@@ -27,12 +27,6 @@ To update later:
 
 More to come, on the same quality bar.
 
-## Editorial policy
-
-- Skills land here only when their methodology is project-agnostic and they have been used in real work for long enough to have rough edges sanded off.
-- Project-specific identifiers, tooling assumptions, and authoring metadata (`SOURCES.md`-style provenance files) live in the private upstream and do not ship to consumers.
-- Voice is consistent: semicolons not em dashes, Oxford commas, no participation-prompt closers.
-
 ## Contributing
 
 This repo is curated, not crowdsourced. Issues and discussions are welcome (bug reports, behavior reports from real use, suggested clarifications). Pull requests for new skills will generally not be accepted; the bar is "skill we use in production," and someone else's production is not ours to vouch for.
