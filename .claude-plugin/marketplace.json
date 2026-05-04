@@ -1,0 +1,18 @@
+{
+  "name": "simiancraft-skills",
+  "owner": {
+    "name": "simiancraft",
+    "email": "info@simiancraft.com",
+    "url": "https://github.com/simiancraft"
+  },
+  "description": "Curated Claude Code skills and agents from simiancraft. Quality-bar-only.",
+  "plugins": [
+    {
+      "name": "simiancraft-skills",
+      "source": "./",
+      "description": "Skills and agents simiancraft uses in production and is willing to put its name on.",
+      "category": "productivity",
+      "keywords": ["planning", "workflow", "skills", "agents"]
+    }
+  ]
+}

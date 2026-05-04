@@ -1,0 +1,14 @@
+{
+  "name": "simiancraft-skills",
+  "description": "Curated Claude Code skills and agents from simiancraft. Personal-shop quality bar; only what represents work worth putting our name on.",
+  "version": "0.1.0",
+  "author": {
+    "name": "simiancraft",
+    "email": "info@simiancraft.com",
+    "url": "https://github.com/simiancraft"
+  },
+  "homepage": "https://github.com/simiancraft/simiancraft-skills",
+  "repository": "https://github.com/simiancraft/simiancraft-skills",
+  "license": "MIT",
+  "keywords": ["claude-code", "skills", "agents", "planning", "workflow"]
+}
