@@ -25,8 +25,6 @@ To update later:
 |-------|--------------|
 | [`how-to-plan`](skills/how-to-plan/SKILL.md) | Methodology for tactical, hand-off-ready planning docs. Goal-as-north-star, atomic commit steps with verification gates, before/after file trees, and the Inspector Gadget Rule (plans self-destruct when shipped, two-key handshake before deletion). |
 
-More to come, on the same quality bar.
-
 ## Contributing
 
 This repo is curated, not crowdsourced. Issues and discussions are welcome (bug reports, behavior reports from real use, suggested clarifications). Pull requests for new skills will generally not be accepted; the bar is "skill we use in production," and someone else's production is not ours to vouch for.
