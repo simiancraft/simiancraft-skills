@@ -5,14 +5,14 @@
     "email": "info@simiancraft.com",
     "url": "https://github.com/simiancraft"
   },
-  "description": "Curated Claude Code skills and agents from simiancraft. Quality-bar-only.",
+  "description": "Opinionated Claude Code skills and agents. Quality-bar-only.",
   "plugins": [
     {
       "name": "simiancraft-skills",
       "source": "./",
-      "description": "Skills and agents simiancraft uses in production and is willing to put its name on.",
+      "description": "Opinionated Claude Code skills and agents. Quality-bar-only.",
       "category": "productivity",
-      "keywords": ["planning", "workflow", "skills", "agents"]
+      "keywords": ["planning", "workflow", "skills", "agents", "android", "testing"]
     }
   ]
 }
