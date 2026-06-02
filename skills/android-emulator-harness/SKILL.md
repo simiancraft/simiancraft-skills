@@ -15,8 +15,8 @@ description: >-
 
 # Android Emulator Harness (headless, WSL/Linux, Maestro-driven)
 
-Specializations (camera/mask, audio/voice, location, …) sit ON TOP of this kernel
-and only override the parts they must.
+Specializations (e.g. camera/mask) sit ON TOP of this kernel and override only the
+parts they must.
 
 > **Runtime/package manager.** Examples use `bun`/`bunx`; substitute your own
 > runner (`npm`/`npx`, `pnpm`/`pnpm dlx`, or `yarn`) wherever they appear. The
@@ -57,8 +57,9 @@ and only override the parts they must.
 
 ## 1. Create an AVD (one-time)
 
-Default to **x86_64** (fast, modern API). Use 32-bit `x86` ONLY when a required
-native lib lacks an x86_64 variant (see android-emulator-mask-testing).
+Default to **x86_64** (faster under KVM, widest native-lib coverage). Use 32-bit
+`x86` ONLY when a required native lib lacks an x86_64 variant (see
+android-emulator-mask-testing).
 
 ```bash
 yes | "$SDKMGR" "system-images;android-34;google_apis;x86_64" "platforms;android-34"
@@ -95,7 +96,8 @@ emulator; `eas build:download --build-id <id>` fetches only; the Expo MCP
 false bug.
 
 ```bash
-PKG=$("$SDK/build-tools/34.0.0/aapt2" dump badging app.apk | sed -n "s/package: name='\([^']*\)'.*/\1/p")
+AAPT2="$(ls "$SDK"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)"   # newest installed build-tools
+PKG=$("$AAPT2" dump badging app.apk | sed -n "s/package: name='\([^']*\)'.*/\1/p")
 $ADB install -r -g app.apk            # -g grants runtime perms (CAMERA, etc.) up front
 $ADB shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 ```
@@ -105,15 +107,17 @@ $ADB shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 - `.MainActivity` → standalone, JS embedded. Done.
 - `…DevLauncherActivity` → an Expo **dev** build; needs Metro. Start it
   (`bunx expo start` in the app dir), `adb reverse tcp:8081 tcp:8081`, then open the
-  dev-client launch URL (the client consumes the `expo-development-client` scheme, not
-  a bare Metro URL):
-  `adb shell am start -a android.intent.action.VIEW -d "<scheme>://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"`
+  dev-client launch URL. The URL is your app's own custom scheme with the
+  `expo-development-client` host (not literally `expo-development-client://`, and not a
+  bare Metro URL):
+  `adb shell am start -a android.intent.action.VIEW -d "<your-app-scheme>://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"`
   (with `adb reverse` in place use `localhost`; without it, url-encode `http://10.0.2.2:8081`).
   Prefer a **preview/standalone** build for unattended runs to avoid this entirely.
 
 **Auth/login.** Many apps gate the first screen behind login. The first flow must
-authenticate from env or an out-of-repo secrets file (NEVER hardcode). Drive the
-login with Maestro like any other screen; store creds outside the repo.
+authenticate from env or an out-of-repo secrets file (NEVER hardcode). Pass secrets to
+Maestro with `--env KEY=VALUE` (or an env file) and read them in the flow as `${KEY}`;
+drive the login like any other screen and keep creds outside the repo.
 
 ## 4. Drive the UI with Maestro (preferred)
 
