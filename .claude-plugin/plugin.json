@@ -1,6 +1,6 @@
 {
   "name": "simiancraft-skills",
-  "description": "Opinionated Claude Code skills and agents. Quality-bar-only; only what represents work simiancraft is willing to put its name on.",
+  "description": "Opinionated Claude Code skills and agents. Quality-bar-only.",
   "version": "0.1.0",
   "author": {
     "name": "simiancraft",

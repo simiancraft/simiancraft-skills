@@ -12,7 +12,7 @@
       "source": "./",
       "description": "Opinionated Claude Code skills and agents. Quality-bar-only.",
       "category": "productivity",
-      "keywords": ["planning", "workflow", "skills", "agents", "android", "testing"]
+      "keywords": ["claude-code", "skills", "agents", "planning", "workflow", "android", "testing"]
     }
   ]
 }

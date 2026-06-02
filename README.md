@@ -1,8 +1,8 @@
 # simiancraft-skills
 
-> Plans self-destruct when shipped. The Inspector Gadget Rule.
+> Curated Claude Code skills and agents. Only what we run in production.
 
-Opinionated Claude Code skills from [simiancraft](https://github.com/simiancraft). Quality-bar-only.
+Opinionated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Quality-bar-only.
 
 ## What you get
 
