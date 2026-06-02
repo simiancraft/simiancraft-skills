@@ -37,8 +37,6 @@ Reaching that bar requires interrogation. Before drafting any plan prose, interv
 
 Only when every branch has a settled answer; scope, domain model, file paths, data shapes, edge cases, out-of-scope items, ordering; begin drafting. Never paper over a gap with `TBD`; a plan with a TBD is a suggestion, not a plan.
 
-> **Note:** This protocol is adapted from the standalone `grill-me` skill. If `grill-me` (or an equivalent) is installed in the host environment, prefer invoking it; the protocol above is inlined here so this skill works without external skill dependencies.
-
 ## Step 2: Split; one plan, one discrete feature
 
 A plan describes a single discrete feature or action. When work grows large enough to contain multiple heavy phases that could each stand alone, split it into multiple plans that reference each other. This is the most important structural choice while drafting.
