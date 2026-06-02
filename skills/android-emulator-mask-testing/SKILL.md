@@ -20,10 +20,9 @@ and teardown. This skill changes only what's needed to put a segmentable human i
 the camera and run GPU segmentation. Everything else (drive with Maestro, assert on
 logcat + screenshot) is identical to the base.
 
-This skill ships two fixtures alongside it: **`fixtures/person.png`** (a full-body
-subject on a transparent background, the raw asset) and **`fixtures/person-framed.png`**
-(the same subject pre-positioned for the emulator's camera-feed crop; see "Version
-note"). Use them directly, or swap in your own subject of the same shape.
+This skill ships one fixture: **`fixtures/person-framed.png`**, a full-body subject
+pre-positioned for the emulator's camera-feed crop (see override 3). Feed it directly,
+or swap in your own subject framed the same way.
 
 ## The three camera-specific overrides (each cost real debugging time)
 
@@ -47,32 +46,26 @@ note"). Use them directly, or swap in your own subject of the same shape.
    adb shell dumpsys SurfaceFlinger | grep -m1 "GLES:"   # MUST say "OpenGL ES 3.1 ... ANGLE"
    ```
 
-3. **Put a person in the scene via the virtualscene wall poster.** Older emulator
-   builds have no `-camera-back imagefile:`/`videofile:` (a recent addition; see
-   "Version note"); their modes are `emulated/webcam<N>/virtualscene/videoplayback/none`.
-   The headless virtualscene camera pose is NOT settable (telnet `sensor set` is
-   ignored; only the gRPC physical model moves it), so **move the poster into the
-   camera's fixed view, not the camera**. Camera sits near origin looking down −Z.
-   ```bash
-   # this skill ships fixtures/person.png (full-body subject, transparent bg, ~2:3)
-   cp fixtures/person.png /tmp/android-harness/person.png
-   cp "$SDK/emulator/resources/Toren1BD.posters" "$SDK/emulator/resources/Toren1BD.posters.bak" 2>/dev/null || true
-   cat > "$SDK/emulator/resources/Toren1BD.posters" <<'EOF'
-poster wall
-size 2 3
-position 0 0 -3.0
-rotation 0 0 0
-default poster.png
+3. **Feed the framed subject straight into the camera (`-camera-back imagefile:`).**
+   A recent emulator presents a still image as the back camera. Confirm support first
+   (`"$EMU" -help-camera-back` lists `imagefile:` / `videofile:`); upgrade if missing
+   (`yes | "$SDKMGR" emulator`). Feed the **pre-framed** image, not a bare cutout: the
+   imagefile-to-sensor path does not present the image 1:1; it crops and shifts, so a
+   subject centered in the source lands off to the right with the head clipped.
+   `fixtures/person-framed.png` is pre-compensated. The framing that lands the subject
+   centered and fully in frame:
+   - **Frame:** 9:16 portrait (e.g. 1080 x 1920).
+   - **Subject height:** ~0.42 of the frame height (full body, not a close-up).
+   - **Subject center:** x = **0.25 W**, y = **0.58 H**. The left-quarter x is
+     deliberate; it cancels the sensor path's rightward shift so the subject reads
+     centered on screen.
+   - **Background:** opaque and contrasting (a light neutral gray works); segmentation
+     needs a clean figure/ground split, and the background is what gets replaced.
 
-poster table
-size 1 1
-position -2.205 -0.077 3.949
-rotation -90 0 120
-EOF
-   ```
-   Framing: `position 0 0 -1.5` = closer/bigger (midsection); `-3.0` = full body.
-   `size W H` in metres ≈ image aspect. Use the **`wall`** anchor (guaranteed to
-   render; arbitrary poster names may not).
+   These offsets are emulator/AVD/version specific. Calibrate once: feed the image,
+   select no effect to see the raw camera preview, screenshot it, and nudge the
+   subject's x-center until it reads centered before trusting a run. To re-frame for a
+   different crop, recompose from your own transparent subject using the offsets above.
 
 ## Full launch (base boot + the three overrides)
 
@@ -80,15 +73,13 @@ EOF
 sg kvm -c "nohup $EMU -avd harness_x86 \
   -no-window -no-audio -no-boot-anim -no-snapshot \
   -gpu swangle_indirect \
-  -camera-back virtualscene \
-  -virtualscene-poster wall=/tmp/android-harness/person.png \
-  -accel on -port 5554 > /tmp/android-harness/emulator.log 2>&1 &"
+  -camera-back imagefile:$PWD/fixtures/person-framed.png \
+  -accel on -port 5554 > /tmp/emulator.log 2>&1 &"
 # then base boot-wait, then dumpsys SurfaceFlinger GLES check MUST be 3.1/ANGLE
 ```
 
-`-virtualscene-poster wall=<file>` sets the poster IMAGE without editing resources;
-the `.posters` file only sets geometry. `-no-snapshot` forces a clean boot so
-poster changes take effect.
+`-no-snapshot` forces a clean boot so the camera feed takes effect. Pass an absolute
+path to the imagefile; the example uses `$PWD` assuming you launch from the skill dir.
 
 ## Asserting the mask (beyond the base's logcat gate)
 
@@ -104,40 +95,24 @@ threshold tuning, iterate the app's maskThreshold/hardness controls and re-Read.
 
 - **CAN now also validate:** mask SHAPE + compositing (person carved, bg swapped).
 - **Still CANNOT:** temporal mask quality (flicker/edge stability) from a STATIC
-  poster; that needs a moving subject. Path to motion: the version note below.
+  image; that needs motion. Use `-camera-back videofile:<abs>/subject.mp4` for a
+  full-frame moving subject when you need to test edge stability over time.
 
-## Version note: the direct camera-feed path (recent emulator builds)
+## Older emulators without `imagefile:`
 
-Recent emulator builds add official direct camera feeds, which remove the poster hack
-entirely. Confirm support with `"$EMU" -help-camera-back` (look for `imagefile:` /
-`videofile:`):
-- `-camera-back imagefile:<abs>/fixtures/person-framed.png` for a full-frame static
-  subject.
-- `-camera-back videofile:<abs>/subject.mp4` for a full-frame **moving** subject; the
-  right tool for temporal mask testing (flicker/edge stability).
+Builds whose `-help-camera-back` lacks `imagefile:` can still put a subject in view via
+the `virtualscene` wall poster. The headless camera pose is not settable (telnet
+`sensor set` is ignored; only the gRPC physical model moves it), so move the poster
+into the camera's fixed view (camera sits near origin looking down −Z): feed your own
+transparent full-body cutout as `-camera-back virtualscene -virtualscene-poster wall=<subject.png>`
+and set geometry in `$SDK/emulator/resources/Toren1BD.posters` (back it up first; the
+`wall` anchor is guaranteed to render). Upgrading the emulator to get `imagefile:` is
+simpler; prefer that.
 
-Feed the **pre-framed** image (`fixtures/person-framed.png`), not the bare cutout. The
-emulator's imagefile-to-sensor path does not present the image 1:1; it crops and shifts,
-so a subject centered in the source lands off to the right with the head clipped.
-Pre-compensate in the source. The working framing that lands the subject centered and
-fully in frame:
-- **Frame:** 9:16 portrait (e.g. 1080 x 1920).
-- **Subject height:** ~0.42 of the frame height (full body, not a close-up).
-- **Subject center:** x = **0.25 W**, y = **0.58 H**. The left-quarter x is deliberate;
-  it cancels the sensor path's rightward shift so the subject reads centered on screen.
-- **Background:** opaque and contrasting (a light neutral gray works); segmentation
-  needs a clean figure/ground split, and the background is what gets replaced.
-
-These offsets are emulator/AVD/version specific: feed the image, select no effect to see
-the raw camera preview, screenshot it, and nudge the subject's x-center until it reads
-centered before trusting a run. Regenerate `person-framed.png` from `fixtures/person.png`
-(the bare transparent subject) if your AVD crops differently.
-
-Upgrade: `yes | "$SDKMGR" emulator`, then re-check `"$EMU" -help-camera-back`.
-
-## Teardown (restore resources)
+## Teardown
 
 ```bash
 adb -s emulator-5554 emu kill
-cp "$SDK/emulator/resources/Toren1BD.posters.bak" "$SDK/emulator/resources/Toren1BD.posters" 2>/dev/null || true
+# only if you used the virtualscene fallback and edited resources:
+# cp "$SDK/emulator/resources/Toren1BD.posters.bak" "$SDK/emulator/resources/Toren1BD.posters" 2>/dev/null || true
 ```

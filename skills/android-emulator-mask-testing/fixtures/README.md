@@ -1,15 +1,18 @@
 # Fixtures
 
-Test subjects for camera / segmentation testing.
+Test subject for camera / segmentation testing.
 
-- **`person.png`**: a full-body subject on a transparent background; the raw asset.
-- **`person-framed.png`**: the same subject pre-positioned for the emulator's
-  camera-feed crop (regenerated from `person.png`; see the skill's "Version note").
+- **`person-framed.png`**: a full-body subject pre-positioned for the emulator's
+  camera-feed crop, fed directly via `-camera-back imagefile:` (see the skill's
+  override 3). 9:16 portrait, opaque contrasting background, subject pre-compensated
+  for the sensor path's crop and shift.
+
+To re-frame for a different AVD crop, recompose from your own transparent subject
+using the offsets documented in the skill.
 
 ## Provenance and license
 
-These images are original work by [simiancraft](https://github.com/simiancraft),
-created for this skill. They are published under the repository's MIT license (see the
+This image is original work by [simiancraft](https://github.com/simiancraft),
+created for this skill. It is published under the repository's MIT license (see the
 root `LICENSE`), with no third-party material, stock-photo licensing, or model-release
-encumbrance. Reuse, modify, and redistribute them under MIT, or swap in your own
-subject of the same shape.
+encumbrance. Reuse, modify, and redistribute it under MIT, or swap in your own subject.
