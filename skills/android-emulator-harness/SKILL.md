@@ -206,7 +206,8 @@ $ADB -s emulator-5554 emu kill
 
 - **android-emulator-mask-testing**: get a real person in the camera so
   MediaPipe/ML Kit segmentation runs (32-bit x86 + `-gpu swangle_indirect` +
-  virtualscene poster). Overrides steps 1–2 only.
+  `imagefile:` camera feed). Overrides the AVD image, the boot/camera command, and
+  adds mask assertions.
 - (future) audio/voice (LiveKit): mic injection + real-time connectivity; its own
   empirical gotcha-hunt, same shape.
 
