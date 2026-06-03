@@ -127,6 +127,15 @@ return <Layout ... ctaZone={<CTA onSubmit={handleSubmit} />} />;  // handler onl
 
 Item-level loading states follow the same rule: a list item with its own `ItemLayout` uses that layout populated with skeleton content, not a separate skeleton component that rebuilds the card structure.
 
+### When to keep a leaf uncontrolled (direct component refs)
+
+The default is to lift state to the chassis and pass values down. The exception: when re-rendering would damage a *live* DOM input, keep the leaf uncontrolled (it owns its own field state) and read its value through a ref at the commit boundary. Two recurring cases:
+
+- **A focused input a sibling state change would blur.** A search box that shows a loading state: if the loading flag lives in the parent and the parent re-renders on every keystroke, the input loses focus on each character. Hold a ref to the input (or keep it uncontrolled) so the parent can flip loading without re-rendering the field.
+- **Field state in a large collection.** A list editor with an input per row: lifting every keystroke to the orchestrator re-renders the whole list per character. Keep each row's field state local and expose an imperative `getValues()` via `useImperativeHandle`; the orchestrator pulls all values through the list ref at save (`listRef.current?.getValues()`), not on every keystroke.
+
+The signal you crossed the line the wrong way: typing blurs the input, or the list janks on keystroke. That means you lifted state that should have stayed local. This is the one principled place the pattern keeps state *down* instead of up; everywhere else, lift.
+
 ### Side effects, mutations, toasts (the actions pattern)
 
 The biggest source of feature-file bloat is inline mutations + toasts. The fix: **`actions/use<Noun>Actions.ts`** owns the mutation and the user-feedback logic; the feature file imports the action and orchestrates pure composition.
@@ -158,6 +167,19 @@ export function useResetDatabase() {
 A feature or sub-feature file importing `useMutation`, `graphql()`, or `Toast.show()` is wrong-shaped. Those belong in `actions/`. Even when the user-facing UI is identical, moving the mutation and toast out of the calling file is worth it on its own: the calling file reads as a static outline of zones; the action becomes reusable and testable as a transactional unit. (GraphQL fragment and data-flow specifics: `graphql-fragments.md`.)
 
 **`useEffect` is also a side-effect concern.** Most cases that "need" an effect are better expressed as user-action-triggered handler functions, derived computation during render, or `useSyncExternalStore`. Genuine lifecycle exceptions (canvas, WebRTC, external subscriptions, DOM measurement) are real but rare; reach for `useEffect` only with reason.
+
+### Editing a collection (working copy, commit as a diff)
+
+An editor of a collection (a list of slides, rules, rows) does not fire a mutation per edit. It holds a **working copy** (local state, or a feature context when a preview shares it), mutates it freely (add, reorder, edit, delete), and marks unsaved rows with a temp id (`temp-...`). On save it computes the **minimal diff** against the original, a set of Add / Update / Delete commands, in a pure, tested util, and hands that command list to an action. The chassis never persists per-keystroke; it accumulates, then commits once.
+
+```ts
+// utils: pure, tested; original vs working copy -> minimal command set
+const commands = generateBatchCommands(original, working, scopeId);
+// actions/: owns the mutation; sends the command list, owns toasts
+if (commands.length) await save(commands);
+```
+
+The line stops at the action. Whether it sends those commands as one batch mutation, a replayable command payload, or N calls, and how the server applies them, is a transport/API concern (your GraphQL or mutation conventions), out of scope here. This skill owns the client shape up to the `actions/` boundary, the same data boundary it uses everywhere.
 
 ### Platform variance
 

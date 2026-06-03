@@ -19,7 +19,7 @@ Zone Composer is a design pattern for constructing **domain-level components** (
 
 | When you are | Read |
 |---|---|
-| applying the cross-cutting how-to: flag props, the actions pattern, platform variance and `.types.ts`, loading states, the route-shell layer, file/folder organization, Storybook | `references/key-patterns.md` |
+| applying the cross-cutting how-to: flag props, controlled/uncontrolled leaves, the actions pattern, editing a collection, platform variance and `.types.ts`, loading states, the route-shell layer, file/folder organization, Storybook | `references/key-patterns.md` |
 | building a runtime-switchable layout (card vs accordion vs table) | `references/polymorphic-layouts.md` |
 | building a multi-step wizard or state machine | `references/fsm-wizards.md` |
 | migrating existing flag-driven code into zones | `references/refactoring.md` |
@@ -222,7 +222,7 @@ Before writing or accepting a prop on a React component, ask:
 - **Appearance** (text, color, size, content slot) → real prop, fine.
 - **Chassis-level state** (`disabled`, `loading`, `isSubmitting`, `canCreateX`, `hasError`) → prop shouldn't exist; chassis should swap which leaf renders.
 
-Nuance: **interaction state on the same component** can stay as a flag prop. A `SubmitButton` that takes `isSubmitting` because clicking it triggers the mutation owns its in-flight UI; that's its own interaction lifecycle, not a relayed chassis decision. The rule is "no chassis-level flags on leaves," not "no flags ever."
+Nuance: **interaction state on the same component** can stay as a flag prop. A `SubmitButton` that takes `isSubmitting` because clicking it triggers the mutation owns its in-flight UI; that's its own interaction lifecycle, not a relayed chassis decision. The rule is "no chassis-level flags on leaves," not "no flags ever." Likewise, a leaf may own its *input/field* state when lifting it would re-render a large list per keystroke or blur a focused input (a search box with a loading state); keep it uncontrolled and read it through a ref at the commit boundary (see *When to keep a leaf uncontrolled* in `references/key-patterns.md`).
 
 ## What "correctly applied" looks like
 
