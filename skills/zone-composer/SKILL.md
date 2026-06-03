@@ -5,7 +5,7 @@ description: React composition pattern for domain features (screens, panels, too
 
 # Zone Composer
 
-Zone Composer is a design pattern for constructing **domain-level components** (screens, panels, tools, and other surfaces a feature owns) that, applied upfront, consistently produces *less* code than the flag-driven equivalent: typically 25–75% fewer lines. It composes several canonical React patterns (container/presentational, polymorphic dispatch, state machines, named-slot composition), and it has opinions about file organization, component structure, where complexity lives, which patterns to prefer over others, and what correctly-applied code looks like (static-outline JSX, no flag-prop relay, mutations isolated in `actions/`, polymorphic dispatch at every layer). Scales down to primitives, but shines at domain features.
+Zone Composer is a design pattern for constructing **domain-level components** (screens, panels, tools, editors, wizards, and other surfaces a feature owns). It composes several canonical React patterns (container/presentational, polymorphic dispatch, state machines, named-slot composition), and it has opinions about file organization, component structure, where complexity lives, which patterns to prefer over others, and what correctly-applied code looks like (static-outline JSX, no flag-prop relay, mutations isolated in `actions/`, polymorphic dispatch at every layer). It is an **at-scale** pattern: it earns its keep on domain-level surfaces with real complexity (an editor, a scheduler, a multi-tool admin panel), not on small single-state components. Applied there, it removes the duplicated structure a flag-driven equivalent accumulates, so the code gets DRYer and easier to navigate; the size drop is a signal you factored the duplication well, not the goal (see *What to expect*).
 
 **Zone Composer is structural help for a domain-driven approach.** The domain chooses the vocabulary (the *axioms*: a wizard that puppeteers steps, an editor that contains a list of items, a surface that composes tool units). Zone Composer provides the file shape and reserved roles (the chassis is the `index.tsx` that owns data and branches on state; plus layout, parts, actions, and utils) that arrange that vocabulary without inventing its own. Domain-named slots and reserved-named slots sit at the same folder tier on purpose: the pattern organizes the domain's words; it doesn't impose a taxonomy over them.
 
@@ -96,7 +96,15 @@ The pattern speaks to several cross-cutting concerns at once:
 - Children need independent GraphQL fragments.
 - Refactor-safety is worth extra structure.
 
-When in doubt about a domain component: **try the refactor**. Line count up = genuine exception (rare). Line count down = the median outcome: readability earned for free.
+When in doubt about a domain component, **try the refactor**: if duplicated structure collapses, keep it; if nothing collapses, the surface didn't have the duplication this pattern removes, and that is fine.
+
+## What to expect
+
+This is an **at-scale** pattern. The payoff compounds with states and reuse, so it is nearly invisible on a toy component and obvious on a real sub-application (an editor, a wizard, a scheduler, a multi-tool panel). Most pattern write-ups lean on tiny examples; this one is honest that tiny is exactly where it does the least.
+
+The mechanism is duplication removal. Read a surface as **layouts × states**. Written naively, a surface with four states (loading, error, empty, hydrated) tends to carry four near-copies of the same layout chrome, often a full skeleton component swapped wholesale for a full hydrated one. Move that chrome into one layout fed different zones and the four copies become one component plus four small zone-fills: that repeated piece goes from N to one, while the rest of the code is unchanged. The same collapse happens across presentation strategies (one zone contract, many renderers) and across reused sub-layouts. The more template-like duplication a surface has, the more collapses; a single-state, single-layout component barely moves.
+
+So the code usually gets smaller, but **size is a signal, not the goal.** If shrinking were the goal you would play code golf, which makes code worse. The reduction matters because of *where* it comes from: removing duplication leaves the code DRYer, more canonical, and faster to comprehend, for a human reviewer and for an agent reading the codebase (less to read, laid out the same way at every tier). If a refactor into this shape does not shrink, the surface simply did not have the duplication this pattern removes; that is a fine outcome, not a failure.
 
 ## The vocabulary
 
@@ -197,7 +205,7 @@ A stricter React pattern, not a divergent one. The rules below catch patterns th
 | **Avoid `useEffect`.** Most side effects belong in handler functions. Genuine lifecycle exceptions exist (canvas / WebRTC / subscriptions / DOM measurement), but reach for it only with reason. | React docs call `useEffect` an "escape hatch." Effects cause stale-closure bugs and re-render storms; most cases are better as handlers, render-time derivation, or `useSyncExternalStore`. |
 | **No `try/catch/finally` in hook bodies.** Use `.then(onSuccess, onError)` or `.catch()`. | React Compiler concession. The compiler bails out of optimizing a hook body containing `try/finally` or `try` without `catch` (it goes un-memoized rather than failing). Method-form (`.catch()`, `.finally()`) is fine. Prefer `await` outside the hook-body boundary. |
 | **Don't use `useMemo` / `useCallback` / `React.memo`.** React Compiler memoizes automatically. | Compiler concession. Manual memoization is redundant under the compiler (it preserves yours; you just don't need it). Off-compiler? Ignore this row. |
-| **Named exports only** (except story meta). | Default exports rename silently; named exports give you grep-ability. |
+| **Named exports only**, except where a framework mandates a default export (Storybook `meta`, Next.js `page`/`layout`/`route`, Expo Router screens). | Default exports rename silently; named exports give you grep-ability. Honor the required default at those framework entry files only. |
 | **No barrels in subdirectories.** Imports target specific files. | Barrels hide locations, couple features, break tree-shaking. |
 | **Hydrated is non-defensive:** props fully resolved by chassis; zero existence checks. | Downstream existence checks multiply. Narrowing once at the chassis means everything below trusts. |
 | **Loading states reuse the Layout** with skeleton/spinner content in zones. | Duplicated `className` between skeletons and layouts is drift waiting to happen. |
@@ -223,11 +231,9 @@ Nuance: **interaction state on the same component** can stay as a flag prop. A `
 - **No `useMutation` / `graphql()` / `Toast.show()` imports** in scenario or feature files; those live in `actions/`.
 - **Stories ordered by chassis branch:** `ErrorState`, `Loading`, `Hydrated` (always); plus `NoData` and `Submitting` only when those branches are present in this surface. Order matches the trunk early-return order; the sidebar reads like the chassis.
 - **Platform pairs share a `.types.ts`** so `.tsx` and `.web.tsx` can't drift on contract.
-- **Net code shrinks.** Applied upfront, the result has fewer lines than the flag-driven equivalent. Reductions of 25% (minimal) to 75% (polymorphic systems with reusable sections) are typical. The mechanical accounting:
-  - Flag-driven leaf = type + hook return + prop pass-through + internal ternary on label/spinner + chassis still decides which flags to set. Multiple touchpoints per state bit.
-  - Zone-swap leaves = N small leaves (5–10 lines each) + chassis flat-branches once + zero internal branching downstream. Net code is *less*; read-time scanning is O(1).
+- **Duplication collapses** (see *What to expect*). Repeated layout chrome across states and strategies factors into one component fed zones; the code usually gets smaller, but that shrink is the signal, not the target. Per-state accounting: a flag-driven leaf pays for a type, a hook-return field, a prop pass-through, an internal ternary, and the chassis still setting the flag; the zone version is N small leaves the chassis swaps once, with zero downstream branching and O(1) read-time scanning.
 
-When refactoring flag-driven code, **count lines before and after**. Zone version almost always wins. For a step-by-step migration of existing flag-driven code into zones, see `references/refactoring.md`.
+When refactoring flag-driven code, watch the duplicated chrome collapse into shared layouts; if nothing collapses, the surface didn't have the duplication this pattern targets. For a step-by-step migration of existing flag-driven code into zones, see `references/refactoring.md`.
 
 ## The proactive shape: declarative dispatch
 
