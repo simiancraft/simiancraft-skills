@@ -71,6 +71,7 @@ Update later:
 ### Skills
 
 - **[`how-to-plan`](skills/how-to-plan/SKILL.md)**: methodology for tactical, hand-off-ready planning docs. Goal-as-north-star, atomic commit steps with verification gates, before/after file trees with a 10-symbol legend, and the Inspector Gadget Rule.
+- **[`zone-composer`](skills/zone-composer/SKILL.md)**: React composition pattern for domain features (screens, panels, tools, editors). A chassis owns data and state branching via flat early returns; presentational leaves take named zones instead of flag props; mutations live in `actions/`; layouts are polymorphic. Lean core plus six task references (key patterns, polymorphic layouts, FSM wizards, refactoring, GraphQL fragments, code style).
 - **[`android-emulator-harness`](skills/android-emulator-harness/SKILL.md)**: bring up an Android app in a headless emulator on Linux/WSL and drive it for automated integration testing, the Android analog of Playwright for web. Boots an AVD under KVM, installs an APK, drives the UI with Maestro, and gates on logcat plus screenshots.
 - **[`android-emulator-mask-testing`](skills/android-emulator-mask-testing/SKILL.md)**: specialization of the harness for camera and segmentation testing. Puts a real person in front of the emulator camera so MediaPipe / ML Kit selfie segmentation produces a mask, then verifies background-replacement, blur, and shader effects. Ships a pre-framed subject fixture.
 
