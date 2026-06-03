@@ -13,4 +13,4 @@ When you discover the smell late and need to migrate flag-driven code into zones
 5. **Extract mutations + toasts to `actions/use<Noun>Actions.ts`.** Scenario/feature files don't import `useMutation`, declare GraphQL mutations with `graphql()`, or call `Toast.show()`. Action hooks return async functions (often `Promise<boolean>` or `Promise<T | null>`); the scenario orchestrates them as pure composition. (The actions pattern is detailed in `key-patterns.md`; GraphQL fragment and data-flow specifics live in `graphql-fragments.md`.)
 6. **Extract layout** when chrome diverges across states or platforms.
 
-Each step is independently committable. Line count goes down or stays flat after each.
+Each step is independently committable; after each, the surface is DRYer or unchanged, never more duplicated.
