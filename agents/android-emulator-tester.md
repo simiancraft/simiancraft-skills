@@ -15,8 +15,6 @@ description: >-
   FPS/perf, true camera/mic fidelity, or network quality; those stay device
   passes and it says so plainly. Loads the android-emulator-harness skill (and
   android-emulator-mask-testing for camera work) before acting.
-tools: All tools
-model: opus
 skills:
   - android-emulator-harness          # base: boot, install, drive, assert, teardown; ALWAYS
   - android-emulator-mask-testing      # camera/segmentation specialization; load when a person must be in-frame
