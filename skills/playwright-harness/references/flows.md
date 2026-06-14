@@ -36,7 +36,7 @@ await page.goto(`${TARGET_URL}/login`);
 await page.getByLabel('Email').fill(process.env.E2E_USER ?? 'test@example.com');
 await page.getByLabel('Password').fill(process.env.E2E_PASS ?? 'password123');
 await page.getByRole('button', { name: 'Sign in' }).click();
-await page.waitForURL('**/dashboard');
+await page.waitForURL('**/dashboard**'); // trailing ** tolerates a slash: http.server and many routers 301 /dashboard to /dashboard/
 await page.context().storageState({ path: '/tmp/pw-auth.json' });
 ```
 
@@ -131,3 +131,7 @@ const ctx = await browser.newContext({
   },
 });
 ```
+
+When you read a header back to verify it (via `route.request().headers()` or your
+own server), the key is lowercased: match against `x-automated-by`, not the
+title-cased form you set.

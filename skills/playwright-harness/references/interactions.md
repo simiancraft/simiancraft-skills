@@ -53,6 +53,7 @@ action, so you rarely pre-wait.
 - presence / count: `await loc.count()`, `await loc.isVisible()`
 - text: `await loc.textContent()`, `await loc.innerText()`
 - attribute / state: `await loc.getAttribute('href')`, `await loc.isChecked()`, `await loc.isEnabled()`
+- live input value: `await loc.inputValue()` reads what an input, textarea, or select currently holds; `getAttribute('value')` returns the original attribute, NOT what `fill()` or a selection set
 - gate and throw: `if (!(await loc.isVisible())) throw new Error('CTA missing');`
 
 Then the base's rule still holds: collect `pageerror` + `console` errors and

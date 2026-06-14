@@ -62,21 +62,30 @@ camera feed, a GIF) is what you need.
 
 ## The run pattern
 
-1. **Write the script to a temp path**, never into the skill or the project:
-   `/tmp/pw-<task>.mjs`. Parameterize the URL as `const TARGET_URL =
+1. **Write the script into a dedicated scratch dir**, never into the skill or the
+   project: `/tmp/pw-<task>/run.mjs`, with any output alongside it
+   (`/tmp/pw-<task>/shot.png`). A per-task dir stops parallel runs from colliding
+   on a shared filename. Parameterize the URL as `const TARGET_URL =
    process.env.TARGET_URL || '<default>'` so it is never hardcoded.
-2. **Run it with `playwright` resolvable.** An ESM bare import resolves from the
-   script's directory upward, so run from (or under) a dir that has playwright
-   installed, or symlink one next to the script:
+2. **Make `playwright` resolvable from the script's own directory.** ESM resolves
+   a bare import from the SCRIPT's location upward; cwd is irrelevant, so running a
+   `/tmp` script from inside a project that has playwright does NOT work. Symlink
+   an existing install into the scratch dir (do not reuse a shared
+   `/tmp/node_modules`; it collides with other `/tmp` installs and then the import
+   silently fails to resolve):
    ```bash
-   node /tmp/pw-task.mjs                            # cwd or a parent already has playwright
-   ln -sfn "$PWD/node_modules" /tmp/node_modules    # else symlink an install so /tmp resolves bare imports
+   mkdir -p /tmp/pw-<task>
+   ln -sfn /path/to/an-install/node_modules /tmp/pw-<task>/node_modules  # an install that has playwright
+   node /tmp/pw-<task>/run.mjs
    ```
+   No install handy? `cd /tmp/pw-<task> && npm i playwright` right there. Confirm
+   it resolves before relying on it: from the scratch dir, `node -e
+   "import('playwright').then(() => console.log('resolves'))"`.
 3. **Default to headless.** It is faster and gives clean, chrome-free screenshots.
    Use `headless: false` only to watch a flow interactively while debugging.
 
 ```js
-// /tmp/pw-task.mjs
+// /tmp/pw-task/run.mjs
 import { chromium } from 'playwright';
 const TARGET_URL = process.env.TARGET_URL || 'http://localhost:8080/';
 
@@ -87,7 +96,7 @@ page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 page.on('console', (m) => m.type() === 'error' && errors.push(`console: ${m.text()}`));
 
 await page.goto(TARGET_URL, { waitUntil: 'load' });
-await page.locator('#root').screenshot({ path: '/tmp/shot.png' }); // element; omit .locator for full page
+await page.locator('#root').screenshot({ path: '/tmp/pw-task/shot.png' }); // element-cropped; use page.screenshot() for the full page
 await browser.close();
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'no page errors');
 ```
@@ -128,8 +137,11 @@ await page.evaluate(() => { const g = document.createElement('canvas').getContex
   return x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : 'no-debug-renderer-info'; });
 ```
 
-A real GPU returns something like `ANGLE (...)`; `Google SwiftShader` or
-`llvmpipe` means you are still on the no-op software path.
+Read the string case-insensitively for the software markers `SwiftShader` and
+`llvmpipe`: if either is present you are on the no-op software path. The leading
+`ANGLE (` proves nothing on its own; the software path can arrive wrapped, e.g.
+`ANGLE (Google, Vulkan ... SwiftShader driver)`. A real GPU names an actual
+adapter, e.g. `ANGLE (Intel..., D3D12 (Intel(R) UHD Graphics 770), ...)`.
 
 Let any shader/animation settle a second or two after first paint (PSO compile)
 before capturing, or early frames stutter.
@@ -145,6 +157,11 @@ only bite in production:
 mkdir -p /tmp/site && ln -sfn "$(pwd)/dist" /tmp/site/<base-path>
 python3 -m http.server 8091 -d /tmp/site   # test http://localhost:8091/<base-path>/
 ```
+
+`python3 -m http.server PORT -d DIR` serves any static directory (a single loose
+fixture works the same way). It is static-only and cannot answer an app's live
+endpoints (`/api/...`); for those, point `TARGET_URL` at the running dev server,
+or stub the endpoints with the network-stubbing recipe in `references/flows.md`.
 
 ## Scope
 
