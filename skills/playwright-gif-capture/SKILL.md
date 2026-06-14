@@ -17,10 +17,9 @@ description: >-
 **Read `playwright-harness` first.** The base owns prerequisites, the run pattern
 (write to `/tmp/pw-*.mjs`, run with `playwright` resolvable), and the drive/assert
 + WebGL-GPU patterns. This skill changes only how you turn a running animation
-into frames; encoding and the
-quality/size tradeoffs live in **`references/gif-optimization.md`**; read it
-before tuning, because deep-fried (low color), janky (bad fps), and bloated GIFs
-are all easy to make by accident.
+into frames. Encoding and the quality/size tradeoffs live in
+**`references/gif-optimization.md`**; open it before tuning, since a deep-fried,
+janky, or oversized GIF is easy to make by accident.
 
 **Headless is required here** (not just the default): the encode is offline and
 you want clean, chrome-free frames.

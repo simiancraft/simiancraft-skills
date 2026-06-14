@@ -70,7 +70,7 @@ intended.
 - **Capture at a fixed clock, not wall-clock.** Drive the animation time per
   frame (see SKILL.md, method A) so frames are evenly spaced. Wall-clock
   screenshotting inherits render jitter and produces uneven motion.
-- **Pick an fps the format respects:** **12–20 fps** is the sweet spot for smooth
+- **Pick an fps the format respects:** **12-20 fps** is the sweet spot for smooth
   web GIFs. 10 reads as "documentation smooth"; 8 is choppy but tiny; >25 is
   wasted (viewers clamp it and you just pay size). Match the encode `fps` to the
   capture fps exactly; a mismatch makes ffmpeg drop or duplicate frames,
@@ -94,7 +94,7 @@ quality-per-byte saved:
 
 1. **Dimensions**: `scale=480:-1` (or `-1` height). Halving width ~quarters
    size. Biggest lever; do this first.
-2. **Duration**: trim to the shortest loop that reads. 2–4 s is usually plenty.
+2. **Duration**: trim to the shortest loop that reads. 2-4 s is usually plenty.
 3. **fps**: 16 → 12 → 10. Each step is a near-linear size cut.
 4. **Colors**: `max_colors` 256 → 128 → 64. Below ~64 it deep-fries; flat
    content tolerates lower.
@@ -145,9 +145,9 @@ wins on content with a static background, free of quality cost up to a few %.
 Don't pick numbers blindly. Encode good, measure, then trade in §3 order:
 
 ```bash
-encode at 720px / 16fps / 256-color / bayer  ->  measure bytes
+encode at 720px / 16fps / 256-color / bayer  →  measure bytes
 while size > budget:
-  apply the next cheapest cut (dims -> duration -> fps -> colors -> dither -> --lossy)
+  apply the next cheapest cut (dims → duration → fps → colors → dither → --lossy)
   re-measure
 stop at the first version under budget; don't over-compress
 ```
@@ -156,7 +156,7 @@ Always **print the byte size** and **Read the GIF back** (vision) before
 shipping: confirm it isn't banded (deep-fried), isn't stuttering (janky), and is
 under the destination's limit. Common budgets: GitHub README/issue inline ≤ ~10 MB
 (smaller loads better); Slack message GIF ≤ a few MB at 480²; Slack emoji 128²,
-< 3 s, 48–128 colors.
+< 3 s, 48-128 colors.
 
 ## Craft notes
 

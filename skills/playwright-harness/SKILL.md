@@ -3,20 +3,41 @@ name: playwright-harness
 description: >-
   Drive a real browser headlessly with Playwright on Linux/WSL and gate on what
   you observe: write a script, launch Chromium (real GPU under WSLg via ANGLE when
-  WebGL matters), drive the page, and assert on screenshots + collected page
-  errors. The web analog of an emulator harness. Use for ANY web project when the
-  task is "run the page in a browser", "drive the UI headlessly", "smoke-test a
-  screen", "screenshot a component/canvas", "reproduce a console error", or "set
-  up browser testing". Project-agnostic base; layer a domain skill on top for
-  specialized inputs (see playwright-camera-mask-testing for a camera feed,
-  playwright-gif-capture for animated GIFs). Validated on Linux/WSL, headless
-  Chromium, with the ANGLE GPU path for WebGL.
+  WebGL matters), drive the page, and assert on screenshots plus collected page
+  errors. The operational trunk for browser work; specializations layer on top.
+  Use for ANY web task: "drive the UI headlessly",
+  "smoke-test a screen", "screenshot a component or canvas", "reproduce a console
+  error", "fill and submit a form", "test a login flow", "check responsive
+  layout", "find broken links", or "automate a browser flow". Open
+  references/interactions.md and references/flows.md for the element vocabulary and
+  multi-step recipes; switch to playwright-camera-mask-testing for a camera or
+  person feed, or playwright-gif-capture for an animated GIF. Validated on
+  Linux/WSL, headless Chromium, with the ANGLE GPU path for WebGL.
 ---
 
 # Playwright Harness (headless, Linux/WSL)
 
-Project-agnostic kernel for driving a browser and asserting on it. Specializations
-sit ON TOP of this and override only the parts they must.
+Project-agnostic kernel for driving a browser and asserting on it; the operational
+trunk the rest of the suite hangs off.
+
+## Map of the suite
+
+This skill is the trunk: what to install, plus the run-and-assert pattern.
+Everything else hangs off it.
+
+```
+playwright-harness/                     <- you are here: prerequisites + run pattern + assert loop
+├── references/
+│   ├── interactions.md                 address elements: locators, actions, waits, assertions
+│   └── flows.md                        recipes: login, forms, responsive, link-checking, network stubbing
+└── specializations (separate, discoverable skills; read this one first):
+    ├── playwright-camera-mask-testing  a real person through getUserMedia; assert segmentation/mask by vision
+    └── playwright-gif-capture          an animated GIF of a page, canvas, or WebGL animation
+```
+
+`references/` is this skill's own depth, loaded by reading the file. The
+specializations are separate, discoverable skills; open one when its input (a
+camera feed, a GIF) is what you need.
 
 > **Runtime/package manager.** Examples use plain `node` + `npm`; substitute your
 > own runner (`bun`, `pnpm`, `yarn`) wherever they appear. Playwright itself is
@@ -81,6 +102,13 @@ console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'no page errors');
 - **Wait on conditions, not the clock:** `waitForSelector`, `waitForURL`,
   `waitForLoadState`, or a page-exposed signal, beats a fixed `waitForTimeout`.
 
+## Interactions and flows
+
+The element vocabulary and the multi-step recipes live in the two references
+above. They exist to reach observable states worth gating on, not to be a general
+automation toolkit; a new recipe earns its place by ending on something you
+assert, not just an action it performs.
+
 ## WebGL / GPU caveat (WSLg, headless)
 
 Default headless Chromium renders WebGL via **SwiftShader**, which silently
@@ -99,6 +127,9 @@ await page.evaluate(() => { const g = document.createElement('canvas').getContex
   const x = g.getExtension('WEBGL_debug_renderer_info');
   return x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : 'no-debug-renderer-info'; });
 ```
+
+A real GPU returns something like `ANGLE (...)`; `Google SwiftShader` or
+`llvmpipe` means you are still on the no-op software path.
 
 Let any shader/animation settle a second or two after first paint (PSO compile)
 before capturing, or early frames stutter.
@@ -124,12 +155,9 @@ python3 -m http.server 8091 -d /tmp/site   # test http://localhost:8091/<base-pa
   timing), true input-device fidelity, or Firefox/WebKit capability differences
   unless you launch those browsers explicitly.
 
-## Specializations that layer on this base
+## The specialization contract
 
-- **playwright-camera-mask-testing**: feed a real person through getUserMedia and
-  assert segmentation/mask effects by vision.
-- **playwright-gif-capture**: capture an animated GIF of a page or canvas.
-
-A new specialization says "Read playwright-harness first" and adds only its delta
-(its inputs, its assertion); it does not re-document the run pattern, the assert
-loop, or the GPU caveat.
+A sibling skill (mapped above) says "Read playwright-harness first" and adds only
+its delta: its inputs and its assertion. It does not re-document the run pattern,
+the assert loop, or the GPU caveat. A new reference follows the same rule: it
+states its patterns and points back here for execution.

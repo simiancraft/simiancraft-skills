@@ -16,6 +16,11 @@ ffmpeg -i ../../android-emulator-mask-testing/fixtures/person-framed.png \
   person-web.png
 ```
 
+That source path resolves when the marketplace repo is checked out whole; the
+sibling `android-emulator-mask-testing` skill ships alongside this one. The
+shipped `person-web.png` already exists, so the command above is only for
+regenerating it.
+
 To swap in your own subject, match the shape: landscape 4:3 or 16:9, even
 dimensions, subject centered at 50-85% of frame height, opaque contrasting
 background (the background is what gets replaced, so it must read as
