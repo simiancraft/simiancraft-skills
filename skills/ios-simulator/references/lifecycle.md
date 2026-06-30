@@ -96,8 +96,8 @@ SIMCTL_CHILD_MY_FLAG=1 xcrun simctl launch <udid|booted> <app-bundle-id>
 
 ## See also
 
-- `capture.md`, screenshots and the device framebuffer.
-- `permissions.md`, `simctl privacy` grants.
-- `simulator-ui.md`, the Simulator app window and menus around these commands.
+- `capture.md`: screenshots and the device framebuffer.
+- `permissions.md`: `simctl privacy` grants.
+- `simulator-ui.md`: the Simulator app window and menus around these commands.
 - For installing an Expo/React Native dev client and launching it, see
   **expo-ios-simulator** `references/development-builds.md`.

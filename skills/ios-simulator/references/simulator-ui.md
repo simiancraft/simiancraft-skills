@@ -86,7 +86,7 @@ scheme path is how you reach a dev client or a deep route.
 
 ## See also
 
-- `capture.md`, the device framebuffer (why window state does not matter).
-- `driving.md`, the screen-coordinate fallback that consumes the window geometry.
-- `lifecycle.md`, the `simctl` equivalents of the menu actions.
-- **ios-simulator-flow-evidence**, screen recording (the File menu's Record Screen).
+- `capture.md`: the device framebuffer (why window state does not matter).
+- `driving.md`: the screen-coordinate fallback that consumes the window geometry.
+- `lifecycle.md`: the `simctl` equivalents of the menu actions.
+- **ios-simulator-flow-evidence**: screen recording (the File menu's Record Screen).

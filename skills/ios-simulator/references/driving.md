@@ -101,5 +101,5 @@ before each click and prefer AXe whenever it can be installed.
 
 ## See also
 
-- **mobile-accessibility**, what makes elements addressable (`--id` versus `--label`).
-- `capture.md` and `lifecycle.md`, deriving a device coordinate for the `-x -y` fallback.
+- **mobile-accessibility**: what makes elements addressable (`--id` versus `--label`).
+- `capture.md` and `lifecycle.md`: deriving a device coordinate for the `-x -y` fallback.

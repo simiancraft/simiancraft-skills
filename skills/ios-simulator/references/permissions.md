@@ -62,5 +62,5 @@ app never actually makes.
 
 ## See also
 
-- `lifecycle.md`, launching the app you are granting permissions to.
-- **ios-simulator-flow-evidence**, the simulator capability limits (push, camera).
+- `lifecycle.md`: launching the app you are granting permissions to.
+- **ios-simulator-flow-evidence**: the simulator capability limits (push, camera).

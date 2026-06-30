@@ -63,9 +63,9 @@ overlay) before treating it as evidence. Packaging screenshots as artifacts live
 
 ## See also
 
-- `lifecycle.md`, deriving the device scale from a screenshot's pixel width.
-- `driving.md`, acting on what the screenshot shows (tap/type via AXe).
-- **ios-simulator-flow-evidence** `references/video.md`, recording the screen instead
+- `lifecycle.md`: deriving the device scale from a screenshot's pixel width.
+- `driving.md`: acting on what the screenshot shows (tap/type via AXe).
+- **ios-simulator-flow-evidence** `references/video.md`: recording the screen instead
   of capturing stills.
-- **ios-simulator-flow-evidence** `references/screenshots.md`, packaging screenshots as
+- **ios-simulator-flow-evidence** `references/screenshots.md`: packaging screenshots as
   flow artifacts.
