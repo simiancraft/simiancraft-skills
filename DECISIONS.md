@@ -46,7 +46,7 @@ iOS Simulator end to end (build, drive, triage, evidence) for any Expo/RN app.
 
 ## D4. Mandates
 - **Project-agnostic.** Discover everything (booted UDID, bundle id + scheme from `app.config`,
-  device scale). Zero app-specific nouns. (LifeGuides was the proving ground, not a reference.)
+  device scale). Zero app-specific nouns. (A real Expo app was the proving ground, not a reference.)
 - **No prior-art dependencies.** We reviewed the field (below) ONLY to find gaps we might be missing,
   then implement them ourselves within our structure. We never tell a user "go install that skill."
 - **Atomic but DRY.** Install some, not all. One home per concept. No run-on ball-of-mud skill.
