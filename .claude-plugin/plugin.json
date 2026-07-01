@@ -13,5 +13,5 @@
     "url": "https://github.com/simiancraft/simiancraft-skills.git"
   },
   "license": "MIT",
-  "keywords": ["claude-code", "skills", "agents", "planning", "workflow", "android", "testing", "react", "playwright", "web"]
+  "keywords": ["claude-code", "skills", "agents", "planning", "workflow", "android", "ios", "simulator", "expo", "accessibility", "testing", "react", "playwright", "web"]
 }
