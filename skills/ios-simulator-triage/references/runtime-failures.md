@@ -19,7 +19,9 @@ misbehaved. The layer decides the log and the fix, so split it: an **app-native*
 A native crash (the app vanishes, or never draws) leaves evidence outside the JS world:
 
 - **Crash report**: look in `~/Library/Logs/DiagnosticReports` for a fresh `.ips` report
-  naming the thread and exception; or collect everything with `xcrun simctl diagnose`.
+  naming the thread and exception; or collect everything with `xcrun simctl diagnose`. The
+  report is written by a host daemon and can lag the crash by seconds, so if none is there
+  immediately, wait and re-check rather than concluding there was no crash.
 - **stdout / stderr**: relaunch with `xcrun simctl launch --console booted <bundle-id>`
   (see `references/logging.md`); log output is often on **stderr**, not stdout, so do not
   assume silence means nothing happened.

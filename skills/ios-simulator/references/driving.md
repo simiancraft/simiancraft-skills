@@ -44,7 +44,10 @@ axe tap -x <x> -y <y> --udid <udid>                # by coordinate; ignores --id
 
 `--element-type <type>` (e.g. `Button`, `TextField`, `Switch`) narrows an ambiguous
 id/label/value match. `--wait-timeout <seconds>` with `--poll-interval <seconds>`
-waits for the element to appear; `--pre-delay` and `--post-delay` pad timing. When you
+waits for the element to appear; `--pre-delay` and `--post-delay` pad timing. A `Switch`
+or toggle that will not flip under the default tap usually needs `--tap-style physical`;
+the default `automatic` already uses a physical touch for switches and a simulator tap
+elsewhere. When you
 must use `-x -y`, derive the device coordinate from a screenshot fraction times the
 device scale (see `capture.md` and `lifecycle.md`); no window math, no full-screen.
 
@@ -59,6 +62,16 @@ axe type --file text.txt --udid <udid>
 Tap the field first so it has focus. **US-keyboard characters only** (a HID limit):
 `A-Z`, `a-z`, `0-9`, and the symbols `!@#$%^&*()_+-={}[]|\:";'<>?,./` plus `` ` `` and
 `~`. International and accented characters (£, é, ñ) are not supported.
+
+## Set a slider
+
+```bash
+axe slider --label <accessibility-label> --value <0-100> --udid <udid>
+```
+
+`slider` sets a slider to a percentage from 0 to 100 by accessibility (`--id` or `--label`),
+which is deterministic where a bare `swipe` across the track is not. AXe also has lower-level
+`drag`, `touch`, `key`, and `key-sequence` for cases the higher-level verbs do not cover.
 
 ## Swipe and preset gestures
 
@@ -97,7 +110,11 @@ device fraction onto the Simulator window:
 3. Click it: `cliclick c:<screen-x>,<screen-y>`.
 
 It is coordinate-only and breaks if the window moves or resizes, so re-read the bounds
-before each click and prefer AXe whenever it can be installed.
+before each click and prefer AXe whenever it can be installed. The Simulator's Window menu
+(Physical Size, Point Accuracy, Pixel Accuracy) changes the window's content scale without
+changing the framebuffer, so a coordinate computed from window bounds can be off under a
+non-default mode; AXe drives the framebuffer directly and is unaffected, a second reason to
+prefer it.
 
 ## See also
 

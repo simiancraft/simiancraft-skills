@@ -23,8 +23,11 @@ xcrun simctl spawn booted log show --last 5m              # recent, after the fa
 ```
 
 Narrow the firehose with a predicate (`xcrun simctl spawn booted log help predicates`), for
-example `--predicate 'process == "<AppName>"'` (the process, i.e. executable, name). Use this
-for app-native runtime behavior.
+example `--predicate 'process == "<AppName>"'` (the process, i.e. executable, name). For an
+Expo / RN app the executable name is often not the display name, so `process ==` can match
+nothing; `subsystem == "<bundle-id>"` or `processImagePath CONTAINS "<name>"` are more
+forgiving, and an empty stream usually means the predicate did not match, not that nothing
+logged. Confirm the real process name from a crash `.ips` or `ps` before trusting `process ==`.
 
 ## The app's stdout and stderr (runtime, one app)
 

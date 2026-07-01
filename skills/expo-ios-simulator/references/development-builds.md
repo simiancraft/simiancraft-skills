@@ -16,7 +16,7 @@ half; the prompts and dev menu that follow are in `known-prompts.md`.
 
 ## The standard build: expo run:ios
 
-`npx expo run:ios` runs prebuild if `ios/` is missing, installs CocoaPods, compiles
+`npx expo run:ios` runs prebuild if `ios/` is missing, installs pods (`pod install`), compiles
 with Xcode, installs the binary, launches it, and starts Metro. It is the documented
 one-shot path.
 
@@ -54,7 +54,9 @@ The deep link triggers an "Open in '<App>'?" system dialog; dismiss it by access
 not coordinates: `axe tap --label "Open" --udid <udid>`.
 
 Discover `<App>` (scheme and workspace) and `<app-bundle-id>` from `app.config`
-(`scheme`, `ios.bundleIdentifier`); never hardcode them.
+(`scheme`, `ios.bundleIdentifier`); never hardcode them. If `app.config` sets no `scheme`,
+the dev client registers the fallback `exp+<slug>`, so use
+`exp+<slug>://expo-development-client/?url=...`.
 
 ## See also
 
