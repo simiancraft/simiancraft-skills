@@ -37,8 +37,9 @@ Run the checks and install the driver: `prerequisites.md`. In short, macOS with 
    what makes an app addressable.
 3. **Capture** (`references/capture.md`): `simctl io ... screenshot`; the screenshot is
    the device framebuffer, so window size and position never matter. Verify it with vision.
-4. **Pre-grant permissions** (`references/permissions.md`): `simctl privacy` to skip
-   on-device dialogs.
+4. **Set device state and permissions** (`references/permissions.md`,
+   `references/device-state.md`): `simctl privacy` to skip dialogs; appearance, status bar,
+   location, media, clipboard, and push to put the device in a known state.
 5. **The app's own chrome** (`references/simulator-ui.md`): menu-only features, the
    window geometry, and opening a URL on the device.
 

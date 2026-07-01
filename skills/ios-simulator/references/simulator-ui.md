@@ -62,7 +62,10 @@ The automation-relevant items (on the Xcode read for this doc):
 Prefer `simctl` or AXe when an equivalent exists: Trigger Screenshot is
 `simctl io ... screenshot` (`capture.md`), Home and Lock are `axe button`
 (`driving.md`), and Erase All Content and Settings is `simctl erase` (`lifecycle.md`).
-For menu-only features (Toggle Appearance, Face ID, Connect Hardware Keyboard, Shake),
+Toggle Appearance and the contrast and text-size toggles are **scriptable** through
+`simctl ui`, and the status bar's contents (time, battery, carrier) are overridable via
+`simctl status_bar` (`device-state.md`); prefer those over the menu. For the genuinely
+menu-only features (the in-call status-bar banner, Face ID, Connect Hardware Keyboard, Shake),
 click the item through AppleScript:
 
 ```bash
@@ -89,4 +92,5 @@ scheme path is how you reach a dev client or a deep route.
 - `capture.md`: the device framebuffer (why window state does not matter).
 - `driving.md`: the screen-coordinate fallback that consumes the window geometry.
 - `lifecycle.md`: the `simctl` equivalents of the menu actions.
+- `device-state.md`: the scriptable appearance, status-bar, and contrast overrides.
 - **ios-simulator-flow-evidence**: screen recording (the File menu's Record Screen).

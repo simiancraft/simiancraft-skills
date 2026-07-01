@@ -63,4 +63,5 @@ app never actually makes.
 ## See also
 
 - `lifecycle.md`: launching the app you are granting permissions to.
+- `device-state.md`: setting the state behind a permission (a location coordinate, seeded photos).
 - **ios-simulator-flow-evidence**: the simulator capability limits (push, camera).

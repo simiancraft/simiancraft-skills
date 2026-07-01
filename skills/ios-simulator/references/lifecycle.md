@@ -47,6 +47,26 @@ xcrun simctl erase <udid|booted>        # wipe contents and settings to factory 
 to toggle launchd jobs. `erase` takes one or more devices, or the literal `all`
 to erase every device.
 
+**Wait for boot to finish.** `boot` returns before the device is ready to install or drive;
+racing it causes flaky installs. Block until the device is fully booted:
+
+```bash
+xcrun simctl bootstatus <udid> -b     # -b boots first if needed, then waits for boot-complete
+```
+
+`bootstatus` is safe to call before you start booting; `-c` monitors across boot/shutdown cycles.
+
+## Provision and tear down a device
+
+For a hermetic run that should not depend on a pre-existing named device, create one and delete
+it after:
+
+```bash
+xcrun simctl create "<name>" "<device type id>" "<runtime id>"   # ids from `list devicetypes` / `list runtimes`
+xcrun simctl clone <udid> "<new name>"                           # copy an existing device
+xcrun simctl delete <udid|unavailable|all>                       # remove when done
+```
+
 ## Install, launch, terminate, uninstall
 
 ```bash
@@ -98,6 +118,7 @@ SIMCTL_CHILD_MY_FLAG=1 xcrun simctl launch <udid|booted> <app-bundle-id>
 
 - `capture.md`: screenshots and the device framebuffer.
 - `permissions.md`: `simctl privacy` grants.
+- `device-state.md`: appearance, status bar, location, media, clipboard, keychain, and push.
 - `simulator-ui.md`: the Simulator app window and menus around these commands.
 - For installing an Expo/React Native dev client and launching it, see
   **expo-ios-simulator** `references/development-builds.md`.
