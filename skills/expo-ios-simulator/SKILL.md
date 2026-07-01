@@ -47,6 +47,10 @@ hardcodes a project's nouns.
 ## Rules
 
 - Discover bundle id and scheme from the app config; never hardcode them.
+- **Never drive a bundling app.** Two readiness gates sit between "launched" and "driveable":
+  Metro serving (`curl /status`) and the first bundle finishing (the tree grows labels); both
+  recipes are in `references/development-builds.md`. Taps dispatched before them report
+  success and do nothing.
 - Clear every Expo dialog and overlay by accessibility (`axe tap --label`), not coordinates.
 - Every factual claim here and in the references cites a primary source (Expo, Apple, AXe's
   own help); a prior-art skill is never a source.

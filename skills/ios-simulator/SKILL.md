@@ -45,8 +45,28 @@ Run the checks and install the driver: `prerequisites.md`. In short, macOS with 
 
 ## Rules
 
-- Prefer `simctl` and AXe (accessibility) over the window and coordinates. Read the
-  Simulator's state; never resize or full-screen it.
+Three of these are laws about how this environment fails; internalize them before the
+first command, because the failures they prevent emit **no error**.
+
+- **Trust effects, not exit codes.** Every actuation channel here confirms delivery, not
+  processing: AXe synthesizes HID events (`references/driving.md`), an AppleScript menu
+  click returns success even when Simulator is backgrounded and the click never lands
+  (`references/simulator-ui.md`), and `simctl launch` / `openurl` return before the app is
+  interactive. After any step whose outcome matters, verify the state actually changed:
+  re-run `axe describe-ui`, or screenshot and read it.
+- **Gate on readiness signals, never fixed sleeps.** Wait on something provably true:
+  `simctl bootstatus -b` for boot (`references/lifecycle.md`), `--wait-timeout` for an
+  element, the accessibility tree growing labels for a screen. A sleep that worked once is
+  a flake that has not fired yet. Layer skills add their own signals (Metro's `/status`
+  probe and the first-bundle wait in **expo-ios-simulator**).
+- **Ask what is on top before blaming the target.** iOS stacks surfaces over the app:
+  permission and app alerts, the software keyboard, and (on Expo) the dev menu, the LogBox
+  toast, and the inspector overlay. When a tap silently does nothing or the tree looks
+  wrong, dump the label inventory (`references/driving.md`) and clear the overlay first;
+  **ios-simulator-triage** `references/automation-failures.md` walks the causes.
+- Prefer `simctl` and AXe (accessibility) over the window and coordinates, and identity
+  over coordinates (the targeting ladder in `references/driving.md`). Read the Simulator's
+  state; never resize or full-screen it.
 - Every factual claim here and in the references cites a primary source (the tool's own
   help, Apple, AXe); a prior-art skill is never a source.
 

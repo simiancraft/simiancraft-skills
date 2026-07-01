@@ -1,6 +1,6 @@
 ---
 title: Driving the UI
-summary: tap, type, swipe, run preset gestures, key combos, and hardware-button presses via AXe, addressing elements by accessibility id or label before coordinates
+summary: tap, type, swipe, run preset gestures, key combos, and hardware-button presses via AXe, addressing elements down the targeting ladder (id, label, value, derived coordinate)
 status: complete
 sources:
   - "axe describe-ui --help, axe tap --help, axe type --help, axe slider --help, axe swipe --help, axe gesture --help, axe key-combo --help, axe button --help, axe touch --help, axe batch --help (AXe per-subcommand surface; run to confirm for your version)"
@@ -51,9 +51,29 @@ inventory (one line per unique label) and read that instead of the raw JSON:
 axe describe-ui --udid <udid> | jq -r '[.. | objects | select(.AXLabel? != null) | .AXLabel] | unique | .[]'
 ```
 
+## The targeting ladder
+
+Target every element by working down this ladder; each rung's failure names the next move,
+so a miss is a diagnosis, not a dead end:
+
+1. **`--id`** (`AXUniqueId`, the accessibilityIdentifier): the stable handle. Absent from
+   the tree → the app never set a `testID`; that is a source gap (**mobile-accessibility**),
+   so drop a rung.
+2. **`--label`** (`AXLabel`, the accessibilityLabel): the visible name. Drifts with copy and
+   locale; ambiguous → narrow with `--element-type`, still ambiguous → drop a rung.
+3. **`--value`** (`AXValue`): what the control currently shows. An input with no id and no
+   label is still targetable by its placeholder or current text.
+4. **Coordinates, derived, never guessed**: the element's own `AXFrame` from `describe-ui`
+   (its center, or an offset for a sub-control inside it), or a screenshot fraction times
+   the device scale (`capture.md`).
+
+A node visible in `describe-ui` can always be hit by rung 4, because every node carries an
+`AXFrame`; a node absent from `describe-ui` cannot be hit by any rung until the overlay
+hiding it is cleared or the app exposes it (**mobile-accessibility**).
+
 ## Tap
 
-Prefer identity over coordinates:
+The ladder above, as flags:
 
 ```bash
 axe tap --id <accessibility-id> --udid <udid>      # by AXUniqueId (accessibilityIdentifier, the stable handle)

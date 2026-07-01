@@ -1,6 +1,6 @@
 ---
 title: Automation failures
-summary: the app runs but AXe cannot act; no booted device, an empty describe-ui tree, a missed tap, or a blocking overlay
+summary: the app runs but AXe cannot act; no booted device, an empty describe-ui tree, an app that is not interactive yet, a missed tap, or a blocking overlay
 status: complete
 sources:
   - "axe --help (list-simulators, describe-ui, tap --id/--label) and xcrun simctl list devices booted (from xcrun simctl help)"
@@ -28,6 +28,16 @@ problem, not a driver problem; the app needs `accessibilityLabel` and `testID` s
 **mobile-accessibility** for what makes a tree readable. Confirm the app (not a launcher or a
 dialog) is in the foreground first.
 
+## The app is not interactive yet
+
+A launch or deep link returning is not the app being ready: a splash screen, a first JS
+bundle still building, or a screen mid-transition accepts taps and drops them, and the
+driver still reports success. The tell is a **sparse tree that then grows**: poll
+`describe-ui` until the screen's own labels appear before the first tap (for Expo's Metro
+and first-bundle gates, see **expo-ios-simulator** `references/development-builds.md`).
+This cause looks identical to "describe-ui is empty" above; the difference is time. Rule
+out "too early" before concluding "not addressable".
+
 ## A tap by label or id misses
 
 - **By label**: labels are user-facing and drift with copy, locale, and SDK version. Re-run
@@ -38,14 +48,22 @@ dialog) is in the foreground first.
 
 ## An overlay is intercepting taps
 
-If taps stop reaching the app, something is on top of it:
+If taps stop reaching the app, or land somewhere other than the target, something is on
+top of it:
 
-- the **element-inspector** overlay (easy to toggle on by accident), or
-- the **stacking push-token alert** that darkens the screen after reloads, or
-- the **dev menu** or an "Open in app?" dialog.
+- the **element-inspector** overlay (easy to toggle on by accident),
+- the **stacking push-token alert** that darkens the screen after reloads,
+- the **dev menu** or an "Open in app?" dialog,
+- the **LogBox toast** covering the bottom of the screen (and its full-screen inspector,
+  if the toast body got tapped), or
+- the **software keyboard**, which floods the tree with per-key nodes and covers the lower
+  half of the screen after any tap into a text field.
 
-All three, and their recovery, are in **expo-ios-simulator** `references/known-prompts.md`.
-Clear the overlay by accessibility, then resume the flow.
+The Expo overlays, and their recovery, are in **expo-ios-simulator**
+`references/known-prompts.md`. The fastest check is the label inventory one-liner
+(**ios-simulator** `references/driving.md`): alert buttons, dev-menu items, or a page of
+single-letter key labels name the culprit immediately. Clear the overlay by accessibility,
+then resume the flow.
 
 ## See also
 
