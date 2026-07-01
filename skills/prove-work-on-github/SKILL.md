@@ -64,8 +64,9 @@ Judgement reads the three and returns an action: merge, gather more, or block.
 ## Cross-cutting non-negotiables
 
 - **Pin to an immutable referent.** Cite a full commit SHA, a content-addressed artifact, or a
-  permalink with the commit hash; never a moving target. Evidence is append-only and never
-  overwritten, so an inline reference cannot silently change.
+  permalink with the commit hash; never a moving target. The embedded SHA is what fixes the bytes
+  under the reference; append-only is a convention kept on top of that, not something the branch
+  enforces.
 - **Never let a receipt leak.** A pasted log can dump a token; a screenshot can catch a secret.
   Redact before you store or present.
 - **Keep capture read-only.** Acquiring proof of a change must not alter the system under proof.

@@ -9,6 +9,11 @@ role: rubric-interpreter
 
 # Judgement
 
+> **Status: unfinished, scheduled next-to-last.** This file has its framing and its inputs but not
+> its core; the adequacy-versus-confidence scorecard and the score-to-action map named in the
+> description are not written yet. Do not read the sections below as a complete rubric. Judgement is
+> authored after the intake pillars and `render.md`; only `catalog.md` comes after it.
+
 Proof exists to be judged. A merge-gating agent decides, from the proof on the thread,
 whether the work can land. The presenting agent self-evaluates first, but the design target
 is that a **second** agent, without the presenter's context, can evaluate the proof already
@@ -26,7 +31,7 @@ in the PR.
 
 ## What the evaluator needs
 
-- The proof comment (`present.md`), read top to bottom.
+- The proof comment (`render.md`), read top to bottom.
 - Each artifact's **manifest** entry (`artifact-manifest.md`): what it claims (scope tags),
   what it covers (paths), and the commit it was captured at.
 - The ability to re-check: an immutable referent it can resolve, and an artifact whose content
@@ -34,6 +39,13 @@ in the PR.
 
 If the proof cannot be re-checked by someone without the presenter's context, the evaluator
 should treat it as unproven and request reacquisition, not approve on trust.
+
+## Adequacy versus confidence, and the action
+
+> TODO (the core, not yet written): the scorecard that scores **adequacy** (does the evidence cover
+> what the change owes, at the depth its physical size demands) separately from **confidence** (how
+> sure the merge decision is, given any uncoverable blind spot on a load-bearing claim), and the map
+> from that score to an **action**: merge, gather more, or block.
 
 ## Relationship to freshness
 

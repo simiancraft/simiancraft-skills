@@ -27,7 +27,7 @@ Half-life is **not** primarily time; pure-time decay causes eternal reproving. I
 function of repo state:
 
 ```
-decay = f(distance from the release branch) × f(fraction of incoming change
+decay = f(distance from the release branch) * f(fraction of incoming change
           that intersects this artifact's covered paths)
 ```
 
@@ -46,7 +46,7 @@ intersection, not a guess.
 
 ## Asynchronous reproof shrinks the surface
 
-Because proof is presented atomically across comments (`present.md`), a stale artifact can be
+Because proof is presented atomically across comments (`render.md`), a stale artifact can be
 invalidated and reacquired on its own, leaving the rest of the proof standing. Smaller atomic
 units mean a smaller reproof surface area.
 

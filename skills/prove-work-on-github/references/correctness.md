@@ -5,15 +5,14 @@ description: >-
   verifiability (mechanical correctness), durability (ages well), and security (no
   footguns), sorted by how objectively each can be measured.
 role: rubric-aspect
-aspect: 3
+aspect: 2
 ---
 
 # Correctness
 
-
-Axiom 3. Is the change sound, in four sub-items arranged along a verifiability gradient: push
-what you can to tools, and isolate the irreducible judgment to alignment. Scoped to the change,
-not the repo.
+The second aspect. Is the change sound, in four sub-items arranged along a verifiability gradient:
+push what you can to tools, and isolate the irreducible judgment to alignment. Scoped to the
+change, not the repo.
 
 ## Alignment (judgment)
 

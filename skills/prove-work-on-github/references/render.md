@@ -3,11 +3,11 @@ name: render
 description: >-
   The show-it stage: compose and render proof inline in a PR or issue comment so a reader
   sees it top to bottom, sized by the change shape.
-role: pipeline-stage
-stage: 4
+role: lifecycle-stage
+stage: 3
 ---
 
-# Present
+# Render
 
 The proof exists in the locker; now make it legible where the claim is made. A reader,
 human or agent, should scroll the PR/issue comment top to bottom and see the evidence in
@@ -15,9 +15,9 @@ context, not chase links.
 
 ## Inline from the locker
 
-Embed each artifact by its pinned, branch-hosted raw URL (see `evidence-locker.md`). The
-inline image/GIF renders in the comment; the URL is content-addressed so it never silently
-changes.
+Embed each artifact by its commit-SHA-pinned raw URL (see `evidence-locker.md`); the embedded
+commit SHA fixes the bytes, so the reference cannot silently change. The inline image or GIF
+renders in the comment.
 
 ## Where proof goes
 
@@ -40,4 +40,4 @@ redoing the rest (see `freshness-and-reproof.md`).
 ## Consumes / produces
 
 - Consumes: pinned URLs (`evidence-locker.md`) and manifest entries (`artifact-manifest.md`).
-- Produces: the human- and agent-readable proof comment that stage 6 evaluates.
+- Produces: the human- and agent-readable proof comment that stage 4 evaluates.
