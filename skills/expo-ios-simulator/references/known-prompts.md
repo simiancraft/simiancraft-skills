@@ -38,7 +38,10 @@ keys do not reach the app). `axe describe-ui` then shows its
 labels: `Reload`, `Go home`, `Toggle performance monitor`, `Toggle element inspector`,
 `Open JS debugger`, and `Close`, plus `Connected to: http://localhost:8081`. Drive any of
 them by label, for example `axe tap --label "Reload" --udid <udid>`; close it with
-`axe tap --label "Close" --udid <udid>`.
+`axe tap --label "Close" --udid <udid>`. This file is only the iOS way to open and drive the
+menu; for what each item does (the performance monitor's two-thread FPS, the element inspector's
+modes, Open DevTools), see **expo-developer-tools** `references/dev-menu.md`, the shared home for
+the menu and React Native DevTools.
 
 ## The element-inspector trap
 
@@ -51,5 +54,6 @@ dark "inspect" overlay and taps stop reaching the app. Recover by re-opening the
 ## See also
 
 - **ios-simulator** `references/driving.md`: `axe describe-ui` and `axe tap --label`.
+- **expo-developer-tools** `references/dev-menu.md`: what each dev-menu item does (shared iOS/Android).
 - `development-builds.md`: the deep link that raises the "Open in" dialog.
 - **ios-simulator** `references/simulator-ui.md`: the Simulator menus behind the shake shortcut.

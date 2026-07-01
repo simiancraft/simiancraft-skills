@@ -55,6 +55,7 @@ hardcodes a project's nouns.
 
 - The simulator itself, its chrome, capture, and permissions: **ios-simulator**.
 - What makes an app addressable (accessibility props): **mobile-accessibility**.
+- The dev menu's items and React Native DevTools (shared with Android): **expo-developer-tools**.
 - Build, runtime, and automation failures: **ios-simulator-triage**.
 
 ## References
