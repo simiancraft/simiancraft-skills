@@ -1,7 +1,7 @@
 {
   "name": "simiancraft-skills",
   "description": "Opinionated Claude Code skills and agents. Quality-bar-only.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": {
     "name": "simiancraft",
     "email": "info@simiancraft.com",
