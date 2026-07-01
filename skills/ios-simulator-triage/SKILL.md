@@ -4,7 +4,7 @@ description: >-
   Diagnose and recover from failures when building, running, or driving an app on
   the iOS Simulator. A living catalog organized by layer: build failures
   (xcodebuild, CocoaPods, signing, codegen), runtime failures split into
-  app-runtime vs Expo-runtime (the red screen of death), and automation failures
+  app-runtime vs Expo-runtime (the red error overlay), and automation failures
   that emit no error (element not found in the accessibility tree, stuck flow).
   Each layer names where its logs live. Used alongside ios-simulator and
   expo-ios-simulator when something breaks. Project-agnostic.

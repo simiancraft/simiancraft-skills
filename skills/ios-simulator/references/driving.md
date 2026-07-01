@@ -91,7 +91,7 @@ button: `apple-pay`, `home`, `lock`, `side-button`, or `siri`, with optional
 The no-install fallback drives by **screen** coordinate with `cliclick`, mapping a
 device fraction onto the Simulator window:
 
-1. Read the live window bounds: `osascript -e 'tell application "System Events" to tell process "Simulator" to get {position, size} of window 1'`.
+1. Read the live window bounds (the `osascript` line in `simulator-ui.md`).
 2. Map a device fraction (from a screenshot, see `capture.md`) into that rect,
    allowing for the window title bar.
 3. Click it: `cliclick c:<screen-x>,<screen-y>`.
@@ -103,3 +103,4 @@ before each click and prefer AXe whenever it can be installed.
 
 - **mobile-accessibility**: what makes elements addressable (`--id` versus `--label`).
 - `capture.md` and `lifecycle.md`: deriving a device coordinate for the `-x -y` fallback.
+- `simulator-ui.md`: reading the live window bounds the coordinate fallback maps onto.
