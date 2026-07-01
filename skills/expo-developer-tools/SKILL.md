@@ -2,15 +2,15 @@
 name: expo-developer-tools
 description: >-
   Read and use the Expo / React Native in-app developer tools: the developer menu
-  (reload, go home, performance monitor, element inspector, Open DevTools, fast
+  (reload, go home, performance monitor, element inspector, Open DevTools, and fast
   refresh) and React Native DevTools (Console, Sources, Network, Memory, Performance,
-  Components, Profiler), plus Rozenite plugins. The tools are identical on iOS and
+  Components, and Profiler), plus Rozenite plugins. The tools are identical on iOS and
   Android; only the gesture that opens the menu differs, so this skill is the shared
   home referenced by both the iOS-simulator and Android-emulator skills. This is the
-  interpretive field guide (what each tool shows and how to read it), not a driver.
+  reference for reading these tools (what each shows and how to interpret it), not a driver.
   Use for "open the Expo dev menu", "read the performance monitor", "use the element
   inspector", or "inspect a component / a slow re-render with React Native DevTools".
-status: scaffold
+status: draft
 sources:
   - https://docs.expo.dev/debugging/tools/ (the developer menu and the tools it opens)
   - https://reactnative.dev/docs/react-native-devtools (the React Native DevTools panels)
