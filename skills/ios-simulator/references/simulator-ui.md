@@ -69,8 +69,16 @@ menu-only features (the in-call status-bar banner, Face ID, Connect Hardware Key
 click the item through AppleScript:
 
 ```bash
-osascript -e 'tell application "System Events" to tell process "Simulator" to click menu item "Shake" of menu "Device" of menu bar 1'
+osascript \
+  -e 'tell application "Simulator" to activate' \
+  -e 'delay 0.5' \
+  -e 'tell application "System Events" to tell process "Simulator" to click menu item "Shake" of menu "Device" of menu bar 1'
 ```
+
+**Activate Simulator first.** With Simulator in the background, the System Events click
+still returns success but the device never receives the action; the `activate` plus a short
+delay is what makes it land. Verify the effect afterwards (a `describe-ui` or screenshot),
+not the osascript exit code.
 
 Shake opens the React Native and Expo developer menu; see **expo-ios-simulator**.
 

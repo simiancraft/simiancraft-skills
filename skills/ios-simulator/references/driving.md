@@ -44,6 +44,13 @@ the node you want by label or id (substring, optionally by type):
 axe describe-ui --udid <udid> | jq '.. | objects | select(.AXLabel? and (.AXLabel | test("Save"; "i")))'
 ```
 
+To orient on an unfamiliar screen before targeting anything, dump its whole label
+inventory (one line per unique label) and read that instead of the raw JSON:
+
+```bash
+axe describe-ui --udid <udid> | jq -r '[.. | objects | select(.AXLabel? != null) | .AXLabel] | unique | .[]'
+```
+
 ## Tap
 
 Prefer identity over coordinates:
