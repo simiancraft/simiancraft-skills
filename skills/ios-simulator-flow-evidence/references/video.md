@@ -44,6 +44,14 @@ you want a smaller MP4 by dropping fps or scale, or a higher-quality capture. Wh
 scripted, signal-driven start and stop, prefer `simctl recordVideo`, whose stop semantics are
 documented above.
 
+## AXe stream-video: a live frame stream
+
+`axe stream-video --udid <udid>` streams frames to stdout instead of writing a file: `--format
+mjpeg|raw|ffmpeg|bgra` (default `mjpeg`), `--fps` (1-30, default 10), `--quality` (1-100, default
+80), and `--scale` (0.1-1.0). Reach for it to watch a flow live or pipe frames into another tool
+(for example `ffmpeg`); for a finalized evidence artifact you attach to a PR, record to a file
+instead.
+
 ## GIF: a post-process, not a native output
 
 No simulator capture tool emits an animated GIF; AXe produces MP4, simctl produces MOV, and

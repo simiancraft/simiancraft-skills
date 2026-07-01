@@ -3,7 +3,7 @@ title: Driving the UI
 summary: tap, type, swipe, run preset gestures, key combos, and hardware-button presses via AXe, addressing elements by accessibility id or label before coordinates
 status: draft
 sources:
-  - "axe describe-ui --help, axe tap --help, axe type --help, axe swipe --help, axe gesture --help, axe key-combo --help, axe button --help (AXe per-subcommand surface; run to confirm for your version)"
+  - "axe describe-ui --help, axe tap --help, axe type --help, axe slider --help, axe swipe --help, axe gesture --help, axe key-combo --help, axe button --help, axe touch --help, axe batch --help (AXe per-subcommand surface; run to confirm for your version)"
   - "axe describe-ui output (the AXUniqueId / AXLabel / AXValue / type key names)"
   - https://github.com/cameroncooke/AXe
 ---
@@ -19,6 +19,14 @@ distinction); this file is the command vocabulary.
 
 Every AXe command needs `--udid <udid>` (discover it in `lifecycle.md`).
 
+## Dispatch is not confirmation
+
+AXe synthesizes HID events: a command confirms the event was **dispatched**, not that the app
+**processed** it. A tap can land before the screen is interactive or mid-transition and silently
+do nothing, yet still report success. So when the outcome matters, **verify it**: re-run
+`describe-ui`, or capture a screenshot and read it, and confirm the state actually changed. This is
+why a green run can still be wrong, and why the wait flags below exist.
+
 ## Find what to target: describe-ui
 
 ```bash
@@ -29,7 +37,12 @@ axe describe-ui --udid <udid> --point <x,y>  # only the element at x,y
 The output is JSON; each node carries `AXUniqueId` (the accessibilityIdentifier),
 `AXLabel` (the accessibilityLabel), `AXValue`, and `type`. Read these before tapping.
 A tap that "can't find" an element is an absent or mislabeled node here, not a flaky
-tap.
+tap. On a dense screen the full dump is large; narrow it with `--point`, or filter the JSON for
+the node you want by label or id (substring, optionally by type):
+
+```bash
+axe describe-ui --udid <udid> | jq '.. | objects | select(.AXLabel? and (.AXLabel | test("Save"; "i")))'
+```
 
 ## Tap
 
@@ -43,13 +56,22 @@ axe tap -x <x> -y <y> --udid <udid>                # by coordinate; ignores --id
 ```
 
 `--element-type <type>` (e.g. `Button`, `TextField`, `Switch`) narrows an ambiguous
-id/label/value match. `--wait-timeout <seconds>` with `--poll-interval <seconds>`
+id/label/value match; if a `--label` still matches several nodes and none carry an `AXUniqueId`,
+fall back to `-x -y` for that one step. `--wait-timeout <seconds>` with `--poll-interval <seconds>`
 waits for the element to appear; `--pre-delay` and `--post-delay` pad timing. A `Switch`
 or toggle that will not flip under the default tap usually needs `--tap-style physical`;
 the default `automatic` already uses a physical touch for switches and a simulator tap
 elsewhere. When you
 must use `-x -y`, derive the device coordinate from a screenshot fraction times the
 device scale (see `capture.md` and `lifecycle.md`); no window math, no full-screen.
+
+**Long-press and double-tap** have no dedicated verb. A long press is a `touch` down-and-up with a
+hold at the element's point (read the point from `describe-ui`); a double-tap is two quick `tap`s
+at the same target:
+
+```bash
+axe touch -x <x> -y <y> --down --up --delay 1.0 --udid <udid>   # long press (hold 1s)
+```
 
 ## Type
 
@@ -98,6 +120,29 @@ order. Left-hand modifier keycodes are `224` Control, `225` Shift, `226` Alt/Opt
 `227` Command; `228`-`231` are the right-hand variants. `button` presses a hardware
 button: `apple-pay`, `home`, `lock`, `side-button`, or `siri`, with optional
 `--duration`.
+
+## Batch a flow in one session
+
+For a multi-step flow, `batch` runs an ordered sequence of steps in a **single HID session** (one
+process, one continuous input session), which is faster and steadier than spawning `axe` per step:
+
+```bash
+axe batch --udid <udid> \
+  --step "tap --label 'Sign in'" \
+  --step "type 'user@example.com'" \
+  --step "sleep 1" \
+  --step "tap --label 'Continue'"
+axe batch --udid <udid> --file steps.txt      # one step per line; or --stdin
+```
+
+Steps may be `tap`, `swipe`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, and
+`key-combo`, plus a batch-only `sleep <seconds>` pseudo-step; step lines omit `--udid`. It does
+**not** run `slider`, `drag`, `describe-ui`, `screenshot`, or video, so keep those as separate
+calls. `--wait-timeout` with `--poll-interval` makes the batch wait for an element that only
+appears after a navigation step, the resilient way to script a multi-screen flow;
+`--continue-on-error` keeps going past a failed step (default is fail-fast); `--ax-cache
+perBatch|perStep|none` controls how often the accessibility snapshot refreshes between selector
+taps. Dispatch is still not confirmation, so verify the end state after the batch.
 
 ## When AXe is unavailable
 
