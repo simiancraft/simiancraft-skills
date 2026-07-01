@@ -6,6 +6,7 @@ sources:
   - "axe describe-ui --help, axe tap --help, axe type --help, axe slider --help, axe swipe --help, axe gesture --help, axe key-combo --help, axe button --help, axe touch --help, axe batch --help (AXe per-subcommand surface; run to confirm for your version)"
   - "axe describe-ui output (the AXUniqueId / AXLabel / AXValue / type key names)"
   - "Observed, reproducible: the slider touch-move failure and its swipe-along-the-track fallback; the status-bar and home-indicator dead zones (run to confirm for your Xcode/AXe versions)"
+  - https://github.com/cameroncooke/AXe/issues/59 (the touch-move failure upstream, filed against drag on newer Xcode)
   - https://github.com/cameroncooke/AXe
 ---
 
@@ -133,7 +134,9 @@ which is deterministic where a bare `swipe` across the track is not. AXe also ha
 `drag`, `touch`, `key`, and `key-sequence` for cases the higher-level verbs do not cover.
 
 On some Xcode/runtime combinations `slider` fails outright with
-`FBSimulatorHIDEvent does not support touch move events.` (observed, reproducible). When it
+`FBSimulatorHIDEvent does not support touch move events.` (observed, reproducible; a known
+open AXe issue on newer Xcode versions, where `drag` fails the same way, so do not burn time
+reinstalling). When it
 does, the working fallback is a **swipe along the track**: a tap on the track does not seek,
 and a down-then-up pair without movement does not drag, but `axe swipe` does move the thumb.
 Compute both endpoints from the slider's own node and converge:
