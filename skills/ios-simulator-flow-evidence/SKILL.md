@@ -46,7 +46,9 @@ relies on that contract; do not break it without updating the presentation side.
 Evidence from a simulator proves **UI, navigation, wiring, and state**, not device fidelity.
 A simulator cannot:
 
-- **deliver a real push notification** (no APNs token; see **expo-ios-simulator**
+- **vend a native APNs device token** (`getDevicePushTokenAsync`), so real remote-push
+  registration is a device pass; a simulator can still display a payload via `xcrun simctl push`
+  and receive a remote push on Xcode 14+ (see **expo-ios-simulator**
   `references/known-prompts.md` for the push-token alert this raises);
 - **produce real camera or microphone frames** (no physical sensors);
 - **place a phone call or send a carrier SMS**;

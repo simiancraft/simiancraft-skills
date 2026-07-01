@@ -22,7 +22,10 @@ coordinates: `axe describe-ui` to read the label, then `axe tap --label "<label>
 1. **"Open in '<App>'?"** system dialog, from the dev-client deep link (see
    `development-builds.md`). Dismiss: `axe tap --label "Open" --udid <udid>`.
 2. **"Must use physical device for Push Notifications"** alert, the push-token alert; it
-   fires because a simulator cannot vend a push token. Dismiss it with
+   fires because the app requests a native APNs device token (`getDevicePushTokenAsync`),
+   which a simulator cannot vend. A simulator on Xcode 14+ can still receive a remote push and
+   an Expo push token, and `xcrun simctl push` can deliver a payload; the missing piece is the
+   native device token. Dismiss it with
    `axe tap --label "OK" --udid <udid>`. It re-fires on every reload, so the alerts stack;
    after a reload, dismiss them in a loop until none remain, otherwise the stacked overlays
    darken and block the screen.

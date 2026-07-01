@@ -34,8 +34,7 @@ xcrun simctl io booted screenshot -                     # PNG to stdout
 `screenshot` accepts `--type=<png|tiff|bmp|gif|jpeg>` (default `png`),
 `--display=<internal|external>` (default `internal`), and, for non-rectangular
 displays, `--mask=<ignored|alpha|black>` (`ignored` saves the unmasked framebuffer;
-`alpha` is not supported, retained only for compatibility, and renders the mask black;
-`black` renders the mask black).
+`alpha` uses the mask as premultiplied alpha; `black` renders the mask black).
 
 AXe captures the same buffer and is convenient when you are already driving with it:
 
