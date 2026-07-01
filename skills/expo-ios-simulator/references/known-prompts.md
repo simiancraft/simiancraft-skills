@@ -45,12 +45,13 @@ the screen (a count, the message, and an X). It does not intercept taps elsewher
 covers whatever sits under it (a tab bar, a footer button), and **tapping its body opens the
 full-screen LogBox inspector**, which does block the app. The toast is one `GenericElement`
 with no `AXUniqueId` and no separately addressable close button, so this is a legitimate use
-of the coordinate fallback: read the toast's `AXFrame` from `describe-ui` and tap the X at its
-right edge (about 24 points in from the right, vertically centered):
+of the coordinate fallback: read the toast's `frame` object from `describe-ui` (see the key
+names in **ios-simulator** `references/driving.md`) and tap the X at its right edge (about
+24 points in from the right, vertically centered):
 
 ```bash
-axe describe-ui --udid <udid> | jq -c '.. | objects | select(.AXLabel? // "" | test("^[0-9]+, ")) | .AXFrame'
-axe tap -x <frame.x + frame.w - 24> -y <frame.y + frame.h / 2> --udid <udid>
+axe describe-ui --udid <udid> | jq -c '.. | objects | select(.AXLabel? // "" | test("^[0-9]+, ")) | .frame'
+axe tap -x <frame.x + frame.width - 24> -y <frame.y + frame.height / 2> --udid <udid>
 ```
 
 If the full-screen inspector opens by accident, its own dismiss controls are labeled; read

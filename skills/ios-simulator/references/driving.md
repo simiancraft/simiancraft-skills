@@ -35,7 +35,9 @@ axe describe-ui --udid <udid> --point <x,y>  # only the element at x,y
 ```
 
 The output is JSON; each node carries `AXUniqueId` (the accessibilityIdentifier),
-`AXLabel` (the accessibilityLabel), `AXValue`, and `type`. Read these before tapping.
+`AXLabel` (the accessibilityLabel), `AXValue`, and `type`, plus its rectangle twice:
+`AXFrame` (a display string) and `frame` (an object with `x`, `y`, `width`, and `height`;
+use this one for arithmetic). Read these before tapping.
 A tap that "can't find" an element is an absent or mislabeled node here, not a flaky
 tap. On a dense screen the full dump is large; narrow it with `--point`, or filter the JSON for
 the node you want by label or id (substring, optionally by type):
@@ -53,8 +55,7 @@ axe describe-ui --udid <udid> | jq -r '[.. | objects | select(.AXLabel? != null)
 
 ## The targeting ladder
 
-Target every element by working down this ladder; each rung's failure names the next move,
-so a miss is a diagnosis, not a dead end:
+Target every element by working down this ladder; each rung's failure names the next rung:
 
 1. **`--id`** (`AXUniqueId`, the accessibilityIdentifier): the stable handle. Absent from
    the tree → the app never set a `testID`; that is a source gap (**mobile-accessibility**),
@@ -63,12 +64,12 @@ so a miss is a diagnosis, not a dead end:
    locale; ambiguous → narrow with `--element-type`, still ambiguous → drop a rung.
 3. **`--value`** (`AXValue`): what the control currently shows. An input with no id and no
    label is still targetable by its placeholder or current text.
-4. **Coordinates, derived, never guessed**: the element's own `AXFrame` from `describe-ui`
-   (its center, or an offset for a sub-control inside it), or a screenshot fraction times
-   the device scale (`capture.md`).
+4. **Coordinates, derived, never guessed**: the element's own `frame` object from
+   `describe-ui` (its center, or an offset for a sub-control inside it), or a screenshot
+   fraction times the device scale (`capture.md`).
 
-A node visible in `describe-ui` can always be hit by rung 4, because every node carries an
-`AXFrame`; a node absent from `describe-ui` cannot be hit by any rung until the overlay
+A node visible in `describe-ui` can always be hit by rung 4, because every node carries its
+`frame`; a node absent from `describe-ui` cannot be hit by any rung until the overlay
 hiding it is cleared or the app exposes it (**mobile-accessibility**).
 
 ## Tap

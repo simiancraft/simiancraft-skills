@@ -45,14 +45,16 @@ Run the checks and install the driver: `prerequisites.md`. In short, macOS with 
 
 ## Rules
 
-Three of these are laws about how this environment fails; internalize them before the
+The first three are laws about how this environment fails; internalize them before the
 first command, because the failures they prevent emit **no error**.
 
 - **Trust effects, not exit codes.** Every actuation channel here confirms delivery, not
   processing: AXe synthesizes HID events (`references/driving.md`), an AppleScript menu
   click returns success even when Simulator is backgrounded and the click never lands
   (`references/simulator-ui.md`), and `simctl launch` / `openurl` return before the app is
-  interactive. After any step whose outcome matters, verify the state actually changed:
+  interactive (observed, reproducible; the readiness gates in **expo-ios-simulator**
+  `references/development-builds.md` exist for exactly this). After any step whose outcome
+  matters, verify the state actually changed:
   re-run `axe describe-ui`, or screenshot and read it.
 - **Gate on readiness signals, never fixed sleeps.** Wait on something provably true:
   `simctl bootstatus -b` for boot (`references/lifecycle.md`), `--wait-timeout` for an
