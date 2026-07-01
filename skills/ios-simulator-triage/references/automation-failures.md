@@ -57,7 +57,11 @@ top of it:
 - the **LogBox toast** covering the bottom of the screen (and its full-screen inspector,
   if the toast body got tapped), or
 - the **software keyboard**, which floods the tree with per-key nodes and covers the lower
-  half of the screen after any tap into a text field.
+  half of the screen after any tap into a text field, or
+- the **device's own chrome**: an element scrolled under the status bar at the top or the
+  home-indicator band at the bottom reports a valid frame and accepts dispatch, yet the app
+  never receives the gesture. Scroll it to mid-screen (**ios-simulator**
+  `references/driving.md`, the dead-zone note).
 
 The Expo overlays, and their recovery, are in **expo-ios-simulator**
 `references/known-prompts.md`. The fastest check is the label inventory one-liner

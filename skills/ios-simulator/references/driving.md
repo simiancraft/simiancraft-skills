@@ -5,6 +5,7 @@ status: complete
 sources:
   - "axe describe-ui --help, axe tap --help, axe type --help, axe slider --help, axe swipe --help, axe gesture --help, axe key-combo --help, axe button --help, axe touch --help, axe batch --help (AXe per-subcommand surface; run to confirm for your version)"
   - "axe describe-ui output (the AXUniqueId / AXLabel / AXValue / type key names)"
+  - "Observed, reproducible: the slider touch-move failure and its swipe-along-the-track fallback; the status-bar and home-indicator dead zones (run to confirm for your Xcode/AXe versions)"
   - https://github.com/cameroncooke/AXe
 ---
 
@@ -38,6 +39,14 @@ The output is JSON; each node carries `AXUniqueId` (the accessibilityIdentifier)
 `AXLabel` (the accessibilityLabel), `AXValue`, and `type`, plus its rectangle twice:
 `AXFrame` (a display string) and `frame` (an object with `x`, `y`, `width`, and `height`;
 use this one for arithmetic). Read these before tapping.
+
+**A frame is not a promise the point is reachable.** Nodes scrolled out of view keep
+reporting frames (negative `y` included), and a gesture there dispatches fine and does
+nothing (the CLI also rejects a negative `-y` as a missing argument). Worse, the device's
+own chrome makes **dead zones**: an element sitting under the status bar at the top of the
+screen, or under the home-indicator band at the bottom, has a valid frame and accepts
+dispatch, yet the app never receives the gesture (observed, reproducible). Before acting on
+an element, scroll it into the middle band of the screen.
 A tap that "can't find" an element is an absent or mislabeled node here, not a flaky
 tap. On a dense screen the full dump is large; narrow it with `--point`, or filter the JSON for
 the node you want by label or id (substring, optionally by type):
@@ -122,6 +131,22 @@ axe slider --label <accessibility-label> --value <0-100> --udid <udid>
 `slider` sets a slider to a percentage from 0 to 100 by accessibility (`--id` or `--label`),
 which is deterministic where a bare `swipe` across the track is not. AXe also has lower-level
 `drag`, `touch`, `key`, and `key-sequence` for cases the higher-level verbs do not cover.
+
+On some Xcode/runtime combinations `slider` fails outright with
+`FBSimulatorHIDEvent does not support touch move events.` (observed, reproducible). When it
+does, the working fallback is a **swipe along the track**: a tap on the track does not seek,
+and a down-then-up pair without movement does not drag, but `axe swipe` does move the thumb.
+Compute both endpoints from the slider's own node and converge:
+
+1. Read the slider's `frame` and `AXValue` from `describe-ui`, and scroll the row to
+   mid-screen first (see the dead zones below).
+2. Swipe from the thumb (`x + width * fraction`, clamped about 14 points inside the track
+   ends) to the target fraction, at the row's vertical center.
+3. Re-read `AXValue` and repeat until close enough. A swipe shorter than roughly 40 points
+   may not move the thumb at all, so accept near-target rather than chasing exact values.
+
+For a 0-to-1 slider, `AXValue` is the fraction directly; for any other range, derive the
+fraction from the slider's known minimum and maximum (`describe-ui` does not expose them).
 
 ## Swipe and preset gestures
 

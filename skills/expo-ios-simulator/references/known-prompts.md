@@ -47,10 +47,13 @@ full-screen LogBox inspector**, which does block the app. The toast is one `Gene
 with no `AXUniqueId` and no separately addressable close button, so this is a legitimate use
 of the coordinate fallback: read the toast's `frame` object from `describe-ui` (see the key
 names in **ios-simulator** `references/driving.md`) and tap the X at its right edge (about
-24 points in from the right, vertically centered):
+24 points in from the right, vertically centered). The toast's label shape varies with the
+issue kind (observed: `3, <message>` for a counted error or warning, `! <message>` for a
+promise-rejection warning), so read the actual label from the tree rather than assuming a
+prefix; both observed shapes match:
 
 ```bash
-axe describe-ui --udid <udid> | jq -c '.. | objects | select(.AXLabel? // "" | test("^[0-9]+, ")) | .frame'
+axe describe-ui --udid <udid> | jq -c '.. | objects | select(.AXLabel? // "" | test("^([0-9]+, |! )")) | .frame'
 axe tap -x <frame.x + frame.width - 24> -y <frame.y + frame.height / 2> --udid <udid>
 ```
 
