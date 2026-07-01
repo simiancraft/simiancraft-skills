@@ -9,7 +9,7 @@ description: >-
   expo-ios-simulator, and "make the app driveable" lives in mobile-accessibility.
   Use for any task that is "boot/run an iOS simulator", "drive an iOS screen",
   "screenshot the simulator", or "automate an iOS flow".
-status: draft
+status: complete
 sources:
   - "xcrun simctl help and AXe (axe --help); each reference file below carries the per-command provenance"
   - https://developer.apple.com/documentation/xcode/running-your-app-in-the-simulator-or-on-a-device

@@ -1,7 +1,7 @@
 ---
 title: Runtime failures
 summary: the app launched but broke, split into the app's native runtime (crash reports, the unified log) and the Expo / React-Native runtime (missing native module, Metro disconnect, the red box)
-status: draft
+status: complete
 sources:
   - "xcrun simctl launch --console (stdout/stderr; log often goes to stderr), simctl spawn booted log stream, and simctl diagnose (from xcrun simctl help)"
   - https://docs.expo.dev/develop/development-builds/introduction/ (Expo Go's fixed native set; the missing-native-module failure)

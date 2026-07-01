@@ -9,7 +9,7 @@ description: >-
   (accessibilityLabel/role/state/accessible + testID) and how RN maps to the native
   tree. Prefer accessibility over coordinates. Referenced by ios-simulator and
   expo-ios-simulator for driving, and by the auditing skills for completeness.
-status: draft
+status: complete
 sources:
   - https://reactnative.dev/docs/accessibility (the React Native accessibility props)
   - https://reactnative.dev/docs/view (testID: "Used to locate this view in end-to-end tests")

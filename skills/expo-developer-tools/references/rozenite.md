@@ -1,7 +1,7 @@
 ---
 title: Rozenite plugins
 summary: Rozenite, the React Native DevTools plugin framework, and its official plugins; the escape hatch when a built-in DevTools panel is not enough
-status: draft
+status: complete
 sources:
   - https://www.rozenite.dev/ (what Rozenite is; auto-appears in DevTools; auto-disabled in production; Expo and bare RN, Metro and Re.Pack)
   - https://www.rozenite.dev/plugin-directory (the official plugin list, verbatim)

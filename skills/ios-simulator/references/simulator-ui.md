@@ -1,7 +1,7 @@
 ---
 title: Simulator UI lexicon
 summary: the Simulator app window versus the simulated device, reading the window geometry, the menu lexicon and how to trigger items, and opening a web URL on the device
-status: draft
+status: complete
 sources:
   - "Simulator menu bar, read live via AppleScript / System Events (re-run to list the items for your Xcode)"
   - "xcrun simctl help openurl (opening a URL on the device)"

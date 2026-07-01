@@ -1,7 +1,7 @@
 ---
 title: Simulator permissions
 summary: grant, revoke, and reset app privacy permissions on a simulator with simctl privacy, including the services it covers and the ones it does not
-status: draft
+status: complete
 sources:
   - "xcrun simctl help privacy (actions, the service list, examples, and the Info.plist warning)"
   - https://developer.apple.com/documentation/xcode/running-your-app-in-the-simulator-or-on-a-device

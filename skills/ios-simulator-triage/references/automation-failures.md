@@ -1,7 +1,7 @@
 ---
 title: Automation failures
 summary: the app runs but AXe cannot act; no booted device, an empty describe-ui tree, a missed tap, or a blocking overlay
-status: draft
+status: complete
 sources:
   - "axe --help (list-simulators, describe-ui, tap --id/--label) and xcrun simctl list devices booted (from xcrun simctl help)"
   - "the accessibility-tree cause is owned by mobile-accessibility; the overlay causes by expo-ios-simulator/references/known-prompts.md"

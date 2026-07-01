@@ -9,7 +9,7 @@ description: >-
   Sits ON TOP of ios-simulator; failures route to ios-simulator-triage.
   Project-agnostic; discovers bundle id and scheme from the app config. Use for
   "run my Expo app on the simulator", "load a dev client", or "drive Storybook on iOS".
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/develop/development-builds/introduction/ (Expo Go vs development builds; the fixed native set)
   - "the reference files below carry the per-command provenance (Expo docs, Apple, AXe --help)"

@@ -1,7 +1,7 @@
 ---
 title: Build failures
 summary: the artifact will not build or install; code signing, CocoaPods, prebuild, and architecture, routed to the fixes
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/guides/local-app-development/ (npx expo prebuild, npx expo run:ios)
   - https://guides.cocoapods.org/using/using-cocoapods.html (pod install)

@@ -1,7 +1,7 @@
 ---
 title: React Native DevTools
 summary: the panels behind "Open DevTools" (Console, Sources, Network, Memory, Performance, Components, Profiler), what each shows and how an agent reads it, plus the reconnection dialog
-status: draft
+status: complete
 sources:
   - https://reactnative.dev/docs/react-native-devtools (the DevTools panels and the reconnection dialog)
   - https://docs.expo.dev/debugging/tools/ (Open DevTools; the Network panel's Expo-only note)

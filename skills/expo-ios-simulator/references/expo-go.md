@@ -1,7 +1,7 @@
 ---
 title: Running under Expo Go
 summary: the Expo Go path on the simulator (npx expo start, press i, auto-install) and the fixed-native-set limit that forces a dev client for any app with custom native code
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/get-started/set-up-your-environment/ (npx expo start; press i; Expo CLI installs Expo Go automatically)
   - https://docs.expo.dev/develop/development-builds/introduction/ (Expo Go ships a fixed set of native libraries; custom native code cannot be added; when to switch to a dev build)

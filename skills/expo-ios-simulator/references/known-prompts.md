@@ -1,7 +1,7 @@
 ---
 title: Known prompts and overlays
 summary: the recurring Expo/RN dialogs and overlays that block automation, and how to clear each by accessibility (axe tap --label), including the stacking push-token alert and the element-inspector trap
-status: draft
+status: complete
 sources:
   - "axe describe-ui output of the Expo dev menu (labels for this writing; re-run describe-ui to confirm, they drift across Expo/RN versions)"
   - "Simulator Device menu > Shake and its Cmd+Ctrl+Z accelerator, a Simulator-level command (see ios-simulator references/simulator-ui.md)"

@@ -8,7 +8,7 @@ description: >-
   GitHub-presentation skill consumes; this skill owns extraction, not publishing.
   Sits beside ios-simulator; project-agnostic. Use for "capture evidence of an iOS
   flow" or "record the simulator".
-status: draft
+status: complete
 sources:
   - "axe --help (screenshot, record-video) and xcrun simctl io help (screenshot, recordVideo); each reference file carries the per-command provenance"
   - https://developer.apple.com/documentation/xcode/capturing-screenshots-and-videos-from-simulator

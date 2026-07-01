@@ -1,7 +1,7 @@
 ---
 title: Driving the UI
 summary: tap, type, swipe, run preset gestures, key combos, and hardware-button presses via AXe, addressing elements by accessibility id or label before coordinates
-status: draft
+status: complete
 sources:
   - "axe describe-ui --help, axe tap --help, axe type --help, axe slider --help, axe swipe --help, axe gesture --help, axe key-combo --help, axe button --help, axe touch --help, axe batch --help (AXe per-subcommand surface; run to confirm for your version)"
   - "axe describe-ui output (the AXUniqueId / AXLabel / AXValue / type key names)"

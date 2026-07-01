@@ -1,7 +1,7 @@
 ---
 title: Execution modes
 summary: the four ways to run an Expo app on the simulator (Expo Go, a dev client, Storybook-mobile, web-on-mobile), what each is, and when to use it
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/guides/local-app-development/ (npx expo run:ios; local dev builds)
   - "xcrun simctl help openurl (web-on-mobile) and the STORYBOOK_ENABLED env gate (observed; project-defined)"

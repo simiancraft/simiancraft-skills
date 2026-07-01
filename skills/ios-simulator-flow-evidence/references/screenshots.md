@@ -1,7 +1,7 @@
 ---
 title: Screenshot evidence
 summary: capturing one PNG per driven step and vision-verifying each as proof of a flow
-status: draft
+status: complete
 sources:
   - "axe screenshot --help (PNG output, --output) and xcrun simctl io <udid> screenshot (PNG; see ios-simulator references/capture.md for --type and --mask)"
   - https://developer.apple.com/documentation/xcode/capturing-screenshots-and-videos-from-simulator

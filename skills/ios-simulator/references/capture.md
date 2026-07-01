@@ -1,7 +1,7 @@
 ---
 title: Capturing the screen
 summary: take a screenshot with simctl or AXe, read its pixel dimensions, and use the device framebuffer as a window-independent coordinate space
-status: draft
+status: complete
 sources:
   - "xcrun simctl help io (screenshot operation, flags, formats)"
   - "axe screenshot --help (AXe screenshot subcommand)"

@@ -1,7 +1,7 @@
 ---
 title: Video evidence
 summary: recording a flow to MP4 or MOV (simctl recordVideo with documented start/stop signals, or AXe record-video), and the GIF post-process and its external dependency
-status: draft
+status: complete
 sources:
   - "xcrun simctl io <udid> recordVideo: QuickTime .mov; --codec h264|hevc (default hevc), --display, --mask, --force; writes 'Recording started' to stderr at the first frame; SIGINT stops and finalizes (from `xcrun simctl io` help)"
   - "axe record-video --help: MP4 (H.264); --fps 1-30 (default 10), --quality 1-100 (default 80), --scale 0.1-1.0, --output"

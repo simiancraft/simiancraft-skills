@@ -1,7 +1,7 @@
 ---
 title: Prerequisites
 summary: verify the environment can run and drive an iOS Simulator before anything else, and install AXe
-status: draft
+status: complete
 sources:
   - "xcodebuild -version and xcrun simctl help (ship with Xcode; run to confirm availability)"
   - https://github.com/cameroncooke/AXe (the AXe driver; brew install)

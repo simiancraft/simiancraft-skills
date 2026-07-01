@@ -1,7 +1,7 @@
 ---
 title: Where the logs live
 summary: the log source for each failure layer (xcodebuild output, the unified log, console stdout/stderr, crash reports, simctl diagnose, the Metro terminal), indexed by layer
-status: draft
+status: complete
 sources:
   - "xcrun simctl help: launch --console/--console-pty/--stdout/--stderr, spawn, diagnose, get_app_container"
   - https://developer.apple.com/documentation/os/logging (the unified logging system that `log` reads)

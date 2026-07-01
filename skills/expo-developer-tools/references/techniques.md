@@ -1,7 +1,7 @@
 ---
 title: Cross-tool techniques
 summary: techniques that span more than one dev-menu item or DevTools panel, each named after the technique, starting with diagnosing a slow re-render
-status: draft
+status: complete
 sources:
   - https://reactnative.dev/docs/react-native-devtools (the Components highlight-updates toggle and the Profiler)
   - https://docs.expo.dev/debugging/tools/ (the performance monitor's two-thread FPS)

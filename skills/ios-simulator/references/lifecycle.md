@@ -1,7 +1,7 @@
 ---
 title: Simulator lifecycle
 summary: boot/shutdown/erase, install/launch/terminate, and discovering the booted UDID and device scale, all through xcrun simctl
-status: draft
+status: complete
 sources:
   - "xcrun simctl help (per-Xcode; primary source for the commands and flags below)"
   - "xcrun simctl help <subcommand> (per-command flags)"

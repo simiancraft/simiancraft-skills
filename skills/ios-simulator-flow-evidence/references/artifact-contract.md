@@ -1,7 +1,7 @@
 ---
 title: Artifact contract
 summary: the directory layout, names, and formats this skill emits, the stable seam the external GitHub-presentation skill consumes
-status: draft
+status: complete
 sources:
   - "formats are the capture tools' outputs: PNG (axe screenshot / simctl io screenshot), MP4 (axe record-video), MOV (simctl recordVideo); the layout and naming below are conventions this skill defines"
 ---

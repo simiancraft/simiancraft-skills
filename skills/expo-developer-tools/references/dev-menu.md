@@ -1,7 +1,7 @@
 ---
 title: The developer menu
 summary: the developer-menu items top to bottom as the app presents them, what each is and what an agent reads it for, including the performance monitor's two-thread FPS and the element inspector's four modes
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/debugging/tools/ (the developer-menu items, the performance monitor, and the element inspector)
 ---

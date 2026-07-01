@@ -8,7 +8,7 @@ description: >-
   that emit no error (element not found in the accessibility tree, stuck flow).
   Each layer names where its logs live. Used alongside ios-simulator and
   expo-ios-simulator when something breaks. Project-agnostic.
-status: draft
+status: complete
 sources:
   - "xcrun simctl help (launch --console/--stdout/--stderr, spawn, diagnose, get_app_container) and axe --help; each reference carries the per-command provenance"
   - https://developer.apple.com/documentation/os/logging

@@ -1,7 +1,7 @@
 ---
 title: Flow manifest
 summary: the manifest.json schema tying each driven step to its artifact and the state it proves, including a device-only list for what the simulator cannot show
-status: draft
+status: complete
 sources:
   - "the manifest is a convention this skill defines; artifact paths reference the formats in artifact-contract.md (PNG, MP4/MOV)"
 ---

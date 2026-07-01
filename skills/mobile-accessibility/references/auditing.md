@@ -1,7 +1,7 @@
 ---
 title: Accessibility auditing lens
 summary: the minimum name/role/value bar for the tree, mapped to the iOS fields; a thin seam that the future general accessibility skill expands
-status: draft
+status: complete
 sources:
   - https://www.w3.org/WAI/WCAG21/Understanding/name-role-value.html (WCAG 2.1 Success Criterion 4.1.2, Name, Role, Value)
 ---

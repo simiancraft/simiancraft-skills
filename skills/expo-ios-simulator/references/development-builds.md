@@ -1,7 +1,7 @@
 ---
 title: Development builds
 summary: build and install an Expo dev client on the simulator; the expo run:ios device-picker pitfall, the direct xcodebuild + simctl path, Metro, and the dev-client deep link
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/guides/local-app-development/ (npx expo run:ios; prebuild, compile, install, launch, and Metro)
   - "xcodebuild (Apple; the direct simulator build) and xcrun simctl install/launch/openurl"

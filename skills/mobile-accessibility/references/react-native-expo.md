@@ -1,7 +1,7 @@
 ---
 title: React Native / Expo accessibility
 summary: accessibilityLabel/role/state/value/accessible and testID; the handle-vs-name distinction; how RN props map onto the native iOS tree
-status: draft
+status: complete
 sources:
   - https://reactnative.dev/docs/accessibility (accessible, accessibilityLabel, accessibilityRole, accessibilityState, accessibilityValue, accessibilityHint, and the isAccessibilityElement mapping)
   - https://reactnative.dev/docs/view (testID: "Used to locate this view in end-to-end tests")

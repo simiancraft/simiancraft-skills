@@ -10,7 +10,7 @@ description: >-
   reference for reading these tools (what each shows and how to interpret it), not a driver.
   Use for "open the Expo dev menu", "read the performance monitor", "use the element
   inspector", or "inspect a component / a slow re-render with React Native DevTools".
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/debugging/tools/ (the developer menu and the tools it opens)
   - https://reactnative.dev/docs/react-native-devtools (the React Native DevTools panels)

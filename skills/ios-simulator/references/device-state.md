@@ -1,7 +1,7 @@
 ---
 title: Device state and content
 summary: put the simulated device into a known state and inject content by script (appearance, status bar, location, media, clipboard, keychain, and push); all scriptable simctl verbs, not menu-only affordances
-status: draft
+status: complete
 sources:
   - "xcrun simctl help status_bar | location | ui | addmedia | pbcopy | pbpaste | keychain | push (each verb's own usage; run to confirm the value sets)"
   - https://developer.apple.com/documentation/xcode/running-your-app-in-the-simulator-or-on-a-device

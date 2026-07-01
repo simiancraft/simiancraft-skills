@@ -1,7 +1,7 @@
 ---
 title: iOS native accessibility
 summary: the UIAccessibility fields a driver and an auditor read (isAccessibilityElement, accessibilityLabel, accessibilityValue, accessibilityTraits, accessibilityIdentifier), and how they surface in an AXe describe-ui dump
-status: draft
+status: complete
 sources:
   - https://developer.apple.com/documentation/uikit/uiaccessibilityelement/isaccessibilityelement (in or out of the tree)
   - https://developer.apple.com/documentation/uikit/uiaccessibilityelement/accessibilitylabel (the name)

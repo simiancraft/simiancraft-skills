@@ -1,7 +1,7 @@
 ---
 title: Opening the developer menu
 summary: the open-gesture matrix across iOS and Android, device and simulator/emulator, plus the terminal shortcut; the one platform-divergent part of the dev tools
-status: draft
+status: complete
 sources:
   - https://docs.expo.dev/debugging/tools/ (how to open the developer menu per platform)
 ---
