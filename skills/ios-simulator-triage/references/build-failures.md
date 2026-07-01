@@ -12,7 +12,8 @@ sources:
 
 Reference for **ios-simulator-triage**. The symptom is that nothing reaches the device: the
 compile, the pod install, or the prebuild failed, so there is no `.app` to install. The log
-is the **xcodebuild output** (and its `.xcresult` bundle; see `references/logging.md`). Match
+is the **xcodebuild output** (and its `.xcresult` bundle, which `xcrun xcresulttool get
+build-results` reads into JSON; see `references/logging.md`). Match
 the error, then apply the fix, which usually lives in a sibling skill.
 
 ## "No code signing certificates are available"

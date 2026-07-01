@@ -48,8 +48,9 @@ environment variables for the launched app, export them in the calling shell wit
   one names the thread and exception.
 - `xcrun simctl diagnose` collects logs and diagnostics into one bundle when you need the
   whole picture to attach or inspect.
-- `xcrun simctl get_app_container booted <bundle-id> data` prints the app's data container,
-  for inspecting files it wrote.
+- `xcrun simctl get_app_container booted <bundle-id> data` prints the app's data container;
+  inspect what it persisted (`defaults read` or `plutil -p` on a `.plist`, `sqlite3` on a Core
+  Data store) to triage a persisted-state bug.
 
 ## The build log
 

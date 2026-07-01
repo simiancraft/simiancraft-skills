@@ -21,12 +21,17 @@ A native crash (the app vanishes, or never draws) leaves evidence outside the JS
 - **Crash report**: look in `~/Library/Logs/DiagnosticReports` for a fresh `.ips` report
   naming the thread and exception; or collect everything with `xcrun simctl diagnose`. The
   report is written by a host daemon and can lag the crash by seconds, so if none is there
-  immediately, wait and re-check rather than concluding there was no crash.
+  immediately, wait and re-check rather than concluding there was no crash. Turn a stripped
+  report's addresses into function names with `atos` (give it the app binary or its `.dSYM` via
+  `-o` and the load address via `-l`, matching the UUID from `dwarfdump --uuid`).
 - **stdout / stderr**: relaunch with `xcrun simctl launch --console booted <bundle-id>`
   (see `references/logging.md`); log output is often on **stderr**, not stdout, so do not
   assume silence means nothing happened.
 - **Unified log**: watch `xcrun simctl spawn booted log stream` (filtered with a predicate)
   while you reproduce; see `references/logging.md`.
+- **Hang, not crash**: a frozen app (spinner, unresponsive) leaves no crash report and looks
+  exactly like a missed tap. Watch the unified log for watchdog and `RunningBoard` terminations;
+  a `0x8badf00d` exception code in an `.ips` report is the watchdog killing a hung app.
 
 Discover `<bundle-id>` from the app config (`ios.bundleIdentifier`); never hardcode it.
 
