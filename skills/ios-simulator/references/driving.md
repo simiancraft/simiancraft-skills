@@ -135,8 +135,8 @@ which is deterministic where a bare `swipe` across the track is not. AXe also ha
 
 On some Xcode/runtime combinations `slider` fails outright with
 `FBSimulatorHIDEvent does not support touch move events.` (observed, reproducible; a known
-open AXe issue on newer Xcode versions, where `drag` fails the same way, so do not burn time
-reinstalling). When it
+open AXe issue reported against `drag`, reproduced across Xcode versions, so do not burn
+time reinstalling). When it
 does, the working fallback is a **swipe along the track**: a tap on the track does not seek,
 and a down-then-up pair without movement does not drag, but `axe swipe` does move the thumb.
 Compute both endpoints from the slider's own node and converge:
