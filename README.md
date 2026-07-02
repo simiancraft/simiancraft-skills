@@ -88,6 +88,7 @@ Update later:
 
 - **[`android-emulator-tester`](agents/android-emulator-tester.md)**: automated Android UI/integration testing specialist; drives a real app on a headless emulator and gates on what it observes. Owns the boot, install, drive, and assert loop, and is honest about what an emulator cannot validate (real FPS, true camera/mic fidelity, network quality).
 - **[`android-kotlin-expert`](agents/android-kotlin-expert.md)**: Android native specialist for Kotlin, Java, Gradle, the Jetpack libraries, OpenGL ES and camera pipelines, and React Native / Expo Modules native bridging. Two modes: implement or review.
+- **[`review-software-architect`](agents/review-software-architect.md)**: senior architect review lens for any codebase. Judges a project against its own organizing principle first and the canon (SOLID, DDD, layering, paradigm coherence, convention vs configuration) second, and grades on request with calibrated letter grades.
 
 ## Curation policy
 
