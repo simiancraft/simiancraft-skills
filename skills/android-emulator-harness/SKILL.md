@@ -114,6 +114,11 @@ $ADB shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
   (with `adb reverse` in place use `localhost`; without it, url-encode `http://10.0.2.2:8081`).
   Prefer a **preview/standalone** build for unattended runs to avoid this entirely.
 
+**The dev menu.** Open the React Native / Expo developer menu with
+`adb shell input keyevent 82` (or `Cmd+M` / `Ctrl+M`); it exposes the performance monitor, the
+element inspector, and Open DevTools. The menu and React Native DevTools are identical to iOS; see
+**expo-developer-tools** for what each item and panel does and how to read it.
+
 **Auth/login.** Many apps gate the first screen behind login. The first flow must
 authenticate from env or an out-of-repo secrets file (NEVER hardcode). Pass secrets to
 Maestro with `--env KEY=VALUE` (or an env file) and read them in the flow as `${KEY}`;
