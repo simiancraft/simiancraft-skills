@@ -9,7 +9,7 @@ sources:
 # Artifact contract
 
 Reference for **ios-simulator-flow-evidence**. This skill produces a **flow-evidence bundle**:
-a directory with a known shape that a separate **github-proof-presentation** skill (external)
+a directory with a known shape that the separate **prove-work-on-github** skill
 consumes. The bundle is the seam between the two; keep it stable so the presentation side does
 not break.
 
@@ -46,7 +46,7 @@ of a bundle without being told.
 ## This skill produces; it does not publish
 
 Producing a bundle to this contract is the whole job. Uploading it, embedding it in a PR, or
-rendering it is the **github-proof-presentation** skill's job (external). Do not reach across
+rendering it is the separate **prove-work-on-github** skill's job. Do not reach across
 that seam; emit the bundle and stop.
 
 ## See also

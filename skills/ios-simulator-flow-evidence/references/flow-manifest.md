@@ -9,7 +9,7 @@ sources:
 # Flow manifest
 
 Reference for **ios-simulator-flow-evidence**. The manifest is the bundle's index: a small
-JSON file that lets a reviewer (or the **github-proof-presentation** skill) understand what
+JSON file that lets a reviewer (or the **prove-work-on-github** skill) understand what
 each artifact proves **without re-running the flow**. It lives at the bundle root as
 `manifest.json` (see `references/artifact-contract.md`).
 

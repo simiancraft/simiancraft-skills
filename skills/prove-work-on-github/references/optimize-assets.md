@@ -13,7 +13,7 @@ stage: 3
 
 Before an artifact enters the Evidence Locker, this stage shrinks it to the smallest bytes that
 still carry the proof. Optimizing a media asset is the `asset-optimization` skill's job, keyed on
-asset kind (raster, vector, animation, video, and audio) and on the presentation target. Use that
+asset kind and on the presentation target. Use that
 skill for tool selection, the fidelity pass, format conversion, and before-and-after measurement.
 This file adds only what is specific to proof on GitHub.
 

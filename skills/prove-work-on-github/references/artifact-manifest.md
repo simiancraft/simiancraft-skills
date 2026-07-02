@@ -66,6 +66,14 @@ To read a PR's whole manifest, glob its sidecars by the shared number prefix
 (`evidence/NNNNN-*.json`); the naming convention (`evidence-locker.md`) keeps one PR's artifacts and
 sidecars contiguous.
 
+## Not a producer's bundle manifest
+
+A producer can ship its own flow-level index: `ios-simulator-flow-evidence` emits a `manifest.json`
+tying each driven step to its artifact. That is an extraction index of one capture; these sidecars
+are the storage record written when each artifact is pinned. The bundle manifest feeds acquisition
+(`acquire.md`), where its per-step intent and `deviceOnly` gaps inform a sidecar's `capture_method`
+and `scope_tags`; the sidecar is what freshness and judgement read.
+
 ## Why it exists (its three consumers)
 
 - **Decay-detection** (`freshness-and-reproof.md`): `covered_paths` intersected with the incoming

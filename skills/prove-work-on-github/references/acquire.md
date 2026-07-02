@@ -44,7 +44,17 @@ gracefully if a given harness is not present in the environment.
 | Put a real person in front of a webcam for segmentation/camera effects | `playwright-camera-mask-testing` |
 | Drive an Android app in a headless emulator | `android-emulator-harness` |
 | Camera/segmentation testing on the Android emulator | `android-emulator-mask-testing` |
-| iOS simulator capture | (on-machine Xcode tooling) |
+| Drive an iOS app in the simulator | `ios-simulator` |
+| Capture proof of an iOS simulator flow | `ios-simulator-flow-evidence` |
+
+## Ingesting a bundle
+
+Some harnesses emit a whole bundle to a contract, not loose files. `ios-simulator-flow-evidence`
+produces a flow-evidence bundle (`<flow>/manifest.json`, `screenshots/`, and `video/`) per its
+artifact-contract. Ingest such a bundle by running each artifact through the rest of this
+lifecycle: optimize it (`optimize-assets.md`), pin it in the locker with a per-artifact sidecar
+(`artifact-manifest.md`, `evidence-locker.md`), and carry the bundle manifest's step order and its
+`deviceOnly` gaps into the rendered proof (`render.md`).
 
 ## Consumes / produces
 
