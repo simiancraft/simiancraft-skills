@@ -2,7 +2,7 @@
 
 > Claude Code skills for the full arc of a change: farm to table, with receipts.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-14-4c1) ![Agents](https://img.shields.io/badge/agents-3-4c1)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-15-4c1) ![Agents](https://img.shields.io/badge/agents-3-4c1)
 
 Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Most skill collections are grab bags. This one has a spine: it carries a change through its whole life. Plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
 
@@ -30,7 +30,7 @@ Each stage of a change has a home here, and each stage ends in an observable gat
 | **Drive and observe** | screenshots, logcat, and page errors that came back for inspection | [the web, Android, and iOS harness families](#drive-and-observe) |
 | **Extract evidence** | artifacts a reviewer can consume: a contract-shaped bundle with a manifest, or a GIF embedded where the claim is made | [`ios-simulator-flow-evidence`](skills/ios-simulator-flow-evidence/SKILL.md), [`playwright-gif-capture`](skills/playwright-gif-capture/SKILL.md) |
 | **Shrink** | kept only if smaller AND still valid; never regress | [`asset-optimization`](skills/asset-optimization/SKILL.md) |
-| **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](https://github.com/simiancraft/simiancraft-skills/pull/9) (incoming, PR #9) |
+| **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](skills/prove-work-on-github/SKILL.md) |
 
 The seams are contracts with names, not habits. The evidence skill emits artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
 
@@ -77,6 +77,10 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 - **[`asset-optimization`](skills/asset-optimization/SKILL.md)**: shrinks a media asset to the smallest bytes that still serve its purpose, keyed on asset kind (raster, vector, animation, video, audio, model, document, font) and on where it will be presented. Measures before and after, validates the output, and keeps the result only if it is smaller AND still valid; redirects to a better format when the source is wrong for the job.
 
+### Prove
+
+- **[`prove-work-on-github`](skills/prove-work-on-github/SKILL.md)**: proves that work claimed on a pull request or issue actually landed and is sound, with verifiable evidence a reader can independently re-check. Sizes the proof a change owes, names what must be proven, supplies the receipts, stores them durably in an evidence branch rendered inline on the PR, and judges whether they are enough to merge.
+
 ### Agents
 
 - **[`android-emulator-tester`](agents/android-emulator-tester.md)**: automated Android UI/integration testing specialist; drives a real app on a headless emulator and gates on what it observes. Owns the boot, install, drive, and assert loop.
@@ -85,7 +89,7 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 ## Every skill names its ceiling
 
-An emulator cannot validate real FPS or true camera fidelity, and the Android harness says so. A simulator cannot use a real camera or place a call, and the evidence skill lists that plainly. The proof skill, incoming in [#9](https://github.com/simiancraft/simiancraft-skills/pull/9), states outright that proof is asymptotic and a total account of it would be a lie. Skills that overclaim get you confidently wrong answers; these are written to keep the model calibrated. The iOS and accessibility skills cite their upstream docs, and the web and Android harnesses name the exact stack they were validated on.
+An emulator cannot validate real FPS or true camera fidelity, and the Android harness says so. A simulator cannot use a real camera or place a call, and the evidence skill lists that plainly. The proof skill states outright that proof is asymptotic and a total account of it would be a lie. Skills that overclaim get you confidently wrong answers; these are written to keep the model calibrated. The iOS and accessibility skills cite their upstream docs, and the web and Android harnesses name the exact stack they were validated on.
 
 ## Curation policy
 
