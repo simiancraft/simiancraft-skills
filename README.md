@@ -1,8 +1,10 @@
 # simiancraft-skills
 
-> The full arc of a change, farm to table, with receipts.
+> Claude Code skills for the full arc of a change: farm to table, with receipts.
 
-Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Together they carry a change through its whole life: plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-14-4c1) ![Agents](https://img.shields.io/badge/agents-3-4c1)
+
+Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Most skill collections are grab bags. This one has a spine: it carries a change through its whole life; plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
 
 ## Install
 
@@ -19,18 +21,18 @@ Update later:
 
 ## The arc
 
-Most skill collections are grab bags. This one has a spine. Each stage of a change has a home here, and each stage ends in an observable gate:
+Each stage of a change has a home here, and each stage ends in an observable gate:
 
 | Stage | Gate | Where it lives |
 |-------|------|----------------|
 | **Plan** | every commit step carries a verification gate; the plan self-destructs when shipped | [`how-to-plan`](skills/how-to-plan/SKILL.md) |
 | **Structure** | domain nouns named before file structure; flag-prop relay refused | [`zone-composer`](skills/zone-composer/SKILL.md) |
-| **Drive and observe** | screenshots, logcat, and page errors that came back for inspection | the web, Android, and iOS harness families |
-| **Extract evidence** | artifacts conforming to a stable contract: stable names, known formats, a manifest | [`ios-simulator-flow-evidence`](skills/ios-simulator-flow-evidence/SKILL.md), [`playwright-gif-capture`](skills/playwright-gif-capture/SKILL.md) |
-| **Shrink it** | kept only if smaller AND still valid; never regress | [`asset-optimization`](skills/asset-optimization/SKILL.md) |
-| **Prove it** | a claim is narrative; a receipt is proof | `prove-work-on-github`, incoming in [#9](https://github.com/simiancraft/simiancraft-skills/pull/9) |
+| **Drive and observe** | screenshots, logcat, and page errors that came back for inspection | [the web, Android, and iOS harness families](#drive-and-observe) |
+| **Extract evidence** | artifacts a reviewer can consume: a contract-shaped bundle with a manifest, or a GIF embedded where the claim is made | [`ios-simulator-flow-evidence`](skills/ios-simulator-flow-evidence/SKILL.md), [`playwright-gif-capture`](skills/playwright-gif-capture/SKILL.md) |
+| **Shrink** | kept only if smaller AND still valid; never regress | [`asset-optimization`](skills/asset-optimization/SKILL.md) |
+| **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](https://github.com/simiancraft/simiancraft-skills/pull/9) (incoming, PR #9) |
 
-The seams are contracts, not vibes. The evidence skills emit artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
+The seams are contracts with names, not habits. The evidence skills emit artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
 
 ## What's in here
 
@@ -46,25 +48,27 @@ The seams are contracts, not vibes. The evidence skills emit artifacts to a docu
 
 Three harness trunks, one mental model: boot the runtime, drive the UI by stable handles rather than brittle coordinates, and gate on what comes back. Each trunk declares a specialization contract; a sibling skill reads the trunk first and adds only its delta.
 
-**Web**
+The camera skills ship a person: a pre-framed human subject fixture fed to the emulator or browser camera, so segmentation models produce a real mask with no physical device in the loop.
+
+#### Web
 
 - **[`playwright-harness`](skills/playwright-harness/SKILL.md)**: the operational trunk for browser work. Writes a script, launches Chromium (real GPU under WSLg via ANGLE when WebGL matters), drives the page, and gates on screenshots plus collected page errors. Two references carry the depth: interactions (locators, actions, waits, assertions) and flows (login and session reuse, forms, responsive sweeps, link checking, network stubbing).
 - **[`playwright-camera-mask-testing`](skills/playwright-camera-mask-testing/SKILL.md)**: puts a real person in front of getUserMedia so MediaPipe selfie segmentation produces an actual mask, then verifies background replacement, blur, and shader effects by vision. Ships a webcam-shaped subject fixture and an empty-scene negative case.
 - **[`playwright-gif-capture`](skills/playwright-gif-capture/SKILL.md)**: drives a page, canvas, or WebGL animation deterministically, grabs frames, and encodes a looping GIF, with a reference on the color, frame-rate, and size dials so the output is not deep-fried, janky, or oversized.
 
-**Android**
+#### Android
 
 - **[`android-emulator-harness`](skills/android-emulator-harness/SKILL.md)**: the Android analog of Playwright for web. Boots an AVD headless under KVM on Linux/WSL, installs an APK, drives the UI with Maestro, and gates on logcat plus screenshots that come back for inspection.
 - **[`android-emulator-mask-testing`](skills/android-emulator-mask-testing/SKILL.md)**: gets a real person in front of the emulator camera so MediaPipe / ML Kit selfie segmentation produces an actual mask, then verifies background replacement, blur, and shader effects. Ships a pre-framed subject fixture.
 
-**iOS**
+#### iOS
 
-- **[`ios-simulator`](skills/ios-simulator/SKILL.md)**: the iOS analog of the other two trunks. Discovers and boots a device, installs and launches an app, drives the UI by accessibility (AXe), captures screenshots and video, and covers the simulator's own chrome, device state, and execution modes.
+- **[`ios-simulator`](skills/ios-simulator/SKILL.md)**: the iOS analog of the other two trunks. Discovers and boots a device, installs and launches an app, drives the UI by accessibility (AXe), captures screenshots (video capture lives in `ios-simulator-flow-evidence`), and covers the simulator's own chrome, device state, and execution modes.
 - **[`expo-ios-simulator`](skills/expo-ios-simulator/SKILL.md)**: runs an Expo / React Native app on the simulator; sits on top of `ios-simulator`. Picks an execution mode (Expo Go, dev client, Storybook-mobile, web-on-mobile), builds and installs a dev client, and clears the recurring Expo prompts that block automation.
 - **[`ios-simulator-triage`](skills/ios-simulator-triage/SKILL.md)**: a living failure catalog organized by layer: build failures, app-runtime vs Expo-runtime failures, and automation failures that emit no error. Each layer names where its logs live.
 - **[`ios-simulator-flow-evidence`](skills/ios-simulator-flow-evidence/SKILL.md)**: captures proof of a driven flow: vision-verifiable screenshots, video, and a manifest tying steps to artifacts, plus an honest list of what a simulator cannot do. Owns extraction, not publishing.
 
-**Shared trunks**
+#### Shared trunks
 
 - **[`mobile-accessibility`](skills/mobile-accessibility/SKILL.md)**: makes a mobile app driveable and auditable through the accessibility tree, the shared dependency behind every tap-by-label interaction. One tree, two consumers: driving reads the stable handle, auditing reads the user-facing semantics.
 - **[`expo-developer-tools`](skills/expo-developer-tools/SKILL.md)**: reading the Expo / React Native in-app developer tools: the developer menu, React Native DevTools, and Rozenite plugins. The shared home both platform families point to; an interpretive reference, not a driver.
@@ -81,11 +85,11 @@ Three harness trunks, one mental model: boot the runtime, drive the UI by stable
 
 ## Every skill names its ceiling
 
-An emulator cannot validate real FPS or true camera fidelity, and the Android harness says so. A simulator cannot deliver a push or place a call, and the evidence skill lists that plainly. The proof skill states outright that proof is asymptotic and a total account of it would be a lie. Skills that overclaim get you confidently wrong answers; these are written to keep the model calibrated instead. Commands carry provenance to upstream docs, and each harness names the exact stack it was validated on.
+An emulator cannot validate real FPS or true camera fidelity, and the Android harness says so. A simulator cannot use a real camera or place a call, and the evidence skill lists that plainly. The proof skill, incoming in [#9](https://github.com/simiancraft/simiancraft-skills/pull/9), states outright that proof is asymptotic and a total account of it would be a lie. Skills that overclaim get you confidently wrong answers; these are written to keep the model calibrated. The iOS and accessibility skills carry per-command provenance to upstream docs, and the web and Android harnesses name the exact stack they were validated on.
 
 ## Curation policy
 
-Deliberately small, slow-growing. Every skill is one we run in production and are willing to put the simiancraft name on; nothing makes it in for completeness or volume. Gotchas in these files cost real debugging time; that is the bar for writing one down. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contribution posture.
+Deliberately small, slow-growing. Everything here is in production use at simiancraft and worth putting the name on; some skills are living catalogs that grow as use finds new cases. Nothing makes it in for completeness or volume. Gotchas in these files cost real debugging time; that is the bar for writing one down. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contribution posture.
 
 ## License
 
