@@ -23,8 +23,9 @@ that is `asset-optimization`. This skill points to those seams and documents
 exactly one thing: **how to record human/machine shared steps for running a
 flow.**
 
-> **Status: being authored.** Definitions below are locked; sections marked as
-> stubs are still being dictated and validated. Nothing in here is
+> **Status: being authored.** Definitions, step properties, the visualization
+> spec, and the storage convention are locked; the authoring and reproduction
+> loops are still being dictated and validated. Nothing in here is
 > project-specific: the target Storybook is always parameterized
 > (`STORYBOOK_URL`), and flow locations are conventions, not paths into any one
 > repo.
@@ -76,21 +77,54 @@ following properties:
 
 ## The visualization
 
-A visualization is, ideally, an **inlined provision of the component that
-matches what is taking place inside the flow on the actual page**: the real
-component rendered in the flow document, not a description of it.
+A visualization is, ideally, an **actual inline component**: the real component
+rendered in the flow document, not a description of it. Flows are MDX files in
+Storybook, so inlining the real thing is cheap; do it.
 
-<!-- stub: why the inlined component is the ideal (being dictated); the
-     fallback ladder when inlining is not possible (captured image via
-     playwright-harness, shrunk via asset-optimization); how the visualization
-     is addressed inside Storybook. -->
+How a narrated step becomes a complete one. The narrator says "go click the
+login button", and that is everything a step needs:
 
-## Where flows live in Storybook
+1. **Title:** "Click login".
+2. **Description:** where the login button is located on the page.
+3. **Visualization:** literally inline the component, based on the actual code
+   cross-referenced with the component itself. Look the button up in Storybook,
+   look at its source code, and put that button (and, where it helps, its
+   surrounding context) inline as the visualization.
 
-<!-- stub: the conventional docs location (a Docs/Testing/Flows-style section);
-     MDX docs pages auto-registered by glob; how the flow page is addressed
-     (?path=/docs/...) and how the story iframe is addressed (iframe.html?id=)
-     when the flow drives real stories. -->
+The visualization carries the **same accessibility tags an agent would see when
+actually driving the page**. That is the point of it: a human sees a button
+that looks exactly like the button on the page; an agent sees the accessibility
+hint that locates it quickly. Flows are therefore highly accessible by default;
+a visualization without the real accessibility surface is incomplete.
+
+**Fallback.** When a component cannot be inlined, take a screenshot of the
+region of the page the step describes and inject that screenshot into the MDX
+file. Capture per `playwright-harness`; shrink per `asset-optimization` before
+it is committed.
+
+## Where flows live
+
+Inside the project, prefer a `/docs` folder, unless the author has overridden
+their default root-level Storybook documentation folder; in that case, use
+theirs. Inside it:
+
+- a `/flows` folder (author it if it does not exist);
+- **every flow gets its own folder**, named after the user story it depicts;
+- the flow's point of entry is its **`index.mdx`**;
+- artifacts live beside `index.mdx` in the flow's folder: images, gifs, and
+  special components (for example, a component depicting two components side
+  by side that would not normally be side by side).
+
+```
+docs/
+└── flows/
+    └── <user-story-name>/
+        ├── index.mdx          <- the flow; root point of entry
+        └── <artifacts>        <- images, gifs, special components
+```
+
+In the Storybook sidebar, the flow's `Meta` registers under a root-level
+`Flows` folder, then the name of the flow.
 
 ## Authoring a flow (drive first, then write)
 
