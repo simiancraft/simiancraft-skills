@@ -87,7 +87,37 @@ following properties:
 1. **A number.** Steps are numbered and execute in sequence.
 2. **A title.** Short and succinct: "Log in", "Click button".
 3. **A description.** A short account of the action being taken.
-4. **A visualization.** The most important property, described below.
+4. **A route.** The route the step takes place on, as a clickable link
+   (described below).
+5. **A visualization.** The most important property, described below.
+
+## Routes and the base URL
+
+Flows take place inside a web application, so every flow is on some route, and
+the flow records it. The route appears at the flow level as well, beyond the
+scenario outline, not only on individual steps.
+
+Routes are recorded as **clickable links**, and they resolve against a
+configured base:
+
+- **A configuration sits at the root of the flows folder** and declares the
+  default base URL for flows, pointing at the QA server or the development
+  server. There must be a default test root URL for flows.
+- **Routes in flow documents are authored relative to that base.** If the
+  configuration says the default flow base is `www.my-qa-server.com/testers`,
+  every route described while authoring is relative to it, and the rendered
+  links point into that server.
+- **Runners substitute the base.** When an agent runs a flow locally, it
+  replaces the base URL and drives the same relative routes against the local
+  server.
+- **A flow may override the base.** If a flow is authored against a specific
+  environment (reproducing something that happens in production, say), the
+  author states that during authoring; the override is written into the flow
+  document itself and all of its clickable links resolve against the override
+  instead of the default.
+
+<!-- stub: the concrete shape of the flows-root configuration file gets locked
+     during first real authoring, then recorded here. -->
 
 ## The visualization
 
