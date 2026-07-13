@@ -57,6 +57,20 @@ flow. If a detailed authentication flow exists and a new flow begins with "log
 in", the authentication steps are copied into the new flow, not linked. Assume
 the person or agent executing a flow has no knowledge of any other flow.
 
+The single exception is a **precondition** (below): required starting state may
+name another flow; steps never do.
+
+## Preconditions (required starting state)
+
+A flow may require a certain state to have already taken place before step 1,
+in the manner of a Cucumber scenario outline: "if you are already logged in,
+then perform the flow."
+
+**In this context only, a flow may reference another flow** as the way to reach
+the required state. The precondition names the state and the flow that
+establishes it; it is not a step, and it is not inlined. Steps inside the flow
+body still never reference other flows.
+
 ## The final state
 
 Every flow ends in **success** or **failure**, and every flow must define its
@@ -126,17 +140,43 @@ docs/
 In the Storybook sidebar, the flow's `Meta` registers under a root-level
 `Flows` folder, then the name of the flow.
 
-## Authoring a flow (drive first, then write)
+## Authoring a flow (the interactive loop)
 
-<!-- stub: the authoring loop: drive the sequence per playwright-harness,
-     gate each step on something observed, then write the steps from the
-     evidence; a step that was never driven does not get written down. -->
+Authoring is an interactive process: a human dictates, and every discrete
+instruction becomes a step inside the flow.
 
-## Reproducing a flow
+1. The developer says "do this."
+2. You do it (drive it per `playwright-harness`).
+3. You write down what you did, as a step with all four properties (number,
+   title, description, visualization).
+4. Repeat until the developer tells you that reaching this point is success.
 
-<!-- stub: the reading loop: an agent opens the flow page, translates each
-     step into playwright-harness driving, and gates on the same observables;
-     divergence between the page and reality is a finding, not a silent patch. -->
+That declaration is the flow's **success criteria**; encode it as the flow's
+final success state. A step that was never driven does not get written down,
+and nothing gets written down that was not dictated.
+
+**Flows are direct.** Branching conditions are not supported. If a dictated
+sequence wants to branch, that is two flows.
+
+## Reproducing a flow (run by name)
+
+The second mode: someone tells the agent to test a feature by running a flow
+on its own, and they **name the flow**. The agent:
+
+1. finds the named flow in the flows folder (its own folder under `/flows`,
+   entered at `index.mdx`);
+2. executes the steps in order, translating each step's description and
+   visualization (including its accessibility hints) into `playwright-harness`
+   driving;
+3. gates on the flow's final success state: all steps completed in sequence,
+   including the last, with no problems and no errors thrown, is success;
+   anything else is failure.
+
+Divergence between the flow page and reality is a finding to report, not
+something to silently patch around.
+
+Both modes are required. An agent using this skill must be able to author
+interactively and to reproduce by name.
 
 ## Scope
 
