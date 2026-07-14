@@ -141,6 +141,11 @@ that looks exactly like the button on the page; an agent sees the accessibility
 hint that locates it quickly. Flows are therefore highly accessible by default;
 a visualization without the real accessibility surface is incomplete.
 
+Present agent-facing detail as secondary content. The human walkthrough reads
+clean without it: the accessibility surface renders collapsed (a disclosure the
+human can expand), while an agent — which reads the document, not the folds —
+always sees it. Both readers get what they need from the same page.
+
 **Fallback.** When a component cannot be inlined, take a screenshot of the
 region of the page the step describes and inject that screenshot into the MDX
 file. Capture per `playwright-harness`; shrink per `asset-optimization` before
