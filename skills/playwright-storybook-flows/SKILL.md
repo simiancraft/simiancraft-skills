@@ -178,9 +178,17 @@ instruction becomes a step inside the flow.
 
 1. The developer says "do this."
 2. You do it (drive it per `playwright-harness`).
-3. You write down what you did, as a step with all four properties (number,
-   title, description, visualization).
+3. **You immediately write down what you did**, as a step with all of its
+   properties (number, title, description, route, visualization) — before
+   taking the next instruction.
 4. Repeat until the developer tells you that reaching this point is success.
+
+The rhythm is strict and per-step: follow the instruction, write down the
+step; follow the instruction, write down the step. Every successfully
+completed action is recorded in the flow document the moment it is confirmed —
+steps are never batched up to be written later. If the flow document does not
+yet show a step you have driven, you are behind; write it before anything
+else.
 
 That declaration is the flow's **success criteria**; encode it as the flow's
 final success state. A step that was never driven does not get written down,
