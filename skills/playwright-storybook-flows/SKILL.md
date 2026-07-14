@@ -189,6 +189,17 @@ and nothing gets written down that was not dictated.
 **Flows are direct.** Branching conditions are not supported. If a dictated
 sequence wants to branch, that is two flows.
 
+**Insufficient accessibility is fixed at the source, during authoring.** If a
+dictated step's target element cannot be located by its accessibility surface
+(no role, no accessible name), do not settle for locating it by geometry or
+styling: open the component's source, decorate the element (accessible role
+and name — `aria-label`, `accessibilityLabel`, or the platform equivalent),
+and update the codebase with that change as part of the authoring session. The
+step's visualization then carries the element's real accessibility surface, as
+required. Authoring is when these gaps surface, and fixing them serves a dual
+purpose: the page becomes discoverable by humans, agents, and
+assistive-technology users alike.
+
 ## Reproducing a flow (run by name)
 
 The second mode: someone tells the agent to test a feature by running a flow
