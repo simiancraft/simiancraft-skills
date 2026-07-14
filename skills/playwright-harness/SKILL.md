@@ -1,21 +1,22 @@
 ---
 name: playwright-harness
 description: >-
-  Drive a real browser headlessly with Playwright on Linux/WSL and gate on what
-  you observe: write a script, launch Chromium (real GPU under WSLg via ANGLE when
-  WebGL matters), drive the page, and assert on screenshots plus collected page
-  errors. The operational trunk for browser work; specializations layer on top.
-  Use for ANY web task: "drive the UI headlessly",
+  Drive a real browser with Playwright on any OS and gate on what you observe:
+  write a script, launch Chromium (headless by default; a shared headed window
+  when a human must watch or drive), drive the page, and assert on screenshots
+  plus collected page errors. The operational trunk for browser work;
+  specializations layer on top. Use for ANY web task: "drive the UI headlessly",
   "smoke-test a screen", "screenshot a component or canvas", "reproduce a console
   error", "fill and submit a form", "test a login flow", "check responsive
-  layout", "find broken links", or "automate a browser flow". Open
-  references/interactions.md and references/flows.md for the element vocabulary and
-  multi-step recipes; switch to playwright-camera-mask-testing for a camera or
-  person feed, or playwright-gif-capture for an animated GIF. Validated on
-  Linux/WSL, headless Chromium, with the ANGLE GPU path for WebGL.
+  layout", "find broken links", "open a browser I can watch/drive", or "automate
+  a browser flow". Open references/interactions.md and references/flows.md for
+  the element vocabulary and multi-step recipes; switch to
+  playwright-camera-mask-testing for a camera or person feed, or
+  playwright-gif-capture for an animated GIF. Validated on Linux/WSL (headless,
+  ANGLE GPU path for WebGL) and macOS (headless + interactive headed mode).
 ---
 
-# Playwright Harness (headless, Linux/WSL)
+# Playwright Harness
 
 Project-agnostic kernel for driving a browser and asserting on it; the operational
 trunk the rest of the suite hangs off.
@@ -30,6 +31,9 @@ playwright-harness/                     <- you are here: prerequisites + run pat
 ├── references/
 │   ├── interactions.md                 address elements: locators, actions, waits, assertions
 │   └── flows.md                        recipes: login, forms, responsive, link-checking, network stubbing
+├── scripts/
+│   ├── keeper.mjs                      interactive headed mode: long-lived shared browser + CDP
+│   └── observe.mjs                     interactive headed mode: attach, report URL/errors, screenshot
 └── specializations (separate, discoverable skills; read this one first):
     ├── playwright-camera-mask-testing  a real person through getUserMedia; assert segmentation/mask by vision
     └── playwright-gif-capture          an animated GIF of a page, canvas, or WebGL animation
@@ -51,12 +55,15 @@ camera feed, a GIF) is what you need.
   npm i -D playwright          # or add to the project that already has it
   npx playwright install chromium
   ```
-- **Headless system libraries (Linux/WSL).** A fresh box is missing the shared
-  libs Chromium needs (`libnss3`, `libatk`, `libgbm`, …); the symptom is a launch
-  error listing `error while loading shared libraries`. Install them once:
+- **Headless system libraries (Linux/WSL only).** A fresh box is missing the
+  shared libs Chromium needs (`libnss3`, `libatk`, `libgbm`, …); the symptom is a
+  launch error listing `error while loading shared libraries`. Install them once:
   ```bash
   npx playwright install-deps chromium   # needs sudo; or your distro's equivalent packages
   ```
+  **macOS needs none of this** — the downloaded Chromium runs as-is, headless or
+  headed. There is no `install-deps` step and no GPU shim to configure; a headed
+  launch opens a normal window on the desktop.
 - Some specializations need extra binaries (e.g. `ffmpeg` for video/GIF encode);
   each declares its own in a "Prerequisites" block.
 
@@ -82,7 +89,10 @@ camera feed, a GIF) is what you need.
    it resolves before relying on it: from the scratch dir, `node -e
    "import('playwright').then(() => console.log('resolves'))"`.
 3. **Default to headless.** It is faster and gives clean, chrome-free screenshots.
-   Use `headless: false` only to watch a flow interactively while debugging.
+   Use `headless: false` only when a human must watch or drive — see "Interactive
+   headed mode" below. (On a display-less box — CI, WSL without WSLg — headed
+   launches fail outright; headless is not just the default there, it is the only
+   mode.)
 
 ```js
 // /tmp/pw-task/run.mjs
@@ -101,6 +111,35 @@ await browser.close();
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'no page errors');
 ```
 
+## Interactive headed mode (shared browser, human + agent)
+
+When a human must watch the agent drive — or type URLs and act while the agent
+observes — one browser is shared between them instead of scripting a headless
+one-shot. Two scripts in `scripts/` implement it; copy them into the scratch dir
+(they follow the same resolution rule as any run-pattern script):
+
+- **`keeper.mjs`** — launched as a **background process**, it opens a headed
+  Chromium with a persistent profile (`./profile` beside the script, so logins
+  survive relaunches) and exposes CDP on `:9222` (`CDP_PORT` to override). The
+  human gets a real window with an address bar; the process lives until the
+  window closes.
+- **`observe.mjs`** — run on demand, it attaches over CDP, reports the active
+  tab's URL and title, and screenshots it for vision assertion. Its
+  `browser.close()` only detaches the CDP connection; the headed window stays up.
+
+Driving works the same way: any ad-hoc script that starts with
+`chromium.connectOverCDP('http://127.0.0.1:9222')` can locate elements, click,
+and fill in the shared window using the ordinary vocabulary from
+`references/interactions.md`. Two caveats learned the hard way:
+
+- **The keeper dies with its parent.** If the shell/session that spawned it
+  exits, the window vanishes. Check the CDP port (`lsof -nP -iTCP:9222`) before
+  assuming the browser is still up; relaunching is idempotent thanks to the
+  persistent profile.
+- **Screenshots of a headed window include its real viewport**, sized by the
+  human's window, not a scripted `viewport:` — assert on element crops, not
+  pixel-exact page dimensions.
+
 ## Assert on what you observe
 
 - **Gate on page errors.** Collect `pageerror` + `console` errors (filter
@@ -118,12 +157,14 @@ above. They exist to reach observable states worth gating on, not to be a genera
 automation toolkit; a new recipe earns its place by ending on something you
 assert, not just an action it performs.
 
-## WebGL / GPU caveat (WSLg, headless)
+## WebGL / GPU caveat (headless, any OS; fix shown is Linux/WSLg)
 
-Default headless Chromium renders WebGL via **SwiftShader**, which silently
-**no-ops heavy GPU work**: a canvas-heavy page or a generative shader renders
-black/empty with GPU time ~0, no error. If a canvas is empty headless but works in
-a real browser, relaunch reaching the real GPU under WSLg:
+Default headless Chromium renders WebGL via **SwiftShader** on every platform,
+which silently **no-ops heavy GPU work**: a canvas-heavy page or a generative
+shader renders black/empty with GPU time ~0, no error. A headed launch (macOS or
+a Linux desktop) always has the real GPU, so interactive headed mode sidesteps
+this entirely. If a canvas is empty headless but works in a real browser,
+relaunch reaching the real GPU — under WSLg, via ANGLE:
 
 ```js
 chromium.launch({ headless: true, args: ['--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'] });
