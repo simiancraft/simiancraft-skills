@@ -168,7 +168,8 @@ docs/
 ```
 
 In the Storybook sidebar, the flow's `Meta` registers under a root-level
-`Flows` folder, then the name of the flow.
+`flows/` folder (lowercase), then the name of the flow:
+`<Meta title="flows/<Flow Name>" />`.
 
 ## Authoring a flow (the interactive loop)
 
