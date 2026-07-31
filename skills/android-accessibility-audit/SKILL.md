@@ -108,9 +108,11 @@ for (const r of ROUTES.filter((r) => r.navigable)) console.log(strip(r.path) + "
 APP_SCHEME=myapp ./scripts/sweep.sh /tmp/routes.txt /tmp/a11y-out
 ```
 
-Every `adb` call is pinned to `ANDROID_SERIAL` (default `emulator-5554`). Set it
-when more than one device is attached, or adb will refuse with "more than one
-device/emulator". Set `BUNDLER_PORT` if your bundler is not on 8081, or
+Both `adb` and Maestro are pinned to `ANDROID_SERIAL` (default
+`emulator-5554`), adb via `-s` and Maestro via its `--device` global option. Set
+it when more than one device is attached, or adb refuses with "more than one
+device/emulator" and Maestro may select a different device than the one you
+deep-linked into. Set `BUNDLER_PORT` if your bundler is not on 8081, or
 `BUNDLER_PORT=` to skip the reverse entirely for a standalone build.
 
 Per route: a hierarchy dump, a screenshot, and a JSON report. On a 440dpi AVD,
@@ -131,8 +133,11 @@ bun ./scripts/report.ts /tmp/a11y-out/json
 npx tsx ./scripts/report.ts /tmp/a11y-out/json
 ```
 
-Reports totals, findings by rule, worst routes, unreadable reports, and suspect
-captures. **Read the last two before believing the totals.**
+Reports totals, findings by rule, worst routes, and three honesty signals:
+routes that were attempted but never inspected, reports that would not parse, and
+captures thin enough to look mid-mount. **Read those three before believing the
+totals**; a route that failed capture contributes no findings, so without them a
+failure looks identical to a clean pass.
 
 ### 4. Fix the shared component, not the route
 
@@ -146,15 +151,20 @@ and diff the counts as your receipt.
 | Rule | Severity | Meaning |
 |---|---|---|
 | `clickable-unnamed` | error | Clickable with no name; announced as a bare "button". Downgraded to warning when a descendant supplies text, since platforms usually merge that upward |
-| `target-size-48dp` | error under 32dp, else warning | Below Material's 48dp minimum |
+| `target-size-48dp` | error under 32dp, else warning | Below Android/Material's 48dp guidance. **Not a WCAG 2.2 result**, see below. The 32dp split is a triage heuristic, not a standard |
 | `nested-touchable` | warning | Clickable inside a clickable; the outer takes focus and the inner is unreachable |
 | `input-name-is-placeholder` | warning | Input announces its placeholder or current value instead of its label |
 | `input-name-is-mask` | error | Password input announces literal asterisks as its name |
 | `clickable-hidden` | error | Clickable marked `important-for-accessibility=false` |
 
-`target-size-48dp` is the rule a web audit will not give you. WCAG 2.2 AA asks
-only for 24x24 CSS px, so a control can pass axe-core and still be half the size
-a thumb needs.
+`target-size-48dp` is the rule a web audit will not give you, but read it as
+platform guidance rather than a conformance result. WCAG 2.2 SC 2.5.8 asks for
+24x24 CSS px **and allows five exceptions** (sufficient spacing, an equivalent
+control elsewhere, inline content, user-agent control, essential presentation).
+This tool evaluates none of them, and CSS px and dp are analogous but not
+normatively interchangeable. So a 40dp isolated control can be flagged here and
+still conform to WCAG 2.2 AA, and a sub-24dp control is not automatically a
+failure. Use the finding to improve the app, not to claim or deny conformance.
 
 The analyzer filters React Native's LogBox toast, which is dev-only chrome and
 would otherwise manufacture unnamed-clickable findings on every screen in a debug
@@ -164,13 +174,21 @@ accessibility defect.
 
 ## What it deliberately refuses to check
 
-**Headings.** React Native maps `accessibilityRole="header"` onto
-`AccessibilityNodeInfo.isHeading()`, but neither `maestro hierarchy` nor
-`uiautomator dump` serialises that bit: the attribute set has no heading field and
+**Headings, from this input.** `AccessibilityNodeInfo.isHeading()` has existed
+since API 28, so the state does exist on the node; the limitation is the dump,
+not the platform. Neither `maestro hierarchy` nor stock `uiautomator dump`
+serialises that bit: the attribute set has no heading field and
 the node class is unchanged. A tree-based heading rule would pass silently on
 every screen and prove nothing, which is worse than having no rule. Count
 `accessibilityRole="header"` in source instead, and know that a low count means
 titles are plain text to a screen reader.
+
+Getting it properly means a custom dumper: a `UiAutomation` instrumentation test
+or an accessibility service that walks `rootInActiveWindow` and serialises
+`isHeading` alongside the rest. That is a worthwhile addition and is not built
+here. Counting `accessibilityRole="header"` in source is a proxy for React Native
+coverage, not verification of the runtime node, and it says nothing about native,
+Compose, or third-party components.
 
 This is the general principle: a check that cannot fail is not a check.
 

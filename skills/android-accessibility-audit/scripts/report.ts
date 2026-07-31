@@ -18,6 +18,20 @@ if (!dir) {
 const reports: Report[] = [];
 const unreadable: string[] = [];
 
+// A route that failed capture leaves no report at all, so counting only the
+// files present silently shrinks the denominator and the run reads as clean.
+// sweep.sh records what it attempted; reconcile against it.
+const sweepRoot = dir.replace(/\/json\/?$/, '');
+const readList = (name: string): string[] => {
+  try {
+    return readFileSync(join(sweepRoot, name), 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+const attempted = readList('attempted.txt');
+const failed = readList('failed.txt');
+
 for (const file of readdirSync(dir).sort()) {
   if (!file.endsWith('.json')) continue;
   try {
@@ -42,7 +56,20 @@ for (const r of reports) {
   for (const f of r.findings) byRule[f.rule] = (byRule[f.rule] ?? 0) + 1;
 }
 
-console.log(`${reports.length} routes | errors=${errors} warnings=${warnings}`);
+const inspected = reports.length;
+if (attempted.length > 0) {
+  console.log(
+    `${inspected}/${attempted.length} routes inspected | errors=${errors} warnings=${warnings}`,
+  );
+} else {
+  console.log(`${inspected} routes | errors=${errors} warnings=${warnings}`);
+  console.log('   (no attempted.txt found; cannot confirm every route was inspected)');
+}
+
+if (failed.length > 0) {
+  console.log(`\n!! ${failed.length} route(s) NEVER INSPECTED, not counted above:`);
+  for (const f of failed) console.log(`   ${f}`);
+}
 
 if (unreadable.length > 0) {
   console.log(`\n!! ${unreadable.length} unreadable report(s), route NOT inspected:`);

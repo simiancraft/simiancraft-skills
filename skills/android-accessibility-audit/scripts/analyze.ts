@@ -20,9 +20,17 @@
  * finding, so pass it explicitly when auditing anything but the default AVD.
  */
 const DEFAULT_DENSITY = 2.75;
-/** Material's minimum touch target. WCAG 2.2 AA only asks for 24x24 CSS px. */
+/**
+ * Android/Material guidance for a touch target. This is NOT the WCAG 2.2 AA
+ * threshold: SC 2.5.8 asks for 24x24 CSS px and allows five exceptions
+ * (spacing, equivalent control, inline, user-agent, essential), none of which
+ * this evaluates. Report findings as platform guidance, not a WCAG failure.
+ */
 const MIN_TARGET_DP = 48;
-/** Below this a target is not merely small, it is unhittable. */
+/**
+ * Heuristic, not a standard. Nothing in Material or WCAG designates 32dp; it
+ * exists only to sort "noticeably small" from "barely under" during triage.
+ */
 const SEVERE_TARGET_DP = 32;
 /**
  * A tree with fewer text nodes than this is usually captured mid-mount.
@@ -70,6 +78,7 @@ interface Node {
   hint: string;
   clickable: boolean;
   importantForAccessibility: string;
+  enabled: boolean;
   id: string;
   bounds: Bounds | null;
   clickableAncestors: Node[];
@@ -126,6 +135,7 @@ function flatten(root: RawNode): Node[] {
       hint: (a.hintText ?? '').trim(),
       clickable: a.clickable === 'true',
       importantForAccessibility: a['important-for-accessibility'] ?? '',
+      enabled: a.enabled !== 'false',
       id: a['resource-id'] ?? '',
       bounds: parseBounds(a.bounds),
       clickableAncestors: ancestors,
@@ -146,7 +156,9 @@ export function analyze(root: RawNode, label: string, density = DEFAULT_DENSITY)
   const inLogbox = (n: Node) => logboxRoots.some((r) => contains(r.bounds, n.bounds));
 
   const app = all.filter((n) => !SYSTEM_NOISE.test(`${n.text} ${n.desc}`) && !inLogbox(n));
-  const named = (n: Node) => Boolean(n.desc || n.text || n.hint);
+  // hintText is Android's HINT, not the accessible name. Counting it as a name
+  // hides genuinely unnamed controls, so it does not satisfy this check.
+  const named = (n: Node) => Boolean(n.desc || n.text);
 
   const findings: Finding[] = [];
   const add = (
@@ -170,6 +182,7 @@ export function analyze(root: RawNode, label: string, density = DEFAULT_DENSITY)
   // what activating one does.
   for (const n of app) {
     if (!n.clickable || named(n)) continue;
+    if (!n.enabled) continue; // a disabled control is not an operable target
     // When a descendant carries the text, announcement depends on the platform
     // merging it upward, which usually works. Report it, but not as an error.
     const descendantSpeaks = app.some((d) => d.depth > n.depth && contains(n.bounds, d.bounds) && named(d));
@@ -185,7 +198,7 @@ export function analyze(root: RawNode, label: string, density = DEFAULT_DENSITY)
 
   // --- Touch target below the Material minimum ------------------------------
   for (const n of app) {
-    if (!n.clickable || !n.bounds) continue;
+    if (!n.clickable || !n.bounds || !n.enabled) continue;
     const wDp = n.bounds.w / density;
     const hDp = n.bounds.h / density;
     if (wDp === 0 || hDp === 0) continue;
@@ -240,12 +253,14 @@ export function analyze(root: RawNode, label: string, density = DEFAULT_DENSITY)
   }
 
   // --- Headings: NOT CHECKABLE HERE, deliberately ---------------------------
-  // React Native maps accessibilityRole="header" onto
-  // AccessibilityNodeInfo.isHeading(), but neither `maestro hierarchy` nor
-  // `uiautomator dump` serialises that bit: the attribute set has no heading
-  // field and the node class is unchanged. Any tree-based heading rule would
-  // pass silently and prove nothing, which is worse than no rule. Count
-  // accessibilityRole="header" in source instead.
+  // AccessibilityNodeInfo.isHeading() has existed since API 28, so the state
+  // does exist on the node. Neither `maestro hierarchy` nor stock
+  // `uiautomator dump` serialises it, so THIS input cannot support the rule and
+  // a check written against it would pass silently on every screen. Obtaining it
+  // needs a custom dumper: a UiAutomation instrumentation test or an
+  // accessibility service walking rootInActiveWindow and emitting isHeading.
+  // Until then count accessibilityRole="header" in source, as a proxy rather
+  // than verification of the runtime node.
 
   const textNodes = app.filter((n) => n.text).length;
 

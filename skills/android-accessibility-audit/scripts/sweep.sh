@@ -57,6 +57,8 @@ command -v "${RUNNER%% *}" >/dev/null 2>&1 || { echo "missing TS runner: ${RUNNE
 LIST="${1:?usage: sweep.sh <route-list> <outdir>}"
 OUT="${2:?usage: sweep.sh <route-list> <outdir>}"
 mkdir -p "$OUT/hier" "$OUT/shot" "$OUT/json"
+: > "$OUT/attempted.txt"
+: > "$OUT/failed.txt"
 
 # Count text-bearing nodes. Returns 0 for a missing or unparseable file so the
 # caller can always compare it as an integer.
@@ -103,6 +105,7 @@ while IFS=$'\t' read -r path label <&3; do
   # exist and drop the capture silently, so normalise rather than trust input.
   label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')"
   echo "--- $label ($path)"
+  printf '%s\n' "$label" >> "$OUT/attempted.txt"
 
   "$TIMEOUT" 30 "$ADB" -s "$DEVICE" shell am start -a android.intent.action.VIEW \
     -d "${APP_SCHEME}://${path}" >/dev/null 2>&1
@@ -111,7 +114,7 @@ while IFS=$'\t' read -r path label <&3; do
   ok=0
   for _attempt in 1 2 3; do
     err="$OUT/hier/$label.err"
-    if "$TIMEOUT" 90 "$MAESTRO" hierarchy > "$OUT/hier/$label.raw" 2>"$err" \
+    if "$TIMEOUT" 90 "$MAESTRO" --device "$DEVICE" hierarchy > "$OUT/hier/$label.raw" 2>"$err" \
        && [ -s "$OUT/hier/$label.raw" ]; then
       # Maestro prints a "Running on <device>" banner to stdout on some runs.
       # It lands ahead of the JSON and silently corrupts the capture, which then
@@ -140,6 +143,7 @@ while IFS=$'\t' read -r path label <&3; do
   if [ "$ok" -ne 1 ]; then
     echo "    HIERARCHY FAILED after 3 attempts"
     rm -f "$OUT/json/$label.json"
+    printf '%s\n' "$label" >> "$OUT/failed.txt"
     continue
   fi
 
@@ -156,4 +160,7 @@ while IFS=$'\t' read -r path label <&3; do
   ' "$OUT/json/$label.json"
 done 3< "$LIST"
 
-echo "=== sweep complete: $OUT ==="
+failed_n=$(wc -l < "$OUT/failed.txt" | tr -d ' ')
+attempted_n=$(wc -l < "$OUT/attempted.txt" | tr -d ' ')
+echo "=== sweep complete: $OUT ($attempted_n attempted, $failed_n never inspected) ==="
+[ "$failed_n" -eq 0 ] || echo "!! $failed_n route(s) failed; see $OUT/failed.txt"
