@@ -15,12 +15,16 @@
 #   - the app installed and already past login and any onboarding gate
 #
 # Environment:
-#   APP_SCHEME       required; the app's deep-link scheme, without "://"
+#   APP_SCHEME       required; the deep-link scheme of the app, without "://"
 #   ADB              default `adb`
 #   MAESTRO          default `maestro`
-#   ANDROID_SERIAL   default `emulator-5554`
+#   RUNNER           default `bun`; any TS runner works, e.g. RUNNER="npx tsx"
+#   ANDROID_SERIAL   default `emulator-5554`; every adb call is pinned to it
+#   BUNDLER_PORT     default 8081; re-reversed after an adb flush. Empty to skip
 #   SETTLE_SECONDS   default 7; raise for slow screens
 #   DENSITY          optional; px per dp, passed through to analyze.ts
+#   TIMEOUT          default `timeout`; use `gtimeout` on macOS coreutils
+#   MIN_TEXT_NODES   default 8; below this a capture is treated as mid-mount
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,8 +36,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ADB="${ADB:-adb}"
 MAESTRO="${MAESTRO:-maestro}"
 DEVICE="${ANDROID_SERIAL:-emulator-5554}"
+RUNNER="${RUNNER:-bun}"
+BUNDLER_PORT="${BUNDLER_PORT:-8081}"
 SETTLE_SECONDS="${SETTLE_SECONDS:-7}"
 DENSITY="${DENSITY:-}"
+# Keep in step with MIN_TEXT_NODES in analyze.ts.
+MIN_TEXT_NODES="${MIN_TEXT_NODES:-8}"
+
+# Fail on a missing tool now, with its name, rather than 40 routes into a run
+# with every capture empty. `timeout` is GNU coreutils and is absent on a stock
+# macOS; install coreutils (it arrives as `gtimeout`, so set TIMEOUT=gtimeout).
+TIMEOUT="${TIMEOUT:-timeout}"
+missing=0
+for tool in "$ADB" "$MAESTRO" "$TIMEOUT"; do
+  command -v "${tool%% *}" >/dev/null 2>&1 || { echo "missing required tool: ${tool%% *}" >&2; missing=1; }
+done
+command -v "${RUNNER%% *}" >/dev/null 2>&1 || { echo "missing TS runner: ${RUNNER%% *} (override with RUNNER=)" >&2; missing=1; }
+[ "$missing" -eq 0 ] || exit 127
 
 LIST="${1:?usage: sweep.sh <route-list> <outdir>}"
 OUT="${2:?usage: sweep.sh <route-list> <outdir>}"
@@ -61,29 +80,38 @@ textcount() {
 # server clears it. This recurs mid-sweep, so recover rather than fail the route.
 flush_adb() {
   echo "    adb registry stale, flushing"
-  timeout 20 "$ADB" kill-server >/dev/null 2>&1
+  "$TIMEOUT" 20 "$ADB" kill-server >/dev/null 2>&1
   sleep 2
   nohup "$ADB" nodaemon server >/dev/null 2>&1 &
   for _ in $(seq 1 20); do
-    [ "$(timeout 10 "$ADB" devices 2>/dev/null | grep -c 'device$')" -ge 1 ] && break
+    [ "$("$TIMEOUT" 10 "$ADB" devices 2>/dev/null | grep -c 'device$')" -ge 1 ] && break
     sleep 3
   done
+  # kill-server drops every reverse tunnel with it. A dev-client build that
+  # loses the bundler keeps rendering, so without this the rest of the sweep
+  # captures error screens and reports them as findings.
+  if [ -n "$BUNDLER_PORT" ]; then
+    "$TIMEOUT" 20 "$ADB" -s "$DEVICE" reverse "tcp:$BUNDLER_PORT" "tcp:$BUNDLER_PORT" >/dev/null 2>&1
+  fi
 }
 
 # fd 3, because adb and maestro inside the loop body consume stdin and would
 # otherwise swallow the rest of the route list after the first iteration.
 while IFS=$'\t' read -r path label <&3; do
   [ -z "${path:-}" ] && continue
+  # Labels become filenames. A slash would write into a directory that does not
+  # exist and drop the capture silently, so normalise rather than trust input.
+  label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')"
   echo "--- $label ($path)"
 
-  timeout 30 "$ADB" shell am start -a android.intent.action.VIEW \
+  "$TIMEOUT" 30 "$ADB" -s "$DEVICE" shell am start -a android.intent.action.VIEW \
     -d "${APP_SCHEME}://${path}" >/dev/null 2>&1
   sleep "$SETTLE_SECONDS"
 
   ok=0
   for _attempt in 1 2 3; do
     err="$OUT/hier/$label.err"
-    if timeout 90 "$MAESTRO" hierarchy > "$OUT/hier/$label.raw" 2>"$err" \
+    if "$TIMEOUT" 90 "$MAESTRO" hierarchy > "$OUT/hier/$label.raw" 2>"$err" \
        && [ -s "$OUT/hier/$label.raw" ]; then
       # Maestro prints a "Running on <device>" banner to stdout on some runs.
       # It lands ahead of the JSON and silently corrupts the capture, which then
@@ -93,13 +121,13 @@ while IFS=$'\t' read -r path label <&3; do
       n=$(textcount "$OUT/hier/$label.json")
       # A dump taken mid-mount has the app's nodes but no text, which looks
       # exactly like a screen with no labels. Settle and retry.
-      if [ "${n:-0}" -ge 8 ]; then ok=1; rm -f "$err"; break; fi
+      if [ "${n:-0}" -ge "$MIN_TEXT_NODES" ]; then ok=1; rm -f "$err"; break; fi
       sleep 6
       continue
     fi
     if grep -q "No running emulator found" "$err" 2>/dev/null; then
       flush_adb
-      timeout 30 "$ADB" shell am start -a android.intent.action.VIEW \
+      "$TIMEOUT" 30 "$ADB" -s "$DEVICE" shell am start -a android.intent.action.VIEW \
         -d "${APP_SCHEME}://${path}" >/dev/null 2>&1
       sleep 8
     else
@@ -115,14 +143,14 @@ while IFS=$'\t' read -r path label <&3; do
     continue
   fi
 
-  timeout 30 "$ADB" shell screencap -p /sdcard/_a11y.png >/dev/null 2>&1
-  timeout 30 "$ADB" pull /sdcard/_a11y.png "$OUT/shot/$label.png" >/dev/null 2>&1
+  "$TIMEOUT" 30 "$ADB" -s "$DEVICE" shell screencap -p /sdcard/_a11y.png >/dev/null 2>&1
+  "$TIMEOUT" 30 "$ADB" -s "$DEVICE" pull /sdcard/_a11y.png "$OUT/shot/$label.png" >/dev/null 2>&1
 
   # shellcheck disable=SC2086 # DENSITY is an optional bare argument
-  bun "$SCRIPT_DIR/analyze.ts" "$OUT/hier/$label.json" "$label" $DENSITY \
+  $RUNNER "$SCRIPT_DIR/analyze.ts" "$OUT/hier/$label.json" "$label" $DENSITY \
     > "$OUT/json/$label.json"
 
-  bun -e '
+  $RUNNER -e '
   const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   console.log(`    nodes=${r.appNodes} clickable=${r.clickables} text=${r.textNodes} errors=${r.errors} warnings=${r.warnings}`);
   ' "$OUT/json/$label.json"

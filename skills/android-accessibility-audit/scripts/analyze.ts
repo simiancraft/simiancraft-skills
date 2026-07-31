@@ -1,6 +1,10 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S npx tsx
 /**
  * Analyze one `maestro hierarchy` dump for Android accessibility defects.
+ *
+ * Runtime-agnostic on purpose: plain node:fs and no runtime-specific globals,
+ * so `bun`, `npx tsx`, `pnpm dlx tsx`, or a compiled build all work. Nothing
+ * here is Bun-only.
  *
  * Deliberately NOT axe-core. axe evaluates a DOM; this is a native view
  * hierarchy where the equivalent failures wear different shapes and several
@@ -20,8 +24,16 @@ const DEFAULT_DENSITY = 2.75;
 const MIN_TARGET_DP = 48;
 /** Below this a target is not merely small, it is unhittable. */
 const SEVERE_TARGET_DP = 32;
-/** A tree with fewer text nodes than this is usually captured mid-mount. */
-const MIN_TEXT_NODES = 8;
+/**
+ * A tree with fewer text nodes than this is usually captured mid-mount.
+ * Exported so the sweep applies the same floor rather than duplicating it;
+ * two copies of this number silently drift apart.
+ */
+export const MIN_TEXT_NODES = 8;
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Status bar and system UI, which is not the app under test. */
 const SYSTEM_NOISE =
@@ -251,13 +263,18 @@ export function analyze(root: RawNode, label: string, density = DEFAULT_DENSITY)
   };
 }
 
-if (import.meta.main) {
+// `import.meta.main` is not portable across runtimes; comparing the resolved
+// entry path is.
+const invokedDirectly =
+  process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (invokedDirectly) {
   const [file, label, density] = process.argv.slice(2);
   if (!file || !label) {
-    console.error('usage: bun analyze.ts <hierarchy.json> <label> [density]');
+    console.error('usage: analyze.ts <hierarchy.json> <label> [density]');
     process.exit(1);
   }
-  const raw = JSON.parse(await Bun.file(file).text()) as RawNode;
+  const raw = JSON.parse(readFileSync(file, 'utf8')) as RawNode;
   const report = analyze(raw, label, density ? Number(density) : undefined);
   console.log(JSON.stringify(report, null, 2));
 }

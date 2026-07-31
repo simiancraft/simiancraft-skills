@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S npx tsx
 /**
  * Aggregate a sweep's per-route reports into a summary.
  *
@@ -11,7 +11,7 @@ import type { Report } from './analyze';
 
 const dir = process.argv[2];
 if (!dir) {
-  console.error('usage: bun report.ts <sweep-outdir>/json');
+  console.error('usage: report.ts <sweep-outdir>/json');
   process.exit(1);
 }
 

@@ -40,6 +40,28 @@ because a screen "looks fine". It is done when the tree a screen reader reads ha
 a name for every control, targets big enough to hit, and no control hidden inside
 another. Those are measurable. Measure them.
 
+## Dependencies
+
+Nothing to install per project; these are host tools. The sweep preflights all of
+them and exits 127 naming whichever is missing, rather than running to completion
+with empty captures.
+
+| Tool | Why | Override |
+|---|---|---|
+| `adb` (platform-tools) | deep-links routes, screenshots, device registry | `ADB` |
+| Maestro 2.x | dumps the accessibility tree (`maestro hierarchy`) | `MAESTRO` |
+| JDK 17 | Maestro refuses to start on older JDKs | see gotchas |
+| a TypeScript runner | runs `analyze.ts` and `report.ts` | `RUNNER`, default `bun` |
+| GNU `timeout` (coreutils) | bounds every hung adb or Maestro call | `TIMEOUT` |
+
+The two TypeScript files use only `node:fs`, `node:path`, and `node:url`, with no
+runtime-specific globals, so `bun`, `npx tsx`, `pnpm dlx tsx`, or a compiled build
+all work: `RUNNER="npx tsx" ./scripts/sweep.sh ...`. There are no npm
+dependencies and no package.json; the scripts are standalone.
+
+On macOS, `timeout` arrives from Homebrew coreutils as `gtimeout`, so set
+`TIMEOUT=gtimeout`.
+
 ## Prerequisites
 
 This skill provisions none of these. Get them from `android-emulator-harness`:
@@ -86,6 +108,11 @@ for (const r of ROUTES.filter((r) => r.navigable)) console.log(strip(r.path) + "
 APP_SCHEME=myapp ./scripts/sweep.sh /tmp/routes.txt /tmp/a11y-out
 ```
 
+Every `adb` call is pinned to `ANDROID_SERIAL` (default `emulator-5554`). Set it
+when more than one device is attached, or adb will refuse with "more than one
+device/emulator". Set `BUNDLER_PORT` if your bundler is not on 8081, or
+`BUNDLER_PORT=` to skip the reverse entirely for a standalone build.
+
 Per route: a hierarchy dump, a screenshot, and a JSON report. On a 440dpi AVD,
 budget roughly 15 to 20 seconds per route.
 
@@ -100,6 +127,8 @@ DENSITY=2.75 APP_SCHEME=myapp ./scripts/sweep.sh /tmp/routes.txt /tmp/a11y-out
 
 ```bash
 bun ./scripts/report.ts /tmp/a11y-out/json
+# or with any other runner:
+npx tsx ./scripts/report.ts /tmp/a11y-out/json
 ```
 
 Reports totals, findings by rule, worst routes, unreadable reports, and suspect
