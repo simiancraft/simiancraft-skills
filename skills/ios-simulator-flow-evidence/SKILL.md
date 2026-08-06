@@ -16,8 +16,8 @@ sources:
 
 # iOS Simulator Flow Evidence (extraction, not publishing)
 
-Owns getting artifacts OUT of the simulator. A separate **github-proof-presentation**
-skill (external) consumes them; the seam is `references/artifact-contract.md`. This skill
+Owns getting artifacts OUT of the simulator. The separate **prove-work-on-github**
+skill consumes them; the seam is `references/artifact-contract.md`. This skill
 produces the bundle; it does not publish it.
 
 ## The three artifact kinds
@@ -38,7 +38,7 @@ never matter (see **ios-simulator** `references/capture.md`); never resize or fu
 ## The contract
 
 Everything this skill emits conforms to `references/artifact-contract.md`: stable names,
-known formats (PNG, MP4 or MOV), and the manifest shape. The external presentation skill
+known formats (PNG, MP4 or MOV), and the manifest shape. The consumer prove-work-on-github
 relies on that contract; do not break it without updating the presentation side.
 
 ## Honest can't-do list (simulator limits)
@@ -68,5 +68,5 @@ evidence covers.
 
 ## Out of scope
 
-Publishing or presenting artifacts -> external **github-proof-presentation**. Driving the
+Publishing or presenting artifacts -> the separate **prove-work-on-github** skill. Driving the
 flow itself -> **ios-simulator** and **expo-ios-simulator**.
