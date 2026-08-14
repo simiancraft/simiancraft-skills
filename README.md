@@ -60,6 +60,7 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 - **[`android-emulator-harness`](skills/android-emulator-harness/SKILL.md)**: the Android analog of Playwright for web. Boots an AVD headless under KVM on Linux/WSL, installs an APK, drives the UI with Maestro, and gates on logcat plus screenshots that come back for inspection.
 - **[`android-emulator-mask-testing`](skills/android-emulator-mask-testing/SKILL.md)**: gets a real person in front of the emulator camera so MediaPipe / ML Kit selfie segmentation produces an actual mask, then verifies background replacement, blur, and shader effects. Ships a pre-framed subject fixture.
+- **[`android-accessibility-audit`](skills/android-accessibility-audit/SKILL.md)**: audits the real accessibility tree route by route and returns counted findings: unnamed controls, touch targets under Material's 48dp, nested touchables that steal focus from the control inside them, and inputs announcing their placeholder instead of their label. Catches what static linting structurally cannot, and refuses to check what the tree cannot report.
 
 #### iOS
 
