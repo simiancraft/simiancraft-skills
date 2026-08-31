@@ -45,6 +45,7 @@ knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and the rest)
 
 | Need | Read |
 |------|------|
+| Run one and watch it: identifying the driver, reading the log, what is not a bug, what to check afterwards, landing a parked pull request by hand | `references/operating.md` |
 | Adopt the loop in a repository: the config template, the two fields that actually bite, preconditions, first-run order, stopping a run | `references/adopting.md` |
 | How and why the loop works: the shape, review pinning, staleness via import closure, the merge boundary, crash recovery, known gaps | `references/architecture.md` |
 
