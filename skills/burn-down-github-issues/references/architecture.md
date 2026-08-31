@@ -60,8 +60,8 @@ worker follows its lifecycle to size, acquire, store, and render proof, and the 
 with the vision and reasoning modes its `references/judgement.md` defines. The pull master's
 staleness rule implements that skill's `references/freshness-and-reproof.md` directly; decay is a
 function of distance from the base and of how much of the incoming change intersects the proof's
-covered paths, and this loop's import-closure walk is a working answer to the covered-paths
-intersection that reference still marks as a TODO, so it is a candidate contribution to it.
+covered paths, and that reference's covered-paths method is this loop's import-closure walk,
+written up there from this implementation.
 
 Install it where each engine can read it. For Claude, the simiancraft-skills plugin carries both
 skills. For an engine with no skill loader, the prompt's "load the skill" instruction has to
@@ -255,13 +255,14 @@ against the issue and nothing was judging the issue against the conventions.
 
 ## Known gaps
 
-[`references/judgement.md`](../../prove-work-on-github/references/judgement.md) in the sibling
-`prove-work-on-github` skill marks its adequacy-versus-confidence scorecard as not yet written. The bar the reviewer applies is
-therefore stated inline in `prompts/review.md` rather than inherited from the skill, and says so.
-When that section lands upstream, the reviewer prompt should defer to it instead. Two things worth
-carrying up: the sharpest rejection this loop has produced turned on whether the proof exercised
-the command CI actually runs, which the skill does not currently ask for; and the import-closure
-walk answers the covered-paths TODO in `references/freshness-and-reproof.md`.
+The adequacy-versus-confidence scorecard now lives where it belongs, in the sibling skill's
+[`references/judgement.md`](../../prove-work-on-github/references/judgement.md), and
+`prompts/review.md` defers to it rather than stating it inline. The scorecard was distilled from
+this loop's field rejections, so the two carry-ups happened: the deciding-command coverage check
+and the remote-resolvable-SHA check are judgement rows now, and the import-closure walk is written
+up as the covered-paths method in `references/freshness-and-reproof.md`. The abilities sit in the
+right skills: proof judgement in the proof skill, and only what is loop-shaped (rounds, budgets,
+the verdict file contract, the loop's own verification list) in this one.
 
 The pull master runs inside the loop process rather than as its own, so merging happens only while
 a run is alive. A run that dies after opening pull requests no longer strands them outright: the

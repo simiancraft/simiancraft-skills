@@ -2,7 +2,7 @@
 
 > Claude Code skills for the full arc of a change: farm to table, with receipts.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-15-4c1) ![Agents](https://img.shields.io/badge/agents-3-4c1)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-17-4c1) ![Agents](https://img.shields.io/badge/agents-4-4c1)
 
 Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Most skill collections are grab bags. This one has a spine: it carries a change through its whole life. Plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
 
@@ -31,6 +31,7 @@ Each stage of a change has a home here, and each stage ends in an observable gat
 | **Extract evidence** | artifacts a reviewer can consume: a contract-shaped bundle with a manifest, or a GIF embedded where the claim is made | [`ios-simulator-flow-evidence`](skills/ios-simulator-flow-evidence/SKILL.md), [`playwright-gif-capture`](skills/playwright-gif-capture/SKILL.md) |
 | **Shrink** | kept only if smaller AND still valid; never regress | [`asset-optimization`](skills/asset-optimization/SKILL.md) |
 | **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](skills/prove-work-on-github/SKILL.md) |
+| **Run the whole arc unattended** | issues appraised, fixed, proven, judged by a second engine, and merged one branch at a time | [`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md) |
 
 The seams are contracts with names, not habits. The evidence skill emits artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
 
@@ -81,10 +82,15 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 - **[`prove-work-on-github`](skills/prove-work-on-github/SKILL.md)**: proves that work claimed on a pull request or issue actually landed and is sound, with verifiable evidence a reader can independently re-check. Sizes the proof a change owes, names what must be proven, supplies the receipts, stores them durably in an evidence branch rendered inline on the PR, and judges whether they are enough to merge.
 
+### Burn down
+
+- **[`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md)**: runs the whole arc unattended over an issue backlog. Appraises and sizes recent issues, closes stale ones with re-checkable receipts, fixes small ones in parallel git worktrees, proves each fix per `prove-work-on-github` on a draft PR, has an isolated second-engine reviewer judge it against the proof skill's rubric, and merges one branch at a time with import-closure staleness checks. The loop ships with the skill; a repository carries only a config file, and the loop refuses to start without it.
+
 ### Agents
 
 - **[`android-emulator-tester`](agents/android-emulator-tester.md)**: automated Android UI/integration testing specialist; drives a real app on a headless emulator and gates on what it observes. Owns the boot, install, drive, and assert loop.
 - **[`android-kotlin-expert`](agents/android-kotlin-expert.md)**: Android native specialist for Kotlin, Java, Gradle, the Jetpack libraries, OpenGL ES and camera pipelines, and React Native / Expo Modules native bridging. Two modes: implement or review.
+- **[`review-security-expert`](agents/review-security-expert.md)**: security review lens covering input handling, ReDoS, prototype pollution, supply chain, publish hygiene, and GitHub Actions workflow exploitation.
 - **[`review-software-architect`](agents/review-software-architect.md)**: senior architect review lens for any codebase. Judges a project against its own organizing principle first and the canon (SOLID, DDD, layering, paradigm coherence) second, and grades on request with calibrated letter grades.
 
 ## Every skill names its ceiling

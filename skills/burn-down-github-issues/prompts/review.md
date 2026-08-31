@@ -65,23 +65,13 @@ at the width and theme claimed), **reasoning** for correctness claims (does the 
 over-the-wire capture, database shape, or log actually demonstrate the call was made correctly).
 Use whichever the claim calls for.
 
-Score two things separately, and do not let one stand in for the other. The scorecard below is
-stated inline because that skill's `references/judgement.md` marks its adequacy-versus-confidence
-core as not yet written; when that section lands there, defer to it instead.
-
-**Adequacy**: does the evidence cover what this change owes, at the depth its size demands? Check:
-
-- Every load-bearing claim in the body has a receipt. Narrative with no receipt fails.
-- Each receipt is pinned to an immutable referent: a full commit SHA, not a branch ref.
-- The proof is fresh: captured at the pull request's current head SHA. Proof captured before the
-  last push gates an artifact that no longer exists. Compare the SHAs.
-- You can re-check it yourself. If verifying requires the author's machine or the author's word,
-  treat it as unproven and ask for reacquisition rather than approving on trust.
-- No receipt leaks a secret, a token, or a customer's details.
-
-**Confidence**: how sure is the merge decision, given anything you could not cover? A blind spot
-on a decorative detail is not the same as a blind spot on whether a mutation writes twice. Name the
-blind spot rather than discounting it.
+Score two things separately, and do not let one stand in for the other: **adequacy** and
+**confidence**, exactly as that skill's `references/judgement.md` defines them. Apply its
+scorecard to every load-bearing claim (receipted, pinned, resolvable on the remote, fresh at the
+head under judgement, re-checkable by a stranger, leaking nothing), its two change-level checks
+(the command CI runs is covered; nothing load-bearing rests on narrative), its blind-spot register
+for confidence, and its action map with the tie-breakers in order. The criteria are not restated
+here; the skill is the rubric.
 
 Then verify the change itself, independently of its proof:
 
