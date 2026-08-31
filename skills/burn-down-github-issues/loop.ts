@@ -385,6 +385,37 @@ const children = new Set<{ pid: number; kill: () => void }>();
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
+/**
+ * Extra attempts an agent gets when the upstream refused for a reason that is not about the work.
+ * A model at capacity is a different fact from a model that tried and failed: the first is worth
+ * asking again, the second is not, and spending the lane on the first loses an issue for the run.
+ * Bounded at one so a sustained outage costs each issue one wasted attempt, not an unbounded loop.
+ */
+const AGENT_RETRIES = 1;
+const RETRY_BACKOFF_MS = 60 * 1000;
+
+/**
+ * Refusals that mean "ask again later" rather than "this work failed". Matched against the tail of
+ * the agent's own log, and only ever consulted after a non-zero exit, so a phrase appearing in an
+ * agent's prose costs at most one extra attempt on a run that had already failed.
+ */
+const RETRYABLE_UPSTREAM = [
+  'at capacity',
+  'overloaded',
+  'rate limit',
+  'service unavailable',
+  'try a different model',
+];
+
+function retryableFailure(logPath: string): string | null {
+  try {
+    const tail = readFileSync(logPath, 'utf8').slice(-8000).toLowerCase();
+    return RETRYABLE_UPSTREAM.find((phrase) => tail.includes(phrase)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Agents run under setsid where available, so a kill reaches their whole process group. */
 const SETSID = Bun.which('setsid');
 
@@ -807,7 +838,11 @@ function reconcile(): void {
     const dir = resolve(line.slice('worktree '.length).trim());
     if (!dir.startsWith(`${managed}/`)) continue;
 
-    const issue = /issue-(\d+)$/.exec(dir)?.[1];
+    // Agents make scratch siblings next to their own worktree (`issue-3293-evidence`) to capture a
+    // before state or write to the evidence branch. A pattern anchored on the number alone could
+    // not see them, so a crashed lane left them behind permanently: nothing else walks this root.
+    // They belong to the parent issue, so the claimed and dirty rules below judge them by it.
+    const issue = /issue-(\d+)(?:-[^/]+)?$/.exec(dir)?.[1];
     if (!issue) continue;
 
     // A pull request means the work reached GitHub and is not ours to throw away; selection already
@@ -840,6 +875,34 @@ function reconcile(): void {
 // ---------------------------------------------------------------------------
 // Worktrees
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns a lane to what a fresh worker expects: detached at the base, no branch, no scratch.
+ *
+ * A worker that dies partway has usually already cut its branch and may have committed to it, so
+ * retrying in place would fail at `git switch -c` and cascade into a second, confusing failure.
+ * The discarded work is the work whose answer the driver already refuses to trust.
+ */
+function resetLane(issue: number, cwd: string): void {
+  try {
+    const branch = sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    sh(['git', 'fetch', REMOTE, BASE]);
+    sh(['git', 'checkout', '--detach', `${REMOTE}/${BASE}`], cwd);
+    sh(['git', 'reset', '--hard', `${REMOTE}/${BASE}`], cwd);
+    // Ignored files go too, so a half-written artifact cannot be read as this attempt's, but the
+    // installed dependencies stay: reinstalling them is minutes of nothing.
+    sh(['git', 'clean', '-fdx', '-e', 'node_modules'], cwd);
+    if (branch && branch !== 'HEAD') {
+      try {
+        sh(['git', 'branch', '-D', branch], cwd);
+      } catch {
+        // the branch was never created, or is already gone
+      }
+    }
+  } catch (error) {
+    log(`  #${issue}  could not reset the lane before retrying: ${error}`);
+  }
+}
 
 function worktreeFor(issue: number): string {
   const dir = resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue}`);
@@ -1166,7 +1229,34 @@ function agentCommand(seat: Seat, cwd: string, prompt: string): string[] {
 }
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
-async function runAgent(role: string, issue: number, cwd: string, seat: Seat, prompt: string) {
+/**
+ * Runs an agent, asking again when the upstream refused rather than the work failing.
+ *
+ * `onRetry` restores whatever state the next attempt needs; a worker passes a lane reset, while an
+ * appraiser and a reviewer need nothing because neither leaves state a rerun would trip over.
+ */
+async function runAgent(
+  role: string,
+  issue: number,
+  cwd: string,
+  seat: Seat,
+  prompt: string,
+  onRetry?: () => void,
+): Promise<{ logPath: string; exitCode: number }> {
+  for (let attempt = 0; ; attempt++) {
+    const run = await runAgentOnce(role, issue, cwd, seat, prompt);
+    if (run.exitCode === 0 || attempt >= AGENT_RETRIES) return run;
+
+    const reason = retryableFailure(run.logPath);
+    if (!reason) return run;
+
+    log(`  #${issue}  ${role} hit an upstream refusal ("${reason}"); retrying once in ${RETRY_BACKOFF_MS / 1000}s`);
+    onRetry?.();
+    await Bun.sleep(RETRY_BACKOFF_MS);
+  }
+}
+
+async function runAgentOnce(role: string, issue: number, cwd: string, seat: Seat, prompt: string) {
   mkdirSync(RUN_DIR, { recursive: true });
   const logPath = join(RUN_DIR, `${issue}-${role}-${Date.now()}.log`);
 
@@ -1370,7 +1460,16 @@ async function runWorker(issue: Issue, cwd: string, feedback?: ReviewResult): Pr
       : 'This is the first attempt at this issue.',
   });
 
-  const { logPath, exitCode } = await runAgent(feedback ? 'worker-revise' : 'worker', issue.number, cwd, SEATS.worker, prompt);
+  // A revision is the exception: its lane holds the branch and the pull request under review, so a
+  // reset would throw away work the reviewer already read. Only a first attempt may be reset.
+  const { logPath, exitCode } = await runAgent(
+    feedback ? 'worker-revise' : 'worker',
+    issue.number,
+    cwd,
+    SEATS.worker,
+    prompt,
+    feedback ? undefined : () => resetLane(issue.number, cwd),
+  );
   if (exitCode !== 0) {
     return {
       issue: issue.number,
@@ -1632,6 +1731,16 @@ function land(
     return 'park';
   }
 
+  // A failing or unfinished build never merges, whatever the review said. The reviewer watched
+  // checks too, but its answer ages: any catch-up since the verdict pushed a head whose CI run
+  // started fresh, and this is the last moment anything looks. Waiting here blocks the serial
+  // queue, which is honest; a merge may not outrun its own build.
+  const notGreen = await awaitGreenChecks(pr, say);
+  if (notGreen) {
+    say(`refusing to merge PR #${pr}: ${notGreen}`);
+    return 'park';
+  }
+
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
   mutate(`merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
@@ -1676,6 +1785,16 @@ async function handleIssue(issue: Issue): Promise<void> {
     await workIssue(issue, cwd, say);
   } finally {
     inFlight.delete(issue.number);
+
+    // Whatever the outcome, this lane is finished with the directory, so it goes here rather than
+    // at each of the eight exits that used to leak one. Nothing in-process reads it again, and
+    // `findStranded` resumes only a `fixed` verdict whose pull request is open at the same head on
+    // an unlabelled issue; every outcome that reaches this line (failed, parked, DLQed, budget
+    // exhausted, terminal verdict, merged) is one it already refuses. Removing the worktree also
+    // sweeps the `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else
+    // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
+    // so `reconcile` still owns that case on the next start.
+    if (!DRY_RUN) removeWorktree(issue.number);
   }
 }
 
