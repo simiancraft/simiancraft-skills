@@ -267,9 +267,11 @@ the verdict file contract, the loop's own verification list) in this one.
 The pull master runs inside the loop process rather than as its own, so merging happens only while
 a run is alive. A run that dies after opening pull requests no longer strands them outright: the
 next start resumes each stranded pull request from the worker verdict file its worktree still
-holds, before selecting anything new. What remains unrecoverable is the narrow crash window after
-the pull request opens and before the verdict file is written, which is reported rather than
-resumed. Extracting the pull master into its own process, with enough durable state on the PR to
+holds, before selecting anything new. Result-file clearing is role-specific precisely so that
+starting a reviewer does not destroy the verdict this resume depends on. What remains
+unrecoverable are the windows when no trusted verdict exists on disk: after the pull request
+opens and before the verdict file is written, and during a revision after the old verdict is
+cleared and before the new one lands. Both are reported rather than resumed. Extracting the pull master into its own process, with enough durable state on the PR to
 land without the lane's memory, is still the standing design gap.
 
 The import-closure walk follows outgoing imports from the diff's files only: it does not see

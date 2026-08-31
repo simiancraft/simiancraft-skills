@@ -220,9 +220,13 @@ type ProjectConfig = {
   pathAliases: Array<{ prefix: string; dir: string }>;
   /** Extensions and index files the closure walk will try, in order. */
   sourceExtensions: string[];
-  /** Paths whose change invalidates any proof in flight, whatever the pull request touched. */
+  /**
+   * Paths whose change invalidates any proof in flight, whatever the pull request touched.
+   * Prefix patterns, except that a pattern starting with '.' and carrying no '/' matches as a
+   * filename suffix ('.sql.ts' catches schema files wherever they live).
+   */
   alwaysInvalidates: string[];
-  /** Paths that mechanically classify a diff for the merge boundary. */
+  /** Paths that mechanically classify a diff for the merge boundary. Same pattern rules. */
   touchPaths: Record<'migration' | 'ci', string[]>;
   /** Sibling directory outside the repository root where worktrees and run logs live. */
   worktreeRoot: string;
@@ -283,7 +287,69 @@ const CONFIG: LoopKnobs & { project: ProjectConfig } = await (async () => {
     process.exit(1);
   }
   const { project, ...overrides } = loaded;
-  return { ...DEFAULTS, ...overrides, project };
+  const merged: LoopKnobs & { project: ProjectConfig } = {
+    ...DEFAULTS,
+    ...overrides,
+    // Seats deep-merge: a config overriding one seat must not silently drop the other two.
+    seats: { ...DEFAULTS.seats, ...(overrides.seats ?? {}) },
+    project,
+  };
+
+  // Presence is not validity. A shallow undefined check let null enums, empty strings, partial
+  // touchPaths, and an in-repository worktreeRoot through to fail later and stranger.
+  const faults: string[] = [];
+  for (const key of [
+    'name',
+    'repo',
+    'remote',
+    'baseBranch',
+    'evidenceBranch',
+    'checkCommand',
+    'installCommand',
+    'sizingScale',
+  ] as const) {
+    if (typeof project[key] !== 'string' || project[key].trim() === '') {
+      faults.push(`project.${key} must be a non-empty string`);
+    }
+  }
+  for (const key of ['portBase', 'portSpan'] as const) {
+    if (!Number.isInteger(project[key]) || project[key] <= 0) faults.push(`project.${key} must be a positive integer`);
+  }
+  for (const key of [
+    'ageDays',
+    'maxPoints',
+    'maxReviewRounds',
+    'limit',
+    'concurrency',
+    'appraiserConcurrency',
+    'appraiseLimit',
+  ] as const) {
+    if (!Number.isInteger(merged[key]) || merged[key] <= 0) faults.push(`${key} must be a positive integer`);
+  }
+  if (!['always', 'code-only', 'never'].includes(merged.autoMerge)) {
+    faults.push(`autoMerge must be 'always', 'code-only', or 'never'`);
+  }
+  for (const key of ['conventionDocs', 'sharedServices', 'sourceExtensions', 'alwaysInvalidates'] as const) {
+    if (!Array.isArray(project[key])) faults.push(`project.${key} must be an array`);
+  }
+  if (
+    !Array.isArray(project.pathAliases) ||
+    project.pathAliases.some((alias) => typeof alias?.prefix !== 'string' || typeof alias?.dir !== 'string')
+  ) {
+    faults.push('project.pathAliases must be an array of { prefix, dir }');
+  }
+  if (!Array.isArray(project.touchPaths?.migration) || !Array.isArray(project.touchPaths?.ci)) {
+    faults.push('project.touchPaths must carry migration and ci arrays; an absent one silently removes a merge boundary');
+  }
+  const worktreeRootAbs = typeof project.worktreeRoot === 'string' ? resolve(REPO_ROOT, project.worktreeRoot) : REPO_ROOT;
+  if (worktreeRootAbs === REPO_ROOT || worktreeRootAbs.startsWith(`${REPO_ROOT}/`)) {
+    faults.push('project.worktreeRoot must resolve outside the repository root');
+  }
+  if (faults.length > 0) {
+    console.error([`config ${CONFIG_FILE} is invalid:`, ...faults.map((fault) => `  - ${fault}`)].join('\n'));
+    process.exit(1);
+  }
+  return merged;
 })();
 
 const PROJECT = CONFIG.project;
@@ -437,9 +503,14 @@ const CONTENTION = [
 ];
 
 function sh(cmd: string[], cwd = REPO_ROOT, attempts = 4): string {
+  // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
+  // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is
+  // one that can comment on a client's tracker: lifeguides carries two remotes pointing at two
+  // different repositories, so this is not hypothetical.
+  const argv = cmd[0] === 'gh' && !cmd.includes('-R') ? [...cmd, '-R', PROJECT.repo] : cmd;
   let lastError = '';
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const proc = Bun.spawnSync(cmd, { cwd, stderr: 'pipe' });
+    const proc = Bun.spawnSync(argv, { cwd, stderr: 'pipe' });
     if (proc.exitCode === 0) return proc.stdout.toString().trim();
 
     lastError = proc.stderr.toString().trim();
@@ -520,17 +591,19 @@ function selectCandidates(): Issue[] {
   ]);
   const all: Issue[] = JSON.parse(raw);
 
+  const claimed = new Set(openPullRequestIssueRefs());
+
   // --issue overrides the age and size filters, never the safety ones: a skipped, parked, DLQed,
-  // or budget-exhausted issue stays out of reach even when named directly.
+  // budget-exhausted, or already-claimed issue stays out of reach even when named directly.
   if (ONLY_ISSUE) {
     return all
       .filter((i) => i.number === ONLY_ISSUE)
       .filter((issue) => !issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq'))
-      .filter((issue) => reviewCount(issue.labels) < CONFIG.maxReviewRounds);
+      .filter((issue) => reviewCount(issue.labels) < CONFIG.maxReviewRounds)
+      .filter((issue) => !claimed.has(issue.number));
   }
 
   const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
-  const claimed = new Set(openPullRequestIssueRefs());
 
   return all
     .filter((issue) => Date.parse(issue.createdAt) >= cutoff)
@@ -650,16 +723,50 @@ function sendToDlq(issue: number, rounds: number, reason: string): void {
     `Moved to the dead-letter queue after ${rounds} review rounds without a merge.\n\n${reason}\n\nRemove the \`loop/dlq\` label to put it back in the queue with a fresh review budget.`,
   ]);
   mutate(`send #${issue} to the DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/dlq']);
-  // The count label comes off, or the redrive is a lie: with `loop/reviews: N` still at the cap,
-  // removing `loop/dlq` would put the issue somewhere selection still refuses to look.
-  mutate(`clear loop/reviews: ${rounds} on #${issue}`, [
-    'gh',
-    'issue',
-    'edit',
-    String(issue),
-    '--remove-label',
-    `loop/reviews: ${rounds}`,
-  ]);
+  // Every count label comes off, or the redrive is a lie: with any `loop/reviews: N` surviving,
+  // removing `loop/dlq` would put the issue somewhere selection still refuses to look, or hand it
+  // back with a short budget. Read the labels live rather than trusting the caller's snapshot,
+  // since an earlier add-before-remove crash can have left lower counts behind.
+  const current = sh(['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name'])
+    .split('\n')
+    .filter((name) => /^loop\/reviews:/.test(name));
+  for (const label of current) {
+    mutate(`clear ${label} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
+  }
+}
+
+/**
+ * Repairs label states a crash can leave half-written, so every durable transition is
+ * re-runnable rather than a one-shot. Two known wrecks: an issue at the review cap that never
+ * received `loop/dlq` (its ejection half done, invisible to selection forever), and a DLQed issue
+ * still carrying `loop/reviews:*` counts (its redrive would not actually requeue it). Runs under
+ * the instance lock, before any lane starts.
+ */
+function repairDurableState(all: Issue[]): void {
+  for (const issue of all) {
+    const names = issue.labels.map((l) => l.name);
+    const counts = names.filter((name) => /^loop\/reviews:/.test(name));
+    const dlq = names.includes('loop/dlq');
+    const shelved = names.some((name) => CONFIG.skipLabels.includes(name));
+
+    if (dlq && counts.length > 0) {
+      for (const label of counts) {
+        mutate(`repair: clear ${label} on DLQed #${issue.number}`, [
+          'gh',
+          'issue',
+          'edit',
+          String(issue.number),
+          '--remove-label',
+          label,
+        ]);
+      }
+      continue;
+    }
+    if (!dlq && !shelved && reviewCount(issue.labels) >= CONFIG.maxReviewRounds) {
+      log(`repair: #${issue.number} sits at the review cap without loop/dlq; finishing the ejection`);
+      sendToDlq(issue.number, reviewCount(issue.labels), 'Completing an ejection an earlier run started and did not finish.');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -877,6 +984,16 @@ function updateFromBase(cwd: string): boolean {
  */
 const ALWAYS_INVALIDATES: readonly string[] = PROJECT.alwaysInvalidates;
 
+/**
+ * Path patterns for `alwaysInvalidates` and `touchPaths`: a pattern that starts with '.' and
+ * carries no '/' matches as a filename suffix ('.sql.ts' catches every Drizzle schema file
+ * wherever it lives); anything else matches as a prefix from the repository root, so
+ * '.github/workflows/' stays a prefix.
+ */
+function matchesPath(file: string, pattern: string): boolean {
+  return pattern.startsWith('.') && !pattern.includes('/') ? file.endsWith(pattern) : file.startsWith(pattern);
+}
+
 /** Beyond this the closure is not worth computing; treat the proof as stale and re-review. */
 const MAX_BASE_REFRESHES = 2;
 
@@ -954,7 +1071,7 @@ function staleAgainstBase(cwd: string, sinceSha: string): string[] {
   const incoming = lines(sh(['git', 'diff', '--name-only', `${sinceSha}...${REMOTE}/${BASE}`], cwd));
   if (incoming.length === 0) return [];
 
-  const global = incoming.filter((file) => ALWAYS_INVALIDATES.some((prefix) => file.startsWith(prefix)));
+  const global = incoming.filter((file) => ALWAYS_INVALIDATES.some((pattern) => matchesPath(file, pattern)));
   if (global.length > 0) return global;
 
   const mine = lines(sh(['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd));
@@ -1047,10 +1164,17 @@ async function runAgent(role: string, issue: number, cwd: string, seat: Seat, pr
   assertNotMainCheckout(cwd, role);
   log(`  running ${role} on #${issue} via ${seatLabel(seat)} (log: ${logPath})`);
 
-  // Clear the previous run's answers before starting. Otherwise an agent that crashes leaves the
-  // last one in place and the driver reads it as this run's: a re-review that dies would hand back
-  // the earlier "merge" and land a pull request nobody re-reviewed.
-  for (const stale of [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, LAST_MESSAGE_FILE]) {
+  // Clear the previous run's answer for THIS role before starting; a crashed agent must not hand
+  // back its predecessor's verdict. Role-specific on purpose: clearing everything meant starting a
+  // reviewer destroyed the worker verdict that findStranded resumes a crashed run from, so a crash
+  // during review or merging stranded the pull request the resume path exists to save.
+  const clearsByRole: Record<string, string[]> = {
+    appraiser: [APPRAISAL_FILE, LAST_MESSAGE_FILE],
+    worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
+    'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
+    reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
+  };
+  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, LAST_MESSAGE_FILE]) {
     rmSync(join(cwd, stale), { force: true });
   }
 
@@ -1288,8 +1412,8 @@ function computedTouches(cwd: string): Array<'migration' | 'ci'> {
     .split('\n')
     .filter(Boolean);
   const found: Array<'migration' | 'ci'> = [];
-  for (const [kind, prefixes] of Object.entries(PROJECT.touchPaths) as Array<['migration' | 'ci', string[]]>) {
-    if (files.some((file) => prefixes.some((prefix) => file.startsWith(prefix)))) found.push(kind);
+  for (const [kind, patterns] of Object.entries(PROJECT.touchPaths) as Array<['migration' | 'ci', string[]]>) {
+    if (files.some((file) => patterns.some((pattern) => matchesPath(file, pattern)))) found.push(kind);
   }
   return found;
 }
@@ -1337,7 +1461,9 @@ function pullRequestMatchesReview(pr: number, issue: number, cwd: string, review
 
   if (view.state !== 'OPEN') return `pull request is ${view.state}`;
   if (view.baseRefName !== BASE) return `targets ${view.baseRefName}, not ${BASE}`;
-  if (!view.headRefName.includes(String(issue))) return `branch ${view.headRefName} does not name issue ${issue}`;
+  if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(view.headRefName)) {
+    return `branch ${view.headRefName} does not name issue ${issue}`;
+  }
   if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
   if (view.headRefOid !== localHead) return 'remote head and worktree head disagree';
   if (sh(['git', 'status', '--porcelain'], cwd).length > 0) return 'worktree has uncommitted changes';
@@ -1728,13 +1854,31 @@ function findStranded(all: Issue[]): Array<{ issue: Issue; cwd: string; result: 
     const issue = all.find((candidate) => candidate.number === Number(num));
     if (!issue) continue; // closed or outside the window; reconcile owns the cleanup question
 
+    // The safety labels that gate selection gate resumption too: a parked, skipped, DLQed, or
+    // budget-exhausted issue belongs to a human even when a worktree still remembers it.
+    if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) continue;
+    if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) continue;
+
     const verdict = parseJsonFile<WorkerResult>(join(dir, VERDICT_FILE));
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
       log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
       continue;
     }
-    const state = sh(['gh', 'pr', 'view', String(verdict.pr), '--json', 'state', '--jq', '.state']);
-    if (state !== 'OPEN') continue;
+    // The verdict is trusted only as far as it can be corroborated: it must name this issue, and
+    // the worktree must sit at the pull request's remote head, or the resume would review a tree
+    // that is not what would merge.
+    if (Number(verdict.issue) !== issue.number) {
+      log(`#${num}  stranded verdict names issue ${verdict.issue}; leaving it for a human`);
+      continue;
+    }
+    const view: { state: string; headRefOid: string } = JSON.parse(
+      sh(['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
+    );
+    if (view.state !== 'OPEN') continue;
+    if (view.headRefOid !== sh(['git', 'rev-parse', 'HEAD'], dir)) {
+      log(`#${num}  stranded worktree head is not the pull request head; leaving it for a human`);
+      continue;
+    }
     found.push({ issue, cwd: dir, result: verdict });
   }
   return found;
@@ -1747,7 +1891,9 @@ async function main(): Promise<void> {
   // agent runs. A closure of one module (only the entry) means aliases resolve nothing, which is
   // the silent failure that degrades staleness to filename comparison.
   if (CLOSURE_PROBE) {
-    const closure = importClosure(REPO_ROOT, [CLOSURE_PROBE]);
+    // Scan the invoking checkout, not the main one: from a linked worktree the two can hold
+    // different branches, and the probe must inspect the tree the config under test describes.
+    const closure = importClosure(INVOKE_ROOT, [CLOSURE_PROBE]);
     for (const file of [...closure].sort()) console.log(file);
     log(`${closure.size} module(s) reachable from ${CLOSURE_PROBE}`);
     return;
@@ -1785,8 +1931,13 @@ async function main(): Promise<void> {
   if (!DRY_RUN) {
     reconcile();
 
+    // Half-written label transitions are repaired before anything reads them, so a crash mid-DLQ
+    // or mid-count-swap costs one repair pass rather than a permanently wedged issue.
+    repairDurableState(allIssues());
+
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
-    // it first also moves the base before fresh lanes cut their branches from it.
+    // it first also moves the base before fresh lanes cut their branches from it. Re-read the
+    // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
     const stranded = findStranded(allIssues());
     if (stranded.length > 0) {
       step(`Resuming ${stranded.length} stranded pull request(s) from an earlier run`);

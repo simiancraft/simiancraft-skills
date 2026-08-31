@@ -31,7 +31,9 @@ bought by breaking someone else's run.
 
 ## What to read
 
-1. `gh pr view {{PR}} --comments` and `gh pr diff {{PR}}`.
+1. `gh pr view {{PR}} --comments` and `gh pr diff {{PR}}`. Pass `-R {{REPO}}` on these and every
+   other `gh` command; the checkout can carry more than one remote, and gh's default is not
+   guaranteed.
 
 The pull request was opened as a draft and marked ready only when its author believed the work was
 complete, so CI ran on the finished branch rather than on each intermediate push. Do not approve on
@@ -73,12 +75,19 @@ head under judgement, re-checkable by a stranger, leaking nothing), its two chan
 for confidence, and its action map with the tie-breakers in order. The criteria are not restated
 here; the skill is the rubric.
 
+One boundary against that rubric: freshness, for you, means the proof was captured at the pull
+request's current head. Whether the base branch has since moved into the work's covered paths is
+the integration step's question, answered after your verdict by its own zero-cost path; do not
+return `gather-more` for base movement alone, which would spend the issue's review budget on
+upstream churn that is not a defect in the change.
+
 Then verify the change itself, independently of its proof:
 
 - Run `{{CHECK_COMMAND}}` and `{{INSTALL_COMMAND}}`. Do not take a claim of green on trust; a claim
   of green is exactly the kind of claim this gate exists to check.
 - The diff is the smallest change that resolves the issue. Opportunistic edits, drive-by renames,
-  and reformatting of untouched lines are grounds for `gather-more`.
+  and reformatting of untouched lines are out-of-scope work, which is grounds for `block`;
+  `gather-more` asks for evidence, never for scope.
 - **The issue is a claim about the code, not a description of it.** Before you reject a change for
   missing something the issue says exists, open the file and confirm it exists. Issues here are
   written from a reading of the code at some past moment, and a claim that several helpers "share

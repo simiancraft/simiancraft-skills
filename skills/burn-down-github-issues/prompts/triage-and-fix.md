@@ -32,6 +32,8 @@ repository and this same machine. Your worktree is yours; almost nothing else is
   only here. Never install, clean, or otherwise rewrite dependencies outside this worktree.
 - **Do not touch another issue's branch, worktree, or pull request**, even to fix something obvious
   in it.
+- **gh needs the repository named.** This checkout can carry more than one remote, and gh's
+  default is not guaranteed; pass `-R {{REPO}}` on every `gh` command you run.
 
 {{FEEDBACK}}
 
@@ -117,8 +119,10 @@ runs, and prove that.
 
 **Cite only SHAs that exist on the remote.** Capture receipts after your final push, never before,
 and verify every SHA you write down resolves on the remote rather than only in your local
-repository: `git cat-file -e <sha>^{commit}` for a repository commit, plus a fetch of the evidence
-branch for artifact links. An amended or rebased commit leaves you quoting a SHA that no longer
+repository: `git fetch {{REMOTE}} <branch>` then `git merge-base --is-ancestor <sha> {{REMOTE}}/<branch>`
+for a repository commit (`git cat-file -e` proves only that your own object store has it, which is
+exactly the false comfort this rule exists to remove), plus a fetch of the evidence branch for
+artifact links. An amended or rebased commit leaves you quoting a SHA that no longer
 exists while its first nine characters still look right, which is what happened once here and cost a
 full review round. A receipt pinned to a commit nobody else can resolve is not a receipt.
 
@@ -129,10 +133,10 @@ full review round. A receipt pinned to a commit nobody else can resolve is not a
 1. **Finish the work before you open anything.** Commit and push every change you intend to make,
    having run `{{CHECK_COMMAND}}` and `{{INSTALL_COMMAND}}` locally first. Do not open a pull request against a branch
    you are still going to iterate on.
-2. **Open it as a draft**: `gh pr create --draft --base {{BASE_BRANCH}}`.
+2. **Open it as a draft**: `gh pr create -R {{REPO}} --draft --base {{BASE_BRANCH}}`.
 3. **Attach the proof** to the draft.
 4. **Mark it ready only when you believe it is feature complete**: the fix is whole, the checks pass
-   locally, and the proof is attached. `gh pr ready <number>`. That flip is your statement that this
+   locally, and the proof is attached. `gh pr ready <number> -R {{REPO}}`. That flip is your statement that this
    is finished work, not a checkpoint.
 
 If you have to push again after opening, convert it back to a draft first (`gh pr ready --undo`),
@@ -166,8 +170,9 @@ On a revision, `pr` and `branch` are required again in full; the driver only kno
 request you name here, and a verdict without them reads as no pull request and parks the issue.
 
 `touches` is how the driver decides whether it may merge without a human. Use every value that
-applies: `code`, `ci`, `data` (any production or seeded record), `migration` (any Prisma schema
-change), `stored-string` (any user-visible text held in the database).
+applies: `code`, `ci`, `data` (any production or seeded record), `migration` (any database schema
+or migration change, whatever the ORM), `stored-string` (any user-visible text held in the
+database).
 
 Be accurate rather than generous in `reason`. A verdict the driver acts on is worth more than a
 verdict that flatters the run.
