@@ -364,6 +364,21 @@ const VERDICT_FILE = 'loop-verdict.json';
 const APPRAISAL_FILE = 'loop-appraisal.json';
 const REVIEW_FILE = 'loop-review.json';
 
+/**
+ * The driver's own scratch, written untracked into each worktree root. Every dirty-tree judgement
+ * must look through these: they exist in every worktree the moment an agent finishes, so a bare
+ * `git status --porcelain` would call every tree dirty and park every issue.
+ */
+const CONTROL_FILES = new Set([LAST_MESSAGE_FILE, VERDICT_FILE, APPRAISAL_FILE, REVIEW_FILE]);
+
+/** Porcelain status of a worktree, minus the loop's own control files. */
+function dirtyPaths(cwd: string): string[] {
+  return sh(['git', 'status', '--porcelain'], cwd)
+    .split('\n')
+    .filter(Boolean)
+    .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()));
+}
+
 /** Live agent processes, so a signal can take them down rather than orphaning them. */
 const children = new Set<{ pid: number; kill: () => void }>();
 
@@ -804,7 +819,7 @@ function reconcile(): void {
 
     const dirty = (() => {
       try {
-        return sh(['git', 'status', '--porcelain'], dir).length > 0;
+        return dirtyPaths(dir).length > 0;
       } catch {
         return false;
       }
@@ -831,7 +846,7 @@ function worktreeFor(issue: number): string {
   if (existsSync(dir)) {
     // Reconcile leaves a dirty no-PR worktree in place for inspection; handing it to a fresh
     // worker would make the new fix inherit another run's uncommitted state.
-    if (sh(['git', 'status', '--porcelain'], dir).length > 0) {
+    if (dirtyPaths(dir).length > 0) {
       throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
     }
     return dir;
@@ -1466,7 +1481,7 @@ function pullRequestMatchesReview(pr: number, issue: number, cwd: string, review
   }
   if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
   if (view.headRefOid !== localHead) return 'remote head and worktree head disagree';
-  if (sh(['git', 'status', '--porcelain'], cwd).length > 0) return 'worktree has uncommitted changes';
+  if (dirtyPaths(cwd).length > 0) return 'worktree has uncommitted changes';
   return null;
 }
 
@@ -1523,7 +1538,7 @@ async function review(
 
   // A dirty tree means checks run against files that are not in the pull request: a worker's
   // uncommitted edit could make the reviewer's re-run pass while the clean remote commit fails.
-  if (sh(['git', 'status', '--porcelain'], cwd).length > 0) {
+  if (dirtyPaths(cwd).length > 0) {
     say('worktree has uncommitted changes; a review here would judge code that is not in the pull request');
     return null;
   }
