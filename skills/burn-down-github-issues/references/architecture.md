@@ -67,9 +67,9 @@ Install it where each engine can read it. For Claude, the simiancraft-skills plu
 skills. For an engine with no skill loader, the prompt's "load the skill" instruction has to
 resolve to files on disk, so keep a checkout of the repo readable from the worktrees.
 
-Provenance: this loop was written for Ultrathin first, adopted by `lifeguides-application` second,
-and abstracted here once the shape held in both. The two histories are why the reasoning below
-cites concrete issue numbers; they are Ultrathin's.
+Provenance: this loop was written for one repository, adopted by a second, and abstracted here
+once the shape held in both. The two histories are why the reasoning below cites concrete issue
+numbers; they are the first adopter's.
 
 ## Boundaries
 
@@ -237,8 +237,8 @@ never the run its state.
 
 ## Sizing
 
-The scale is the [KANBAN-ESTIMATION-SCALE](https://github.com/simiancraft/Ultrathin/wiki/KANBAN-ESTIMATION-SCALE)
-wiki page, carried on issues by the `size: N` labels. An issue already sized above the band is left
+The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
+carried on issues by the `size: N` labels. An issue already sized above the band is left
 alone; an unsized issue is sized by the appraiser, which runs as its own cheap population ahead of
 the workers.
 

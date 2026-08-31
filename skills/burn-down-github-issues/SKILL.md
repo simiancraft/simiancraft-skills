@@ -25,6 +25,28 @@ Everything true of a repository (remotes, branches, commands, path aliases, inva
 lives in `burn-down-github-issues.config.ts` at that repository's root, and the loop refuses to
 start without one, naming the missing file and the fields it lacks.
 
+## Standards the loop enforces
+
+These travel with the skill because an adopter cannot be assumed to have house rules of its own.
+The first three are enforced by the driver, so no prompt drift can lose them; the rest are written
+into the prompts and checked by the reviewer.
+
+- **A failing or unfinished build never merges.** The pull master waits on the pull request's
+  checks at the last moment before merging and parks instead when they fail or never finish. A
+  green local gate is not a substitute; the checks the pipeline runs are the ones that count.
+- **Nothing lands except through a reviewed pull request.** The loop never pushes to the base
+  branch; the gated merge is the only write it makes there.
+- **Pushed history is merged forward, never rebased.** Catch-ups merge the base into the branch,
+  so nothing another reader has fetched is rewritten.
+- **No agent or bot is an author or co-author.** Authorship is for humans; the reviewer hard-blocks
+  on it.
+- **Claims carry receipts.** Proof follows `prove-work-on-github`: pinned, resolvable,
+  re-checkable by a stranger. Narrative alone never carries a load-bearing claim.
+- **Commits and pull requests describe the code, not the process.** Conventional Commits,
+  imperative, facts only; any mention of agents, prompts, or local tooling is a block.
+- **Shared services are never reset or reseeded** to reproduce a claim, and servers bind per-issue
+  ports; other lanes are reading that state as their own evidence.
+
 ## Run it
 
 From inside the target repository (any directory of it, including a worktree):
@@ -70,5 +92,6 @@ holds. The merge boundary computes `migration` and `ci` from the diff's paths, b
 `data` and `stored-string` are runtime effects a path cannot reveal; for those it holds two
 independent self-reports and parks rather than trusts. The reviewer runs as the same GitHub
 account as the worker, so its independence is model-level, not identity-level. And two paths have
-executed in no production run yet: closure-based staleness firing in anger, and dead-letter-queue
+executed in no production run yet: staleness detected by the import-closure walk itself (the
+global-invalidator path has fired in anger; the graph walk has not), and dead-letter-queue
 ejection. Both are written; neither is proven.
