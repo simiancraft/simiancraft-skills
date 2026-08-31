@@ -50,12 +50,42 @@ Because proof is presented atomically across comments (`render.md`), a stale art
 invalidated and reacquired on its own, leaving the rest of the proof standing. Smaller atomic
 units mean a smaller reproof surface area.
 
+## Computing the covered-paths intersection
+
+Covered paths are the **import closure** of the files the change touches, not the touched files
+themselves. A test receipt or a rendered frame depends on the whole module graph beneath the
+component; a base change to a shared chassis module or a generated type invalidates the proof
+while touching nothing the diff touched, and comparing filenames alone calls that fresh.
+
+The working method, field-run by the merge gate in the `burn-down-github-issues` skill:
+
+1. **Incoming**: `git diff --name-only <captureSha>...<remote>/<base>`, the base's movement since
+   capture. Empty means fresh, however long ago the capture was; time is a backstop, not a signal.
+2. **Global invalidators short-circuit.** Some paths sit outside any import graph and everything
+   depends on them: the lockfile, the package manifest, type and lint config, build config, the
+   schema and its migrations, generated output, CI workflows. If the incoming set touches one,
+   the proof is stale, full stop.
+3. **Closure**: from the change's own files, follow `import`/`from`/`require` (including dynamic
+   imports with literal specifiers) transitively, resolving the project's path aliases, until the
+   graph is exhausted or a size cap is hit. At the cap, stop computing and call the proof stale;
+   the conservative answer is the cheap one.
+4. **Intersect** incoming against the closure. A non-empty intersection means reacquire; an empty
+   one means the movement did not reach what this proof covers.
+
+Honest limits: a static walk does not see reverse consumers, string-built import paths, CSS and
+asset coupling outside explicit imports, or coupling through a database. The global-invalidator
+list is the blunt instrument covering what the walk cannot; a repository with heavy non-import
+coupling should widen that list rather than trust the closure. And the intersection gates
+freshness only; it never substitutes for CI on the merged result.
+
+There is no useful numeric threshold for "far behind." Distance matters only through the
+intersection: a branch hundreds of commits back whose closure the base never entered is fresh,
+and a branch one commit back whose shared chassis moved is stale.
+
 ## If pruning is ever forced
 
 Should storage pressure ever force a rolling window, **prune by validity-staleness, not age**:
 the best cull candidate is proof so far back it no longer reflects the current application.
-
-> TODO: how to compute the covered-paths intersection from a diff; thresholds for "far behind."
 
 ## Consumes / produces
 
