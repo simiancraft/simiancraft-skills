@@ -385,8 +385,12 @@ const children = new Set<{ pid: number; kill: () => void }>();
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
-/** How long the merge gate waits for a pull request's checks before parking instead of merging. */
-const CHECKS_TIMEOUT_MS = 15 * 60 * 1000;
+/**
+ * How long the merge gate waits for a pull request's checks before parking instead of merging.
+ * Size this to the repository's slowest required check; a mobile CI with EAS-style builds can
+ * legitimately take over 30 minutes on a fresh head.
+ */
+const CHECKS_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
  * Extra attempts an agent gets when the upstream refused for a reason that is not about the work.
