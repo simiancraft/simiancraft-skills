@@ -1617,8 +1617,10 @@ async function awaitGreenChecks(pr: number, say: (message: string) => void): Pro
   type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
   const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
   const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
+  // GitHub renders an unfinished CheckRun with conclusion "" (empty string, not null), so a
+  // nullish coalesce would read "" as a verdict and fail-close a merely-running check.
   const classify = (c: CheckNode): 'green' | 'pending' | 'failed' => {
-    const verdict = c.conclusion ?? c.state ?? c.status ?? null;
+    const verdict = c.conclusion || c.state || c.status || null;
     if (verdict === null || RUNNING.has(verdict)) return 'pending';
     return GREEN.has(verdict) ? 'green' : 'failed';
   };
@@ -1631,7 +1633,7 @@ async function awaitGreenChecks(pr: number, say: (message: string) => void): Pro
 
     const failed = rollup.filter((c) => classify(c) === 'failed');
     if (failed.length > 0) {
-      return `checks failed: ${failed.map((c) => `${nameOf(c)} (${c.conclusion ?? c.state})`).join(', ')}`;
+      return `checks failed: ${failed.map((c) => `${nameOf(c)} (${c.conclusion || c.state || c.status})`).join(', ')}`;
     }
 
     const pending = rollup.filter((c) => classify(c) === 'pending');
