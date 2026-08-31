@@ -57,7 +57,8 @@ themselves. A test receipt or a rendered frame depends on the whole module graph
 component; a base change to a shared chassis module or a generated type invalidates the proof
 while touching nothing the diff touched, and comparing filenames alone calls that fresh.
 
-The working method, field-run by the merge gate in the `burn-down-github-issues` skill:
+The working method, run in the field by the merge gate in the `burn-down-github-issues` skill in
+its whole-change form (see the honest limits below for what "whole-change" concedes):
 
 1. **Incoming**: `git diff --name-only <captureSha>...<remote>/<base>`, the base's movement since
    capture. Empty means fresh, however long ago the capture was; time is a backstop, not a signal.
@@ -77,6 +78,12 @@ asset coupling outside explicit imports, or coupling through a database. The glo
 list is the blunt instrument covering what the walk cannot; a repository with heavy non-import
 coupling should widen that list rather than trust the closure. And the intersection gates
 freshness only; it never substitutes for CI on the merged result.
+
+The burn-down gate runs the conservative whole-change variant: one closure computed from the
+entire diff, and a stale answer reproves the whole pull request. The per-artifact refinement this
+file's partial-reproof section describes, intersecting each artifact's own covered paths so only
+the stale artifacts reacquire, is what the manifest's covered-paths field enables; it is designed,
+not yet field-run.
 
 There is no useful numeric threshold for "far behind." Distance matters only through the
 intersection: a branch hundreds of commits back whose closure the base never entered is fresh,

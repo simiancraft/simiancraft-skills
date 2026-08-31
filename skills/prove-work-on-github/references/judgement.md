@@ -100,11 +100,21 @@ Tie-breakers, in order:
 3. **A rejection is a work order, not a verdict on the author.** Write each item as the concrete
    thing to do, file and case named. Where review rounds are budgeted, reject on what actually
    stands between the change and merging, not on everything you would have done differently.
+4. **An uncheckable load-bearing blind spot maps to gather-more when a checkable receipt could
+   exist in another form**; ask for that form. Only when no receipt could exist for the claim does
+   it become block, because a change whose correctness cannot be evidenced at all is not mergeable
+   through this gate.
 
 ## Relationship to freshness
 
-Before evaluating, confirm the proof is fresh against current repo state (`freshness-and-reproof.md`).
-Evaluating stale proof gates the wrong artifact.
+Before evaluating, confirm the proof is fresh (`freshness-and-reproof.md`); evaluating stale proof
+gates the wrong artifact. Two freshness questions have two owners, and conflating them charges the
+author for upstream churn: the **evaluator** confirms the proof was captured at the head under
+judgement, while the **integration step** (whoever merges) answers whether the base has since
+moved into the work's covered paths. Where a pipeline separates the roles, the evaluator does not
+spend its verdict on base movement; the merger's answer is usually cheaper than a re-review, and a
+gather-more issued for base movement asks the author to fix something that is not a defect in the
+change.
 
 ## Consumes / produces
 
