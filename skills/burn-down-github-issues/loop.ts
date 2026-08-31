@@ -50,7 +50,7 @@ const DEFAULTS: LoopKnobs = {
   /** Only consider issues opened within this many days. Widen once a run has gone well. */
   ageDays: 30,
 
-  /** Fibonacci points the loop is willing to attempt. See the KANBAN-ESTIMATION-SCALE wiki page. */
+  /** Fibonacci points the loop is willing to attempt, on whatever scale PROJECT.sizingScale names. */
   maxPoints: 2,
 
   /**
@@ -385,6 +385,9 @@ const children = new Set<{ pid: number; kill: () => void }>();
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
+/** How long the merge gate waits for a pull request's checks before parking instead of merging. */
+const CHECKS_TIMEOUT_MS = 15 * 60 * 1000;
+
 /**
  * Extra attempts an agent gets when the upstream refused for a reason that is not about the work.
  * A model at capacity is a different fact from a model that tried and failed: the first is worth
@@ -551,8 +554,8 @@ const CONTENTION = [
 function sh(cmd: string[], cwd = REPO_ROOT, attempts = 4): string {
   // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
   // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is
-  // one that can comment on a client's tracker: lifeguides carries two remotes pointing at two
-  // different repositories, so this is not hypothetical.
+  // one that can comment on a client's tracker: an adopting checkout can carry two remotes
+  // pointing at two different repositories, so this is not hypothetical.
   const argv = cmd[0] === 'gh' && !cmd.includes('-R') ? [...cmd, '-R', PROJECT.repo] : cmd;
   let lastError = '';
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -841,9 +844,15 @@ function reconcile(): void {
     // Agents make scratch siblings next to their own worktree (`issue-3293-evidence`) to capture a
     // before state or write to the evidence branch. A pattern anchored on the number alone could
     // not see them, so a crashed lane left them behind permanently: nothing else walks this root.
-    // They belong to the parent issue, so the claimed and dirty rules below judge them by it.
-    const issue = /issue-(\d+)(?:-[^/]+)?$/.exec(dir)?.[1];
+    // They belong to the parent issue, so the claimed and dirty rules below judge them by the
+    // parent where it still exists, and a sibling's removal takes only the sibling: removing by
+    // issue number would also take the parent worktree this same pass may have chosen to keep.
+    const parts = /issue-(\d+)(-[^/]+)?$/.exec(dir);
+    const issue = parts?.[1];
     if (!issue) continue;
+    const parent = resolve(managed, `issue-${issue}`);
+    const isSibling = Boolean(parts?.[2]);
+    const judged = isSibling && existsSync(parent) ? parent : dir;
 
     // A pull request means the work reached GitHub and is not ours to throw away; selection already
     // treats the issue as claimed, so leave both alone and let a human or a later round finish it.
@@ -854,7 +863,7 @@ function reconcile(): void {
 
     const dirty = (() => {
       try {
-        return dirtyPaths(dir).length > 0;
+        return dirtyPaths(judged).length > 0;
       } catch {
         return false;
       }
@@ -864,8 +873,17 @@ function reconcile(): void {
       continue;
     }
 
-    log(`reconcile: removing abandoned worktree for #${issue}`);
-    removeWorktree(Number(issue));
+    if (isSibling) {
+      log(`reconcile: removing abandoned scratch worktree ${dir}`);
+      try {
+        sh(['git', 'worktree', 'remove', '--force', dir]);
+      } catch {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } else {
+      log(`reconcile: removing abandoned worktree for #${issue}`);
+      removeWorktree(Number(issue));
+    }
     repaired++;
   }
 
@@ -951,8 +969,9 @@ function removeWorktree(issue: number): void {
  *
  * An earlier version did the opposite: it removed any registered worktree OUTSIDE the managed
  * directory whose path contained the issue number, force-removing it and then recursively deleting
- * the directory if git refused. This repository has `Ultrathin-worktrees/fix-3117-label-feedback`,
- * so working issue #3117 would have destroyed a human's checkout and any uncommitted work in it.
+ * the directory if git refused. An adopting repository kept a human's checkout at a path like
+ * `worktrees/fix-3117-label-feedback`, so working issue #3117 would have destroyed that checkout
+ * and any uncommitted work in it.
  * Path substring is not ownership. Nothing outside `worktreeRoot` is ever touched.
  */
 function removeStrayWorktrees(issue: number): void {
@@ -1589,6 +1608,42 @@ function isDraft(pr: number): boolean {
   return sh(['gh', 'pr', 'view', String(pr), '--json', 'isDraft', '--jq', '.isDraft']) === 'true';
 }
 
+/**
+ * The build gate: block until the pull request's checks are green, or say why they never will be.
+ * Returns null when every check passed (or the repository runs none), otherwise a refusal reason.
+ * Unknown states fail closed; a merge with a failing or unfinished build is never allowed.
+ */
+async function awaitGreenChecks(pr: number, say: (message: string) => void): Promise<string | null> {
+  type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
+  const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
+  const classify = (c: CheckNode): 'green' | 'pending' | 'failed' => {
+    const verdict = c.conclusion ?? c.state ?? c.status ?? null;
+    if (verdict === null || RUNNING.has(verdict)) return 'pending';
+    return GREEN.has(verdict) ? 'green' : 'failed';
+  };
+  const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
+
+  const deadline = Date.now() + CHECKS_TIMEOUT_MS;
+  for (;;) {
+    const raw = sh(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup']);
+    const rollup: CheckNode[] = raw ? JSON.parse(raw) : [];
+
+    const failed = rollup.filter((c) => classify(c) === 'failed');
+    if (failed.length > 0) {
+      return `checks failed: ${failed.map((c) => `${nameOf(c)} (${c.conclusion ?? c.state})`).join(', ')}`;
+    }
+
+    const pending = rollup.filter((c) => classify(c) === 'pending');
+    if (pending.length === 0) return null;
+    if (Date.now() >= deadline) {
+      return `checks still unfinished after ${Math.round(CHECKS_TIMEOUT_MS / 60000)} minutes: ${pending.map(nameOf).join(', ')}`;
+    }
+    say(`waiting on ${pending.length} unfinished check(s) before merging`);
+    await Bun.sleep(30_000);
+  }
+}
+
 function closeIssue(issue: number, comment: string): void {
   mutate(`comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', comment]);
   mutate(`close #${issue}`, ['gh', 'issue', 'close', String(issue)]);
@@ -1663,14 +1718,14 @@ async function review(
  * captured at, so upstream movement that does not reach this work leaves it standing. Movement that
  * does reach it invalidates the proof, so the branch catches up and is judged again.
  */
-function land(
+async function land(
   issue: Issue,
   pr: number,
   touches: WorkerResult['touches'],
   reviewed: Reviewed,
   cwd: string,
   say: (message: string) => void,
-): Landing {
+): Promise<Landing> {
   const { review: verdict, reviewedSha } = reviewed;
 
   // Rejections are judged before freshness, because staleness invalidates an approval and not a
