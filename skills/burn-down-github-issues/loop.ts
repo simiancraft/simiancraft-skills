@@ -226,6 +226,15 @@ type ProjectConfig = {
    * filename suffix ('.sql.ts' catches schema files wherever they live).
    */
   alwaysInvalidates: string[];
+  /**
+   * Files the repository's own release machinery rewrites on every merge to the base (deploy
+   * constants, generated changelogs). Their movement alone never invalidates an approval: the
+   * queued branch still catches up, but does not pay a re-review for noise every landing produces.
+   * Optional; same pattern rules as alwaysInvalidates. package.json needs no entry here: a base
+   * change that only bumps its "version" field is recognized as release noise automatically,
+   * while any other package.json change still invalidates.
+   */
+  releaseArtifacts?: string[];
   /** Paths that mechanically classify a diff for the merge boundary. Same pattern rules. */
   touchPaths: Record<'migration' | 'ci', string[]>;
   /** Sibling directory outside the repository root where worktrees and run logs live. */
@@ -331,6 +340,9 @@ const CONFIG: LoopKnobs & { project: ProjectConfig } = await (async () => {
   }
   for (const key of ['conventionDocs', 'sharedServices', 'sourceExtensions', 'alwaysInvalidates'] as const) {
     if (!Array.isArray(project[key])) faults.push(`project.${key} must be an array`);
+  }
+  if (project.releaseArtifacts !== undefined && !Array.isArray(project.releaseArtifacts)) {
+    faults.push('project.releaseArtifacts must be an array when present');
   }
   if (
     !Array.isArray(project.pathAliases) ||
@@ -1084,6 +1096,7 @@ function updateFromBase(cwd: string): boolean {
  * config is not imported by a module path, yet everything downstream depends on it.
  */
 const ALWAYS_INVALIDATES: readonly string[] = PROJECT.alwaysInvalidates;
+const RELEASE_ARTIFACTS: readonly string[] = PROJECT.releaseArtifacts ?? [];
 
 /**
  * Path patterns for `alwaysInvalidates` and `touchPaths`: a pattern that starts with '.' and
@@ -1165,11 +1178,33 @@ function importClosure(cwd: string, entries: string[]): Set<string> {
  * chassis module, a generated type, or a lockfile invalidates a receipt while touching nothing the
  * diff touched, and comparing filenames alone would call that fresh and merge it.
  */
+/**
+ * Whether the base's package.json movement since `sinceSha` is nothing but a version bump.
+ * Release automation bumps the version on every landing; that noise must not read as a
+ * dependency change, which genuinely invalidates any proof in flight.
+ */
+function isVersionOnlyPackageJsonBump(cwd: string, sinceSha: string): boolean {
+  const diff = sh(['git', 'diff', '--unified=0', `${sinceSha}...${REMOTE}/${BASE}`, '--', 'package.json'], cwd);
+  const changed = diff.split('\n').filter((line) => /^[+-](?![+-])/.test(line));
+  return changed.length > 0 && changed.every((line) => /^[+-]\s*"version":/.test(line));
+}
+
 function staleAgainstBase(cwd: string, sinceSha: string): string[] {
   sh(['git', 'fetch', REMOTE, BASE], cwd);
   const lines = (out: string) => out.split('\n').filter(Boolean);
 
-  const incoming = lines(sh(['git', 'diff', '--name-only', `${sinceSha}...${REMOTE}/${BASE}`], cwd));
+  // Release machinery rewrites its artifacts on every landing; a queue where each merge
+  // invalidates every approval behind it re-reviews the same code for noise. Filter that
+  // movement out before anything judges freshness. The branch merges without catching up on
+  // these files: it does not touch them, so git merges them cleanly, and if a branch ever does
+  // touch one, the merge conflicts and fails closed rather than landing anything unreviewed.
+  const machineNoise = (file: string) =>
+    RELEASE_ARTIFACTS.some((pattern) => matchesPath(file, pattern)) ||
+    (file === 'package.json' && isVersionOnlyPackageJsonBump(cwd, sinceSha));
+
+  const incoming = lines(sh(['git', 'diff', '--name-only', `${sinceSha}...${REMOTE}/${BASE}`], cwd)).filter(
+    (file) => !machineNoise(file),
+  );
   if (incoming.length === 0) return [];
 
   const global = incoming.filter((file) => ALWAYS_INVALIDATES.some((pattern) => matchesPath(file, pattern)));

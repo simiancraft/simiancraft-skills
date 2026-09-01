@@ -40,6 +40,7 @@ export default {
     pathAliases: [{ prefix: '~/', dir: '.' }],
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
+    releaseArtifacts: [/* optional; see below */],
     touchPaths: {
       migration: ['db/migrations/'],
       ci: ['.github/workflows/'],
@@ -127,6 +128,19 @@ The same reasoning applies to `touchPaths`, which mechanically classifies a diff
 `ci` for the merge boundary: point it at your schema, migration, and workflow directories. The
 worker and reviewer also self-report those categories, but the path scan is what makes the
 boundary independent of anyone's say-so.
+
+### `releaseArtifacts`: carve the machine's own noise out of staleness
+
+If every merge to your base branch triggers release automation that commits files back (a deploy
+constants file, a generated changelog), each landing rewrites paths that `alwaysInvalidates`
+matches, which discards the approval of every pull request still queued and re-reviews the same
+code for noise the machine itself produced. List those machine-rewritten files here and their base
+movement stops invalidating approvals entirely, so only list a file whose every landing-time
+change is machine-produced; a file humans also edit does not belong here. `package.json` needs no
+entry: a base change that only bumps its `"version"` field is recognized as release noise
+automatically, while a dependency change still invalidates. One adopter's release bot committed a
+deploy-constants file and a version bump on every landing, and a two-merge queue paid three full
+re-reviews before this key existed.
 
 ## Preconditions
 
