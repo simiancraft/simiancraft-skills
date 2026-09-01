@@ -36,19 +36,23 @@ bought by breaking someone else's run.
    guaranteed.
 
 The pull request was opened as a draft and marked ready only when its author believed the work was
-complete, so CI ran on the finished branch rather than on each intermediate push. Do not approve on
-an absent result, and do not push the branch or re-run the workflow to hurry it along, which spends
-the budget the draft was protecting.
+complete, so CI ran on the finished branch rather than on each intermediate push. Do not treat an
+absent result as a pass, and do not push the branch or re-run the workflow to hurry it along, which
+spends the budget the draft was protecting.
 
 **You get one turn, and it ends when you stop.** There is no later moment in which you write the
 verdict; the process that runs you exits with you, and a verdict file that does not exist by then
-reads as a crash and parks the issue. So a check that has not reported is something you wait out
+reads as a crash and parks the issue. A check that has not reported may be worth waiting out
 *inside this turn*, synchronously and with a deadline:
 
     gh pr checks {{PR}} --watch --interval 30 --fail-fast
 
-Give it roughly ten minutes. If the checks report, judge them. If they are still pending when your
-patience runs out, write the verdict anyway as `gather-more`, naming the run that had not finished.
+Give it roughly ten minutes. A check that has **failed** is a real gap; judge it. A check that is
+merely **still running** when your patience runs out is not: the driver that consumes your verdict
+refuses to merge until every check is green and does its own waiting, sized to the repository's
+slowest build. Judge the change on everything else, name the unfinished runs in `confidence`, and
+never spend a `gather-more` round on CI latency alone; that round costs a full revision cycle to
+learn what the merge gate would have learned by waiting.
 Never arm a background watcher, schedule a callback, or promise to write the verdict once something
 completes; nothing you leave running survives your exit. Writing `loop-review.json` is the last
 thing you do and the only thing anyone reads.
