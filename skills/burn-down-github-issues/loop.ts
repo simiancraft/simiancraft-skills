@@ -518,6 +518,18 @@ const opt = (name: string) => {
 
 const DRY_RUN = flag('dry-run');
 const LIMIT = Number(opt('limit') ?? CONFIG.limit);
+// Per-run ambition knob: a one-off ceiling raise belongs on the command line, not in the durable
+// config, whose value is what unattended runs get.
+const MAX_POINTS = (() => {
+  const raw = opt('max-points');
+  if (raw === undefined) return CONFIG.maxPoints;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.error(`--max-points expects a positive integer, got '${raw}'`);
+    process.exit(1);
+  }
+  return parsed;
+})();
 const ONLY_ISSUE = (() => {
   const raw = opt('issue');
   if (raw === undefined) return undefined;
@@ -679,7 +691,7 @@ function selectCandidates(): Issue[] {
     // split exists to stop, since a worker pays for a worktree before discovering it is not work.
     .filter((issue) => {
       const points = pointsFromLabels(issue.labels);
-      return points !== null && points <= CONFIG.maxPoints;
+      return points !== null && points <= MAX_POINTS;
     })
     .sort((a, b) => b.number - a.number);
 }
@@ -1511,7 +1523,7 @@ async function runWorker(issue: Issue, cwd: string, feedback?: ReviewResult): Pr
   const prompt = renderPrompt('triage-and-fix.md', {
     ISSUE: String(issue.number),
     TITLE: issue.title,
-    MAX_POINTS: String(CONFIG.maxPoints),
+    MAX_POINTS: String(MAX_POINTS),
     FEEDBACK: feedback
       ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
         `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`
@@ -2130,7 +2142,7 @@ async function main(): Promise<void> {
   }
 
   step(`${PROJECT.name} burn-down-github-issues`);
-  log(`base ${BASE} | last ${CONFIG.ageDays} days | up to ${CONFIG.maxPoints} points | merge: ${CONFIG.autoMerge}`);
+  log(`base ${BASE} | last ${CONFIG.ageDays} days | up to ${MAX_POINTS} points | merge: ${CONFIG.autoMerge}`);
   log(`appraiser ${seatLabel(SEATS.appraiser)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)}`);
   if (SEATS.worker.engine === SEATS.reviewer.engine) {
     log('WARNING: worker and reviewer share an engine, so the merge gate shares the author\'s blind spots');
@@ -2213,7 +2225,7 @@ async function main(): Promise<void> {
   // depends on, and a worker must see them.
   const candidates = selectCandidates().slice(0, LIMIT);
   if (candidates.length === 0) {
-    log('no sized candidates in the window; widen CONFIG.ageDays or CONFIG.maxPoints');
+    log('no sized candidates in the window; widen CONFIG.ageDays or raise --max-points');
     step('done');
     return;
   }
