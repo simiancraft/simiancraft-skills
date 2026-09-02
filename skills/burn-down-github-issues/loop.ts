@@ -24,13 +24,32 @@
  * references/freshness-and-reproof.md.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  CHECKS_TIMEOUT_MS,
+  children,
+  killAgent,
+  logTail,
+  parseJsonFile,
+  readResult,
+  renderPrompt,
+  runAgent,
+} from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
-import { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from '../fix-github-issue/lib/control-files.ts';
+import { APPRAISAL_FILE, VERDICT_FILE } from '../fix-github-issue/lib/control-files.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
-import { ENGINES, parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
+import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
+import {
+  claimLock,
+  dirtyPaths,
+  inFlight,
+  removeWorktree,
+  resetLane,
+  updateFromBase,
+  worktreeFor,
+} from '../fix-github-issue/lib/lane.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { log, mutate, sh, step } from '../fix-github-issue/lib/shell.ts';
 
@@ -172,86 +191,6 @@ const REMOTE = PROJECT.remote;
 const BASE = PROJECT.baseBranch;
 
 const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
-
-/** Porcelain status of a worktree, minus the loop's own control files. */
-function dirtyPaths(cwd: string): string[] {
-  return sh(ctx, ['git', 'status', '--porcelain'], cwd)
-    .split('\n')
-    .filter(Boolean)
-    .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()));
-}
-
-/** Live agent processes, so a signal can take them down rather than orphaning them. */
-const children = new Set<{ pid: number; kill: () => void }>();
-
-/** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
-const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
-
-/**
- * How long the merge gate waits for a pull request's checks before parking instead of merging.
- * Size this to the repository's slowest required check; some builds legitimately take a long
- * time on a fresh head.
- */
-const CHECKS_TIMEOUT_MS = 45 * 60 * 1000;
-
-/**
- * Extra attempts an agent gets when the upstream refused for a reason that is not about the work.
- * A model at capacity is a different fact from a model that tried and failed: the first is worth
- * asking again, the second is not, and spending the lane on the first loses an issue for the run.
- * Bounded at one so a sustained outage costs each issue one wasted attempt, not an unbounded loop.
- */
-const AGENT_RETRIES = 1;
-const RETRY_BACKOFF_MS = 60 * 1000;
-
-/**
- * Refusals that mean "ask again later" rather than "this work failed". Matched against the tail of
- * the agent's own log, and only ever consulted after a non-zero exit, so a phrase appearing in an
- * agent's prose costs at most one extra attempt on a run that had already failed.
- */
-const RETRYABLE_UPSTREAM = [
-  'at capacity',
-  'overloaded',
-  'rate limit',
-  'service unavailable',
-  'try a different model',
-];
-
-function retryableFailure(logPath: string): string | null {
-  try {
-    const tail = readFileSync(logPath, 'utf8').slice(-8000).toLowerCase();
-    return RETRYABLE_UPSTREAM.find((phrase) => tail.includes(phrase)) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Agents run under setsid where available, so a kill reaches their whole process group. */
-const SETSID = Bun.which('setsid');
-
-/**
- * Takes an agent down with everything it started. A bare `proc.kill()` reaches only the CLI
- * itself, and a hung check command or dev server it spawned would outlive it, holding a port into
- * the next lane. With setsid the agent leads its own group, so `-pid` addresses the whole tree;
- * without it the group kill is a no-op ESRCH and the plain kill still lands.
- */
-function killAgent(proc: { pid: number; kill: () => void }): void {
-  const signal = (sig: 'SIGTERM' | 'SIGKILL') => {
-    try {
-      process.kill(-proc.pid, sig);
-    } catch {
-      // no such group; fall through to the direct kill
-    }
-    try {
-      process.kill(proc.pid, sig);
-    } catch {
-      // already gone
-    }
-  };
-  signal('SIGTERM');
-  // An agent that ignores SIGTERM must not keep holding its lane; escalate once, unref'd so the
-  // timer never keeps the loop process alive on its own.
-  setTimeout(() => signal('SIGKILL'), 10_000).unref();
-}
 
 type Verdict =
   | 'already-fixed'
@@ -647,7 +586,7 @@ function reconcile(): void {
 
     const dirty = (() => {
       try {
-        return dirtyPaths(judged).length > 0;
+        return dirtyPaths(ctx, judged).length > 0;
       } catch {
         return false;
       }
@@ -666,194 +605,12 @@ function reconcile(): void {
       }
     } else {
       log(`reconcile: removing abandoned worktree for #${issue}`);
-      removeWorktree(Number(issue));
+      removeWorktree(ctx, Number(issue));
     }
     repaired++;
   }
 
   if (repaired > 0) log(`reconcile: cleared ${repaired} abandoned worktree(s) from an earlier run`);
-}
-
-// ---------------------------------------------------------------------------
-// Worktrees
-// ---------------------------------------------------------------------------
-
-/**
- * Returns a lane to what a fresh worker expects: detached at the base, no branch, no scratch.
- *
- * A worker that dies partway has usually already cut its branch and may have committed to it, so
- * retrying in place would fail at `git switch -c` and cascade into a second, confusing failure.
- * The discarded work is the work whose answer the driver already refuses to trust.
- */
-function resetLane(issue: number, cwd: string): void {
-  try {
-    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-    sh(ctx, ['git', 'fetch', REMOTE, BASE]);
-    sh(ctx, ['git', 'checkout', '--detach', `${REMOTE}/${BASE}`], cwd);
-    sh(ctx, ['git', 'reset', '--hard', `${REMOTE}/${BASE}`], cwd);
-    // Ignored files go too, so a half-written artifact cannot be read as this attempt's, but the
-    // installed dependencies stay: reinstalling them is minutes of nothing.
-    sh(ctx, ['git', 'clean', '-fdx', '-e', 'node_modules'], cwd);
-    if (branch && branch !== 'HEAD') {
-      try {
-        sh(ctx, ['git', 'branch', '-D', branch], cwd);
-      } catch {
-        // the branch was never created, or is already gone
-      }
-    }
-  } catch (error) {
-    log(`  #${issue}  could not reset the lane before retrying: ${error}`);
-  }
-}
-
-function worktreeFor(issue: number): string {
-  const dir = resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue}`);
-  if (existsSync(dir)) {
-    // Reconcile leaves a dirty no-PR worktree in place for inspection; handing it to a fresh
-    // worker would make the new fix inherit another run's uncommitted state.
-    if (dirtyPaths(dir).length > 0) {
-      throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
-    }
-    return dir;
-  }
-
-  mkdirSync(dirname(dir), { recursive: true });
-  sh(ctx, ['git', 'fetch', REMOTE, BASE]);
-  sh(ctx, ['git', 'worktree', 'add', '--detach', dir, `${REMOTE}/${BASE}`]);
-  return dir;
-}
-
-/*
- * Deliberately NOT sharing `node_modules` with the main checkout.
- *
- * A symlink looks like free speed: a fresh worktree has none, so every agent installs before it can
- * type-check. The install command is typically a frozen-lockfile `bun install` under another name,
- * and both prompts require running it before a push. Through a symlink that install writes into the
- * main checkout's dependencies, from several lanes at once, while a human may be working there.
- * Each worktree therefore installs its own; bun hardlinks from its global cache, so the cost is
- * disk-cheap and the blast radius is one throwaway directory.
- */
-
-function removeWorktree(issue: number): void {
-  const dir = resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue}`);
-  if (existsSync(dir)) {
-    try {
-      sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
-    } catch {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-  removeStrayWorktrees(issue);
-}
-
-/**
- * Agents make their own worktrees (an evidence checkout, a before-state revert) and do not always
- * clean them up. Only ones the agent was told to create, inside this loop's own directory, are
- * removed.
- *
- * An earlier version did the opposite: it removed any registered worktree OUTSIDE the managed
- * directory whose path contained the issue number, force-removing it and then recursively deleting
- * the directory if git refused. A human's checkout kept at a path like `worktrees/fix-1234-typo`
- * would be destroyed, with any uncommitted work in it, the moment the loop worked issue 1234.
- * Path substring is not ownership. Nothing outside `worktreeRoot` is ever touched.
- */
-function removeStrayWorktrees(issue: number): void {
-  const managed = resolve(REPO_ROOT, PROJECT.worktreeRoot);
-  const own = resolve(managed, `issue-${issue}`);
-
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (dir === REPO_ROOT || dir === own) continue;
-    if (!dir.startsWith(`${managed}/`)) continue;
-    // The issue number must stand alone between non-digits: cleaning issue 234 must not match a scratch
-    // directory another lane made for issue 1234. Substring is not ownership even inside the root.
-    if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(dir.slice(managed.length + 1))) continue;
-    log(`  removing scratch worktree left by an agent: ${dir}`);
-    try {
-      sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
-    } catch {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-}
-
-/**
- * Worktrees currently in use, for cleanup and for refusing to hand one to two agents at once.
- *
- * Nothing else touches a worktree while its agent owns it. A `git merge` under a running agent
- * either fails on its uncommitted edits or, worse, succeeds and changes files beneath it, so its
- * next commit carries a merge it never saw. Bringing a branch up to date happens only at the front
- * of the integration queue, where no agent is running in it.
- */
-const inFlight = new Map<number, { dir: string; busy: boolean }>();
-
-/**
- * One loop per repository. Selection reads the tracker and claims what it finds, so a second
- * process started while the first is mid-run picks the same issues and two agents fix them in
- * parallel. The lock records a pid; a lock whose process is gone is stale and gets taken.
- */
-function claimSingleInstance(): () => void {
-  mkdirSync(RUN_DIR, { recursive: true });
-  const lockPath = join(RUN_DIR, 'loop.lock');
-
-  const held = () => {
-    const holder = Number(readFileSync(lockPath, 'utf8').trim());
-    try {
-      process.kill(holder, 0);
-      return holder;
-    } catch {
-      return null;
-    }
-  };
-
-  // Exclusive create rather than check-then-write: two loops started in the same instant would both
-  // pass an existsSync check and both believe they hold the lock.
-  try {
-    writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-  } catch {
-    const holder = held();
-    if (holder !== null) throw new Error(`another burn-down loop is running (pid ${holder}); wait for it or kill it`);
-    log('clearing a stale lock from a dead process');
-    rmSync(lockPath, { force: true });
-    writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-  }
-
-  // Read the lock back: two starters can both observe the same dead pid, both clear it, and race
-  // the rewrite. Whoever's pid is not in the file lost, and must not run believing it holds it.
-  if (readFileSync(lockPath, 'utf8').trim() !== String(process.pid)) {
-    throw new Error('another burn-down loop claimed the lock first; run again once it finishes');
-  }
-
-  // Release only a lock this process still owns; deleting unconditionally could take out the lock
-  // a competing starter just legitimately claimed.
-  return () => {
-    try {
-      if (readFileSync(lockPath, 'utf8').trim() === String(process.pid)) rmSync(lockPath, { force: true });
-    } catch {
-      // already gone
-    }
-  };
-}
-
-/**
- * Pulls the base branch into a worktree's branch and pushes the result. Returns false on conflict,
- * leaving the tree clean, since a conflicted catch-up is a human's problem and not the loop's.
- */
-function updateFromBase(cwd: string): boolean {
-  sh(ctx, ['git', 'fetch', REMOTE, BASE], cwd);
-  try {
-    sh(ctx, ['git', 'merge', '--no-edit', `${REMOTE}/${BASE}`], cwd);
-  } catch {
-    try {
-      sh(ctx, ['git', 'merge', '--abort'], cwd);
-    } catch {
-      // nothing to abort
-    }
-    return false;
-  }
-  sh(ctx, ['git', 'push', REMOTE, 'HEAD'], cwd);
-  return true;
 }
 
 /**
@@ -984,218 +741,6 @@ function staleAgainstBase(cwd: string, sinceSha: string): string[] {
   return incoming.filter((file) => closure.has(file));
 }
 
-
-/**
- * The main checkout is never an agent's working directory. It holds the user's own branch and
- * uncommitted work, and an agent told to `git switch` in it would take that hostage.
- */
-function assertNotMainCheckout(cwd: string, role: string): void {
-  if (resolve(cwd) === resolve(REPO_ROOT)) {
-    throw new Error(`refusing to run ${role} in the main checkout (${REPO_ROOT}); it must run in a worktree`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// The two agents
-// ---------------------------------------------------------------------------
-
-function renderPrompt(file: string, vars: Record<string, string>): string {
-  let text = readFileSync(join(PROMPTS, file), 'utf8');
-  // Every prompt gets the project vocabulary, so a prompt never names this repository directly and
-  // porting the loop does not mean rewriting prose in three files.
-  const withProject: Record<string, string> = {
-    PROJECT: PROJECT.name,
-    REMOTE: REMOTE,
-    SHARED_SERVICES: PROJECT.sharedServices.join(', '),
-    REPO: PROJECT.repo,
-    BASE_BRANCH: BASE,
-    EVIDENCE_BRANCH: PROJECT.evidenceBranch,
-    CHECK_COMMAND: PROJECT.checkCommand,
-    INSTALL_COMMAND: PROJECT.installCommand,
-    CONVENTION_DOCS: PROJECT.conventionDocs.map((d) => `\`${d}\``).join(', '),
-    SIZING_SCALE: PROJECT.sizingScale,
-    MAIN_CHECKOUT: REPO_ROOT,
-    AGE_DAYS: String(CONFIG.ageDays),
-    MAX_ROUNDS: String(CONFIG.maxReviewRounds),
-    PORT_BASE: String(PROJECT.portBase),
-    PORT_SPAN: String(PROJECT.portSpan),
-    ...vars,
-  };
-  for (const [key, value] of Object.entries(withProject)) {
-    text = text.replaceAll(`{{${key}}}`, value);
-  }
-  return text;
-}
-
-
-/**
- * Streams an agent's output into its log as it arrives, and returns the whole of it.
- *
- * Buffering until the process exits means a run that is killed leaves no log at all, which is
- * exactly the run whose output you need. Appending per chunk costs nothing and makes a killed run
- * diagnosable.
- */
-async function pump(stream: ReadableStream<Uint8Array> | null, logPath: string, prefix = ''): Promise<string> {
-  if (!stream) return '';
-  const decoder = new TextDecoder();
-  let collected = '';
-
-  for await (const chunk of stream) {
-    const text = decoder.decode(chunk, { stream: true });
-    collected += text;
-    appendFileSync(logPath, prefix ? text.replace(/^/gm, prefix) : text);
-  }
-  return collected;
-}
-
-/** The argv that runs one prompt to completion, non-interactively, on the seat's engine. */
-function agentCommand(seat: Seat, cwd: string, prompt: string): string[] {
-  return ENGINES[seat.engine].command(cwd, prompt, seat.model);
-}
-
-/** Runs one headless agent process to completion, capturing its output into a per-issue log. */
-/**
- * Runs an agent, asking again when the upstream refused rather than the work failing.
- *
- * `onRetry` restores whatever state the next attempt needs; a worker passes a lane reset, while an
- * appraiser and a reviewer need nothing because neither leaves state a rerun would trip over.
- */
-async function runAgent(
-  role: string,
-  issue: number,
-  cwd: string,
-  seat: Seat,
-  prompt: string,
-  onRetry?: () => void,
-): Promise<{ logPath: string; exitCode: number }> {
-  for (let attempt = 0; ; attempt++) {
-    const run = await runAgentOnce(role, issue, cwd, seat, prompt);
-    if (run.exitCode === 0 || attempt >= AGENT_RETRIES) return run;
-
-    const reason = retryableFailure(run.logPath);
-    if (!reason) return run;
-
-    log(`  #${issue}  ${role} hit an upstream refusal ("${reason}"); retrying once in ${RETRY_BACKOFF_MS / 1000}s`);
-    onRetry?.();
-    await Bun.sleep(RETRY_BACKOFF_MS);
-  }
-}
-
-async function runAgentOnce(role: string, issue: number, cwd: string, seat: Seat, prompt: string) {
-  mkdirSync(RUN_DIR, { recursive: true });
-  const logPath = join(RUN_DIR, `${issue}-${role}-${Date.now()}.log`);
-
-  if (DRY_RUN) {
-    writeFileSync(logPath, prompt);
-    log(`  DRY RUN  would run ${role} (${seatLabel(seat)}) on #${issue} (prompt written to ${logPath})`);
-    return { logPath, exitCode: 0 };
-  }
-
-  assertNotMainCheckout(cwd, role);
-  log(`  running ${role} on #${issue} via ${seatLabel(seat)} (log: ${logPath})`);
-
-  // Clear the previous run's answer for THIS role before starting; a crashed agent must not hand
-  // back its predecessor's verdict. Role-specific on purpose: clearing everything meant starting a
-  // reviewer destroyed the worker verdict that findStranded resumes a crashed run from, so a crash
-  // during review or merging stranded the pull request the resume path exists to save.
-  const clearsByRole: Record<string, string[]> = {
-    appraiser: [APPRAISAL_FILE, LAST_MESSAGE_FILE],
-    worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
-    'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
-    reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
-  };
-  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, LAST_MESSAGE_FILE]) {
-    rmSync(join(cwd, stale), { force: true });
-  }
-
-  // The worktree belongs to the agent until it exits. Nothing else may touch it in the meantime.
-  const entry = inFlight.get(issue);
-  if (entry) entry.busy = true;
-
-  // ANTHROPIC_API_KEY takes precedence over the claude.ai login, so a key inherited from the shell
-  // sends a Claude worker to an API account rather than the login the operator intended.
-  const { ANTHROPIC_API_KEY: _inheritedKey, ...childEnv } = process.env;
-
-  const argv = agentCommand(seat, cwd, prompt);
-  const proc = Bun.spawn(SETSID ? [SETSID, ...argv] : argv, {
-    cwd,
-    env: childEnv,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  children.add(proc);
-  // Drain both pipes at once. Reading stdout to EOF first deadlocks a child that fills its stderr
-  // pipe in the meantime: it blocks waiting for stderr space while the parent waits for stdout EOF.
-  const timeout = setTimeout(() => {
-    log(`  #${issue}  ${role} exceeded ${AGENT_TIMEOUT_MS / 60000} minutes; killing it`);
-    killAgent(proc);
-  }, AGENT_TIMEOUT_MS);
-
-  writeFileSync(logPath, `${new Date().toISOString()} ${role} on #${issue} via ${seatLabel(seat)}\n`);
-  const [output, errors] = await Promise.all([pump(proc.stdout, logPath), pump(proc.stderr, logPath, 'stderr: ')]);
-  const exitCode = await proc.exited;
-  clearTimeout(timeout);
-
-  // `claude -p` prints its final message to stdout and writes no file, so without this the
-  // fallback verdict channel would exist only for engines with an --output-last-message flag.
-  const lastMessagePath = join(cwd, LAST_MESSAGE_FILE);
-  if (!existsSync(lastMessagePath) && output.trim().length > 0) writeFileSync(lastMessagePath, output);
-
-  children.delete(proc);
-  appendFileSync(logPath, `\nexit code: ${exitCode}\n`);
-  if (exitCode !== 0) log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
-
-  if (entry) entry.busy = false;
-
-  return { logPath, exitCode };
-}
-
-/** The last few meaningful lines of a log, so a failure explains itself without opening a file. */
-function logTail(logPath: string, lines = 4): string {
-  if (!existsSync(logPath)) return 'no log written';
-  return readFileSync(logPath, 'utf8')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-lines)
-    .join(' | ');
-}
-
-/**
- * Reads the verdict the agent produced. Preferred channel is the file it was asked to write; the
- * fallback is the last message, since an agent that answers in chat rather than on disk has still
- * done the thinking and throwing that away costs a whole run.
- */
-function readResult<T>(cwd: string, file: string): T | null {
-  const fromFile = parseJsonFile<T>(join(cwd, file));
-  if (fromFile) return fromFile;
-
-  const lastMessage = join(cwd, LAST_MESSAGE_FILE);
-  if (!existsSync(lastMessage)) return null;
-
-  const text = readFileSync(lastMessage, 'utf8');
-  const fenced = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/.exec(text);
-  const bare = /\{[\s\S]*\}/.exec(text);
-  for (const candidate of [fenced?.[1], bare?.[0]]) {
-    if (!candidate) continue;
-    try {
-      return JSON.parse(candidate) as T;
-    } catch {
-      // fall through to the next candidate
-    }
-  }
-  return null;
-}
-
-function parseJsonFile<T>(resultPath: string): T | null {
-  if (!existsSync(resultPath)) return null;
-  try {
-    return JSON.parse(readFileSync(resultPath, 'utf8')) as T;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Appraises one issue and acts on the answer.
  *
@@ -1207,11 +752,12 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
   const cwd = join(RUN_DIR, `appraise-${issue.number}`);
   mkdirSync(cwd, { recursive: true });
 
-  const prompt = renderPrompt('appraise.md', {
+  const prompt = renderPrompt(ctx, 'appraise.md', {
     ISSUE: String(issue.number),
     TITLE: issue.title,
+    AGE_DAYS: String(CONFIG.ageDays),
   });
-  const run = await runAgent('appraiser', issue.number, cwd, SEATS.appraiser, prompt);
+  const run = await runAgent(ctx, 'appraiser', issue.number, cwd, SEATS.appraiser, prompt);
   if (run.exitCode !== 0) {
     say(`appraiser exited ${run.exitCode}; its verdict is not trusted and the issue stays unsized`);
     rmSync(cwd, { recursive: true, force: true });
@@ -1275,7 +821,7 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
 }
 
 async function runWorker(issue: Issue, cwd: string, feedback?: ReviewResult): Promise<WorkerResult> {
-  const prompt = renderPrompt('triage-and-fix.md', {
+  const prompt = renderPrompt(ctx, 'triage-and-fix.md', {
     ISSUE: String(issue.number),
     TITLE: issue.title,
     MAX_POINTS: String(MAX_POINTS),
@@ -1287,13 +833,13 @@ async function runWorker(issue: Issue, cwd: string, feedback?: ReviewResult): Pr
 
   // A revision is the exception: its lane holds the branch and the pull request under review, so a
   // reset would throw away work the reviewer already read. Only a first attempt may be reset.
-  const { logPath, exitCode } = await runAgent(
+  const { logPath, exitCode } = await runAgent(ctx, 
     feedback ? 'worker-revise' : 'worker',
     issue.number,
     cwd,
     SEATS.worker,
     prompt,
-    feedback ? undefined : () => resetLane(issue.number, cwd),
+    feedback ? undefined : () => resetLane(ctx, issue.number, cwd),
   );
   if (exitCode !== 0) {
     return {
@@ -1318,8 +864,13 @@ async function runWorker(issue: Issue, cwd: string, feedback?: ReviewResult): Pr
 }
 
 async function runReviewer(issue: number, pr: number, cwd: string, round: number): Promise<ReviewResult | null> {
-  const prompt = renderPrompt('review.md', { PR: String(pr), ISSUE: String(issue), ROUND: String(round) });
-  const { exitCode } = await runAgent('reviewer', issue, cwd, SEATS.reviewer, prompt);
+  const prompt = renderPrompt(ctx, 'review.md', {
+    PR: String(pr),
+    ISSUE: String(issue),
+    ROUND: String(round),
+    MAX_ROUNDS: String(CONFIG.maxReviewRounds),
+  });
+  const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, SEATS.reviewer, prompt);
   // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
   // reviewer's parting words could approve a merge.
   if (exitCode !== 0) return null;
@@ -1405,7 +956,7 @@ function pullRequestMatchesReview(pr: number, issue: number, cwd: string, review
   }
   if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
   if (view.headRefOid !== localHead) return 'remote head and worktree head disagree';
-  if (dirtyPaths(cwd).length > 0) return 'worktree has uncommitted changes';
+  if (dirtyPaths(ctx, cwd).length > 0) return 'worktree has uncommitted changes';
   return null;
 }
 
@@ -1500,7 +1051,7 @@ async function review(
 
   // A dirty tree means checks run against files that are not in the pull request: a worker's
   // uncommitted edit could make the reviewer's re-run pass while the clean remote commit fails.
-  if (dirtyPaths(cwd).length > 0) {
+  if (dirtyPaths(ctx, cwd).length > 0) {
     say('worktree has uncommitted changes; a review here would judge code that is not in the pull request');
     return null;
   }
@@ -1553,7 +1104,7 @@ async function land(
     const behind = staleAgainstBase(cwd, reviewedSha);
     if (behind.length > 0) {
       say(`catching up before the revision (${behind.join(', ')})`);
-      if (!updateFromBase(cwd)) {
+      if (!updateFromBase(ctx, cwd)) {
         // A parked pull request must not sit in draft: the human reading loop/parked would find a
         // branch the CI guard is configured to skip, and nothing else would ever flip it back.
         mutate(ctx, `mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
@@ -1568,7 +1119,7 @@ async function land(
   const overlap = staleAgainstBase(cwd, reviewedSha);
   if (overlap.length > 0) {
     say(`base moved into this work (${overlap.join(', ')}); the approval no longer describes what would land`);
-    if (!updateFromBase(cwd)) {
+    if (!updateFromBase(ctx, cwd)) {
       say(`conflicts with ${BASE}; a human has to resolve it`);
       return 'park';
     }
@@ -1624,7 +1175,7 @@ async function land(
 
   // Read the branch name while the worktree still exists, then drop it.
   const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-  removeWorktree(issue.number);
+  removeWorktree(ctx, issue.number);
   try {
     sh(ctx, ['git', 'push', REMOTE, '--delete', branch]);
   } catch {
@@ -1642,7 +1193,7 @@ async function handleIssue(issue: Issue): Promise<void> {
 
   // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
   // learns to treat REPO_ROOT as a valid agent working directory.
-  const cwd = DRY_RUN ? resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue.number}`) : worktreeFor(issue.number);
+  const cwd = DRY_RUN ? resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number);
   inFlight.set(issue.number, { dir: cwd, busy: false });
   try {
     await workIssue(issue, cwd, say);
@@ -1657,7 +1208,7 @@ async function handleIssue(issue: Issue): Promise<void> {
     // sweeps the `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else
     // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
     // so `reconcile` still owns that case on the next start.
-    if (!DRY_RUN) removeWorktree(issue.number);
+    if (!DRY_RUN) removeWorktree(ctx, issue.number);
   }
 }
 
@@ -1680,7 +1231,7 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
     case 'obsolete':
       closeIssue(issue.number, result.closeComment ?? result.reason);
       closePullRequest();
-      removeWorktree(issue.number);
+      removeWorktree(ctx, issue.number);
       return true;
 
     case 'needs-decision':
@@ -1695,7 +1246,7 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
       ]);
       mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
       closePullRequest();
-      removeWorktree(issue.number);
+      removeWorktree(ctx, issue.number);
       return true;
 
     case 'out-of-band': {
@@ -1723,7 +1274,7 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
         }
       }
       closePullRequest();
-      removeWorktree(issue.number);
+      removeWorktree(ctx, issue.number);
       return true;
     }
 
@@ -1906,7 +1457,7 @@ async function main(): Promise<void> {
 
   let releaseLock: () => void;
   try {
-    releaseLock = claimSingleInstance();
+    releaseLock = claimLock(ctx, 'loop.lock');
   } catch (error) {
     log((error as Error).message);
     process.exitCode = 1;
