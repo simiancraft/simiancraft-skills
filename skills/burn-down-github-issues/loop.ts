@@ -26,18 +26,18 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { children, killAgent, readResult, renderPrompt, runAgent } from '../fix-github-issue/lib/agent.ts';
+import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
-import { APPRAISAL_FILE } from '../fix-github-issue/lib/control-files.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { closeIssue, ensureLabels, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { ensureLabels, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, mutate, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
+import { appraiseIssue, pointsFromLabels, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
@@ -56,7 +56,9 @@ type LoopKnobs = {
   appraiserConcurrency: number;
   appraiseLimit: number;
   skipLabels: string[];
-  seats: { appraiser: string; worker: string; reviewer: string };
+  /** Whether a close verdict from the appraiser needs the confirmer's agreement; see appraise-github-issues. */
+  confirmCloses: boolean;
+  seats: { appraiser: string; confirmer: string; worker: string; reviewer: string };
   /**
    * When set, the loop starts the walk-the-floor skill beside itself, puts every merge on the
    * floor, and stops merging the moment a walk finds the deployed base wrong. Requires a
@@ -137,8 +139,11 @@ const DEFAULTS: LoopKnobs = {
    * engine's own default (for codex, whatever `~/.codex/config.toml` sets), which is the safer
    * choice when unsure: a model the local auth does not support fails the run in seconds.
    */
+  confirmCloses: true,
+
   seats: {
     appraiser: 'codex:gpt-5.6-sol',
+    confirmer: 'claude:claude-opus-5',
     worker: 'codex:gpt-5.6-sol',
     reviewer: 'claude:claude-opus-5',
   },
@@ -152,6 +157,8 @@ const DEFAULTS: LoopKnobs = {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
+/** The appraisal prompts, shipped with the sibling skill this loop depends on for sizing. */
+const APPRAISE_PROMPTS = join(HERE, '..', 'appraise-github-issues', 'prompts');
 /** The fix pipeline's own prompts, shipped with the sibling skill this loop depends on. */
 const FIX_PROMPTS = join(HERE, '..', 'fix-github-issue', 'prompts');
 
@@ -336,18 +343,6 @@ function pendingOnTheFloor(): FloorItem[] {
   return pending(readList(FLOOR_DIR), readLedger(FLOOR_DIR));
 }
 
-type AppraisalVerdict = 'valid' | 'already-fixed' | 'obsolete' | 'needs-decision' | 'needs-human' | 'failed';
-
-type AppraisalResult = {
-  issue: number;
-  verdict: AppraisalVerdict;
-  points?: number;
-  reason: string;
-  closeComment?: string;
-  priorSize?: string | null;
-  disagrees?: boolean;
-};
-
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
 const opt = (name: string) => {
@@ -397,6 +392,7 @@ const SEATS = (() => {
   try {
     return {
       appraiser: parseSeat(opt('appraiser') ?? CONFIG.seats.appraiser, '--appraiser'),
+      confirmer: parseSeat(opt('confirmer') ?? CONFIG.seats.confirmer, '--confirmer'),
       worker: parseSeat(opt('worker') ?? CONFIG.seats.worker, '--worker'),
       reviewer: parseSeat(opt('reviewer') ?? CONFIG.seats.reviewer, '--reviewer'),
     };
@@ -418,7 +414,7 @@ const ctx = createContext({
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
-  promptsDirs: [PROMPTS, FIX_PROMPTS],
+  promptsDirs: [PROMPTS, APPRAISE_PROMPTS, FIX_PROMPTS],
   dryRun: DRY_RUN,
   mayMerge: async () => {
     await waitForGo('the merge queue');
@@ -429,19 +425,6 @@ const ctx = createContext({
     putOnTheFloor(event);
   },
 });
-
-/**
- * The largest size label the issue carries. Max rather than first match: a relabel is add-then-
- * remove, so an issue can briefly carry two, and the conservative reading is the bigger one.
- */
-function pointsFromLabels(labels: Array<{ name: string }>): number | null {
-  let points: number | null = null;
-  for (const { name } of labels) {
-    const match = /^size:\s*(\d+)$/.exec(name);
-    if (match) points = Math.max(points ?? 0, Number(match[1]));
-  }
-  return points;
-}
 
 // ---------------------------------------------------------------------------
 // Selection
@@ -457,15 +440,6 @@ function allIssues(): Issue[] {
   return JSON.parse(
     sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,title,createdAt,labels']),
   );
-}
-
-function selectForAppraisal(all: Issue[]): Issue[] {
-  const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
-  return all
-    .filter((issue) => Date.parse(issue.createdAt) >= cutoff)
-    .filter((issue) => !issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq'))
-    .filter((issue) => pointsFromLabels(issue.labels) === null)
-    .sort((a, b) => b.number - a.number);
 }
 
 /**
@@ -529,91 +503,6 @@ function openPullRequestIssueRefs(): number[] {
   return refs;
 }
 
-/**
- * Appraises one issue and acts on the answer.
- *
- * Runs in the loop's own directory rather than a worktree: appraisal is read-only, so it needs no
- * checkout of its own and paying for one would defeat the point of separating it from the worker.
- */
-async function appraise(issue: Issue): Promise<AppraisalVerdict> {
-  const say = (message: string) => log(`#${issue.number}  ${message}`);
-  const cwd = join(RUN_DIR, `appraise-${issue.number}`);
-  mkdirSync(cwd, { recursive: true });
-
-  const prompt = renderPrompt(ctx, 'appraise.md', {
-    ISSUE: String(issue.number),
-    TITLE: issue.title,
-    AGE_DAYS: String(CONFIG.ageDays),
-  });
-  mark(issue.number, issue.title, 'appraising');
-  const run = await runAgent(ctx, 'appraiser', issue.number, cwd, SEATS.appraiser, prompt);
-  if (run.exitCode !== 0) {
-    say(`appraiser exited ${run.exitCode}; its verdict is not trusted and the issue stays unsized`);
-    mark(issue.number, issue.title, 'failed', `appraiser exited ${run.exitCode}`);
-    rmSync(cwd, { recursive: true, force: true });
-    return 'failed';
-  }
-
-  const result = readResult<AppraisalResult>(cwd, APPRAISAL_FILE);
-  if (!result) {
-    say('appraiser wrote no verdict; leaving the issue unsized');
-    mark(issue.number, issue.title, 'failed', 'no appraisal verdict');
-    return 'failed';
-  }
-  say(`appraisal: ${result.verdict}${result.points ? ` at ${result.points} points` : ''}; ${result.reason}`);
-  const stage =
-    result.verdict === 'valid' ? 'sized' : result.verdict === 'already-fixed' || result.verdict === 'obsolete' ? 'closed' : 'handed-off';
-  mark(issue.number, issue.title, stage, result.points ? `${result.verdict}, ${result.points} points` : result.verdict);
-
-  switch (result.verdict) {
-    case 'already-fixed':
-    case 'obsolete':
-      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
-      break;
-
-    case 'needs-decision':
-    case 'needs-human':
-      mutate(ctx, `label #${issue.number} ${result.verdict}`, [
-        'gh',
-        'issue',
-        'edit',
-        String(issue.number),
-        '--add-label',
-        result.verdict,
-      ]);
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
-      break;
-
-    case 'valid':
-      if (result.points) {
-        mutate(ctx, `size #${issue.number} at ${result.points}`, [
-          'gh',
-          'issue',
-          'edit',
-          String(issue.number),
-          '--add-label',
-          `size: ${result.points}`,
-        ]);
-        if (result.disagrees && result.priorSize) {
-          mutate(ctx, `note the sizing disagreement on #${issue.number}`, [
-            'gh',
-            'issue',
-            'comment',
-            String(issue.number),
-            '--body',
-            `Re-sized at ${result.points} points, previously \`${result.priorSize}\`. ${result.reason}`,
-          ]);
-        }
-      } else {
-        say('appraiser called it valid but gave no size; leaving it for the next pass');
-      }
-      break;
-  }
-
-  rmSync(cwd, { recursive: true, force: true });
-  return result.verdict;
-}
-
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -635,7 +524,7 @@ async function main(): Promise<void> {
   step(`${PROJECT.name} burn-down-github-issues`);
   log(`run pid ${process.pid} started ${new Date().toISOString()}`);
   log(`base ${BASE} | last ${CONFIG.ageDays} days | up to ${MAX_POINTS} points | merge: ${CONFIG.autoMerge}`);
-  log(`appraiser ${seatLabel(SEATS.appraiser)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)}`);
+  log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)}`);
   if (SEATS.worker.engine === SEATS.reviewer.engine) {
     log('WARNING: worker and reviewer share an engine, so the merge gate shares the author\'s blind spots');
   }
@@ -704,7 +593,7 @@ async function main(): Promise<void> {
     // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
     // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
     if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
-    const toAppraise = selectForAppraisal(allIssues()).slice(0, APPRAISE_LIMIT);
+    const toAppraise = selectForAppraisal(allIssues(), CONFIG).slice(0, APPRAISE_LIMIT);
     if (toAppraise.length === 0) {
       log('nothing to appraise; the window is fully sized');
     } else {
@@ -714,7 +603,31 @@ async function main(): Promise<void> {
         toAppraise,
         CONFIG.appraiserConcurrency,
         async (issue) => {
-          await appraise(issue);
+          mark(issue.number, issue.title, 'appraising');
+          const outcome = await appraiseIssue(ctx, issue, {
+            ageDays: CONFIG.ageDays,
+            seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
+            confirmCloses: CONFIG.confirmCloses,
+          });
+          const stage =
+            outcome.verdict === 'failed'
+              ? 'failed'
+              : outcome.verdict === 'valid'
+                ? 'sized'
+                : outcome.verdict === 'already-fixed' || outcome.verdict === 'obsolete'
+                  ? outcome.close === 'confirmed' || outcome.close === 'skipped'
+                    ? 'closed'
+                    : 'handed-off'
+                  : 'handed-off';
+          const note =
+            outcome.verdict === 'failed'
+              ? outcome.reason
+              : outcome.points
+                ? `${outcome.verdict}, ${outcome.points} points`
+                : outcome.close
+                  ? `${outcome.verdict}, close ${outcome.close}`
+                  : outcome.verdict;
+          mark(issue.number, issue.title, stage, note);
         },
         (issue) => `#${issue.number}`,
       );

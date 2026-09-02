@@ -56,7 +56,8 @@ export default {
   } satisfies ProjectConfig,
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
   // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
-  // seats: { appraiser: 'codex', worker: 'codex', reviewer: 'claude:claude-opus-5' }.
+  // seats: { appraiser: 'codex', confirmer: 'claude:claude-opus-5', worker: 'codex', reviewer: 'claude:claude-opus-5' },
+  // and confirmCloses (default true): a close proposed by the appraiser needs the confirmer's agreement.
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
   // floor: { cadenceMinutes: 10, drainMinutes: 60 } starts walk-the-floor beside the loop; see "The line" below.
 };

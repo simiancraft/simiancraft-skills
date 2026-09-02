@@ -172,6 +172,10 @@ asks the walker to finish what is pending and exit, and the loop waits for that 
 
 ## Sizing
 
+Sizing is the sibling `appraise-github-issues` skill, called as a library; its prompts, verdicts,
+and the second-engine confirmer that must agree before a close are documented there. The loop adds
+only selection of the unsized window and the board lines.
+
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
 carried on issues by the `size: N` labels. An issue already sized above the band is left
 alone; an unsized issue is sized by the appraiser, which runs as its own cheap population ahead of

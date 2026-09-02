@@ -58,6 +58,7 @@ bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling 
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the sizing pass; --appraise-limit N caps it instead
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
+bun run <this-skill-dir>/loop.ts --appraiser codex:gpt-5.6-sol --confirmer claude:claude-opus-5   # the sizing seats
 bun run <this-skill-dir>/watch.ts                      # follow the current run; --wait for its terminal lines only
 bun run <this-skill-dir>/loop.ts --pulse 2             # operator board every 2 minutes (default 5); --silent turns it off
 ```
