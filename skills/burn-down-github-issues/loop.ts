@@ -38,7 +38,7 @@ import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, mutate, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { configureStatus, elapsed, lineState, mark, pulse, setLine, startPulse } from './status.ts';
+import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -224,7 +224,7 @@ async function waitForGo(where: string): Promise<void> {
       log(`line is paused (${sw.reason || 'no reason given'}); holding ${where} until ${SWITCH_FILE} says go`);
       announced = true;
     } else if (!SILENT) {
-      console.log(`⏸️ paused ${elapsed(lineState().since)}  holding ${where}  ⏱ ${new Date().toISOString().slice(11, 19)}`);
+      console.log(`⏸️ paused ${elapsed(lineState().since)}  holding ${where}  ⏱ ${stamp()}`);
     }
     await Bun.sleep(SWITCH_POLL_MS);
   }
@@ -634,9 +634,11 @@ async function main(): Promise<void> {
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the
     // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
+    const stranded = findStranded(ctx, allIssues(), CONFIG.skipLabels);
+    for (const entry of stranded) mark(entry.issue.number, entry.issue.title, 'working', `resumed PR #${entry.result.pr}`);
     await resumeStranded(
       ctx,
-      findStranded(ctx, allIssues(), CONFIG.skipLabels),
+      stranded,
       CONFIG.concurrency,
       MAX_POINTS,
     );

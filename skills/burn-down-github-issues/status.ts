@@ -46,10 +46,12 @@ export function configureStatus(options: { silent: boolean }): void {
   silent = options.silent;
 }
 
-function stamp(date: Date): string {
+/** Board stamps are local wall-clock time, the operator's clock; the driver log stays UTC. */
+export function stamp(date = new Date()): string {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm} ${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss} ${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
 }
 
 export function elapsed(since: Date, now = new Date()): string {
