@@ -23,9 +23,9 @@ the list, so two processes never race on a rewrite and a crash mid-write loses a
 
 ```json
 { "id": "pull-request:1234", "addedAt": "2026-01-01T00:00:00Z", "source": "burndown",
-  "text": "fix(orders): validate all fields before submit",
+  "text": "fix(search): return an empty result set as a page, not an error",
   "ref": { "pullRequest": 1234, "sha": "<merge commit>", "mergedAt": "2026-01-01T00:00:00Z",
-           "paths": ["app/orders/form.tsx"] } }
+           "paths": ["src/search/results.tsx"] } }
 ```
 
 - `id` is the only required field besides `text`. Two items with the same id are one item; the
@@ -72,7 +72,8 @@ vocabularies, and the walker refuses to write an entry outside them.
 
 The split matters. A terminal verdict retires the item. A pending verdict leaves it on the walk
 list. `absent` and `down` are verdicts, not pending states: the walker knows the environment is
-wrong, files an incident, and walks the item again only after a fix lands. `not-checkable` is a
+wrong, files an incident, attempts the fix, and walks the item again on the next wake; a second
+failure while that incident is open files nothing new. `not-checkable` is a
 known unknown, kept honest by its reason, and never the default; an item the walker cannot classify
 gets no entry and is walked again next wake.
 
@@ -83,8 +84,8 @@ After every terminal or repair-pending entry, the walker looks for a callback by
 - `on-pass` after `present`, `intact`, and `not-checkable`
 - `on-fail` after `absent` and `down`, **before** any incident is filed or fix attempted
 
-Nothing runs after `not-yet-deployed` or `unverified`, and nothing runs inside a configured quiet
-window, where a `down` is expected rather than evidence.
+Nothing runs after `not-yet-deployed` or `unverified`, and neither callback runs inside a
+configured quiet window, where a `down` is expected rather than evidence.
 
 A callback is either or both of:
 

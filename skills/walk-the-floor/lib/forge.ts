@@ -19,7 +19,8 @@ export function itemId(pullRequest: number): string {
 }
 
 export function mergedSince(repo: string, baseBranch: string, sinceIso: string, cwd: string): MergedPullRequest[] {
-  const since = sinceIso.slice(0, 19).replace('T', 'T');
+  // gh's search syntax takes a bare ISO timestamp without the trailing zone designator.
+  const since = sinceIso.slice(0, 19);
   const proc = Bun.spawnSync(
     [
       'gh', 'pr', 'list', '-R', repo, '--state', 'merged', '--base', baseBranch, '--limit', '100',

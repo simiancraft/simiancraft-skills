@@ -20,6 +20,7 @@ import { invokeRootFrom, repoRootFrom } from '../fix-github-issue/lib/config.ts'
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
 import { log, sh, step } from '../fix-github-issue/lib/shell.ts';
+import { matchesPath } from '../fix-github-issue/lib/staleness.ts';
 import { runCallback } from './lib/callbacks.ts';
 import { DRIVER_SKILLS, inQuietWindow, loadWalkConfig, type Walk } from './lib/config.ts';
 import {
@@ -73,6 +74,10 @@ if (EVERY !== null && (!Number.isInteger(EVERY) || EVERY <= 0)) {
   process.exit(2);
 }
 const MAX_POINTS = Number(opt('max-points') ?? 5);
+if (!Number.isInteger(MAX_POINTS) || MAX_POINTS <= 0) {
+  console.error(`--max-points expects a positive integer, got '${opt('max-points')}'`);
+  process.exit(2);
+}
 
 // ---------------------------------------------------------------------------
 // Config and context
@@ -101,12 +106,6 @@ const CHECKOUT = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor-checkout');
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Prefix match from the repository root, with the loop's suffix rule for dotted patterns. */
-function matchesPath(file: string, pattern: string): boolean {
-  if (pattern.startsWith('.') && !pattern.includes('/')) return file.endsWith(pattern);
-  return file === pattern || file.startsWith(pattern);
-}
 
 function walksFor(item: ListItem): Walk[] {
   const paths = item.ref?.paths ?? [];
@@ -240,7 +239,7 @@ async function wake(): Promise<boolean> {
       if (!LIVENESS_ONLY) await repair(entry, deployed);
       return wrong;
     }
-    await runCallback(DIR, 'on-pass', entry, log);
+    if (!inQuietWindow(ENV.quietWindows)) await runCallback(DIR, 'on-pass', entry, log);
   } else {
     log('no environment.baseUrl; skipping liveness');
   }

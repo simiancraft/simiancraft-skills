@@ -7,7 +7,7 @@ description: >-
   append-only ledger, runs conventional on-pass and on-fail callbacks, and when something is down
   or absent files an incident issue and fixes it through fix-github-issue. Use when the task is
   "keep an eye on the deployed base branch", "smoke-check what just merged", "walk the site every
-  ten minutes", or "tell me the moment development goes down". Requires a per-repository
+  ten minutes", or "tell me the moment the deployed environment goes down". Requires a per-repository
   walk-the-floor.config.ts, the fix-github-issue skill, and one environment driver skill
   (playwright-harness for web, expo-ios-simulator or android-emulator-harness for mobile). Skip
   for a rigorous integration suite, which this is not, and for environments with no reachable

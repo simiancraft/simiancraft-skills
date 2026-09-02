@@ -53,13 +53,19 @@ function renderSuspects(suspects: MergedPullRequest[]): string {
     .join('\n');
 }
 
+/** The title every incident for an item carries, so lookups match whole titles rather than substrings. */
+export function incidentTitle(itemId: string, verdict: string): string {
+  return `floor: ${itemId} is ${verdict}`;
+}
+
 /** An open incident already naming this item, or null. */
 export function openIncidentFor(ctx: Context, itemId: string): number | null {
   const raw = sh(ctx, [
     'gh', 'issue', 'list', '--state', 'open', '--label', INCIDENT_LABEL, '--limit', '50', '--json', 'number,title',
   ]);
   const rows = JSON.parse(raw) as Array<{ number: number; title: string }>;
-  return rows.find((row) => row.title.includes(itemId))?.number ?? null;
+  const prefix = `floor: ${itemId} is `;
+  return rows.find((row) => row.title.startsWith(prefix))?.number ?? null;
 }
 
 export function ensureIncidentLabel(ctx: Context): void {
@@ -101,7 +107,7 @@ export async function handleIncident(
     if (!diagnosis) ctx.log('the diagnosis turn produced no usable answer; filing the incident without one');
   }
 
-  const title = `floor: ${entry.itemId} is ${entry.verdict}`;
+  const title = incidentTitle(entry.itemId, entry.verdict);
   const existing = ctx.dryRun ? null : openIncidentFor(ctx, entry.itemId);
   let issue = existing;
   if (issue === null) {
