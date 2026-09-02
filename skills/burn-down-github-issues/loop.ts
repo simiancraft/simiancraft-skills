@@ -313,8 +313,14 @@ if [ -f "$f" ] && sed -n '2p' "$f" | grep -q "^floor: $id is "; then printf 'go\
     const stillPending = () => pendingOnTheFloor().length;
     log(`asking the walker to finish the ${stillPending()} item(s) still on the floor; waiting up to ${drainMinutes} minute(s)`);
     proc.kill('SIGUSR1');
-    const timer = Bun.sleep(drainMinutes * 60_000).then(() => 'timeout' as const);
-    const outcome = await Promise.race([proc.exited.then(() => 'exited' as const), timer]);
+    // A plain timer, cleared on exit: a pending sleep would keep this process alive for the whole
+    // window after the walker had already gone.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((done) => {
+      timer = setTimeout(() => done('timeout'), drainMinutes * 60_000);
+    });
+    const outcome = await Promise.race([proc.exited.then(() => 'exited' as const), timeout]);
+    clearTimeout(timer);
     if (outcome === 'exited') {
       log('walker finished; the floor is clear');
       return;
