@@ -61,6 +61,15 @@ worker failed|reviewer wrote no verdict|exceeded [0-9]+ minutes|refusing to merg
 |did not report a merge|conflicts with|uncommitted changes|Cannot find|SyntaxError
 ```
 
+## When the line is paused
+
+A paused seam logs one line, `line is paused (<reason>); holding <where> until <path> says go`,
+and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
+see the state and the reason. A reason beginning `floor:` was written by the walker's `on-fail`
+callback and names the item that failed; the walker's ledger on `<worktreeRoot>/floor/` and its
+log in `<worktreeRoot>/runs/floor.log` say what it found. A reason without that prefix was written
+by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-switch`.
+
 ## What is not a bug
 
 - **A worker exits non-zero and the issue is left untouched.** The driver refuses to trust the

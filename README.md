@@ -2,7 +2,7 @@
 
 > Claude Code skills for the full arc of a change: farm to table, with receipts.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-17-4c1) ![Agents](https://img.shields.io/badge/agents-4-4c1)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-19-4c1) ![Agents](https://img.shields.io/badge/agents-4-4c1)
 
 Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Most skill collections are grab bags. This one has a spine: it carries a change through its whole life. Plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
 
@@ -33,6 +33,7 @@ Each stage of a change has a home here, and each stage ends in an observable gat
 | **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](skills/prove-work-on-github/SKILL.md) |
 | **Run the whole arc unattended** | issues appraised, fixed, proven, judged by a second engine, and merged one branch at a time | [`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md) |
 | **Fix one known issue unattended** | a worker in its own worktree, a second-engine reviewer, and a merge gated on freshness and green checks | [`fix-github-issue`](skills/fix-github-issue/SKILL.md) |
+| **Keep an eye on the deployed result** | a list of what should now be true, walked on a cadence to the standard "would a user notice", with an incident filed and fixed when it is not | [`walk-the-floor`](skills/walk-the-floor/SKILL.md) |
 
 The seams are contracts with names, not habits. The evidence skill emits artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
 
@@ -89,6 +90,7 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 - **[`fix-github-issue`](skills/fix-github-issue/SKILL.md)**: turns one known issue into a merged pull request. A worker fixes it in its own git worktree and opens a draft pull request carrying proof per `prove-work-on-github`; an isolated second-engine reviewer judges that proof; a serial pull master checks the approval against import-closure staleness and the pull request's own checks before it merges, and parks rather than guesses. Runs standalone from its `fix.ts`, or as the fix stage of another loop, which is what the burndown does with it.
 ### Agents
+- **[`walk-the-floor`](skills/walk-the-floor/SKILL.md)**: a list checker and fixer for a running environment. Wakes once or on a cadence, probes the base URL, puts every merged pull request on its floor, walks each item with a browser or device driver to the standard "would a user notice", and records a rung and a verdict in an append-only ledger. Two conventional callbacks, `on-pass` and `on-fail`, let whatever started it react; the burndown uses `on-fail` to stop its own merge queue. When the environment is down or a change is absent, it files a `floor/incident` issue and hands it to `fix-github-issue`.
 
 - **[`android-emulator-tester`](agents/android-emulator-tester.md)**: automated Android UI/integration testing specialist; drives a real app on a headless emulator and gates on what it observes. Owns the boot, install, drive, and assert loop.
 - **[`android-kotlin-expert`](agents/android-kotlin-expert.md)**: Android native specialist for Kotlin, Java, Gradle, the Jetpack libraries, OpenGL ES and camera pipelines, and React Native / Expo Modules native bridging. Two modes: implement or review.

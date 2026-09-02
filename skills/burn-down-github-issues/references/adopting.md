@@ -58,6 +58,7 @@ export default {
   // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
   // seats: { appraiser: 'codex', worker: 'codex', reviewer: 'claude:claude-opus-5' }.
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
+  // floor: { cadenceMinutes: 10 } starts walk-the-floor beside the loop; see "The line" below.
 };
 ```
 
@@ -142,6 +143,32 @@ every landing-time change is machine-produced; a file humans also edit does not 
 as release noise automatically, while a dependency change still invalidates. Without this key,
 each landing rewrites paths that `alwaysInvalidates` matches, so every queued pull request loses
 its approval and is re-reviewed for noise the machine produced.
+
+## The line: a switch, and a walker that flips it
+
+The loop reads `<worktreeRoot>/runs/line-switch` at three seams: before the appraisal batch, before
+each issue is dispatched, and inside the pull master before every merge. The file's first line is
+`go` or `pause`; anything after it is the reason; an absent file means go, and an unknown word
+means pause. A paused seam holds and polls every thirty seconds, logging once, until the file says
+go. Anyone can flip it:
+
+```bash
+echo pause > <worktreeRoot>/runs/line-switch     # hold every seam
+echo go > <worktreeRoot>/runs/line-switch        # release
+```
+
+With `floor: { cadenceMinutes: N }` in the config and a `walk-the-floor.config.ts` beside it, the
+loop also starts the `walk-the-floor` skill as a child, on `<worktreeRoot>/floor/`, and writes two
+executable callbacks there: `on-fail` pauses the line with a reason naming the failed item, and
+`on-pass` releases a pause that the same item caused and no other, so a pause a person set by
+hand stays until that person clears it. Every merge the loop makes is put on the floor as a list
+item, and the walker checks it against the deployed base on its next wake. The walker's log is
+`<worktreeRoot>/runs/floor.log`. The loop never reads the walker's ledger; the switch is the whole
+interface.
+
+`project.smokeCommand` is the other half: it runs in the lane after the checks are green and
+before the merge, so a change that builds but does not boot parks instead of landing. See the
+`fix-github-issue` skill's `references/pipeline.md`.
 
 ## Preconditions
 

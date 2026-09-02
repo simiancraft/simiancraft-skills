@@ -147,6 +147,23 @@ its own lane: the pool logs the error and moves on, and because every durable fa
 issue, the next run picks that issue back up from its labels. A crash costs a lane its progress,
 never the run its state.
 
+## The line
+
+A file switch, `<worktreeRoot>/runs/line-switch`, stops the loop at its three seams: before the
+appraisal batch, before each dispatch, and inside the pull master before every merge. The pull
+master reaches it through the fix pipeline's `mayMerge` hook, which the loop answers by waiting
+until the switch says go; nothing in the pipeline knows a switch exists. The seam holds rather
+than parks, because a pause is temporary and a parked pull request needs a human.
+
+The switch is how the loop composes with `walk-the-floor` without either knowing the other's
+internals. The walker is a separate process that checks a running environment against a list and
+runs two callbacks, `on-fail` and `on-pass`; the loop starts it, writes those callbacks as shell
+scripts that flip the switch, and puts every merge on the walker's list through the pipeline's
+`afterMerge` hook. A walk that finds the deployed base wrong pauses the line before the walker
+files its incident and attempts a fix; a walk that finds the same item right again releases it.
+The callbacks are executables rather than prompts on purpose: an interlock that stops other
+processes must not depend on an agent following instructions.
+
 ## Sizing
 
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
