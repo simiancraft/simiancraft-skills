@@ -1,0 +1,134 @@
+/**
+ * The walker's config: the repository (shared with the fix pipeline), the environment it walks,
+ * the standing walks, and the walker's own knobs. Read from `walk-the-floor.config.ts` at the
+ * invoking checkout's root; the walker refuses to start without it.
+ */
+
+import { loadProjectConfig, type ProjectConfig } from '../../fix-github-issue/lib/config.ts';
+import type { HealthPath } from './liveness.ts';
+
+export type EnvironmentKind = 'web' | 'ios' | 'android';
+
+/** Which driver skill the walk prompt loads for each kind. A fourth kind is a new row here. */
+export const DRIVER_SKILLS: Record<EnvironmentKind, string> = {
+  web: 'playwright-harness',
+  ios: 'expo-ios-simulator',
+  android: 'android-emulator-harness',
+};
+
+export type Login = {
+  url: string;
+  /** Environment variable NAMES. The loader refuses anything that looks like a value. */
+  userEnv: string;
+  passwordEnv: string;
+  restrictedUserEnv?: string;
+  restrictedPasswordEnv?: string;
+};
+
+export type Environment = {
+  kind: EnvironmentKind;
+  /** The running instance. Absent means no liveness probe and no walks; only classification. */
+  baseUrl?: string;
+  /** Requests the in-process probe makes on every wake. Empty means `/`. */
+  healthPaths: HealthPath[];
+  /** Prints the running commit. Optional; without it items inside `graceMinutes` are `unverified`. */
+  revisionCommand?: string;
+  /** Prints recent logs, read when a walk fails. Optional. */
+  logsCommand?: string;
+  login?: Login;
+  /** Paths the walker may POST to. Default none. */
+  safeEndpoints: string[];
+  graceMinutes: number;
+};
+
+export type Walk = { name: string; paths: string[]; steps: string };
+
+export type WalkKnobs = {
+  autoMerge: 'always' | 'code-only' | 'never';
+  maxReviewRounds: number;
+  cadenceMinutes: number;
+  /** Receives the on-fail ledger entry on stdin. Optional. */
+  notifyCommand?: string;
+  environment: Environment;
+  walks: Walk[];
+  seats: { walker: string; worker: string; reviewer: string };
+};
+
+/** What an adopting repository exports from `walk-the-floor.config.ts`. */
+export type WalkConfig = Partial<Omit<WalkKnobs, 'environment'>> & {
+  project: ProjectConfig;
+  environment: Partial<Environment> & { kind: EnvironmentKind };
+};
+
+const DEFAULT_ENVIRONMENT: Environment = {
+  kind: 'web',
+  healthPaths: [],
+  safeEndpoints: [],
+  graceMinutes: 15,
+};
+
+export const DEFAULTS: WalkKnobs = {
+  autoMerge: 'code-only',
+  maxReviewRounds: 3,
+  cadenceMinutes: 10,
+  environment: DEFAULT_ENVIRONMENT,
+  walks: [],
+  seats: {
+    walker: 'claude:claude-opus-5',
+    worker: 'codex:gpt-5.6-sol',
+    reviewer: 'claude:claude-opus-5',
+  },
+};
+
+export const CONFIG_FILE = 'walk-the-floor.config.ts';
+
+/** A variable name, not a value: upper-case identifier characters only. */
+const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+export async function loadWalkConfig(invokeRoot: string, repoRoot: string): Promise<WalkKnobs & { project: ProjectConfig }> {
+  const loaded = await loadProjectConfig<WalkKnobs>({
+    invokeRoot,
+    repoRoot,
+    fileName: CONFIG_FILE,
+    defaults: DEFAULTS,
+    positiveIntegers: ['maxReviewRounds', 'cadenceMinutes'],
+    help: [
+      'The walker is shared across repositories; everything true of an environment lives in that file.',
+      'Copy the template from references/adopting.md in the walk-the-floor skill and fill it in.',
+    ],
+  });
+
+  // `environment` arrives whole from the file and replaces the default; merge the two so an
+  // adopter that names only a kind and a URL still gets the empty lists and the grace window.
+  const environment: Environment = { ...DEFAULT_ENVIRONMENT, ...(loaded.environment ?? {}) };
+  const faults: string[] = [];
+  if (!(environment.kind in DRIVER_SKILLS)) {
+    faults.push(`environment.kind must be one of ${Object.keys(DRIVER_SKILLS).join(', ')}`);
+  }
+  if (environment.baseUrl !== undefined && !/^https?:\/\//.test(environment.baseUrl)) {
+    faults.push('environment.baseUrl must be an http(s) URL');
+  }
+  if (!Array.isArray(environment.healthPaths)) faults.push('environment.healthPaths must be an array');
+  if (!Array.isArray(environment.safeEndpoints)) faults.push('environment.safeEndpoints must be an array');
+  if (!Number.isInteger(environment.graceMinutes) || environment.graceMinutes <= 0) {
+    faults.push('environment.graceMinutes must be a positive integer');
+  }
+  const login = environment.login;
+  if (login) {
+    for (const key of ['userEnv', 'passwordEnv', 'restrictedUserEnv', 'restrictedPasswordEnv'] as const) {
+      const value = login[key];
+      if (value !== undefined && !ENV_NAME.test(value)) {
+        faults.push(`environment.login.${key} must be an environment variable NAME such as FLOOR_USER, never a value`);
+      }
+    }
+    if (typeof login.url !== 'string' || !login.url) faults.push('environment.login.url must be a URL');
+  }
+  if (!Array.isArray(loaded.walks) || loaded.walks.some((w) => !w?.name || !Array.isArray(w.paths) || !w.steps)) {
+    faults.push('walks must be an array of { name, paths, steps }');
+  }
+  if (faults.length > 0) {
+    console.error([`config ${CONFIG_FILE} is invalid:`, ...faults.map((f) => `  - ${f}`)].join('\n'));
+    process.exit(1);
+  }
+  return { ...loaded, environment };
+}
