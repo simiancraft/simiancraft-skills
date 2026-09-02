@@ -28,7 +28,7 @@ the serial section stays short: it decides whether a finished review still appli
 A review is a judgement about **one commit**, recorded with the SHA it read. The pull master decides
 separately whether that judgement still holds when the branch reaches the front of the queue. An
 earlier version updated branches from the base after they were reviewed, which moved the head out
-from under a finished approval and forced every second lane to park.
+from under a finished approval and forced lanes to park.
 
 **One engine implements, another judges.** By default the worker runs on `codex exec` and the
 reviewer on `claude -p`; both are seats you can reassign. Splitting the engines is not a preference: a reviewer built from the same
@@ -147,8 +147,8 @@ mechanism. A check-command receipt or a rendered frame depends on every module b
 so a base change to a shared chassis file invalidates the proof while touching nothing the diff
 touched. Comparing filenames alone calls that fresh and merges it. At merge time the loop therefore
 walks the branch's imports transitively and intersects the incoming change against that graph.
-On a typical screen component the closure runs to dozens of modules, including shared helpers a
-filename comparison misses entirely.
+A component's closure can run to dozens of modules, including shared helpers a filename
+comparison misses entirely.
 
 Some paths are outside any import graph and invalidate everything in flight: whatever the config's
 `alwaysInvalidates` names, typically the lockfile, the manifest, the schema and its migrations,

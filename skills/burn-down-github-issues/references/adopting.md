@@ -34,8 +34,8 @@ export default {
     conventionDocs: ['AGENTS.md', 'CLAUDE.md'],
     sizingScale: 'where your point scale is documented',
     sharedServices: ['the local database', 'the shared staging environment'],
-    portBase: 9100, // any band your own dev servers do not use
-    portSpan: 800,
+    portBase: 41000, // any band your own dev servers do not use
+    portSpan: 1000,
     pathAliases: [{ prefix: '~/', dir: '.' }],
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
@@ -78,7 +78,7 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `alwaysInvalidates` | see below | ORM schema and bundler config | app config and native build files |
 | `touchPaths` | mechanical merge-boundary classification | schema directory + workflows | migrations directory + workflows |
 | `sharedServices` | what an agent must not reset | database, message queue | database, a shared staging tenant |
-| `portBase` / `portSpan` | `portBase + (issue % portSpan)` | 9100 / 800 | chosen to avoid the dev server's own port |
+| `portBase` / `portSpan` | `portBase + (issue % portSpan)` | 41000 / 1000 | chosen to avoid the dev server's own port |
 
 Also set `worktreeRoot`, which is a sibling directory outside the repository root so no tool that
 walks the working tree has to be told to ignore it.
@@ -189,9 +189,8 @@ that put it there, and removing `loop/dlq` is the redrive.
 
 ## What will surprise you
 
-- **The appraisers are the highest-yield role.** Expect more issues to close as already-fixed or
-  obsolete, with re-checkable receipts, than get fixed by workers; a stale backlog shrinks before
-  anything is coded.
+- **The appraisers can be the highest-yield role.** A stale backlog can shrink before anything is
+  coded, as issues close as already-fixed or obsolete with re-checkable receipts.
 - **The loop executes the tracker, not your intent.** An issue that is internally coherent and
   points the wrong way will be implemented competently in the wrong direction; every stage judges
   the diff against the issue. The guard is `conventionDocs`, which is why those files must actually

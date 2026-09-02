@@ -85,8 +85,7 @@ is one line but which needs a rendered before-and-after across four surfaces is 
 proof the change will owe as part of its size.
 
 If the issue is already carrying a `size: N` label, still form your own judgement and say so; a
-disagreement is worth recording. If it carries a label from an older sizing scheme, give it the
-point value that replaces it.
+disagreement is worth recording.
 
 ## Step 3: write the verdict
 

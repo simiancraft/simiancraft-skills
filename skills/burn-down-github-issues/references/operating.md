@@ -18,7 +18,7 @@ tr '\0' ' ' < /proc/$PID/cmdline     # confirm it names loop.ts before you trust
 
 - Launching under `nohup` or a shell wrapper leaves a short-lived parent that matches the pattern
   and exits within a second. A watcher armed on it reports the run finished moments in, while the
-  real run continues for an hour.
+  real run continues.
 - A monitor whose own command line contains the pattern matches itself, so the process never looks
   absent and the watch never ends.
 
@@ -123,7 +123,7 @@ is how a base branch gets broken.
 
 `mergeable` from GitHub is not freshness. A pull request can be MERGEABLE and CLEAN while its
 green check describes a tree that no longer exists: a change to the test runner can land on the
-base minutes after a worker finishes, and that branch's suite fails to import the moment it is
+base minutes after a worker finishes, and that branch's suite would fail to import the moment it is
 caught up.
 
 ## Cleaning up

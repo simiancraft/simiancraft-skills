@@ -180,7 +180,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 **Files rewritten:**
 - `skills/burn-down-github-issues/loop.ts`: `main` calls `reconcile(ctx)`, `repairDurableState(ctx, ...)`, `resumeStranded(ctx, ...)`, then `pool(candidates, concurrency, (issue) => fixIssue(ctx, issue, { maxPoints }))`. Appraisal and selection are untouched. `renderPrompt` for `appraise.md` reads from the burndown's own `prompts/`, so `ctx.promptsDir` is a list searched in order: the caller's directory first, the fix skill's second.
 
-**Gate:** typecheck, dry run, closure probe, and a real run: `bun run loop.ts --limit 1` from an adopting repository against a fresh sized issue in the window (raise `ageDays` in the config if the window is empty). Confirm on the forge: the draft pull request opens, the reviewer verdict file lands, the merge or park matches the log, the worktree is removed. Compare the run log's driver lines against the last pre-extraction run: the same events in the same order.
+**Gate:** typecheck, dry run, closure probe, and a real run: `bun run loop.ts --limit 1` from an adopting repository against a fresh sized issue in the window (raise `ageDays` in the config if the window is empty). Confirm on the forge: the draft pull request opens, the reviewer verdict file lands, the merge or park matches the log, the worktree is removed. Compare the run log's driver lines against a baseline run captured before Commit 1: the same events in the same order.
 
 ### Commit 6: add the `fix.ts` command
 
@@ -230,8 +230,8 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 ## Verification checklist
 
 - [ ] `bunx tsc --noEmit -p .` passes at every commit.
-- [ ] Dry run and closure probe from an adopting repository match the pre-extraction capture at every commit.
-- [ ] One real burndown run (`--limit 1`) after Commit 5 produces the same driver-line sequence as the last pre-extraction run and the same forge state (draft opened, marked ready, reviewed, merged or parked, worktree removed).
+- [ ] Dry run and closure probe from an adopting repository match a baseline capture taken before Commit 1 at every commit.
+- [ ] One real burndown run (`--limit 1`) after Commit 5 produces the same driver-line sequence as the baseline run and the same forge state (draft opened, marked ready, reviewed, merged or parked, worktree removed).
 - [ ] One real standalone `fix.ts --issue N` after Commit 6.
 - [ ] `loop.ts` is under 800 lines and contains no worker, reviewer, or merge logic.
 - [ ] A parked issue now carries a comment with the reason; a parked pull request from the reviewer-crash path now carries `loop/parked`.

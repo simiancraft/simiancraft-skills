@@ -399,8 +399,8 @@ const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
  * How long the merge gate waits for a pull request's checks before parking instead of merging.
- * Size this to the repository's slowest required check; some builds legitimately take over half
- * an hour on a fresh head.
+ * Size this to the repository's slowest required check; some builds legitimately take a long
+ * time on a fresh head.
  */
 const CHECKS_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -583,7 +583,7 @@ function sh(cmd: string[], cwd = REPO_ROOT, attempts = 4): string {
   // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
   // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is
   // one that can comment on a downstream tracker: an adopting checkout can carry two remotes
-  // pointing at two different repositories, so this is not hypothetical.
+  // pointing at two different repositories.
   const argv = cmd[0] === 'gh' && !cmd.includes('-R') ? [...cmd, '-R', PROJECT.repo] : cmd;
   let lastError = '';
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -1726,7 +1726,7 @@ type Landing = 'merged' | 'park' | 'revise' | 'stale';
  * This performs no git writes and no merge. It reads the tree as it stands, records the commit it
  * read, and returns the verdict; whether that verdict still applies at merge time is the pull
  * master's question, not this one's. Keeping review out of the serial section is what stops one
- * eight-minute review from holding up every other lane behind it.
+ * long review from holding up every other lane behind it.
  */
 async function review(
   issue: Issue,

@@ -9,7 +9,7 @@
 
 ## Goal
 
-The burndown proves each change before it merges, and that proof has a ceiling: it never runs the deployed result. A change that passes every check and then crashes the environment on boot, or renders the site wrong, or empties a search index, goes unnoticed until a person looks, and every merge after it lands on a broken base.
+The burndown proves each change before it merges, and that proof has a ceiling: it never runs the deployed result. A change that passes every check and then crashes the environment on boot, or renders the site wrong, or drops a cache, goes unnoticed until a person looks, and every merge after it lands on a broken base.
 
 This plan adds a second skill, `walk-the-floor`: a machine that wakes on a cadence, reads a list of things that should now be true in a running environment, goes and looks at each one to a sanity standard (would a user notice), records what it found in a ledger, and when something is wrong files an incident and fixes it through `fix-github-issue`. It knows nothing about the burndown. Two conventional callback slots, `on-pass` and `on-fail`, let whoever started it add behavior; the burndown uses `on-fail` to pause its own line.
 
@@ -24,7 +24,7 @@ Done looks like: the walker runs alone against any configured environment from a
 - **Verdict.** `present` (the change is observable), `intact` (the surface still works; the change itself is not observable), `absent` (deployed revision includes the merge and the change is not there), `down` (liveness failed), `not-yet-deployed` (merge SHA is not an ancestor of the deployed revision; pending), `unverified` (no revision signal and inside the grace window; pending), `not-checkable` (observing it would require an external side effect or credentials the config does not provide; terminal, with the reason).
 - **Callback.** `on-pass` and `on-fail`, found by name in the floor. Either an executable, run by the driver with the ledger entry as JSON on stdin before anything else happens, or a Markdown prompt, handed to the walker verbatim. Both may exist; the executable runs first. The executable form exists because a safety interlock must not depend on an agent following a prompt.
 - **Incident.** An issue the walker files when a verdict is `down` or `absent`: the ledger entry, the last clean entry, the suspect merges between them from the forge, and a log excerpt. Filing it is intrinsic, not a callback, because the fix pipeline is issue-shaped and needs one to work.
-- **Standing walk.** A named, prose-described sanity walk in the config, keyed to path globs: "log in, open global search, search a known term, confirm at least one record renders". The driver picks walks by the item's touched paths; the walker improvises the `look` rung on top.
+- **Standing walk.** A named, prose-described sanity walk in the config, keyed to path globs: "log in, open a list view, confirm at least one row renders". The driver picks walks by the item's touched paths; the walker improvises the `look` rung on top.
 
 ## Current surface area
 
@@ -213,10 +213,10 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 
 ### Commit 10: configure an adopting repository
 
-**Goal:** One real floor, in an adopting repository, not in this one.
+**Goal:** A floor for an adopting repository, which lives there and not in this one.
 
 **Files created (in the adopting repository):**
-- `walk-the-floor.config.ts`: re-exports `project` from the burndown config; `environment.kind: 'web'`, its deployed base URL and health paths, `revisionCommand` if the host can answer it, `logsCommand`, login as environment variable names, `safeEndpoints: []` until a webhook is confirmed side-effect free, a few standing walks (sign in; a list view renders rows; open one row; open one secondary view), `cadenceMinutes: 10`.
+- `walk-the-floor.config.ts`: re-exports `project` from the burndown config; `environment.kind: 'web'`, its deployed base URL and health paths, `revisionCommand` if the host can answer it, `logsCommand`, login as environment variable names, `safeEndpoints: []` until an endpoint is confirmed side-effect free, a few standing walks (sign in; a list view renders rows; open one row; open one secondary view), `cadenceMinutes: 10`.
 
 **Files rewritten (in the adopting repository):**
 - `burn-down-github-issues.config.ts`: `floor: { cadenceMinutes: 10 }` and `project.smokeCommand` set to a command that boots the server and exits on the first request served.
