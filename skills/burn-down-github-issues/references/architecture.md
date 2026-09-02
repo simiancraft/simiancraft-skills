@@ -164,6 +164,12 @@ files its incident and attempts a fix; a walk that finds the same item right aga
 The callbacks are executables rather than prompts on purpose: an interlock that stops other
 processes must not depend on an agent following instructions.
 
+The walker outlives the run's last merge by design. Those merges reach the floor through
+`afterMerge` seconds before the loop prints done, so stopping the walker there would leave them
+unwalked (the first run with the walker did exactly that). The loop instead drains it: SIGUSR1
+asks the walker to finish what is pending and exit, and the loop waits for that with a cap
+(`floor.drainMinutes`) before stopping it outright.
+
 ## Sizing
 
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),

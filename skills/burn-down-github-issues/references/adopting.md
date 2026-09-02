@@ -58,7 +58,7 @@ export default {
   // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
   // seats: { appraiser: 'codex', worker: 'codex', reviewer: 'claude:claude-opus-5' }.
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
-  // floor: { cadenceMinutes: 10 } starts walk-the-floor beside the loop; see "The line" below.
+  // floor: { cadenceMinutes: 10, drainMinutes: 60 } starts walk-the-floor beside the loop; see "The line" below.
 };
 ```
 
@@ -163,8 +163,15 @@ executable callbacks there: `on-fail` pauses the line with a reason naming the f
 `on-pass` releases a pause that the same item caused and no other, so a pause a person set by
 hand stays until that person clears it. Every merge the loop makes is put on the floor as a list
 item, and the walker checks it against the deployed base on its next wake. The walker's log is
-`<worktreeRoot>/runs/floor.log`. The loop never reads the walker's ledger; the switch is the whole
-interface.
+`<worktreeRoot>/runs/floor.log`. The loop never reads the walker's ledger to decide anything; the
+switch is the whole interface.
+
+When the run is done the loop does not kill the walker; its last merges landed on the floor seconds
+earlier and are still unwalked. It sends SIGUSR1, which tells the walker to finish every pending
+item and exit, and waits up to `floor.drainMinutes` (default 60) for that. If items are still
+pending at the cap (a deploy that never landed, an incident whose fix is still running) the loop
+stops the walker, names the count, and prints the `walk.ts --once` command that finishes them.
+Ctrl+C still stops the walker outright.
 
 `project.smokeCommand` is the other half: it runs in the lane after the checks are green and
 before the merge, so a change that builds but does not boot parks instead of landing. See the

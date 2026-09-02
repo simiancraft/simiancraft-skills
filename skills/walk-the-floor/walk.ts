@@ -10,6 +10,10 @@
  *   bun run <skill-dir>/walk.ts --dir <floor> --liveness-only --once
  *   bun run <skill-dir>/walk.ts --dir <floor> --once
  *   bun run <skill-dir>/walk.ts --dir <floor> --every 10
+ *
+ * A forever walker drains on SIGUSR1: it finishes every pending item on the floor, then exits 0.
+ * A producer that started it (the issue burndown) sends that instead of SIGTERM when its own run
+ * is done, so the last merges it put on the floor still get walked.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -431,14 +435,46 @@ async function main(): Promise<void> {
     process.exitCode = wrong ? 1 : 0;
     return;
   }
+
+  // Draining: SIGUSR1 means "finish what is on the floor, then stop". A sleeping walker wakes at
+  // once; a walking one finishes its wake. Either way it exits as soon as nothing is pending.
+  let draining = false;
+  let wakeEarly: (() => void) | null = null;
+  process.on('SIGUSR1', () => {
+    if (!draining) log('asked to drain: finishing every pending item on the floor, then stopping');
+    draining = true;
+    wakeEarly?.();
+  });
+  const floorIsClear = () => pending(readList(DIR), readLedger(DIR)).length === 0;
+
   for (;;) {
+    if (draining && floorIsClear()) {
+      log('the floor is clear; stopping');
+      step('done');
+      return;
+    }
     try {
       await wake();
     } catch (error) {
       log(`wake threw: ${(error as Error).message}`);
     }
+    if (draining) {
+      if (floorIsClear()) {
+        log('the floor is clear; stopping');
+        step('done');
+        return;
+      }
+      log(`draining: ${pending(readList(DIR), readLedger(DIR)).length} item(s) still pending`);
+    }
     log(`sleeping ${EVERY} minute(s)`);
-    await Bun.sleep((EVERY as number) * 60_000);
+    await new Promise<void>((done) => {
+      const timer = setTimeout(done, (EVERY as number) * 60_000);
+      wakeEarly = () => {
+        clearTimeout(timer);
+        done();
+      };
+    });
+    wakeEarly = null;
   }
 }
 

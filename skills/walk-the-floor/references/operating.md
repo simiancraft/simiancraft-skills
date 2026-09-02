@@ -87,3 +87,9 @@ read before anything else.
 
 Ctrl+C, or SIGTERM to the pid in `<floor>/floor.lock`. The lock is released; an agent turn in
 flight is killed with its process group and leaves no ledger entry; the next wake starts clean.
+
+SIGUSR1 to the same pid drains instead: a forever walker finishes every pending item on the floor,
+then exits 0 on its own. A sleeping walker wakes at once; a walking one finishes its wake first.
+A producer that started the walker sends this when its own run is done, so the last items it put
+on the floor still get walked. An item that stays pending (`not-yet-deployed` against a deploy
+that never lands) keeps the walker draining at its cadence; the producer decides how long to wait.

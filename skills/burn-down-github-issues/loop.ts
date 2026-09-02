@@ -38,6 +38,7 @@ import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, mutate, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
+import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,14 @@ type LoopKnobs = {
    * floor, and stops merging the moment a walk finds the deployed base wrong. Requires a
    * walk-the-floor.config.ts in the same repository.
    */
-  floor?: { cadenceMinutes: number };
+  floor?: {
+    cadenceMinutes: number;
+    /**
+     * How long, after the run is done, to wait for the walker to finish the items still on the
+     * floor (the run's own last merges among them) before stopping it. Default 60.
+     */
+    drainMinutes?: number;
+  };
 };
 
 const DEFAULTS: LoopKnobs = {
@@ -181,6 +189,16 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
   ],
 });
 
+if (CONFIG.floor) {
+  for (const key of ['cadenceMinutes', 'drainMinutes'] as const) {
+    const value = CONFIG.floor[key];
+    if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+      console.error(`config floor.${key} must be a positive integer, got ${JSON.stringify(value)}`);
+      process.exit(1);
+    }
+  }
+}
+
 const PROJECT = CONFIG.project;
 const REMOTE = PROJECT.remote;
 const BASE = PROJECT.baseBranch;
@@ -249,7 +267,9 @@ function putOnTheFloor(event: { issue: number; title: string; pr: number; sha: s
  * executable form is deliberate: the interlock must not depend on an agent following a prompt.
  * Returns the function that stops it.
  */
-function startWalker(cadenceMinutes: number): () => void {
+type Walker = { stop: () => void; drain: () => Promise<void> };
+
+function startWalker(cadenceMinutes: number, drainMinutes: number): Walker {
   mkdirSync(FLOOR_DIR, { recursive: true });
   mkdirSync(RUN_DIR, { recursive: true });
   const onFail = `#!/bin/sh
@@ -279,13 +299,35 @@ if [ -f "$f" ] && sed -n '2p' "$f" | grep -q "^floor: $id is "; then printf 'go\
     stderr: logFd,
   });
   log(`walker started (pid ${proc.pid}) on ${FLOOR_DIR}, every ${cadenceMinutes} minute(s); log in ${join(RUN_DIR, 'floor.log')}`);
-  return () => {
+  const stop = () => {
     try {
       proc.kill();
     } catch {
       // already gone
     }
   };
+  // The run's last merges land on the floor seconds before "done"; killing the walker there
+  // would leave them unwalked. SIGUSR1 asks it to finish what is pending and exit on its own.
+  const drain = async () => {
+    if (proc.exitCode !== null) return;
+    const stillPending = () => pendingOnTheFloor().length;
+    log(`asking the walker to finish the ${stillPending()} item(s) still on the floor; waiting up to ${drainMinutes} minute(s)`);
+    proc.kill('SIGUSR1');
+    const timer = Bun.sleep(drainMinutes * 60_000).then(() => 'timeout' as const);
+    const outcome = await Promise.race([proc.exited.then(() => 'exited' as const), timer]);
+    if (outcome === 'exited') {
+      log('walker finished; the floor is clear');
+      return;
+    }
+    log(`walker still has ${stillPending()} item(s) pending after ${drainMinutes} minute(s); stopping it. Finish them with: bun run ${WALK_TS} --dir ${FLOOR_DIR} --once`);
+    stop();
+  };
+  return { stop, drain };
+}
+
+/** Floor items with no terminal verdict yet, read the same way the walker reads them. */
+function pendingOnTheFloor(): FloorItem[] {
+  return pending(readList(FLOOR_DIR), readLedger(FLOOR_DIR));
 }
 
 type AppraisalVerdict = 'valid' | 'already-fixed' | 'obsolete' | 'needs-decision' | 'needs-human' | 'failed';
@@ -604,8 +646,12 @@ async function main(): Promise<void> {
   // A polite kill should leave nothing behind: release the lock and take the agents with it. Only
   // SIGKILL can still leave wreckage, which is what `reconcile` exists to clear on the next run.
   // The walker is a child that would otherwise keep this process alive after the run is done, so
-  // it is stopped explicitly at the end of main as well as on every exit path.
-  const stopWalker = CONFIG.floor && !DRY_RUN ? startWalker(CONFIG.floor.cadenceMinutes) : () => {};
+  // main drains it (finish the floor, then exit) and every other exit path stops it outright.
+  const walker: Walker =
+    CONFIG.floor && !DRY_RUN
+      ? startWalker(CONFIG.floor.cadenceMinutes, CONFIG.floor.drainMinutes ?? 60)
+      : { stop: () => {}, drain: async () => {} };
+  const stopWalker = walker.stop;
   const stopPulse = startPulse(PULSE_MINUTES);
   if (!SILENT) log(`operator board: a line per issue on every change, the whole board every ${PULSE_MINUTES} minute(s); --silent turns it off`);
   process.on('exit', () => {
@@ -677,7 +723,7 @@ async function main(): Promise<void> {
     step('done');
     pulse('final');
     stopPulse();
-    stopWalker();
+    await walker.drain();
     return;
   }
 
@@ -704,7 +750,7 @@ async function main(): Promise<void> {
   step('done');
   pulse('final');
   stopPulse();
-  stopWalker();
+  await walker.drain();
 }
 
 await main();
