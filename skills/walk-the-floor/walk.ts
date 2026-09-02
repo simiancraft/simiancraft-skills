@@ -29,7 +29,6 @@ import {
   claimFloorLock,
   evidenceDir,
   LIVENESS_ITEM,
-  lastClean,
   type LedgerEntry,
   type ListItem,
   pending,
@@ -246,8 +245,11 @@ async function wake(): Promise<boolean> {
   // 2. Produce items from the forge for merges nobody else put on the floor.
   if (!NO_FORGE) {
     const list = readList(DIR);
+    // Since the newest merge already on the floor; on a fresh floor, since the first time the
+    // walker looked, so nothing merged after the floor opened is missed.
+    const ledger = readLedger(DIR);
     const since =
-      newestForgeItem(list) ?? lastClean(readLedger(DIR))?.checkedAt ?? new Date(Date.now() - CONFIG.cadenceMinutes * 60_000).toISOString();
+      newestForgeItem(list) ?? ledger[0]?.checkedAt ?? new Date(Date.now() - CONFIG.cadenceMinutes * 60_000).toISOString();
     try {
       const added = appendFromForge(DIR, PROJECT.repo, PROJECT.baseBranch, since, REPO_ROOT);
       if (added > 0) log(`forge: ${added} merged pull request(s) since ${since} put on the floor`);
