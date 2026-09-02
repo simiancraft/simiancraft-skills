@@ -123,7 +123,7 @@ worker's, and a merge without it would rest on one self-report.
 Two boundaries are not knobs, deliberately. The worker never edits production data, and it never
 makes a product decision: an issue whose body asks a person to decide, settle, or rule on something
 comes back as `needs-decision` with the question stated, however small the diff would have been.
-That category is common in this tracker and it is the one place a plausible-looking diff can do
+That category is common in most trackers and it is the one place a plausible-looking diff can do
 real harm.
 
 ## Why worktrees
@@ -153,20 +153,20 @@ Falling behind is not the same as having stale proof. Following the freshness ru
 incoming change intersects the paths the proof covers.
 
 **Covered paths are the import closure, not the edited files.** That distinction is the whole
-mechanism. A `bun check` receipt or a rendered frame depends on every module beneath the component,
+mechanism. A check-command receipt or a rendered frame depends on every module beneath the component,
 so a base change to a shared chassis file invalidates the proof while touching nothing the diff
 touched. Comparing filenames alone calls that fresh and merges it. At merge time the loop therefore
 walks the branch's imports transitively and intersects the incoming change against that graph.
-Measured on `domain/vendors/list.tsx`: 70 modules, including `data-table/helpers.tsx`, which a
+Measured on one adopter's list screen: 70 modules, including a shared table helper that a
 filename comparison misses entirely.
 
-Some paths are outside any import graph and invalidate everything in flight: the lockfile,
-`package.json`, `schema.prisma` and its migrations, generated output, build configs, `shared/`, and
-the workflows. Those short-circuit to stale.
+Some paths are outside any import graph and invalidate everything in flight: whatever the config's
+`alwaysInvalidates` names, typically the lockfile, the manifest, the schema and its migrations,
+generated output, build configs, and the workflows. Those short-circuit to stale.
 
 Freshness gates an **approval**, not a rejection. A rejection names a gap in the work, and the base
 moving does not fill it, so a rejected change catches up and goes straight to its revision rather
-than being re-reviewed first. Re-reviewing one only re-derives it, which cost #3313 ten minutes of a
+than being re-reviewed first. Re-reviewing one only re-derives it; in one run that cost ten minutes of a
 reviewer reaching the same verdict twice.
 
 | Incoming change | What happens |
@@ -199,11 +199,11 @@ feature complete. A revision round puts it back to draft first, so the pushes in
 The driver refuses to review a draft: a draft is the worker's own statement that the work is
 unfinished, and approving one can bless a branch it still intends to push to.
 
-The workflow cooperates: `pull-request.yml` gates its job on
-`github.event.pull_request.draft == false` and carries `ready_for_review` in its trigger types, so
-a draft queues nothing and the checks run once, at the moment the branch is declared finished
-(#3354). Before that guard landed, `pull_request` fired on drafts too and the discipline above
-bought ordering but not budget.
+The adopting repository's workflow has to cooperate: gate the job on
+`github.event.pull_request.draft == false` and carry `ready_for_review` in the trigger types, so
+a draft queues nothing and the checks run once, at the moment the branch is declared finished.
+Without that guard `pull_request` fires on drafts too, and the discipline above buys ordering
+but not budget.
 
 ## Everything else concurrent lanes contend on
 
@@ -225,7 +225,7 @@ that cannot prove something without mutating shared state is told to return `nee
 than break another agent's run to get its receipt.
 
 Worktrees are created under the configured `worktreeRoot`, a sibling outside the repository root, so no tool that
-walks the working tree has to be told to ignore them (see #3305). Agent logs land in
+walks the working tree has to be told to ignore them. Agent logs land in
 `<worktreeRoot>/runs/`, and cleanup collects scratch worktrees an agent leaves behind.
 
 Because lanes interleave, every per-issue line on the console is prefixed with its issue number.
@@ -249,7 +249,7 @@ pull request. Neither stops for it. A documented convention is a decision alread
 to it is following that decision rather than making one, and the point ceiling does the stopping
 when the convention-respecting fix turns out to be larger.
 
-That rule exists because of #3327, which asked for a Python syntax gate in a repository whose
+That rule exists because of an issue that asked for a Python syntax gate in a repository whose
 scripts are TypeScript. Every stage executed it faithfully, because every stage judges the diff
 against the issue and nothing was judging the issue against the conventions.
 

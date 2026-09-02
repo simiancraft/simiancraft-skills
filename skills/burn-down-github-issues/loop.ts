@@ -440,7 +440,7 @@ const SETSID = Bun.which('setsid');
 
 /**
  * Takes an agent down with everything it started. A bare `proc.kill()` reaches only the CLI
- * itself, and a hung `bun check` or dev server it spawned would outlive it, holding a port into
+ * itself, and a hung check command or dev server it spawned would outlive it, holding a port into
  * the next lane. With setsid the agent leads its own group, so `-pid` addresses the whole tree;
  * without it the group kill is a no-op ESRCH and the plain kill still lands.
  */
@@ -971,7 +971,7 @@ function worktreeFor(issue: number): string {
  * Deliberately NOT sharing `node_modules` with the main checkout.
  *
  * A symlink looks like free speed: a fresh worktree has none, so every agent installs before it can
- * type-check. But `bun ci` is not a script in this repository, it is an alias for `bun install`,
+ * type-check. The install command is typically a frozen-lockfile `bun install` under another name,
  * and both prompts require running it before a push. Through a symlink that install writes into the
  * main checkout's dependencies, from several lanes at once, while a human may be working there.
  * Each worktree therefore installs its own; bun hardlinks from its global cache, so the cost is
@@ -1154,7 +1154,7 @@ function resolveSpecifier(cwd: string, fromFile: string, specifier: string): str
 /**
  * Every module the given files reach by following imports, transitively, plus the files themselves.
  *
- * This is what an artifact actually covers. A `bun check` receipt or a rendered frame depends on the
+ * This is what an artifact actually covers. A check-command receipt or a rendered frame depends on the
  * whole graph beneath the component, not on the handful of files the diff happens to edit.
  */
 function importClosure(cwd: string, entries: string[]): Set<string> {
@@ -1784,7 +1784,7 @@ async function land(
   // Rejections are judged before freshness, because staleness invalidates an approval and not a
   // rejection. A proof is pinned to the commit it was captured at, so movement into that commit can
   // make an approval describe something other than what would land; a rejection names a gap in the
-  // work, and the base moving does not fill it. Re-reviewing one just re-derives it: #3313 blocked,
+  // work, and the base moving does not fill it. Re-reviewing one just re-derives it: one branch blocked,
   // caught up, and blocked again ten minutes later for the same reason.
   //
   // `gather-more` says the evidence is short; `block` says the change is. Both spend a round, both

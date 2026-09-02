@@ -93,7 +93,7 @@ Then verify the change itself, independently of its proof:
   and reformatting of untouched lines are out-of-scope work, which is grounds for `block`;
   `gather-more` asks for evidence, never for scope.
 - **The issue is a claim about the code, not a description of it.** Before you reject a change for
-  missing something the issue says exists, open the file and confirm it exists. Issues here are
+  missing something the issue says exists, open the file and confirm it exists. Issues are
   written from a reading of the code at some past moment, and a claim that several helpers "share
   the defect" may be true of two of them and false of the rest, because the others return a number,
   delegate to something already correct, or no longer exist. Rejecting on an unchecked claim sends

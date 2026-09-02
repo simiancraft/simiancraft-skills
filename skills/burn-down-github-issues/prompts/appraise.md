@@ -26,12 +26,12 @@ decided; your judgement is whether the issue's claim still holds, not whether it
 ## Step 1: is it still real
 
 `gh -R {{REPO}} issue view {{ISSUE}} --comments`, then read the code it points at. **Read the whole comment
-thread, not just the body.** In this tracker the body is the original analysis and the comments
-carry the rulings that resolve it; an issue that looks decision-blocked is often already decided
+thread, not just the body.** The body is usually the original analysis; the comments are where
+rulings land, so an issue that looks decision-blocked from its body is often already decided
 further down.
 
-Reach a verdict from what you find in the code today, not from the issue's own framing. Issues here
-are frequently stale.
+Reach a verdict from what you find in the code today, not from the issue's own framing. An issue
+in the window can be far older than it looks, and its claim may no longer hold.
 
 | Verdict | When |
 |---|---|
@@ -48,7 +48,7 @@ Three rules decide most of the hard cases:
   `needs-decision` however small the change would be.
 - **Production data is not ours to edit.** An issue asking for a record to be corrected is
   `needs-human`.
-- **A well-argued issue can still prescribe the wrong remedy, and the convention wins.** Issues here
+- **A well-argued issue can still prescribe the wrong remedy, and the convention wins.** Issues
   often prescribe a fix, not just a defect, and that prescription is the author's opinion rather
   than a ruling. Read it against {{CONVENTION_DOCS}}, and what the surrounding code plainly does. Where they disagree, the written convention wins and the issue is still `valid`: size the
   work the convention implies, not the work the issue proposed, and say in `reason` which remedy you
