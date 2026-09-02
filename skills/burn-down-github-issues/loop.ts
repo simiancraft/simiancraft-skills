@@ -23,7 +23,7 @@
  * references/freshness-and-reproof.md.
  */
 
-import { mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { children, killAgent, readResult, renderPrompt, runAgent } from '../fix-github-issue/lib/agent.ts';
@@ -55,6 +55,12 @@ type LoopKnobs = {
   appraiseLimit: number;
   skipLabels: string[];
   seats: { appraiser: string; worker: string; reviewer: string };
+  /**
+   * When set, the loop starts the walk-the-floor skill beside itself, puts every merge on the
+   * floor, and stops merging the moment a walk finds the deployed base wrong. Requires a
+   * walk-the-floor.config.ts in the same repository.
+   */
+  floor?: { cadenceMinutes: number };
 };
 
 const DEFAULTS: LoopKnobs = {
@@ -180,6 +186,100 @@ const BASE = PROJECT.baseBranch;
 
 const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 
+// ---------------------------------------------------------------------------
+// The line. A file switch anyone can flip stops the loop at its three seams: before the appraisal
+// batch, before each issue is dispatched, and inside the pull master before every merge. The
+// walker, when configured, flips it through the callbacks written below; a person flips it with
+// `echo pause > <runs>/line-switch`. Absent means go; an unknown word means pause.
+// ---------------------------------------------------------------------------
+
+const SWITCH_FILE = join(RUN_DIR, 'line-switch');
+const FLOOR_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor');
+const WALK_TS = join(HERE, '..', 'walk-the-floor', 'walk.ts');
+const SWITCH_POLL_MS = 30 * 1000;
+
+function readSwitch(): { state: 'go' | 'pause'; reason: string } {
+  if (!existsSync(SWITCH_FILE)) return { state: 'go', reason: '' };
+  const [first = '', ...rest] = readFileSync(SWITCH_FILE, 'utf8').split('\n');
+  const word = first.trim().toLowerCase();
+  return { state: word === 'go' ? 'go' : 'pause', reason: rest.join(' ').trim() || first.trim() };
+}
+
+/** Holds until the switch says go. Logs once per pause, not once per poll. */
+async function waitForGo(where: string): Promise<void> {
+  let announced = false;
+  for (;;) {
+    const sw = readSwitch();
+    if (sw.state === 'go') {
+      if (announced) log(`line is go again; resuming ${where}`);
+      return;
+    }
+    if (!announced) {
+      log(`line is paused (${sw.reason || 'no reason given'}); holding ${where} until ${SWITCH_FILE} says go`);
+      announced = true;
+    }
+    await Bun.sleep(SWITCH_POLL_MS);
+  }
+}
+
+/** One list item per merge, in the floor's documented shape, so the walker checks what landed. */
+function putOnTheFloor(event: { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[] }): void {
+  if (!CONFIG.floor) return;
+  mkdirSync(FLOOR_DIR, { recursive: true });
+  const item = {
+    id: `pull-request:${event.pr}`,
+    addedAt: new Date().toISOString(),
+    source: 'burndown',
+    text: event.title,
+    ref: { pullRequest: event.pr, sha: event.sha, mergedAt: event.mergedAt, paths: event.paths },
+  };
+  appendFileSync(join(FLOOR_DIR, 'list.jsonl'), `${JSON.stringify(item)}\n`);
+}
+
+/**
+ * Starts the walker beside the loop and writes the two callbacks that tie it to the switch. The
+ * executable form is deliberate: the interlock must not depend on an agent following a prompt.
+ * Returns the function that stops it.
+ */
+function startWalker(cadenceMinutes: number): () => void {
+  mkdirSync(FLOOR_DIR, { recursive: true });
+  mkdirSync(RUN_DIR, { recursive: true });
+  const onFail = `#!/bin/sh
+# Written by burn-down-github-issues. A failed walk pauses the line; the reason names the item.
+entry=$(cat)
+id=$(printf '%s' "$entry" | sed -E 's/.*"itemId":"([^"]*)".*/\\1/')
+verdict=$(printf '%s' "$entry" | sed -E 's/.*"verdict":"([^"]*)".*/\\1/')
+printf 'pause\nfloor: %s is %s; see the ledger on the floor\n' "$id" "$verdict" > '${SWITCH_FILE}'
+`;
+  const onPass = `#!/bin/sh
+# Written by burn-down-github-issues. A passing walk releases a pause that the same item caused,
+# and nothing else: a pause a person set by hand stays until that person clears it.
+entry=$(cat)
+id=$(printf '%s' "$entry" | sed -E 's/.*"itemId":"([^"]*)".*/\\1/')
+f='${SWITCH_FILE}'
+if [ -f "$f" ] && sed -n '2p' "$f" | grep -q "^floor: $id is "; then printf 'go\n' > "$f"; fi
+`;
+  writeFileSync(join(FLOOR_DIR, 'on-fail'), onFail);
+  writeFileSync(join(FLOOR_DIR, 'on-pass'), onPass);
+  chmodSync(join(FLOOR_DIR, 'on-fail'), 0o755);
+  chmodSync(join(FLOOR_DIR, 'on-pass'), 0o755);
+
+  const logFd = openSync(join(RUN_DIR, 'floor.log'), 'a');
+  const proc = Bun.spawn(['bun', 'run', WALK_TS, '--dir', FLOOR_DIR, '--every', String(cadenceMinutes)], {
+    cwd: INVOKE_ROOT,
+    stdout: logFd,
+    stderr: logFd,
+  });
+  log(`walker started (pid ${proc.pid}) on ${FLOOR_DIR}, every ${cadenceMinutes} minute(s); log in ${join(RUN_DIR, 'floor.log')}`);
+  return () => {
+    try {
+      proc.kill();
+    } catch {
+      // already gone
+    }
+  };
+}
+
 type AppraisalVerdict = 'valid' | 'already-fixed' | 'obsolete' | 'needs-decision' | 'needs-human' | 'failed';
 
 type AppraisalResult = {
@@ -250,6 +350,11 @@ const ctx = createContext({
   runDir: RUN_DIR,
   promptsDirs: [PROMPTS, FIX_PROMPTS],
   dryRun: DRY_RUN,
+  mayMerge: async () => {
+    await waitForGo('the merge queue');
+    return { ok: true } as const;
+  },
+  afterMerge: putOnTheFloor,
 });
 
 /**
@@ -463,11 +568,16 @@ async function main(): Promise<void> {
   }
   // A polite kill should leave nothing behind: release the lock and take the agents with it. Only
   // SIGKILL can still leave wreckage, which is what `reconcile` exists to clear on the next run.
-  process.on('exit', releaseLock);
+  const stopWalker = CONFIG.floor && !DRY_RUN ? startWalker(CONFIG.floor.cadenceMinutes) : () => {};
+  process.on('exit', () => {
+    stopWalker();
+    releaseLock();
+  });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     process.on(signal, () => {
       log(`received ${signal}; stopping agents and releasing the lock`);
       for (const child of children) killAgent(child);
+      stopWalker();
       releaseLock();
       process.exit(signal === 'SIGINT' ? 130 : 143);
     });
@@ -496,6 +606,7 @@ async function main(): Promise<void> {
   // real and sized, so the expensive population never pays for a worktree to discover an issue was
   // already fixed. This queue drains: once the window is appraised there is nothing here to do.
   if (!SKIP_APPRAISAL) {
+    await waitForGo('appraisal');
     // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
     // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
     if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
@@ -531,6 +642,7 @@ async function main(): Promise<void> {
     candidates,
     CONFIG.concurrency,
     async (issue) => {
+      await waitForGo(`#${issue.number}`);
       await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
     },
     (issue) => `#${issue.number}`,
