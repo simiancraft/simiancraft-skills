@@ -65,6 +65,10 @@ The issue is then worked by `fix-github-issue` exactly as any other issue: a wor
 a reviewer on another engine, a gated merge. Its outcome is on the issue and the pull request. A
 second `absent` or `down` for the same item while that issue is open does not file again.
 
+One exception: a diagnosis whose remedy is `outside-repository` (a reindex, a configuration value,
+a vendor outage) parks the issue for a person with the diagnosis attached and runs no worker; the
+line stays paused until the item walks clean again or someone clears the switch.
+
 ## When it pauses something
 
 The walker itself pauses nothing; it runs `on-fail`, and whatever started it decides. If the issue

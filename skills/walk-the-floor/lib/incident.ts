@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { readResult, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
+import { parkIssue } from '../../fix-github-issue/lib/labels.ts';
 import { fixIssue, type FixOutcome } from '../../fix-github-issue/lib/pipeline.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import { type LedgerEntry, lastClean, readLedger } from './floor.ts';
@@ -153,6 +154,16 @@ export async function handleIncident(
     ctx.log(`filed incident #${issue}: ${title}`);
   } else {
     ctx.log(`incident #${issue} is already open for ${entry.itemId}; not filing again`);
+  }
+
+  // A remedy outside the repository (a reindex, a config value, a vendor outage) is not code; a
+  // worker would only spend a lane proving that. Park it for a person with the diagnosis attached.
+  if (diagnosis?.remedy === 'outside-repository') {
+    if (existing === null) {
+      parkIssue(ctx, issue, 'The diagnosis places the remedy outside this repository, so no fix was attempted; a person has to act on the environment. See the diagnosis above.');
+    }
+    ctx.log(`incident #${issue}: parked; the remedy is outside the repository`);
+    return { issue, created: existing === null, fix: null, diagnosis };
   }
 
   // The fix is the pipeline's job, exactly as for any other issue.
