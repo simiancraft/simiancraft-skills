@@ -39,6 +39,12 @@ export type Environment = {
   /** Paths the walker may POST to. Default none. */
   safeEndpoints: string[];
   graceMinutes: number;
+  /**
+   * Daily windows, in UTC `HH:MM`, when the environment is expected to be down or wrong: a nightly
+   * database copy, a scheduled deploy. Inside one the walker still records what it sees but runs no
+   * callback and files no incident; a `down` there is expected, not evidence.
+   */
+  quietWindows: Array<{ start: string; end: string }>;
 };
 
 export type Walk = { name: string; paths: string[]; steps: string };
@@ -65,6 +71,7 @@ const DEFAULT_ENVIRONMENT: Environment = {
   healthPaths: [],
   safeEndpoints: [],
   graceMinutes: 15,
+  quietWindows: [],
 };
 
 export const DEFAULTS: WalkKnobs = {
@@ -81,6 +88,17 @@ export const DEFAULTS: WalkKnobs = {
 };
 
 export const CONFIG_FILE = 'walk-the-floor.config.ts';
+
+/** True when `now` (UTC) falls inside any configured quiet window; windows may cross midnight. */
+export function inQuietWindow(windows: Array<{ start: string; end: string }>, now = new Date()): boolean {
+  const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const toMinutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+  return windows.some(({ start, end }) => {
+    const a = toMinutes(start);
+    const b = toMinutes(end);
+    return a <= b ? minutes >= a && minutes <= b : minutes >= a || minutes <= b;
+  });
+}
 
 /** A variable name, not a value: upper-case identifier characters only. */
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
@@ -110,6 +128,10 @@ export async function loadWalkConfig(invokeRoot: string, repoRoot: string): Prom
   }
   if (!Array.isArray(environment.healthPaths)) faults.push('environment.healthPaths must be an array');
   if (!Array.isArray(environment.safeEndpoints)) faults.push('environment.safeEndpoints must be an array');
+  const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!Array.isArray(environment.quietWindows) || environment.quietWindows.some((w) => !HHMM.test(w?.start) || !HHMM.test(w?.end))) {
+    faults.push('environment.quietWindows must be an array of { start: "HH:MM", end: "HH:MM" } in UTC');
+  }
   if (!Number.isInteger(environment.graceMinutes) || environment.graceMinutes <= 0) {
     faults.push('environment.graceMinutes must be a positive integer');
   }

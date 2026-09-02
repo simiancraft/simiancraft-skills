@@ -48,6 +48,7 @@ export default {
     },
     safeEndpoints: [], // paths the walker may POST to; default none
     graceMinutes: 15, // with no revisionCommand, how long after a merge an item stays `unverified`
+    quietWindows: [{ start: '02:00', end: '02:30' }], // UTC; a nightly copy or deploy is not an incident
   },
 
   // Standing sanity walks, keyed to the paths a change touches. Prose for the agent, not scripts.
@@ -105,6 +106,14 @@ here has no external side effect, creates nothing a person will be billed for, s
 third party, and any record it creates can be soft-deleted. Inbound webhooks that only write rows
 qualify; anything that touches payment, email, or a partner system does not, and the walker will
 mark items behind it `not-checkable` rather than guess.
+
+## Quiet windows
+
+An environment that is rebuilt on a schedule (a nightly database copy from production, a
+scheduled deploy) is down on purpose for a few minutes a day, and a walker that files an incident
+for it every night is noise. List those minutes in `quietWindows`, in UTC. Inside one the walker
+still probes and records what it sees, so the ledger stays honest, but it runs no callback, files
+no incident, and defers the walk to the next wake.
 
 ## Reading the deployed revision
 

@@ -21,7 +21,7 @@ import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
 import { log, sh, step } from '../fix-github-issue/lib/shell.ts';
 import { runCallback } from './lib/callbacks.ts';
-import { DRIVER_SKILLS, loadWalkConfig, type Walk } from './lib/config.ts';
+import { DRIVER_SKILLS, inQuietWindow, loadWalkConfig, type Walk } from './lib/config.ts';
 import {
   AGENT_RUNGS,
   AGENT_VERDICTS,
@@ -231,6 +231,10 @@ async function wake(): Promise<boolean> {
     appendEntry(DIR, entry);
     log(`liveness: ${entry.verdict}; ${entry.reason}`);
     if (!result.up) {
+      if (inQuietWindow(ENV.quietWindows)) {
+        log('inside a quiet window; recorded, no callback, no incident');
+        return false;
+      }
       wrong = true;
       await onFail(entry);
       if (!LIVENESS_ONLY) await repair(entry, deployed);
@@ -285,6 +289,10 @@ async function wake(): Promise<boolean> {
   }
   if (walkable.length === 0) {
     log(items.length === 0 ? 'nothing on the floor to walk' : 'every item is pending; nothing to walk yet');
+    return wrong;
+  }
+  if (inQuietWindow(ENV.quietWindows)) {
+    log('inside a quiet window; the walk waits for the next wake');
     return wrong;
   }
   if (!ENV.baseUrl) {

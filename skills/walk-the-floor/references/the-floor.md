@@ -83,7 +83,8 @@ After every terminal or repair-pending entry, the walker looks for a callback by
 - `on-pass` after `present`, `intact`, and `not-checkable`
 - `on-fail` after `absent` and `down`, **before** any incident is filed or fix attempted
 
-Nothing runs after `not-yet-deployed` or `unverified`.
+Nothing runs after `not-yet-deployed` or `unverified`, and nothing runs inside a configured quiet
+window, where a `down` is expected rather than evidence.
 
 A callback is either or both of:
 
