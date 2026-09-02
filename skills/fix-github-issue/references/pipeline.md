@@ -180,6 +180,25 @@ Two windows remain unrecoverable, because no trusted verdict exists on disk duri
 pull request opens and before the verdict file is written, and during a revision between clearing
 the old verdict and landing the new one. Both are reported rather than resumed.
 
+## Embedding the pipeline
+
+A driver hands the pipeline a context and gets one outcome per issue back. Three optional points
+let a driver shape the merge without the pipeline learning why:
+
+- **`project.smokeCommand`** runs in the lane after the pull request's checks are green and before
+  the merge, against the exact head that would land. A non-zero exit or a ten-minute timeout parks
+  the pull request with the command's last lines as the reason. A build is not a boot: a change can
+  compile, type-check, and pass every test and still fail the moment the result starts, and this
+  is the only gate that starts it.
+- **`ctx.mayMerge`** is asked once, just before every merge. A driver holding its line waits before
+  answering; one that gives up answers with a reason, and the pull request parks without spending
+  a review round. Absent means always allowed.
+- **`ctx.afterMerge`** is told once after every confirmed merge, with the issue, the pull request,
+  the merged SHA, the time, and the paths that landed, while the lane still exists.
+
+Every park carries its reason to the issue as a comment and to the pull request as `loop/parked`,
+whichever gate produced it.
+
 ## Known gaps
 
 Extracting the pull master into its own process, with enough durable state on the pull request to

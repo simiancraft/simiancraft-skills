@@ -11,6 +11,16 @@ import type { PipelineKnobs, ProjectConfig } from './config.ts';
 import type { Seat } from './engines.ts';
 import { log as defaultLog, step as defaultStep } from './shell.ts';
 
+/** What the pull master tells a driver once a merge is confirmed. */
+export type MergeEvent = { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[] };
+
+/**
+ * A driver's answer to "may this merge now". Resolving `ok` lets the merge proceed; a driver that
+ * wants to hold the line waits before resolving, and one that gives up resolves a refusal, which
+ * parks the pull request with the reason and spends no review round.
+ */
+export type MergePermission = { ok: true } | { ok: false; reason: string };
+
 export type Context = {
   /** Everything true of the repository being worked. */
   project: ProjectConfig;
@@ -34,6 +44,10 @@ export type Context = {
   integrationQueue: Promise<unknown>;
   log: (message: string) => void;
   step: (message: string) => void;
+  /** Asked once, just before every merge. Absent means always allowed. */
+  mayMerge?: () => Promise<MergePermission>;
+  /** Told once, after every confirmed merge. */
+  afterMerge?: (event: MergeEvent) => void;
 };
 
 export function createContext(options: {
@@ -47,6 +61,8 @@ export function createContext(options: {
   runDir?: string;
   log?: (message: string) => void;
   step?: (message: string) => void;
+  mayMerge?: () => Promise<MergePermission>;
+  afterMerge?: (event: MergeEvent) => void;
 }): Context {
   return {
     project: options.project,
@@ -60,5 +76,7 @@ export function createContext(options: {
     integrationQueue: Promise.resolve(),
     log: options.log ?? defaultLog,
     step: options.step ?? defaultStep,
+    mayMerge: options.mayMerge,
+    afterMerge: options.afterMerge,
   };
 }

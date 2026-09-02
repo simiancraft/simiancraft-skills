@@ -53,6 +53,13 @@ export type ProjectConfig = {
    * while any other package.json change still invalidates.
    */
   releaseArtifacts?: string[];
+  /**
+   * Run in the lane after the pull request's checks are green and before the merge. A non-zero
+   * exit parks the pull request with the command's tail as the reason. Boot the thing here; a
+   * build is not a boot, and a change that compiles, type-checks, and passes its tests can still
+   * fail the moment the result starts. Optional.
+   */
+  smokeCommand?: string;
   /** Paths that mechanically classify a diff for the merge boundary. Same pattern rules. */
   touchPaths: Record<'migration' | 'ci', string[]>;
   /** Sibling directory outside the repository root where worktrees and run logs live. */

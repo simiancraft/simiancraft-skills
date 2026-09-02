@@ -281,7 +281,10 @@ function serializePullMaster<T>(ctx: Context, action: () => Promise<T>): Promise
 }
 
 export type Reviewed = { review: ReviewResult; reviewedSha: string };
-export type Landing = 'merged' | 'park' | 'revise' | 'stale';
+export type Landing = 'merged' | 'revise' | 'stale' | { park: string };
+
+/** How long the smoke command may run before the pull request parks as unbootable. */
+const SMOKE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Judge one branch. Runs outside the queue, so reviews overlap.
@@ -367,7 +370,7 @@ async function land(
         // branch the CI guard is configured to skip, and nothing else would ever flip it back.
         mutate(ctx, `mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
         say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-        return 'park';
+        return { park: `the branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
       }
     }
     return 'revise';
@@ -379,7 +382,7 @@ async function land(
     say(`base moved into this work (${overlap.join(', ')}); the approval no longer describes what would land`);
     if (!updateFromBase(ctx, cwd)) {
       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-      return 'park';
+      return { park: `the branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
     }
     return 'stale';
   }
@@ -394,13 +397,13 @@ async function land(
       '--add-label',
       'loop/parked',
     ]);
-    return 'park';
+    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}` };
   }
 
   const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, reviewedSha);
   if (mismatch) {
     say(`refusing to merge PR #${pr}: ${mismatch}`);
-    return 'park';
+    return { park: mismatch };
   }
 
   // A failing or unfinished build never merges, whatever the review said. The reviewer watched
@@ -410,7 +413,39 @@ async function land(
   const notGreen = await awaitGreenChecks(ctx, pr, say);
   if (notGreen) {
     say(`refusing to merge PR #${pr}: ${notGreen}`);
-    return 'park';
+    return { park: notGreen };
+  }
+
+  // A green build is not a booted result. A change can compile, type-check, and pass every test
+  // and still fail the moment the result starts, because nothing above ever started it. The smoke
+  // command is the repository's own "boot it and hit it once", run in the lane against the exact
+  // head that would land. Optional; a repository with nothing to boot leaves it unset.
+  if (ctx.project.smokeCommand) {
+    say(`running the smoke command: ${ctx.project.smokeCommand}`);
+    const smoke = Bun.spawnSync(['sh', '-c', ctx.project.smokeCommand], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: SMOKE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
+    if (smoke.exitCode !== 0) {
+      const tail = `${smoke.stdout.toString()}\n${smoke.stderr.toString()}`.trim().split('\n').slice(-6).join(' | ');
+      const reason = `the smoke command exited ${smoke.exitCode ?? 'by timeout'}: ${tail || 'no output'}`;
+      say(`refusing to merge PR #${pr}: ${reason}`);
+      return { park: reason };
+    }
+    say('smoke command passed');
+  }
+
+  // The driver's last word. A driver holding its line waits here rather than answering; one that
+  // gives up answers with a reason, and the pull request parks without spending a review round.
+  if (ctx.mayMerge) {
+    const permission = await ctx.mayMerge();
+    if (!permission.ok) {
+      say(`refusing to merge PR #${pr}: ${permission.reason}`);
+      return { park: permission.reason };
+    }
   }
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
@@ -428,7 +463,15 @@ async function land(
       // nothing was scheduled
     }
     say(`PR #${pr} did not report a merge; cancelled any queued merge and left the worktree and issue alone`);
-    return 'park';
+    return { park: 'the merge was requested but the pull request did not report a merge' };
+  }
+
+  // Tell the driver while the worktree still exists, so the event carries the paths that landed.
+  if (ctx.afterMerge) {
+    const paths = sh(ctx, ['git', 'diff', '--name-only', `${ctx.project.remote}/${ctx.project.baseBranch}...HEAD`], cwd)
+      .split('\n')
+      .filter(Boolean);
+    ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: reviewedSha, mergedAt: merged, paths });
   }
 
   // Read the branch name while the worktree still exists, then drop it.
@@ -599,8 +642,10 @@ export async function reviewAndLand(
     consumed = recordReview(ctx, issue.number, consumed);
     say(`review round ${consumed} of ${ctx.knobs.maxReviewRounds}`);
 
-    if (outcome === 'park') {
-      parkReason = verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy;
+    if (typeof outcome === 'object') {
+      // The gate that parked says why; a rejected review adds the reviewer's own words.
+      const reviewerWords = verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy;
+      parkReason = verdict.decision === 'merge' ? outcome.park : `${outcome.park}\n\nReviewer: ${reviewerWords}`;
       break;
     }
 
