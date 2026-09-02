@@ -18,10 +18,18 @@ adoption.
 
 The loop ships with this skill and stays here. The repository carries exactly one thing:
 `burn-down-github-issues.config.ts` at its root, exporting `{ project, ...knobOverrides }` as
-default. The loop refuses to start without it, and refuses again when a required `project` field
-is missing, naming what it lacks. A template with placeholder values:
+default. The sibling fix skill reads the same file when the repository has no config of its own, so
+adopting the loop also adopts its one-issue command.
+
+The loop refuses to start without the file, and refuses again when a required `project` field is
+missing, naming what it lacks. A template with placeholder values:
 
 ```ts
+// Optional, and worth having: the type lives with the fix skill, so a config that drifts from the
+// contract fails at type-check rather than at the first run. The path is wherever the collection
+// is checked out.
+import type { ProjectConfig } from '<skills-dir>/fix-github-issue/lib/config.ts';
+
 export default {
   project: {
     name: 'YourApp',
@@ -45,7 +53,7 @@ export default {
       ci: ['.github/workflows/'],
     },
     worktreeRoot: '../.your-app-loop',
-  },
+  } satisfies ProjectConfig,
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
   // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
   // seats: { appraiser: 'codex', worker: 'codex', reviewer: 'claude:claude-opus-5' }.

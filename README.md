@@ -32,6 +32,7 @@ Each stage of a change has a home here, and each stage ends in an observable gat
 | **Shrink** | kept only if smaller AND still valid; never regress | [`asset-optimization`](skills/asset-optimization/SKILL.md) |
 | **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](skills/prove-work-on-github/SKILL.md) |
 | **Run the whole arc unattended** | issues appraised, fixed, proven, judged by a second engine, and merged one branch at a time | [`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md) |
+| **Fix one known issue unattended** | a worker in its own worktree, a second-engine reviewer, and a merge gated on freshness and green checks | [`fix-github-issue`](skills/fix-github-issue/SKILL.md) |
 
 The seams are contracts with names, not habits. The evidence skill emits artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
 
@@ -86,6 +87,7 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 - **[`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md)**: runs the whole arc unattended over an issue backlog. Appraises and sizes recent issues, closes stale ones with re-checkable receipts, fixes small ones in parallel git worktrees, proves each fix per `prove-work-on-github` on a draft PR, has an isolated second-engine reviewer judge it against the proof skill's rubric, and merges one branch at a time with import-closure staleness checks. The loop ships with the skill; a repository carries only a config file, and the loop refuses to start without it.
 
+- **[`fix-github-issue`](skills/fix-github-issue/SKILL.md)**: turns one known issue into a merged pull request. A worker fixes it in its own git worktree and opens a draft pull request carrying proof per `prove-work-on-github`; an isolated second-engine reviewer judges that proof; a serial pull master checks the approval against import-closure staleness and the pull request's own checks before it merges, and parks rather than guesses. Runs standalone from its `fix.ts`, or as the fix stage of another loop, which is what the burndown does with it.
 ### Agents
 
 - **[`android-emulator-tester`](agents/android-emulator-tester.md)**: automated Android UI/integration testing specialist; drives a real app on a headless emulator and gates on what it observes. Owns the boot, install, drive, and assert loop.

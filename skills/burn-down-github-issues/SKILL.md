@@ -55,7 +55,6 @@ From inside the target repository (any directory of it, including a worktree):
 bun run <this-skill-dir>/loop.ts --dry-run             # select and print; no agent, no mutation
 bun run <this-skill-dir>/loop.ts --limit 3             # work three issues
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
-bun run <this-skill-dir>/loop.ts --issue <n>           # one issue; skips the age and size window, never the safety filters
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the sizing pass; --appraise-limit N caps it instead
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
@@ -73,10 +72,14 @@ the rest); a flag beats the config for the run it is given on.
 |------|------|
 | Run one and watch it: identifying the driver, reading the log, what is not a bug, what to check afterwards, landing a parked pull request by hand | `references/operating.md` |
 | Adopt the loop in a repository: the config template, the two fields that actually bite, preconditions, first-run order, stopping a run | `references/adopting.md` |
-| How and why the loop works: the shape, review pinning, staleness via import closure, the merge boundary, crash recovery, known gaps | `references/architecture.md` |
+| How and why the loop works: the shape, appraisal, selection, the pool, crash recovery, known gaps | `references/architecture.md` |
+| The fix pipeline itself: the verdict-file contract, the review budget, the merge boundary, staleness, resuming | [`../fix-github-issue/references/pipeline.md`](../fix-github-issue/references/pipeline.md) |
 
 ## Hard dependencies
 
+- The [`fix-github-issue`](../fix-github-issue/SKILL.md) skill, which owns the worker, the
+  reviewer, and the pull master; the loop imports it by relative path and calls it once per
+  selected issue. One named issue is that skill's `fix.ts`, not a flag here.
 - The [`prove-work-on-github`](../prove-work-on-github/SKILL.md) skill, loaded by name in the
   worker and reviewer prompts; the pull master's staleness rule implements its
   `references/freshness-and-reproof.md`.
