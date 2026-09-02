@@ -40,6 +40,15 @@ nothing is not evidence either way; the close is not made and the issue stays un
 
 Sizing and hand-offs stay single-opinion. They are labels a person can change.
 
+## What happens after a size is not the appraiser's to say
+
+A producer puts files named `on-size-<N>`, `on-size-over-<M>`, or `on-size` into a callbacks
+directory, and the appraiser looks one up for the points it just applied and runs it: an
+executable with the appraisal as JSON on stdin, a `.md` prompt as one agent turn on the callback
+seat, or both. The burndown writes the callbacks it ships there on every start, and that is how a
+larger skill (breaking an oversized issue into smaller ones, say) is reached without the appraiser
+knowing it exists. The ladder, the two forms, and the payload are in `references/callbacks.md`.
+
 Keep the appraiser and the confirmer on different engines; the driver warns when they match.
 `--no-confirm` (or `confirmCloses: false`) closes on the appraiser alone, for a tracker whose
 authors you trust to that degree.
@@ -56,12 +65,20 @@ bun run <this-skill-dir>/appraise.ts --all                 # the whole open back
 bun run <this-skill-dir>/appraise.ts --all --include-sized # re-judge everything, sized or not
 bun run <this-skill-dir>/appraise.ts --every <minutes>     # heartbeat: appraise whatever is new, on a cadence you choose
 bun run <this-skill-dir>/appraise.ts --appraiser codex:gpt-5.6-sol --confirmer claude:claude-opus-5
+bun run <this-skill-dir>/appraise.ts --callbacks <dir>     # where a producer's size callbacks live; --callback-seat engine[:model]
 ```
 
 `<this-skill-dir>` is the filesystem path of this directory wherever the collection is checked out;
 it is a path, not a skill name. The command reads `appraise-github-issues.config.ts` at the
 repository root, or the burndown's `burn-down-github-issues.config.ts` when that is what the
 repository has (`references/adopting.md`). Every run is teed to `<worktreeRoot>/runs/appraise.log`.
+
+## Read next
+
+| Need | Read |
+|------|------|
+| Adopt it in a repository: the config, what it writes to the tracker, first-run order, boundaries | `references/adopting.md` |
+| Extend it: the size-callback ladder, the executable and prompt forms, the payload, what a prompt may report | `references/callbacks.md` |
 
 ## Standards this skill enforces
 

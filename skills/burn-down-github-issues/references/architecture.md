@@ -172,7 +172,11 @@ asks the walker to finish what is pending and exit, and the loop waits for that 
 
 ## Sizing
 
-Sizing is the sibling `appraise-github-issues` skill, called as a library; its prompts, verdicts,
+Sizing is the sibling `appraise-github-issues` skill, called as a library. What happens after a
+size is that skill's callback ladder: the loop writes the size callbacks it ships (`callbacks/`
+beside `loop.ts`) into the adopter's callbacks directory on every start, and the appraiser looks
+one up per sized issue without knowing what it does. That is the seam for a skill that breaks an
+oversized issue apart. Sizing itself is the sibling skill; its prompts, verdicts,
 and the second-engine confirmer that must agree before a close are documented there. The loop adds
 only selection of the unsized window and the board lines.
 

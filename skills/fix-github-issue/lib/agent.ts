@@ -115,7 +115,12 @@ export async function shutdownAgents(graceMs = 10_000): Promise<number> {
 export function renderPrompt(ctx: Context, file: string, vars: Record<string, string>): string {
   const found = ctx.promptsDirs.map((dir) => join(dir, file)).find((path) => existsSync(path));
   if (!found) throw new Error(`no prompt ${file} in ${ctx.promptsDirs.join(', ')}`);
-  let text = readFileSync(found, 'utf8');
+  return renderTemplate(ctx, readFileSync(found, 'utf8'), vars);
+}
+
+/** The same rendering for prompt text that did not come from a shipped file: a producer's callback prompt, say. */
+export function renderTemplate(ctx: Context, template: string, vars: Record<string, string>): string {
+  let text = template;
   const withProject: Record<string, string> = {
     PROJECT: ctx.project.name,
     REMOTE: ctx.project.remote,
@@ -218,6 +223,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
     'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
+    callback: ['loop-callback.json', LAST_MESSAGE_FILE],
   };
   for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE]) {
     rmSync(join(cwd, stale), { force: true });

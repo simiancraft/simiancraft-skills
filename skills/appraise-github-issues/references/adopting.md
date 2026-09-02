@@ -36,7 +36,8 @@ export default {
   appraiserConcurrency: 3,
   confirmCloses: true,         // a second engine must agree before an issue closes
   skipLabels: ['needs-decision', 'needs-human', 'loop/skip', 'loop/parked'],
-  seats: { appraiser: 'codex:gpt-5.6-sol', confirmer: 'claude:claude-opus-5' },
+  callbacksDir: '<worktreeRoot>/appraisal-callbacks', // where on-size-<N> callbacks live; see references/callbacks.md
+  seats: { appraiser: 'codex:gpt-5.6-sol', confirmer: 'claude:claude-opus-5', callback: 'codex:gpt-5.6-sol' },
 };
 ```
 

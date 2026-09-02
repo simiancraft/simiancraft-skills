@@ -23,7 +23,7 @@
  * references/freshness-and-reproof.md.
  */
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { children, killAgent, shutdownAgents } from '../fix-github-issue/lib/agent.ts';
@@ -37,7 +37,7 @@ import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { appraiseIssue, assertConfirmCloses, pointsFromLabels, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
+import { appraiseIssue, assertConfirmCloses, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
@@ -62,7 +62,13 @@ type LoopKnobs = {
   skipLabels: string[];
   /** Whether a close verdict from the appraiser needs the confirmer's agreement; see appraise-github-issues. */
   confirmCloses: boolean;
-  seats: { appraiser: string; confirmer: string; worker: string; reviewer: string };
+  /**
+   * Where the loop writes the size callbacks it ships (`callbacks/` beside this file) for the
+   * appraiser to look up, and where an adopter may add its own. See the appraise skill's
+   * references/callbacks.md for the ladder.
+   */
+  callbacksDir: string;
+  seats: { appraiser: string; confirmer: string; callback: string; worker: string; reviewer: string };
   /**
    * When set, the loop starts the walk-the-floor skill beside itself, puts every merge on the
    * floor, and stops merging the moment a walk finds the deployed base wrong. Requires a
@@ -152,9 +158,12 @@ const DEFAULTS: LoopKnobs = {
    */
   confirmCloses: true,
 
+  callbacksDir: '<worktreeRoot>/appraisal-callbacks',
+
   seats: {
     appraiser: 'codex:gpt-5.6-sol',
     confirmer: 'claude:claude-opus-5',
+    callback: 'codex:gpt-5.6-sol',
     worker: 'codex:gpt-5.6-sol',
     reviewer: 'claude:claude-opus-5',
   },
@@ -430,6 +439,7 @@ const SEATS = (() => {
     return {
       appraiser: parseSeat(opt('appraiser') ?? CONFIG.seats.appraiser, '--appraiser'),
       confirmer: parseSeat(opt('confirmer') ?? CONFIG.seats.confirmer, '--confirmer'),
+      callback: parseSeat(opt('callback-seat') ?? CONFIG.seats.callback, '--callback-seat'),
       worker: parseSeat(opt('worker') ?? CONFIG.seats.worker, '--worker'),
       reviewer: parseSeat(opt('reviewer') ?? CONFIG.seats.reviewer, '--reviewer'),
     };
@@ -603,11 +613,35 @@ function issueRefs(prs: Array<{ body: string; title: string; headRefName: string
 
 let SKIP_APPRAISAL_THIS_RUN = false;
 
+/** The size callbacks this loop ships, copied into the callbacks directory on every start so the appraiser finds them. */
+const SHIPPED_CALLBACKS = join(HERE, 'callbacks');
+
+/**
+ * Writes the loop's size callbacks where the appraiser looks, the way `startWalker` writes the
+ * floor's `on-fail`. Shipped files are overwritten so a skill update reaches the adopter; any file
+ * the adopter added under another name is left alone. Returns the directory.
+ */
+function placeSizeCallbacks(): string {
+  const dir = resolveCallbacksDir(ctx, CONFIG.callbacksDir);
+  mkdirSync(dir, { recursive: true });
+  if (!existsSync(SHIPPED_CALLBACKS)) return dir;
+  for (const name of readdirSync(SHIPPED_CALLBACKS)) {
+    if (!/^on-size/.test(name)) continue; // a README beside the slots is documentation, not a slot
+    const from = join(SHIPPED_CALLBACKS, name);
+    const to = join(dir, name);
+    copyFileSync(from, to);
+    chmodSync(to, statSync(from).mode & 0o777);
+  }
+  return dir;
+}
+
 /** The sizing stage: fetch the base ref, select the unsized window, appraise it through the sibling skill. */
 async function sizeTheWindow(): Promise<void> {
   // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
   // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
   if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
+  const callbacksDir = placeSizeCallbacks();
+  log(`size callbacks in ${callbacksDir}`);
   const toAppraise = selectForAppraisal(allIssues(), CONFIG).slice(0, APPRAISE_LIMIT);
   if (toAppraise.length === 0) {
     log('nothing to appraise; the window is fully sized');
@@ -626,6 +660,7 @@ async function sizeTheWindow(): Promise<void> {
             seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
             confirmCloses: CONFIG.confirmCloses,
             skipLabels: CONFIG.skipLabels,
+            callbacks: { dir: callbacksDir, seat: SEATS.callback },
           });
         } catch (error) {
           // The board must not be left saying "appraising" for a lane that threw.
@@ -644,7 +679,7 @@ async function sizeTheWindow(): Promise<void> {
         const note = outcome.retry
           ? outcome.reason
           : outcome.points
-            ? `${outcome.verdict}, ${outcome.points} points`
+            ? `${outcome.verdict}, ${outcome.points} points${outcome.callback?.name ? `, ${outcome.callback.name}` : ''}`
             : outcome.close
               ? `${outcome.verdict}, close ${outcome.close}`
               : outcome.verdict;

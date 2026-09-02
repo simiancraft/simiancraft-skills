@@ -19,10 +19,11 @@
  *   bun run <skill-dir>/appraise.ts --every <minutes>     # a heartbeat: appraise whatever is new, on a cadence you choose
  *   bun run <skill-dir>/appraise.ts --no-confirm          # close on the appraiser's word alone
  *   bun run <skill-dir>/appraise.ts --appraiser codex:gpt-5.6-sol --confirmer claude:claude-opus-5
+ *   bun run <skill-dir>/appraise.ts --callbacks <dir>     # where a producer's on-size-<N> callbacks live
  */
 
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
@@ -33,7 +34,17 @@ import type { Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { shutdownAgents } from '../fix-github-issue/lib/agent.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
-import { allOpenIssues, APPRAISE_DEFAULTS, type AppraiseKnobs, appraiseIssue, assertConfirmCloses, isHeld, selectForAppraisal } from './lib/appraise.ts';
+import {
+  allOpenIssues,
+  APPRAISE_DEFAULTS,
+  type AppraiseKnobs,
+  appraiseIssue,
+  assertConfirmCloses,
+  isHeld,
+  resolveCallbacksDir,
+  selectForAppraisal,
+} from './lib/appraise.ts';
+import { existsSync as dirExists } from 'node:fs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -102,6 +113,7 @@ const SEATS = (() => {
     return {
       appraiser: parseSeat(opt('appraiser') ?? CONFIG.seats.appraiser, '--appraiser'),
       confirmer: parseSeat(opt('confirmer') ?? CONFIG.seats.confirmer, '--confirmer'),
+      callback: parseSeat(opt('callback-seat') ?? CONFIG.seats.callback, '--callback-seat'),
     };
   } catch (error) {
     console.error((error as Error).message);
@@ -122,11 +134,14 @@ const ctx = createContext({
   dryRun: DRY_RUN,
 });
 
+const CALLBACKS_DIR = opt('callbacks') ? resolve(opt('callbacks') as string) : resolveCallbacksDir(ctx, CONFIG.callbacksDir);
+
 teeConsole(join(ctx.runDir, 'appraise.log'));
 step(`${ctx.project.name} appraise-github-issues`);
 log(`run pid ${process.pid} started ${new Date().toISOString()}`);
 log(`base ${ctx.project.baseBranch} | ${ALL_AGES ? 'all ages' : `last ${AGE_DAYS} days`} | ${INCLUDE_SIZED ? 'sized and unsized' : 'unsized only'} | config ${CONFIG_FILE}`);
 log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | closes ${NO_CONFIRM || CONFIG.confirmCloses === false ? 'on the appraiser alone' : 'confirmed by the second engine'}`);
+log(`size callbacks: ${CALLBACKS_DIR}${dirExists(CALLBACKS_DIR) ? '' : ' (absent; none will run)'} | callback seat ${seatLabel(SEATS.callback)}`);
 if (SEATS.appraiser.engine === SEATS.confirmer.engine) {
   log("WARNING: appraiser and confirmer share an engine, so the close check shares the appraiser's blind spots");
 }
@@ -202,8 +217,13 @@ async function once(): Promise<void> {
         seats: SEATS,
         confirmCloses: !(NO_CONFIRM || CONFIG.confirmCloses === false),
         skipLabels: CONFIG.skipLabels,
+        callbacks: { dir: CALLBACKS_DIR, seat: SEATS.callback },
       });
-      const key = outcome.close ? `${outcome.verdict} (${outcome.close})` : outcome.verdict;
+      const key = outcome.close
+        ? `${outcome.verdict} (${outcome.close})`
+        : outcome.callback?.name
+          ? `${outcome.verdict} (${outcome.callback.name})`
+          : outcome.verdict;
       tally.set(key, (tally.get(key) ?? 0) + 1);
     },
     (issue) => `#${issue.number}`,

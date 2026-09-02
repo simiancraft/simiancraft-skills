@@ -18,7 +18,7 @@
  */
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
@@ -26,6 +26,7 @@ import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import { closeIssue } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { mutate, sh } from '../../fix-github-issue/lib/shell.ts';
+import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
 
 export const APPRAISAL_VERDICTS = ['valid', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'failed'] as const;
 export type AppraisalVerdict = (typeof APPRAISAL_VERDICTS)[number];
@@ -51,6 +52,8 @@ export type AppraisalOutcome = {
   close?: 'confirmed' | 'disputed' | 'unconfirmed' | 'skipped';
   /** True when the verdict changed nothing on the issue and the next run should try again. */
   retry?: boolean;
+  /** What the size callback did, when a directory was given and a slot matched. */
+  callback?: SizeCallbackResult;
 };
 
 export type AppraiseKnobs = {
@@ -64,7 +67,12 @@ export type AppraiseKnobs = {
   confirmCloses: boolean;
   /** Labels that keep an issue out of appraisal until a human removes them. */
   skipLabels: string[];
-  seats: { appraiser: string; confirmer: string };
+  /**
+   * Where size callbacks live, relative to the repository root. A producer writes `on-size-<N>`
+   * files there; the appraiser only looks them up. See lib/callbacks.ts for the ladder.
+   */
+  callbacksDir: string;
+  seats: { appraiser: string; confirmer: string; callback: string };
 };
 
 export const APPRAISE_DEFAULTS: AppraiseKnobs = {
@@ -73,11 +81,20 @@ export const APPRAISE_DEFAULTS: AppraiseKnobs = {
   appraiserConcurrency: 3,
   confirmCloses: true,
   skipLabels: ['needs-decision', 'needs-human', 'loop/skip', 'loop/parked'],
+  callbacksDir: '<worktreeRoot>/appraisal-callbacks',
   seats: {
     appraiser: 'codex:gpt-5.6-sol',
     confirmer: 'claude:claude-opus-5',
+    /** A callback prompt runs here; by default the appraiser's own seat. */
+    callback: 'codex:gpt-5.6-sol',
   },
 };
+
+/** `callbacksDir` resolved: `<worktreeRoot>` expands to the project's worktree root, else the path is relative to the repository root. */
+export function resolveCallbacksDir(ctx: Context, configured: string): string {
+  const expanded = configured.replace('<worktreeRoot>', ctx.project.worktreeRoot);
+  return resolve(ctx.repoRoot, expanded);
+}
 
 /**
  * `confirmCloses` is the one boolean whose falsy misreadings all fail open, so it is validated
@@ -231,6 +248,8 @@ export async function appraiseIssue(
     seats: { appraiser: Seat; confirmer: Seat };
     confirmCloses: boolean;
     skipLabels: string[];
+    /** Where a producer put its size callbacks, and the seat a callback prompt runs on. */
+    callbacks?: { dir: string; seat: Seat };
     onVerdict?: (outcome: AppraisalOutcome) => void;
   },
 ): Promise<AppraisalOutcome> {
@@ -338,20 +357,33 @@ export async function appraiseIssue(
       }
       if (priorPoints === result.points) {
         say(`already sized at ${result.points}; nothing to change`);
-        break;
+      } else {
+        // Add the new size and only then note the disagreement; the prior label is left in place
+        // because a person put it there, and `pointsFromLabels` reads the larger of the two.
+        mutate(ctx, `size #${issue.number} at ${result.points}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', `size: ${result.points}`]);
+        if (priorSizes.length > 0) {
+          mutate(ctx, `note the sizing disagreement on #${issue.number}`, [
+            'gh',
+            'issue',
+            'comment',
+            String(issue.number),
+            '--body',
+            `Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`,
+          ]);
+        }
       }
-      // Add the new size and only then note the disagreement; the prior label is left in place
-      // because a person put it there, and `pointsFromLabels` reads the larger of the two.
-      mutate(ctx, `size #${issue.number} at ${result.points}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', `size: ${result.points}`]);
-      if (priorSizes.length > 0) {
-        mutate(ctx, `note the sizing disagreement on #${issue.number}`, [
-          'gh',
-          'issue',
-          'comment',
-          String(issue.number),
-          '--body',
-          `Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`,
-        ]);
+      // The size is on the issue; what happens next for an issue of this size is the producer's.
+      if (options.callbacks) {
+        outcome.callback = await runSizeCallback(ctx, options.callbacks.dir, options.callbacks.seat, issue, {
+          issue: issue.number,
+          title: issue.title,
+          points: result.points,
+          priorPoints,
+          verdict: 'valid',
+          reason: result.reason,
+          repo: ctx.project.repo,
+          baseBranch: ctx.project.baseBranch,
+        }, say);
       }
       break;
 
