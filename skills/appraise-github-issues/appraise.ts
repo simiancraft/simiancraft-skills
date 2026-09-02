@@ -149,7 +149,14 @@ async function once(): Promise<void> {
 
   let issues: Issue[];
   if (ISSUE_NUMBER) {
-    issues = [JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels']))];
+    // Bypasses the window and the size filter, never the labels a person set to hold an issue.
+    const one: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels']));
+    const held = one.labels.map((l) => l.name).filter((name) => CONFIG.skipLabels.includes(name) || name === 'loop/dlq');
+    if (held.length > 0) {
+      log(`#${one.number} carries ${held.join(', ')}; a person holds it, so it is not appraised. Remove the label to put it back in reach.`);
+      return;
+    }
+    issues = [one];
   } else {
     issues = selectForAppraisal(allOpenIssues(ctx), { ageDays: AGE_DAYS, skipLabels: CONFIG.skipLabels }, {
       allAges: ALL_AGES,
