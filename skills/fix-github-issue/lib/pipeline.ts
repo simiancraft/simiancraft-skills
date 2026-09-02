@@ -322,7 +322,9 @@ async function review(
     say('reviewer wrote no verdict');
     return null;
   }
-  say(`review: ${verdict.decision}; ${verdict.adequacy}`);
+  // A verdict that is not merge is explained by what blocks it, not by how good the evidence was.
+  const why = verdict.decision !== 'merge' && verdict.blocking.length > 0 ? verdict.blocking.join(' | ') : verdict.adequacy;
+  say(`review: ${verdict.decision}; ${why}`);
   return { review: verdict, reviewedSha };
 }
 
