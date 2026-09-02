@@ -52,7 +52,7 @@ into the prompts and checked by the reviewer.
 From inside the target repository (any directory of it, including a worktree):
 
 ```bash
-bun run <this-skill-dir>/loop.ts --dry-run             # select and print; no agent, no mutation
+bun run <this-skill-dir>/loop.ts --dry-run             # select and print; no agent, no GitHub or working-tree write (only runs/ logs)
 bun run <this-skill-dir>/loop.ts --limit 3             # work three issues
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the sizing pass; --appraise-limit N caps it instead
@@ -109,5 +109,7 @@ sandbox, so run this only on trackers whose authors you trust as far as the cred
 holds. The merge boundary computes `migration` and `ci` from the diff's paths, but
 `data` and `stored-string` are runtime effects a path cannot reveal; for those it holds two
 independent self-reports and parks rather than trusts. The reviewer runs as the same GitHub
-account as the worker, so its independence is model-level, not identity-level. And dead-letter-queue
-ejection has not been exercised end to end; it is written, not proven.
+account as the worker, so its independence is model-level, not identity-level. Instance locks
+identify their holder by pid, so a pid reused by an unrelated process reads as a live holder until
+that process exits. And dead-letter-queue ejection has not been exercised end to end; it is written,
+not proven.

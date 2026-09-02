@@ -31,7 +31,7 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { ensureLabels } from '../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
-import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
+import { shutdownAgents } from '../fix-github-issue/lib/agent.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { allOpenIssues, APPRAISE_DEFAULTS, type AppraiseKnobs, appraiseIssue, assertConfirmCloses, isHeld, selectForAppraisal } from './lib/appraise.ts';
 
@@ -155,9 +155,10 @@ const releaseLock = (() => {
 })();
 process.on('exit', releaseLock);
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.on(signal, () => {
+  process.on(signal, async () => {
     log(`received ${signal}; stopping agents and releasing the lock`);
-    for (const child of children) killAgent(child);
+    const survivors = await shutdownAgents();
+    if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
     releaseLock();
     process.exit(signal === 'SIGINT' ? 130 : 143);
   });

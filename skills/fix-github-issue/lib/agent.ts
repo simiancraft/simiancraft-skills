@@ -13,7 +13,7 @@ import { assertNotMainCheckout, inFlight } from './lane.ts';
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
 /** Live agent processes, so a signal can take them down rather than orphaning them. */
-export const children = new Set<{ pid: number; kill: () => void }>();
+export const children = new Set<{ pid: number; kill: () => void; exitCode: number | null }>();
 
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
@@ -85,6 +85,34 @@ export function killAgent(proc: { pid: number; kill: () => void }): void {
 }
 
 /**
+ * Takes every running agent down and waits for it, so a driver's signal handler can release its
+ * locks only once nothing it started is still running with its approval gates bypassed. SIGTERM
+ * first; whatever is still alive after `graceMs` gets SIGKILL; whatever survives that is reported.
+ */
+export async function shutdownAgents(graceMs = 10_000): Promise<number> {
+  const running = [...children];
+  if (running.length === 0) return 0;
+  for (const proc of running) killAgent(proc);
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline && running.some((proc) => proc.exitCode === null)) await Bun.sleep(200);
+  for (const proc of running) {
+    if (proc.exitCode !== null) continue;
+    try {
+      process.kill(-proc.pid, 'SIGKILL');
+    } catch {
+      // no group
+    }
+    try {
+      process.kill(proc.pid, 'SIGKILL');
+    } catch {
+      // gone
+    }
+  }
+  await Bun.sleep(200);
+  return running.filter((proc) => proc.exitCode === null).length;
+}
+
+/**
  * Fills a prompt template with the project vocabulary and the caller's own variables.
  *
  * Prompt directories are searched in order, so a driver's own prompts shadow the pipeline's. Every
@@ -111,8 +139,11 @@ export function renderPrompt(ctx: Context, file: string, vars: Record<string, st
     PORT_SPAN: String(ctx.project.portSpan),
     ...vars,
   };
+  // Inserted values are data. A value carrying `{{...}}` (an issue title, say) must not be
+  // re-expanded by a later placeholder pass, so the braces are broken apart on the way in.
+  const inert = (value: string) => value.replaceAll('{{', '{ {').replaceAll('}}', '} }');
   for (const [key, value] of Object.entries(withProject)) {
-    text = text.replaceAll(`{{${key}}}`, value);
+    text = text.replaceAll(`{{${key}}}`, inert(value));
   }
   return text;
 }

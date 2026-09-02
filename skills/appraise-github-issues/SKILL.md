@@ -49,7 +49,7 @@ authors you trust to that degree.
 From inside the target repository:
 
 ```bash
-bun run <this-skill-dir>/appraise.ts --dry-run             # select and print; no agent, no mutation
+bun run <this-skill-dir>/appraise.ts --dry-run             # select and print; no lock, no agent, no GitHub write (only runs/appraise.log)
 bun run <this-skill-dir>/appraise.ts --limit 12            # up to 12 unsized issues in the window
 bun run <this-skill-dir>/appraise.ts --issue <n>           # one issue, whatever its age or size
 bun run <this-skill-dir>/appraise.ts --all                 # the whole open backlog, not only the window

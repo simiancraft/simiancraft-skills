@@ -76,7 +76,7 @@ const EVENT = new RegExp(
 const TERMINAL =
   /merge PR|merged|park|DLQ|needs-(decision|human)|already-fixed|obsolete|worker failed|reviewer wrote no verdict|exceeded \d+ minutes|refusing|conflicts with|incident|liveness: down|received SIG|^done$|no sized candidates/;
 
-type Followed = { path: string; offset: number; label: string };
+type Followed = { path: string; offset: number; label: string; inode?: number };
 
 function readLockPid(lockPath: string): number | null {
   if (!existsSync(lockPath)) return null;
@@ -99,17 +99,38 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Returns the new complete lines since the last call, leaving a partial trailing line for next time. */
+/**
+ * Returns the new complete lines since the last call, leaving a partial trailing line for next
+ * time. A replaced file (different inode) or a shrunken one restarts from zero; a file that
+ * vanishes between the stat and the read is simply retried on the next poll.
+ */
 function drain(file: Followed): string[] {
-  if (!existsSync(file.path)) return [];
-  const size = statSync(file.path).size;
-  if (size < file.offset) file.offset = 0; // truncated or replaced; start over
+  let size: number;
+  let inode: number;
+  try {
+    const stat = statSync(file.path);
+    size = stat.size;
+    inode = stat.ino;
+  } catch {
+    return [];
+  }
+  if (file.inode !== undefined && file.inode !== inode) file.offset = 0; // rotated or replaced
+  file.inode = inode;
+  if (size < file.offset) file.offset = 0; // truncated; start over
   if (size === file.offset) return [];
   const buffer = Buffer.alloc(size - file.offset);
-  const fd = openSync(file.path, 'r');
-  readSync(fd, buffer, 0, buffer.length, file.offset);
-  closeSync(fd);
-  const text = buffer.toString('utf8');
+  let text: string;
+  try {
+    const fd = openSync(file.path, 'r');
+    try {
+      readSync(fd, buffer, 0, buffer.length, file.offset);
+    } finally {
+      closeSync(fd);
+    }
+    text = buffer.toString('utf8');
+  } catch {
+    return [];
+  }
   const lastNewline = text.lastIndexOf('\n');
   if (lastNewline < 0) return [];
   file.offset += Buffer.byteLength(text.slice(0, lastNewline + 1));
@@ -151,7 +172,8 @@ async function main(): Promise<void> {
       { path: join(runDir, 'driver.log'), offset: 0, label: 'loop' },
       { path: join(runDir, 'floor.log'), offset: 0, label: 'floor' },
     ];
-    seekToLastRun(files[0], /^run pid \d+ started/gm);
+    // The driver's header is timestamped like every other log line.
+    seekToLastRun(files[0], /^\d{2}:\d{2}:\d{2}  run pid \d+ started/gm);
     // The floor log has no per-run header; show only what arrives from now on.
     if (existsSync(files[1].path)) files[1].offset = statSync(files[1].path).size;
   }

@@ -111,6 +111,9 @@ by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-sw
 
 ## What is not a bug
 
+- **`repair: #N is open but PR #M merged ... closing with a pointer` at startup.** An earlier run
+  merged the pull request and died before recording the close. The repair closes the issue, puts
+  the merge on the floor, and prevents the issue being fixed a second time.
 - **A worker exits non-zero and the issue is left untouched.** The driver refuses to trust the
   answer of a process that failed. The issue keeps no label and gets no pull request, so a later
   run picks it up normally. This is the fail-closed path working.

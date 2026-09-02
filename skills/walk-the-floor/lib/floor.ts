@@ -4,7 +4,7 @@
  * Nothing here knows about GitHub, agents, or the burndown; see references/the-floor.md.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const FILES = {
@@ -93,14 +93,36 @@ export function readLedger(dir: string): LedgerEntry[] {
   return readJsonl<LedgerEntry>(join(dir, FILES.ledger));
 }
 
+/**
+ * Appends one JSONL record. A crash mid-write can leave the last line without its newline; a plain
+ * append would then fuse the torn fragment and the new record into one invalid line and lose both,
+ * so the file is terminated first when it does not end in a newline.
+ */
+function appendLine(path: string, line: string): void {
+  if (existsSync(path)) {
+    const size = statSync(path).size;
+    if (size > 0) {
+      const fd = openSync(path, 'r');
+      const last = Buffer.alloc(1);
+      try {
+        readSync(fd, last, 0, 1, size - 1);
+      } finally {
+        closeSync(fd);
+      }
+      if (last[0] !== 0x0a) appendFileSync(path, '\n');
+    }
+  }
+  appendFileSync(path, `${line}\n`);
+}
+
 export function appendItem(dir: string, item: ListItem): void {
   mkdirSync(dir, { recursive: true });
-  appendFileSync(join(dir, FILES.list), `${JSON.stringify(item)}\n`);
+  appendLine(join(dir, FILES.list), JSON.stringify(item));
 }
 
 export function appendEntry(dir: string, entry: LedgerEntry): void {
   mkdirSync(dir, { recursive: true });
-  appendFileSync(join(dir, FILES.ledger), `${JSON.stringify(entry)}\n`);
+  appendLine(join(dir, FILES.ledger), JSON.stringify(entry));
 }
 
 /** The newest ledger entry per item id. */
@@ -146,13 +168,23 @@ export function safeName(id: string): string {
 export function claimFloorLock(dir: string): () => void {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, FILES.lock);
-  if (existsSync(path)) {
+  const holder = () => {
     const pid = Number(readFileSync(path, 'utf8').trim());
-    if (Number.isInteger(pid) && pid > 0 && alive(pid)) {
-      throw new Error(`another walker (pid ${pid}) holds ${path}`);
-    }
+    return Number.isInteger(pid) && pid > 0 && alive(pid) ? pid : null;
+  };
+  // Exclusive create, not check-then-write: two walkers started together would both pass an
+  // existence check and both believe they hold the floor.
+  try {
+    writeFileSync(path, `${process.pid}\n`, { flag: 'wx' });
+  } catch {
+    const pid = holder();
+    if (pid !== null) throw new Error(`another walker (pid ${pid}) holds ${path}`);
+    rmSync(path, { force: true });
+    writeFileSync(path, `${process.pid}\n`, { flag: 'wx' });
   }
-  writeFileSync(path, `${process.pid}\n`);
+  if (readFileSync(path, 'utf8').trim() !== String(process.pid)) {
+    throw new Error(`another walker claimed ${path} first`);
+  }
   return () => {
     try {
       if (readFileSync(path, 'utf8').trim() === String(process.pid)) rmSync(path);

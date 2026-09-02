@@ -68,9 +68,18 @@ function lineText(now = new Date()): string {
   return line.state === 'paused' ? `⏸️ paused ${elapsed(line.since, now)}` : '🟢 active';
 }
 
+/** One line of display text: whatever it was, coerced to a string with control characters removed. */
+function oneLine(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function cardText(issue: number, card: Card, now = new Date()): string {
-  const title = card.title.length > 60 ? `${card.title.slice(0, 57)}...` : card.title;
-  const note = card.note ? `  (${card.note})` : '';
+  const full = oneLine(card.title);
+  const title = full.length > 60 ? `${full.slice(0, 57)}...` : full;
+  const note = card.note ? `  (${oneLine(card.note)})` : '';
   return `🎫 #${issue}  ${STAGE_EMOJI[card.stage]} ${card.stage}${note}  ${lineText(now)}  ⏱ ${stamp(card.at)}  ${title}`;
 }
 

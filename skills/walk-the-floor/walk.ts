@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { children, killAgent, readResult, runAgent } from '../fix-github-issue/lib/agent.ts';
+import { readResult, runAgent, shutdownAgents } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
@@ -141,8 +141,28 @@ function removeCheckout(): void {
   }
 }
 
+/**
+ * A dry run observes and reports; it writes no ledger entry and runs no callback or notification,
+ * because a callback can pause a live line and a notification can page someone.
+ */
+function record(entry: LedgerEntry): void {
+  if (DRY_RUN) {
+    log(`DRY RUN  would record ${entry.itemId}: ${entry.verdict} by ${entry.rung}`);
+    return;
+  }
+  record(entry);
+}
+
+async function callback(name: 'on-pass' | 'on-fail', entry: LedgerEntry): Promise<void> {
+  if (DRY_RUN) {
+    log(`DRY RUN  would run ${name} for ${entry.itemId}`);
+    return;
+  }
+  await runCallback(DIR, name, entry, log);
+}
+
 function notify(entry: LedgerEntry): void {
-  if (!CONFIG.notifyCommand) return;
+  if (DRY_RUN || !CONFIG.notifyCommand) return;
   const proc = Bun.spawnSync(['sh', '-c', CONFIG.notifyCommand], {
     cwd: DIR,
     stdin: Buffer.from(`${JSON.stringify(entry)}\n`),
@@ -155,7 +175,7 @@ function notify(entry: LedgerEntry): void {
 
 let lastNotified = 0;
 async function onFail(entry: LedgerEntry): Promise<void> {
-  await runCallback(DIR, 'on-fail', entry, log);
+  await callback('on-fail', entry);
   // While the environment stays down across wakes, one notification an hour is enough.
   if (Date.now() - lastNotified > 60 * 60 * 1000) {
     notify(entry);
@@ -233,7 +253,7 @@ async function wake(): Promise<boolean> {
       verdict: result.up ? 'intact' : 'down',
       reason: describe(result),
     };
-    appendEntry(DIR, entry);
+    record(entry);
     log(`liveness: ${entry.verdict}; ${entry.reason}`);
     if (!result.up) {
       if (inQuietWindow(ENV.quietWindows)) {
@@ -245,7 +265,7 @@ async function wake(): Promise<boolean> {
       if (!LIVENESS_ONLY) await repair(entry, deployed);
       return wrong;
     }
-    if (!inQuietWindow(ENV.quietWindows)) await runCallback(DIR, 'on-pass', entry, log);
+    if (!inQuietWindow(ENV.quietWindows)) await callback('on-pass', entry);
   } else {
     log('no environment.baseUrl; skipping liveness');
   }
@@ -279,7 +299,7 @@ async function wake(): Promise<boolean> {
       repoRoot: REPO_ROOT,
     });
     if (state) {
-      appendEntry(DIR, {
+      record({
         itemId: item.id,
         checkedAt: now,
         deployedRevision: deployed ?? undefined,
@@ -348,7 +368,7 @@ async function wake(): Promise<boolean> {
           reason: raw.reason,
           evidence: raw.evidence,
         };
-        appendEntry(DIR, entry);
+        record(entry);
         log(`${entry.itemId}: ${entry.verdict} by ${entry.rung}; ${entry.reason}`);
         wanted.delete(raw.itemId);
         if (REPAIR.has(entry.verdict)) {
@@ -356,7 +376,7 @@ async function wake(): Promise<boolean> {
           await onFail(entry);
           repairs.push(entry);
         } else {
-          await runCallback(DIR, 'on-pass', entry, log);
+          await callback('on-pass', entry);
         }
       }
       for (const missing of wanted) log(`${missing}: no verdict this wake; walked again next wake`);
@@ -394,7 +414,7 @@ async function repair(entry: LedgerEntry, deployed: string | null, checkout?: st
       // The fix landed; say whether the environment came back, once it has had a moment.
       await Bun.sleep(60_000);
       const again = await probe(ENV.baseUrl, ENV.healthPaths);
-      appendEntry(DIR, {
+      record({
         itemId: LIVENESS_ITEM,
         checkedAt: new Date().toISOString(),
         deployedRevision: deployedRevision(ENV.revisionCommand, INVOKE_ROOT) ?? undefined,
@@ -417,7 +437,7 @@ async function repair(entry: LedgerEntry, deployed: string | null, checkout?: st
 async function main(): Promise<void> {
   step(`${PROJECT.name} walk-the-floor`);
   log(`floor ${DIR} | ${ENV.kind} at ${ENV.baseUrl ?? 'no base URL'} | walker ${seatLabel(WALKER)} | ${ONCE ? 'once' : `every ${EVERY} minutes`}`);
-  if (DRY_RUN) log('DRY RUN: no agent will run and nothing is filed');
+  if (DRY_RUN) log('DRY RUN: the probe runs and items are classified; no agent, no ledger entry, no callback, no notification, nothing filed');
 
   let release: () => void;
   try {
@@ -429,9 +449,10 @@ async function main(): Promise<void> {
   }
   process.on('exit', release);
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    process.on(signal, () => {
+    process.on(signal, async () => {
       log(`received ${signal}; stopping agents and releasing the lock`);
-      for (const child of children) killAgent(child);
+      const survivors = await shutdownAgents();
+      if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another walker`);
       removeCheckout();
       release();
       process.exit(signal === 'SIGINT' ? 130 : 143);

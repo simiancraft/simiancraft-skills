@@ -26,11 +26,11 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
+import { children, killAgent, shutdownAgents } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { ensureLabels, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { closeIssue, ensureLabels, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
@@ -274,7 +274,9 @@ function putOnTheFloor(event: { issue: number; title: string; pr: number; sha: s
  * executable form is deliberate: the interlock must not depend on an agent following a prompt.
  * Returns the function that stops it.
  */
-type Walker = { stop: () => void; drain: () => Promise<void> };
+type Walker = { stop: () => void;
+  /** stop, then wait for the exit with a bounded escalation to SIGKILL. */
+  stopAndWait: () => Promise<void>; drain: () => Promise<void> };
 
 function startWalker(cadenceMinutes: number, drainMinutes: number): Walker {
   mkdirSync(FLOOR_DIR, { recursive: true });
@@ -313,6 +315,27 @@ if [ -f "$f" ] && sed -n '2p' "$f" | grep -q "^floor: $id is "; then printf 'go\
       // already gone
     }
   };
+  /** SIGTERM, then a bounded wait, then SIGKILL: an orphan walker would keep floor.lock and silently unprotect the next run. */
+  const stopAndWait = async () => {
+    if (proc.exitCode !== null) return;
+    stop();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      proc.exited.then(() => 'exited' as const),
+      new Promise<'timeout'>((done) => {
+        timer = setTimeout(() => done('timeout'), 5_000);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (outcome === 'timeout') {
+      log('walker ignored SIGTERM; killing it');
+      try {
+        proc.kill('SIGKILL');
+      } catch {
+        // gone
+      }
+    }
+  };
   // The run's last merges land on the floor seconds before "done"; killing the walker there
   // would leave them unwalked. SIGUSR1 asks it to finish what is pending and exit on its own.
   const drain = async () => {
@@ -335,7 +358,7 @@ if [ -f "$f" ] && sed -n '2p' "$f" | grep -q "^floor: $id is "; then printf 'go\
     log(`walker still has ${stillPending()} item(s) pending after ${drainMinutes} minute(s); stopping it. Finish them with: bun run ${WALK_TS} --dir ${FLOOR_DIR} --once`);
     stop();
   };
-  return { stop, drain };
+  return { stop, stopAndWait, drain };
 }
 
 /** Floor items with no terminal verdict yet, read the same way the walker reads them. */
@@ -430,16 +453,68 @@ const ctx = createContext({
 // Selection
 // ---------------------------------------------------------------------------
 
-/**
- * Issues waiting on an appraiser: recent, open, not already ruled out, and carrying no point size.
- *
- * This population is finite and drains. Once every issue in the window has been appraised there is
- * nothing for an appraiser to do, which is why its pool is sized separately from the workers'.
- */
 function allIssues(): Issue[] {
   return JSON.parse(
     sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,title,createdAt,labels']),
   );
+}
+
+/**
+ * A merge the pull master landed but never recorded: the process died between `gh pr merge` and
+ * the issue close, so the issue is still open and sized and would be fixed a second time. Merged
+ * pull requests that reference an open, unheld, sized issue close it with a pointer, and the merge
+ * goes on the floor as it would have. Runs under the lock before anything is selected.
+ */
+function reconcileMergedPullRequests(all: Issue[]): void {
+  type Merged = {
+    number: number;
+    title: string;
+    body: string;
+    headRefName: string;
+    mergedAt: string;
+    mergeCommit: { oid: string } | null;
+    files: Array<{ path: string }>;
+  };
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  let merged: Merged[];
+  try {
+    merged = JSON.parse(
+      sh(ctx, [
+        'gh',
+        'pr',
+        'list',
+        '--state',
+        'merged',
+        '--base',
+        BASE,
+        '--limit',
+        '100',
+        '--search',
+        `merged:>=${since}`,
+        '--json',
+        'number,title,body,headRefName,mergedAt,mergeCommit,files',
+      ]),
+    );
+  } catch (error) {
+    log(`could not list merged pull requests: ${(error as Error).message}; skipping merge reconciliation`);
+    return;
+  }
+  const open = new Map(all.map((issue) => [issue.number, issue]));
+  for (const pr of merged) {
+    for (const ref of new Set(issueRefs([pr]))) {
+      const issue = open.get(ref);
+      if (!issue) continue;
+      if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) continue;
+      if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
+      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} references it; closing with a pointer`);
+      closeIssue(ctx, issue.number, `Resolved by #${pr.number}, merged at ${pr.mergedAt}. The run that merged it did not finish recording the close.`);
+      mark(issue.number, issue.title, 'merged', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
+      if (!DRY_RUN && pr.mergeCommit) {
+        putOnTheFloor({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
+      }
+      open.delete(ref);
+    }
+  }
 }
 
 /**
@@ -488,7 +563,11 @@ function selectCandidates(): Issue[] {
  */
 function openPullRequestIssueRefs(): number[] {
   const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'body,title,headRefName']);
-  const prs: Array<{ body: string; title: string; headRefName: string }> = JSON.parse(raw);
+  return issueRefs(JSON.parse(raw));
+}
+
+/** The issue numbers a set of pull requests reference, by `#1234` in title or body or `-1234` in the branch. */
+function issueRefs(prs: Array<{ body: string; title: string; headRefName: string }>): number[] {
   const refs: number[] = [];
   for (const pr of prs) {
     for (const match of `${pr.title}\n${pr.body}`.matchAll(/#(\d{2,6})\b/g)) {
@@ -600,7 +679,7 @@ async function main(): Promise<void> {
   const walker: Walker =
     CONFIG.floor && !DRY_RUN
       ? startWalker(CONFIG.floor.cadenceMinutes, CONFIG.floor.drainMinutes ?? 60)
-      : { stop: () => {}, drain: async () => {} };
+      : { stop: () => {}, stopAndWait: async () => {}, drain: async () => {} };
   const stopWalker = walker.stop;
   const stopPulse = startPulse(PULSE_MINUTES);
   if (!SILENT) log(`operator board: a line per issue on every change, the whole board every ${PULSE_MINUTES} minute(s); --silent turns it off`);
@@ -609,11 +688,17 @@ async function main(): Promise<void> {
     stopWalker();
     releaseLock();
   });
+  let stopping = false;
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    process.on(signal, () => {
+    process.on(signal, async () => {
+      if (stopping) return;
+      stopping = true;
       log(`received ${signal}; stopping agents and releasing the lock`);
-      for (const child of children) killAgent(child);
-      stopWalker();
+      // Wait for the agents to actually die before the lock goes: a child that ignores SIGTERM
+      // would otherwise keep working, approvals bypassed, under a replacement run's lock.
+      const survivors = await shutdownAgents();
+      if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
+      await walker.stopAndWait();
       releaseLock();
       process.exit(signal === 'SIGINT' ? 130 : 143);
     });
@@ -626,6 +711,7 @@ async function main(): Promise<void> {
     // Half-written label transitions are repaired before anything reads them, so a crash mid-DLQ
     // or mid-count-swap costs one repair pass rather than a permanently wedged issue.
     repairDurableState(ctx, allIssues(), CONFIG.skipLabels);
+    reconcileMergedPullRequests(allIssues());
 
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the

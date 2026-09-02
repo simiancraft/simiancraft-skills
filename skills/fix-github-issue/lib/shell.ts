@@ -3,7 +3,7 @@
  * mutation wrapper that makes `--dry-run` total, and the two console writers.
  */
 
-import { mkdirSync, openSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Context } from './context.ts';
 
@@ -16,16 +16,38 @@ export const step = (msg: string) => console.log(`\n\x1b[1m${msg}\x1b[0m`);
  * one file holds every run, each opened by the header line the driver prints first.
  */
 export function teeConsole(file: string): void {
-  mkdirSync(dirname(file), { recursive: true });
-  const fd = openSync(file, 'a');
+  let fd: number;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    fd = openSync(file, 'a');
+  } catch (error) {
+    console.error(`not teeing console to ${file}: ${(error as Error).message}`);
+    return;
+  }
   const plain = (args: unknown[]) => `${args.map(String).join(' ')}\n`.replace(/\x1b\[[0-9;]*m/g, '');
+  // A full disk or a vanished file must not turn logging into a driver crash after a GitHub
+  // write: the first failure disables the tee and the console keeps working.
+  let broken = false;
   for (const name of ['log', 'error'] as const) {
     const original = console[name].bind(console);
     console[name] = (...args: unknown[]) => {
       original(...args);
-      writeSync(fd, plain(args));
+      if (broken) return;
+      try {
+        writeSync(fd, plain(args));
+      } catch (error) {
+        broken = true;
+        original(`tee to ${file} stopped: ${(error as Error).message}`);
+      }
     };
   }
+  process.on('exit', () => {
+    try {
+      closeSync(fd);
+    } catch {
+      // already closed
+    }
+  });
 }
 
 /**

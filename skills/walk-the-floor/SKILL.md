@@ -49,7 +49,7 @@ From inside the target repository:
 bun run <this-skill-dir>/walk.ts --dir <floor> --liveness-only --once   # probe the base URL and stop
 bun run <this-skill-dir>/walk.ts --dir <floor> --once                    # one full wake
 bun run <this-skill-dir>/walk.ts --dir <floor> --every 10                # forever, every ten minutes
-bun run <this-skill-dir>/walk.ts --dir <floor> --once --dry-run          # classify, no agent, no writes to the forge
+bun run <this-skill-dir>/walk.ts --dir <floor> --once --dry-run          # probe and classify; no agent, no ledger entry, no callback, nothing filed
 bun run <this-skill-dir>/walk.ts --dir <floor> --once --walker claude:claude-opus-5
 ```
 

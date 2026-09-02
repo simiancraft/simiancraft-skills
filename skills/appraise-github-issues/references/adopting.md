@@ -54,7 +54,7 @@ window and the size filter but not those labels.
 
 ## First-run order
 
-1. `appraise.ts --dry-run`: prints what it would select; no agent runs and nothing is written.
+1. `appraise.ts --dry-run`: prints what it would select; no lock is taken, no agent runs, and nothing but `runs/appraise.log` is written.
 2. `appraise.ts --issue <n>` on one issue you already know the answer for. Read the comment or the
    label it left and check that a stranger could re-check it.
 3. `appraise.ts --limit 3`, then a full window.
