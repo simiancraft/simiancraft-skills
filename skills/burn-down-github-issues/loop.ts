@@ -24,48 +24,21 @@
  * references/freshness-and-reproof.md.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  CHECKS_TIMEOUT_MS,
-  children,
-  killAgent,
-  logTail,
-  parseJsonFile,
-  readResult,
-  renderPrompt,
-  runAgent,
-} from '../fix-github-issue/lib/agent.ts';
+import { children, killAgent, readResult, renderPrompt, runAgent } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
-import { APPRAISAL_FILE, VERDICT_FILE } from '../fix-github-issue/lib/control-files.ts';
+import { APPRAISAL_FILE } from '../fix-github-issue/lib/control-files.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
-import {
-  closeIssue,
-  ensureLabels,
-  recordReview,
-  repairDurableState,
-  reviewCount,
-  sendToDlq,
-} from '../fix-github-issue/lib/labels.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import {
-  claimLock,
-  dirtyPaths,
-  inFlight,
-  removeWorktree,
-  resetLane,
-  updateFromBase,
-  worktreeFor,
-} from '../fix-github-issue/lib/lane.ts';
+import { closeIssue, ensureLabels, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { claimLock } from '../fix-github-issue/lib/lane.ts';
+import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
-import {
-  importClosure,
-  matchesPath,
-  MAX_BASE_REFRESHES,
-  staleAgainstBase,
-} from '../fix-github-issue/lib/staleness.ts';
+import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, mutate, sh, step } from '../fix-github-issue/lib/shell.ts';
+import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -165,6 +138,8 @@ const DEFAULTS: LoopKnobs = {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
+/** The fix pipeline's own prompts, shipped with the sibling skill this loop depends on. */
+const FIX_PROMPTS = join(HERE, '..', 'fix-github-issue', 'prompts');
 
 /**
  * The main checkout of the target repository, resolved from the invoking directory. The loop may
@@ -206,38 +181,6 @@ const BASE = PROJECT.baseBranch;
 
 const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 
-type Verdict =
-  | 'already-fixed'
-  | 'obsolete'
-  | 'needs-decision'
-  | 'needs-human'
-  | 'out-of-band'
-  | 'fixed'
-  | 'failed';
-
-type WorkerResult = {
-  issue: number;
-  verdict: Verdict;
-  points?: number;
-  reason: string;
-  /** For already-fixed and obsolete: the comment to post before closing, receipt included. */
-  closeComment?: string;
-  pr?: number;
-  branch?: string;
-  /** What the change touches, which decides whether autoMerge: 'code-only' will merge it. */
-  touches?: Array<'code' | 'data' | 'migration' | 'stored-string' | 'ci'>;
-};
-
-type ReviewResult = {
-  pr: number;
-  decision: 'merge' | 'gather-more' | 'block';
-  adequacy: string;
-  confidence: string;
-  blocking: string[];
-  /** The reviewer's own classification of the diff, unioned with the worker's before merging. */
-  touches?: WorkerResult['touches'];
-};
-
 type AppraisalVerdict = 'valid' | 'already-fixed' | 'obsolete' | 'needs-decision' | 'needs-human' | 'failed';
 
 type AppraisalResult = {
@@ -249,8 +192,6 @@ type AppraisalResult = {
   priorSize?: string | null;
   disagrees?: boolean;
 };
-
-type Issue = { number: number; title: string; createdAt: string; labels: Array<{ name: string }> };
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
@@ -316,7 +257,7 @@ const ctx = createContext({
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
-  promptsDirs: [PROMPTS],
+  promptsDirs: [PROMPTS, FIX_PROMPTS],
   dryRun: DRY_RUN,
 });
 
@@ -429,78 +370,6 @@ function openPullRequestIssueRefs(): number[] {
   return refs;
 }
 
-// ---------------------------------------------------------------------------
-// Self repair
-// ---------------------------------------------------------------------------
-
-/**
- * Clears the wreckage of a run that died, so a crash costs the next run nothing.
- *
- * A loop process can die for reasons that are never established, so the answer is to make the
- * cause irrelevant rather than to guess at it. Everything durable lives on GitHub; what a dead run leaves
- * behind locally is a worktree with no owner and possibly a branch that never became a pull request.
- * Both are safe to reason about because no process holds them any more: this runs before any lane
- * starts, under the instance lock.
- */
-function reconcile(): void {
-  const managed = resolve(REPO_ROOT, PROJECT.worktreeRoot);
-  const claimed = new Set(openPullRequestIssueRefs());
-  let repaired = 0;
-
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (!dir.startsWith(`${managed}/`)) continue;
-
-    // Agents make scratch siblings next to their own worktree (`issue-1234-evidence`) to capture a
-    // before state or write to the evidence branch. A pattern anchored on the number alone could
-    // not see them, so a crashed lane left them behind permanently: nothing else walks this root.
-    // They belong to the parent issue, so the claimed and dirty rules below judge them by the
-    // parent where it still exists, and a sibling's removal takes only the sibling: removing by
-    // issue number would also take the parent worktree this same pass may have chosen to keep.
-    const parts = /issue-(\d+)(-[^/]+)?$/.exec(dir);
-    const issue = parts?.[1];
-    if (!issue) continue;
-    const parent = resolve(managed, `issue-${issue}`);
-    const isSibling = Boolean(parts?.[2]);
-    const judged = isSibling && existsSync(parent) ? parent : dir;
-
-    // A pull request means the work reached GitHub and is not ours to throw away; selection already
-    // treats the issue as claimed, so leave both alone and let a human or a later round finish it.
-    if (claimed.has(Number(issue))) {
-      log(`reconcile: #${issue} has an open pull request; leaving its worktree in place`);
-      continue;
-    }
-
-    const dirty = (() => {
-      try {
-        return dirtyPaths(ctx, judged).length > 0;
-      } catch {
-        return false;
-      }
-    })();
-    if (dirty) {
-      log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
-      continue;
-    }
-
-    if (isSibling) {
-      log(`reconcile: removing abandoned scratch worktree ${dir}`);
-      try {
-        sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
-      } catch {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    } else {
-      log(`reconcile: removing abandoned worktree for #${issue}`);
-      removeWorktree(ctx, Number(issue));
-    }
-    repaired++;
-  }
-
-  if (repaired > 0) log(`reconcile: cleared ${repaired} abandoned worktree(s) from an earlier run`);
-}
-
 /**
  * Appraises one issue and acts on the answer.
  *
@@ -580,613 +449,6 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
   return result.verdict;
 }
 
-async function runWorker(issue: Issue, cwd: string, feedback?: ReviewResult): Promise<WorkerResult> {
-  const prompt = renderPrompt(ctx, 'triage-and-fix.md', {
-    ISSUE: String(issue.number),
-    TITLE: issue.title,
-    MAX_POINTS: String(MAX_POINTS),
-    FEEDBACK: feedback
-      ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
-        `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`
-      : 'This is the first attempt at this issue.',
-  });
-
-  // A revision is the exception: its lane holds the branch and the pull request under review, so a
-  // reset would throw away work the reviewer already read. Only a first attempt may be reset.
-  const { logPath, exitCode } = await runAgent(ctx, 
-    feedback ? 'worker-revise' : 'worker',
-    issue.number,
-    cwd,
-    SEATS.worker,
-    prompt,
-    feedback ? undefined : () => resetLane(ctx, issue.number, cwd),
-  );
-  if (exitCode !== 0) {
-    return {
-      issue: issue.number,
-      verdict: 'failed',
-      reason: `worker exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
-    };
-  }
-
-  const result = readResult<WorkerResult>(cwd, 'loop-verdict.json');
-  const KNOWN: Verdict[] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'failed'];
-  if (!result || !KNOWN.includes(result.verdict)) {
-    return {
-      issue: issue.number,
-      verdict: 'failed',
-      reason: result
-        ? `worker verdict '${result.verdict}' is not one the driver knows; log ends: ${logTail(logPath)}`
-        : `no verdict from the worker; log ends: ${logTail(logPath)}`,
-    };
-  }
-  return result;
-}
-
-async function runReviewer(issue: number, pr: number, cwd: string, round: number): Promise<ReviewResult | null> {
-  const prompt = renderPrompt(ctx, 'review.md', {
-    PR: String(pr),
-    ISSUE: String(issue),
-    ROUND: String(round),
-    MAX_ROUNDS: String(CONFIG.maxReviewRounds),
-  });
-  const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, SEATS.reviewer, prompt);
-  // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
-  // reviewer's parting words could approve a merge.
-  if (exitCode !== 0) return null;
-  const result = readResult<ReviewResult>(cwd, 'loop-review.json');
-  if (!result) return null;
-  // A verdict the driver acts on is validated, not trusted: an unknown decision must read as no
-  // verdict at all, because anything that is not an explicit rejection would otherwise fall
-  // through land() to the merge path. The PR number must also be the one under review.
-  if (!['merge', 'gather-more', 'block'].includes(result.decision) || Number(result.pr) !== pr) {
-    return null;
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Acting on a verdict
-// ---------------------------------------------------------------------------
-
-/**
- * What the diff mechanically touches, computed from its paths against `project.touchPaths`.
- *
- * A classification that gates a merge must not rest on the author's self-report; a worker that
- * writes `["code"]` over a migration would otherwise sail through `code-only` on its own word.
- * Only `migration` and `ci` are path-shaped; `data` and `stored-string` name runtime effects a
- * path cannot reveal, so those remain self-reported by worker and reviewer.
- */
-function computedTouches(cwd: string): Array<'migration' | 'ci'> {
-  const files = sh(ctx, ['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd)
-    .split('\n')
-    .filter(Boolean);
-  const found: Array<'migration' | 'ci'> = [];
-  for (const [kind, patterns] of Object.entries(PROJECT.touchPaths) as Array<['migration' | 'ci', string[]]>) {
-    if (files.some((file) => patterns.some((pattern) => matchesPath(file, pattern)))) found.push(kind);
-  }
-  return found;
-}
-
-/**
- * The classification the merge decision actually uses: worker report, reviewer report, and the
- * computed paths, unioned, so an omission on any side can never widen what the loop may merge.
- *
- * Null when either agent did not classify at all, which fails closed downstream. An absent field
- * is not evidence of a code-only change (treating it as `[]` would let a migration through), and
- * the requirement is symmetric: for `data` and `stored-string` the path scan sees nothing, so the
- * reviewer's classification is the only independent check on the worker's, and a merge without it
- * would rest on one self-report.
- */
-function effectiveTouches(
-  reported: WorkerResult['touches'],
-  reviewed: WorkerResult['touches'],
-  cwd: string,
-): WorkerResult['touches'] | null {
-  if (!reported || reported.length === 0) return null;
-  if (!reviewed || reviewed.length === 0) return null;
-  return [...new Set([...reported, ...reviewed, ...computedTouches(cwd)])];
-}
-
-/** Whether the loop may merge this itself. Fails closed on a missing classification. */
-function mergeAllowed(touches: WorkerResult['touches'] | null): boolean {
-  if (CONFIG.autoMerge === 'never') return false;
-  if (CONFIG.autoMerge === 'always') return true;
-  if (!touches || touches.length === 0) return false;
-  const risky = ['data', 'migration', 'stored-string', 'ci'];
-  return !touches.some((t) => risky.includes(t));
-}
-
-/**
- * Confirms the pull request the driver is about to merge is the one that was reviewed.
- *
- * The worker reports its own PR number, and `gh pr merge` acts on whatever that PR's head is at the
- * moment it runs. Without this, a number pointing at an unrelated pull request, or a push landing
- * after the review, merges something no reviewer ever read.
- */
-function pullRequestMatchesReview(pr: number, issue: number, cwd: string, reviewedSha: string): string | null {
-  const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']);
-  const view: { headRefOid: string; baseRefName: string; headRefName: string; state: string } = JSON.parse(raw);
-  const localHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-
-  if (view.state !== 'OPEN') return `pull request is ${view.state}`;
-  if (view.baseRefName !== BASE) return `targets ${view.baseRefName}, not ${BASE}`;
-  if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(view.headRefName)) {
-    return `branch ${view.headRefName} does not name issue ${issue}`;
-  }
-  if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
-  if (view.headRefOid !== localHead) return 'remote head and worktree head disagree';
-  if (dirtyPaths(ctx, cwd).length > 0) return 'worktree has uncommitted changes';
-  return null;
-}
-
-/** Whether a pull request is still a draft, which is the worker saying the work is unfinished. */
-function isDraft(pr: number): boolean {
-  return sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'isDraft', '--jq', '.isDraft']) === 'true';
-}
-
-/**
- * The build gate: block until the pull request's checks are green, or say why they never will be.
- * Returns null when every check passed (or the repository runs none), otherwise a refusal reason.
- * Unknown states fail closed; a merge with a failing or unfinished build is never allowed.
- */
-async function awaitGreenChecks(pr: number, say: (message: string) => void): Promise<string | null> {
-  type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
-  const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
-  const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
-  // GitHub renders an unfinished CheckRun with conclusion "" (empty string, not null), so a
-  // nullish coalesce would read "" as a verdict and fail-close a merely-running check.
-  const classify = (c: CheckNode): 'green' | 'pending' | 'failed' => {
-    const verdict = c.conclusion || c.state || c.status || null;
-    if (verdict === null || RUNNING.has(verdict)) return 'pending';
-    return GREEN.has(verdict) ? 'green' : 'failed';
-  };
-  const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
-
-  const deadline = Date.now() + CHECKS_TIMEOUT_MS;
-  for (;;) {
-    const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup']);
-    const rollup: CheckNode[] = raw ? JSON.parse(raw) : [];
-
-    const failed = rollup.filter((c) => classify(c) === 'failed');
-    if (failed.length > 0) {
-      return `checks failed: ${failed.map((c) => `${nameOf(c)} (${c.conclusion || c.state || c.status})`).join(', ')}`;
-    }
-
-    const pending = rollup.filter((c) => classify(c) === 'pending');
-    if (pending.length === 0) return null;
-    if (Date.now() >= deadline) {
-      return `checks still unfinished after ${Math.round(CHECKS_TIMEOUT_MS / 60000)} minutes: ${pending.map(nameOf).join(', ')}`;
-    }
-    say(`waiting on ${pending.length} unfinished check(s) before merging`);
-    await Bun.sleep(30_000);
-  }
-}
-
-/**
- * The integration queue: the pull master.
- *
- * Coding is the concurrent part of this loop. Everything downstream of "I think this is done" is
- * sequential, one branch at a time, because the base branch is shared and a review is only good for
- * the commit it read. Bringing a branch up to date, reviewing it, and merging it all happen inside
- * this queue, so nothing can move the branch or the base between the read and the merge.
- */
-let integrationQueue: Promise<unknown> = Promise.resolve();
-
-function serializePullMaster<T>(action: () => Promise<T>): Promise<T> {
-  const next = integrationQueue.then(action, action);
-  integrationQueue = next.catch(() => undefined);
-  return next;
-}
-
-type Reviewed = { review: ReviewResult; reviewedSha: string };
-type Landing = 'merged' | 'park' | 'revise' | 'stale';
-
-/**
- * Judge one branch. Runs outside the queue, so reviews overlap.
- *
- * This performs no git writes and no merge. It reads the tree as it stands, records the commit it
- * read, and returns the verdict; whether that verdict still applies at merge time is the pull
- * master's question, not this one's. Keeping review out of the serial section is what stops one
- * long review from holding up every other lane behind it.
- */
-async function review(
-  issue: Issue,
-  pr: number,
-  cwd: string,
-  say: (message: string) => void,
-  round: number,
-): Promise<Reviewed | null> {
-  // A draft is the worker's own statement that the work is not finished. Reviewing one wastes the
-  // review and, worse, can approve a branch the worker still intends to push to.
-  if (isDraft(pr)) {
-    say('worker left the pull request in draft; treating it as incomplete');
-    return null;
-  }
-
-  // A dirty tree means checks run against files that are not in the pull request: a worker's
-  // uncommitted edit could make the reviewer's re-run pass while the clean remote commit fails.
-  if (dirtyPaths(ctx, cwd).length > 0) {
-    say('worktree has uncommitted changes; a review here would judge code that is not in the pull request');
-    return null;
-  }
-
-  const reviewedSha = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-  const verdict = await runReviewer(issue.number, pr, cwd, round);
-  if (!verdict) {
-    say('reviewer wrote no verdict');
-    return null;
-  }
-  say(`review: ${verdict.decision}; ${verdict.adequacy}`);
-  return { review: verdict, reviewedSha };
-}
-
-/**
- * The pull master's turn: decide whether a finished review still applies, and if it does, merge.
- *
- * Exactly one of these runs at a time, because the base branch is shared. It holds no agent and
- * spawns none, so the serial section is short by construction.
- *
- * Freshness is judged against the reviewed commit rather than the current head. A branch that is
- * merely behind is left alone; per the freshness rule a receipt is true as of the commit it was
- * captured at, so upstream movement that does not reach this work leaves it standing. Movement that
- * does reach it invalidates the proof, so the branch catches up and is judged again.
- */
-async function land(
-  issue: Issue,
-  pr: number,
-  touches: WorkerResult['touches'],
-  reviewed: Reviewed,
-  cwd: string,
-  say: (message: string) => void,
-): Promise<Landing> {
-  const { review: verdict, reviewedSha } = reviewed;
-
-  // Rejections are judged before freshness, because staleness invalidates an approval and not a
-  // rejection. A proof is pinned to the commit it was captured at, so movement into that commit can
-  // make an approval describe something other than what would land; a rejection names a gap in the
-  // work, and the base moving does not fill it. Re-reviewing one just re-derives it: the branch blocks,
-  // catches up, and blocks again for the same reason.
-  //
-  // `gather-more` says the evidence is short; `block` says the change is. Both spend a round, both
-  // go back to the author, and the per-issue budget bounds the retries with the DLQ underneath.
-  if (verdict.decision === 'block' || verdict.decision === 'gather-more') {
-    // Back to draft before anything is pushed: the catch-up below and the revision pushes that
-    // follow must not each spend a CI run on a pull request still marked ready.
-    mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-    // Catch up anyway, so the revision happens against current code rather than against the base as
-    // it stood when this branch started. Cheap here, and it saves the next review a refresh.
-    const behind = staleAgainstBase(ctx, cwd, reviewedSha);
-    if (behind.length > 0) {
-      say(`catching up before the revision (${behind.join(', ')})`);
-      if (!updateFromBase(ctx, cwd)) {
-        // A parked pull request must not sit in draft: the human reading loop/parked would find a
-        // branch the CI guard is configured to skip, and nothing else would ever flip it back.
-        mutate(ctx, `mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
-        say(`conflicts with ${BASE}; a human has to resolve it`);
-        return 'park';
-      }
-    }
-    return 'revise';
-  }
-
-  // From here the verdict is `merge`, and only now does freshness decide anything.
-  const overlap = staleAgainstBase(ctx, cwd, reviewedSha);
-  if (overlap.length > 0) {
-    say(`base moved into this work (${overlap.join(', ')}); the approval no longer describes what would land`);
-    if (!updateFromBase(ctx, cwd)) {
-      say(`conflicts with ${BASE}; a human has to resolve it`);
-      return 'park';
-    }
-    return 'stale';
-  }
-
-  const effective = effectiveTouches(touches, verdict.touches, cwd);
-  if (!mergeAllowed(effective)) {
-    mutate(ctx, `park PR #${pr} (autoMerge: ${CONFIG.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
-      'gh',
-      'pr',
-      'edit',
-      String(pr),
-      '--add-label',
-      'loop/parked',
-    ]);
-    return 'park';
-  }
-
-  const mismatch = pullRequestMatchesReview(pr, issue.number, cwd, reviewedSha);
-  if (mismatch) {
-    say(`refusing to merge PR #${pr}: ${mismatch}`);
-    return 'park';
-  }
-
-  // A failing or unfinished build never merges, whatever the review said. The reviewer watched
-  // checks too, but its answer ages: any catch-up since the verdict pushed a head whose CI run
-  // started fresh, and this is the last moment anything looks. Waiting here blocks the serial
-  // queue, which is honest; a merge may not outrun its own build.
-  const notGreen = await awaitGreenChecks(pr, say);
-  if (notGreen) {
-    say(`refusing to merge PR #${pr}: ${notGreen}`);
-    return 'park';
-  }
-
-  // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
-  // the call, so the commit that lands is the commit that was read.
-  mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
-
-  // Confirm it actually landed before closing anything. On a repository with a merge queue or
-  // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
-  // later while this driver has already parked it, so cancel whatever was scheduled first.
-  const merged = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
-  if (!merged || merged === 'null') {
-    try {
-      sh(ctx, ['gh', 'pr', 'merge', String(pr), '--disable-auto']);
-    } catch {
-      // nothing was scheduled
-    }
-    say(`PR #${pr} did not report a merge; cancelled any queued merge and left the worktree and issue alone`);
-    return 'park';
-  }
-
-  // Read the branch name while the worktree still exists, then drop it.
-  const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-  removeWorktree(ctx, issue.number);
-  try {
-    sh(ctx, ['git', 'push', REMOTE, '--delete', branch]);
-  } catch {
-    say(`merged branch ${branch} was already deleted`);
-  }
-  closeIssue(ctx, issue.number, `Closed by #${pr}.`);
-  return 'merged';
-}
-
-async function handleIssue(issue: Issue): Promise<void> {
-  // Lanes interleave, so every line an issue emits names the issue. Without this the console is a
-  // shuffled deck of verdicts with no way to tell which belongs to which.
-  const say = (message: string) => log(`#${issue.number}  ${message}`);
-  step(`#${issue.number} ${issue.title}`);
-
-  // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
-  // learns to treat REPO_ROOT as a valid agent working directory.
-  const cwd = DRY_RUN ? resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number);
-  inFlight.set(issue.number, { dir: cwd, busy: false });
-  try {
-    await workIssue(issue, cwd, say);
-  } finally {
-    inFlight.delete(issue.number);
-
-    // Whatever the outcome, this lane is finished with the directory, so it goes here rather than
-    // at each of the eight exits that used to leak one. Nothing in-process reads it again, and
-    // `findStranded` resumes only a `fixed` verdict whose pull request is open at the same head on
-    // an unlabelled issue; every outcome that reaches this line (failed, parked, DLQed, budget
-    // exhausted, terminal verdict, merged) is one it already refuses. Removing the worktree also
-    // sweeps the `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else
-    // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
-    // so `reconcile` still owns that case on the next start.
-    if (!DRY_RUN) removeWorktree(ctx, issue.number);
-  }
-}
-
-/**
- * Acts on a worker verdict that ends an issue without a merge. Returns true when it was terminal.
- *
- * Runs after the first attempt and again after every revision: the base moving mid-issue can make
- * a revising worker's honest answer `already-fixed`, and that verdict earns its close whenever it
- * arrives. An earlier version only consulted the first verdict, so a terminal answer from a
- * revision fell through to `loop/parked` and the close it earned never happened. When a pull
- * request already exists it is closed too, so a terminal verdict does not strand an open draft.
- */
-function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number): boolean {
-  const closePullRequest = () => {
-    if (pr) mutate(ctx, `close PR #${pr}`, ['gh', 'pr', 'close', String(pr), '--comment', 'Superseded; see the issue.']);
-  };
-
-  switch (result.verdict) {
-    case 'already-fixed':
-    case 'obsolete':
-      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
-      closePullRequest();
-      removeWorktree(ctx, issue.number);
-      return true;
-
-    case 'needs-decision':
-    case 'needs-human':
-      mutate(ctx, `label #${issue.number} ${result.verdict}`, [
-        'gh',
-        'issue',
-        'edit',
-        String(issue.number),
-        '--add-label',
-        result.verdict,
-      ]);
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
-      closePullRequest();
-      removeWorktree(ctx, issue.number);
-      return true;
-
-    case 'out-of-band': {
-      if (result.points) {
-        mutate(ctx, `size #${issue.number} at ${result.points}`, [
-          'gh',
-          'issue',
-          'edit',
-          String(issue.number),
-          '--add-label',
-          `size: ${result.points}`,
-        ]);
-        // Two size labels would leave selection reading whichever it finds; add-then-remove plus
-        // pointsFromLabels reading the max keeps the issue out of the band during the swap.
-        const prior = issue.labels.find((l) => /^size:\s*\d+$/.test(l.name) && l.name !== `size: ${result.points}`);
-        if (prior) {
-          mutate(ctx, `clear ${prior.name} on #${issue.number}`, [
-            'gh',
-            'issue',
-            'edit',
-            String(issue.number),
-            '--remove-label',
-            prior.name,
-          ]);
-        }
-      }
-      closePullRequest();
-      removeWorktree(ctx, issue.number);
-      return true;
-    }
-
-    default:
-      return false;
-  }
-}
-
-async function workIssue(issue: Issue, cwd: string, say: (message: string) => void): Promise<void> {
-  const result = await runWorker(issue, cwd);
-  say(`verdict: ${result.verdict}; ${result.reason}`);
-
-  if (result.verdict === 'failed') {
-    say('worker failed; leaving it untouched');
-    return;
-  }
-  if (settleTerminalVerdict(issue, result)) return;
-
-  await reviewAndLand(issue, cwd, result, say);
-}
-
-/**
- * The review pipeline for a pull request that exists: review, land, revise, until it merges,
- * parks, or exhausts its budget. Split from workIssue so a restart can re-enter it: a dead run's
- * worktree still holds the worker's verdict file, and resuming from that file is what un-strands
- * a pull request the crash left behind (see findStranded).
- *
- * From here the work is sequential. Coding is the concurrent part; integration is a pull master
- * working a queue, one branch at a time. The queue keeps this loop's own lanes from moving the
- * branch or the base between the read and the merge; GitHub itself still can, which is why the
- * merge pins the head with --match-head-commit and confirms mergedAt afterwards.
- *
- * The budget is a per-issue high-water mark, not a per-run allowance. An issue that spent two
- * rounds in an earlier run starts this one with one left, because the count lives on the issue
- * and the process does not. That is the whole point: it is what stops an issue cycling between
- * worker and reviewer forever, one restart at a time, with nothing accumulating against it.
- */
-async function reviewAndLand(
-  issue: Issue,
-  cwd: string,
-  first: WorkerResult,
-  say: (message: string) => void,
-): Promise<void> {
-  let result = first;
-  let consumed = reviewCount(issue.labels);
-  let refreshes = 0;
-  while (consumed < CONFIG.maxReviewRounds) {
-    if (!result.pr) break;
-    const pr = result.pr;
-    const touches = result.touches;
-
-    if (DRY_RUN) break;
-
-    // Reviewing happens here, outside the queue, so lanes review at the same time.
-    const reviewed = await review(issue, pr, cwd, say, consumed + 1);
-    if (!reviewed) break;
-
-    // Merging happens there, one branch at a time, because the base branch is shared.
-    const outcome = await serializePullMaster(async () => land(issue, pr, touches, reviewed, cwd, say));
-    if (outcome === 'merged') return;
-
-    // The base reached this work while the review was running. That is upstream churn, not a defect
-    // in the change, so it costs a fresh review but not a round of the issue's budget. Bounded:
-    // a base that keeps landing into these files would otherwise re-review forever.
-    if (outcome === 'stale') {
-      refreshes += 1;
-      if (refreshes > MAX_BASE_REFRESHES) {
-        say(`base moved into this work ${refreshes} times; a human should land it`);
-        break;
-      }
-      continue;
-    }
-
-    const { review: verdict } = reviewed;
-
-    // A verdict was reached and the work goes back or stops, so the round is spent whether the
-    // outcome is a revision or a park. Recorded before the revision starts rather than after it
-    // finishes, so a run killed mid-revision still leaves the budget honest; the alternative
-    // silently refunds a round every time a run dies. A merge ends the accounting instead: the
-    // issue is closing, and label churn on a closed issue records nothing anyone reads.
-    consumed = recordReview(ctx, issue.number, consumed);
-    say(`review round ${consumed} of ${CONFIG.maxReviewRounds}`);
-
-    if (outcome === 'park') break;
-
-    if (consumed >= CONFIG.maxReviewRounds) {
-      sendToDlq(ctx, issue.number, consumed, verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy);
-      say(`ejected to the DLQ after ${consumed} review rounds`);
-      return;
-    }
-
-    // Revision is programming, so it happens outside the queue; the branch rejoins it afterwards.
-    // The pull request is already back in draft: land() flips it before any catch-up push.
-    result = await runWorker(issue, cwd, verdict);
-    say(`verdict: ${result.verdict}; ${result.reason}`);
-    if (result.verdict === 'failed') break; // an open pull request now needs a human
-    if (settleTerminalVerdict(issue, result, pr)) return;
-  }
-
-  mutate(ctx, `park #${issue.number}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'loop/parked']);
-  say('parked for a human');
-}
-
-/**
- * Pull requests a dead run left behind, paired with the worktree and verdict to resume them from.
- *
- * Selection refuses an issue an open pull request claims, and reconcile deliberately leaves that
- * worktree standing, so without a resume path a crash after PR creation stranded finished work
- * until a human noticed. The worker's verdict file survives in the worktree and carries everything
- * reviewAndLand needs. A stranded worktree without a usable verdict is only reported: that crash
- * window (after the PR, before the verdict) leaves nothing safe to resume from.
- */
-function findStranded(all: Issue[]): Array<{ issue: Issue; cwd: string; result: WorkerResult }> {
-  const managed = resolve(REPO_ROOT, PROJECT.worktreeRoot);
-  const found: Array<{ issue: Issue; cwd: string; result: WorkerResult }> = [];
-
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (!dir.startsWith(`${managed}/`)) continue;
-    const num = /issue-(\d+)$/.exec(dir)?.[1];
-    if (!num) continue;
-    if (inFlight.has(Number(num))) continue;
-
-    const issue = all.find((candidate) => candidate.number === Number(num));
-    if (!issue) continue; // closed or outside the window; reconcile owns the cleanup question
-
-    // The safety labels that gate selection gate resumption too: a parked, skipped, DLQed, or
-    // budget-exhausted issue belongs to a human even when a worktree still remembers it.
-    if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) continue;
-    if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) continue;
-
-    const verdict = parseJsonFile<WorkerResult>(join(dir, VERDICT_FILE));
-    if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
-      log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
-      continue;
-    }
-    // The verdict is trusted only as far as it can be corroborated: it must name this issue, and
-    // the worktree must sit at the pull request's remote head, or the resume would review a tree
-    // that is not what would merge.
-    if (Number(verdict.issue) !== issue.number) {
-      log(`#${num}  stranded verdict names issue ${verdict.issue}; leaving it for a human`);
-      continue;
-    }
-    const view: { state: string; headRefOid: string } = JSON.parse(
-      sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
-    );
-    if (view.state !== 'OPEN') continue;
-    if (view.headRefOid !== sh(ctx, ['git', 'rev-parse', 'HEAD'], dir)) {
-      log(`#${num}  stranded worktree head is not the pull request head; leaving it for a human`);
-      continue;
-    }
-    found.push({ issue, cwd: dir, result: verdict });
-  }
-  return found;
-}
-
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -1232,7 +494,7 @@ async function main(): Promise<void> {
 
   ensureLabels(ctx);
   if (!DRY_RUN) {
-    reconcile();
+    reconcile(ctx, new Set(openPullRequestIssueRefs()));
 
     // Half-written label transitions are repaired before anything reads them, so a crash mid-DLQ
     // or mid-count-swap costs one repair pass rather than a permanently wedged issue.
@@ -1241,27 +503,12 @@ async function main(): Promise<void> {
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the
     // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
-    const stranded = findStranded(allIssues());
-    if (stranded.length > 0) {
-      step(`Resuming ${stranded.length} stranded pull request(s) from an earlier run`);
-      log(stranded.map((s) => `#${s.issue.number} (PR #${s.result.pr})`).join(', '));
-      await pool(
-        stranded.map((s) => s.issue),
-        CONFIG.concurrency,
-        async (issue) => {
-          const entry = stranded.find((s) => s.issue.number === issue.number);
-          if (!entry) return;
-          const say = (message: string) => log(`#${issue.number}  ${message}`);
-          inFlight.set(issue.number, { dir: entry.cwd, busy: false });
-          try {
-            await reviewAndLand(issue, entry.cwd, entry.result, say);
-          } finally {
-            inFlight.delete(issue.number);
-          }
-        },
-        (issue) => `#${issue.number}`,
-      );
-    }
+    await resumeStranded(
+      ctx,
+      findStranded(ctx, allIssues(), CONFIG.skipLabels),
+      CONFIG.concurrency,
+      MAX_POINTS,
+    );
   }
 
   // Appraisal first, and on its own timeline. Workers only ever pick up something already judged
@@ -1299,7 +546,14 @@ async function main(): Promise<void> {
 
   step(`Working ${candidates.length} issue(s), ${Math.min(CONFIG.concurrency, candidates.length)} at a time`);
   log(candidates.map((i) => `#${i.number}`).join(', '));
-  await pool(candidates, CONFIG.concurrency, handleIssue, (issue) => `#${issue.number}`);
+  await pool(
+    candidates,
+    CONFIG.concurrency,
+    async (issue) => {
+      await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
+    },
+    (issue) => `#${issue.number}`,
+  );
 
   step('done');
 }

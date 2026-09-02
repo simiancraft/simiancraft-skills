@@ -27,6 +27,11 @@ export type Context = {
   /** Prompt directories, searched in order, so a driver's own prompts shadow the pipeline's. */
   promptsDirs: string[];
   dryRun: boolean;
+  /**
+   * The pull master's serial queue. Held here rather than on the module so two contexts in one
+   * process never share one; the base branch each guards is not the same branch.
+   */
+  integrationQueue: Promise<unknown>;
   log: (message: string) => void;
   step: (message: string) => void;
 };
@@ -52,6 +57,7 @@ export function createContext(options: {
     runDir: options.runDir ?? resolve(options.repoRoot, options.project.worktreeRoot, 'runs'),
     promptsDirs: options.promptsDirs,
     dryRun: options.dryRun,
+    integrationQueue: Promise.resolve(),
     log: options.log ?? defaultLog,
     step: options.step ?? defaultStep,
   };
