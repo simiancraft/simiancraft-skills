@@ -27,6 +27,12 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
+import { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from '../fix-github-issue/lib/control-files.ts';
+import { createContext } from '../fix-github-issue/lib/context.ts';
+import { ENGINES, parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
+import { pool } from '../fix-github-issue/lib/pool.ts';
+import { log, mutate, sh, step } from '../fix-github-issue/lib/shell.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -118,54 +124,6 @@ const DEFAULTS: LoopKnobs = {
   },
 };
 
-/**
- * Every CLI the loop can drive: how to run one prompt to completion, non-interactively, with the
- * approval gate bypassed. Adding an engine is one entry here and nothing else.
- *
- * Headless runs cannot answer a permission prompt, and the worker needs git, gh, and the network,
- * so every entry carries its CLI's bypass flag. The confinement is the throwaway worktree, not the
- * sandbox; read those flags as the loop's real risk surface rather than as boilerplate.
- */
-const ENGINES = {
-  claude: {
-    command: (_cwd: string, prompt: string, model?: string) => [
-      'claude',
-      '-p',
-      prompt,
-      ...(model ? ['--model', model] : []),
-      '--dangerously-skip-permissions',
-    ],
-  },
-  codex: {
-    command: (cwd: string, prompt: string, model?: string) => [
-      'codex',
-      'exec',
-      '--cd',
-      cwd,
-      ...(model ? ['--model', model] : []),
-      '--dangerously-bypass-approvals-and-sandbox',
-      '--output-last-message',
-      join(cwd, LAST_MESSAGE_FILE),
-      prompt,
-    ],
-  },
-} satisfies Record<string, { command: (cwd: string, prompt: string, model?: string) => string[] }>;
-
-type Seat = { engine: keyof typeof ENGINES; model?: string };
-
-/** Parses `engine` or `engine:model`, refusing an engine the registry does not know. */
-function parseSeat(spec: string, source: string): Seat {
-  const [engine, ...rest] = spec.split(':');
-  if (!(engine in ENGINES)) {
-    throw new Error(`${source}: unknown engine '${engine}'; known engines: ${Object.keys(ENGINES).join(', ')}`);
-  }
-  return { engine: engine as keyof typeof ENGINES, model: rest.join(':') || undefined };
-}
-
-function seatLabel(seat: Seat): string {
-  return seat.model ? `${seat.engine}:${seat.model}` : seat.engine;
-}
-
 // ---------------------------------------------------------------------------
 // The repository's config. The loop ships with the skill, outside any target repository, so the
 // invoking directory is the only signal for which repository it serves, and that repository must
@@ -180,151 +138,21 @@ const PROMPTS = join(HERE, 'prompts');
  * be run from a worktree; `--git-common-dir` is the same `.git` for every worktree of a
  * repository, so this answers with the main checkout wherever it is invoked from.
  */
-const REPO_ROOT = (() => {
-  const commonDir = Bun.spawnSync(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-    cwd: process.cwd(),
-  });
-  if (commonDir.exitCode !== 0) {
-    console.error('run this from inside the repository the loop should work on; the current directory is not a git repository');
-    process.exit(1);
-  }
-  return dirname(commonDir.stdout.toString().trim());
-})();
-
-/** Everything true of a repository rather than of the loop. Lives in the repository, never here. */
-type ProjectConfig = {
-  /** Shown in the banner and nowhere else. */
-  name: string;
-  /** `owner/repo`, used to build the SHA-pinned evidence links the prompts hand to reviewers. */
-  repo: string;
-  /** The git remote. Not every checkout calls it `origin`, and `repo` must name what it points at. */
-  remote: string;
-  /** Branch every fix is cut from and merged back into. */
-  baseBranch: string;
-  /** Long-lived branch that holds proof artifacts. Shared by every agent, append only. */
-  evidenceBranch: string;
-  /** Run before every commit, and again before pushing. The gate the worker must pass locally. */
-  checkCommand: string;
-  /** Frozen-lockfile install. A fresh worktree has no `node_modules`. */
-  installCommand: string;
-  /** Files that state the conventions a prescribed remedy has to be read against. */
-  conventionDocs: string[];
-  /** Where the point scale is written down, quoted to the appraiser. */
-  sizingScale: string;
-  /** Shared stateful services an agent must not seed, reset, or migrate. */
-  sharedServices: string[];
-  /** Servers bind `portBase + (issue % portSpan)` so two lanes never contend for a port. */
-  portBase: number;
-  portSpan: number;
-  /** Import-path aliases, specifier prefix to a directory relative to the repository root. */
-  pathAliases: Array<{ prefix: string; dir: string }>;
-  /** Extensions and index files the closure walk will try, in order. */
-  sourceExtensions: string[];
-  /**
-   * Paths whose change invalidates any proof in flight, whatever the pull request touched.
-   * Prefix patterns, except that a pattern starting with '.' and carrying no '/' matches as a
-   * filename suffix ('.schema.ts' catches files so named wherever they live).
-   */
-  alwaysInvalidates: string[];
-  /**
-   * Files the repository's own release machinery rewrites on every merge to the base (deploy
-   * constants, generated changelogs). Their movement alone never invalidates an approval: the
-   * queued branch still catches up, but does not pay a re-review for noise every landing produces.
-   * Optional; same pattern rules as alwaysInvalidates. package.json needs no entry here: a base
-   * change that only bumps its "version" field is recognized as release noise automatically,
-   * while any other package.json change still invalidates.
-   */
-  releaseArtifacts?: string[];
-  /** Paths that mechanically classify a diff for the merge boundary. Same pattern rules. */
-  touchPaths: Record<'migration' | 'ci', string[]>;
-  /** Sibling directory outside the repository root where worktrees and run logs live. */
-  worktreeRoot: string;
-};
+const REPO_ROOT = repoRootFrom(process.cwd());
 
 /**
  * The config is read from the invoking checkout's own top level, not from REPO_ROOT: when the loop
  * is started from a worktree, the branch checked out there carries the config the operator edited,
  * and the main checkout may hold another branch without one.
  */
-const INVOKE_ROOT = (() => {
-  const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { cwd: process.cwd() });
-  return top.exitCode === 0 ? top.stdout.toString().trim() : REPO_ROOT;
-})();
+const INVOKE_ROOT = invokeRootFrom(process.cwd(), REPO_ROOT);
 
-const CONFIG_FILE = join(INVOKE_ROOT, 'burn-down-github-issues.config.ts');
-
-const REQUIRED_PROJECT_FIELDS: Array<keyof ProjectConfig> = [
-  'name',
-  'repo',
-  'remote',
-  'baseBranch',
-  'evidenceBranch',
-  'checkCommand',
-  'installCommand',
-  'conventionDocs',
-  'sizingScale',
-  'sharedServices',
-  'portBase',
-  'portSpan',
-  'pathAliases',
-  'sourceExtensions',
-  'alwaysInvalidates',
-  'touchPaths',
-  'worktreeRoot',
-];
-
-/**
- * Refuses to run an unconfigured repository. A shared driver guessing at a repository's remotes,
- * branches, and conventions is how a loop executes the wrong tracker competently, so a missing or
- * incomplete config is a hard stop with the fix named, not a warning.
- */
-const CONFIG: LoopKnobs & { project: ProjectConfig } = await (async () => {
-  if (!existsSync(CONFIG_FILE)) {
-    console.error(
-      [
-        `no config at ${CONFIG_FILE}`,
-        'This loop is shared across repositories; everything true of a repository lives in that file.',
-        'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
-      ].join('\n'),
-    );
-    process.exit(1);
-  }
-  const loaded = (await import(CONFIG_FILE)).default as (Partial<LoopKnobs> & { project?: ProjectConfig }) | undefined;
-  const missing = REQUIRED_PROJECT_FIELDS.filter((field) => loaded?.project?.[field] === undefined);
-  if (!loaded?.project || missing.length > 0) {
-    console.error(`config ${CONFIG_FILE} is missing project field(s): ${missing.join(', ') || 'project'}`);
-    process.exit(1);
-  }
-  const { project, ...overrides } = loaded;
-  const merged: LoopKnobs & { project: ProjectConfig } = {
-    ...DEFAULTS,
-    ...overrides,
-    // Seats deep-merge: a config overriding one seat must not silently drop the other two.
-    seats: { ...DEFAULTS.seats, ...(overrides.seats ?? {}) },
-    project,
-  };
-
-  // Presence is not validity. A shallow undefined check let null enums, empty strings, partial
-  // touchPaths, and an in-repository worktreeRoot through to fail later and stranger.
-  const faults: string[] = [];
-  for (const key of [
-    'name',
-    'repo',
-    'remote',
-    'baseBranch',
-    'evidenceBranch',
-    'checkCommand',
-    'installCommand',
-    'sizingScale',
-  ] as const) {
-    if (typeof project[key] !== 'string' || project[key].trim() === '') {
-      faults.push(`project.${key} must be a non-empty string`);
-    }
-  }
-  for (const key of ['portBase', 'portSpan'] as const) {
-    if (!Number.isInteger(project[key]) || project[key] <= 0) faults.push(`project.${key} must be a positive integer`);
-  }
-  for (const key of [
+const CONFIG = await loadProjectConfig<LoopKnobs>({
+  invokeRoot: INVOKE_ROOT,
+  repoRoot: REPO_ROOT,
+  fileName: 'burn-down-github-issues.config.ts',
+  defaults: DEFAULTS,
+  positiveIntegers: [
     'ageDays',
     'maxPoints',
     'maxReviewRounds',
@@ -332,37 +160,12 @@ const CONFIG: LoopKnobs & { project: ProjectConfig } = await (async () => {
     'concurrency',
     'appraiserConcurrency',
     'appraiseLimit',
-  ] as const) {
-    if (!Number.isInteger(merged[key]) || merged[key] <= 0) faults.push(`${key} must be a positive integer`);
-  }
-  if (!['always', 'code-only', 'never'].includes(merged.autoMerge)) {
-    faults.push(`autoMerge must be 'always', 'code-only', or 'never'`);
-  }
-  for (const key of ['conventionDocs', 'sharedServices', 'sourceExtensions', 'alwaysInvalidates'] as const) {
-    if (!Array.isArray(project[key])) faults.push(`project.${key} must be an array`);
-  }
-  if (project.releaseArtifacts !== undefined && !Array.isArray(project.releaseArtifacts)) {
-    faults.push('project.releaseArtifacts must be an array when present');
-  }
-  if (
-    !Array.isArray(project.pathAliases) ||
-    project.pathAliases.some((alias) => typeof alias?.prefix !== 'string' || typeof alias?.dir !== 'string')
-  ) {
-    faults.push('project.pathAliases must be an array of { prefix, dir }');
-  }
-  if (!Array.isArray(project.touchPaths?.migration) || !Array.isArray(project.touchPaths?.ci)) {
-    faults.push('project.touchPaths must carry migration and ci arrays; an absent one silently removes a merge boundary');
-  }
-  const worktreeRootAbs = typeof project.worktreeRoot === 'string' ? resolve(REPO_ROOT, project.worktreeRoot) : REPO_ROOT;
-  if (worktreeRootAbs === REPO_ROOT || worktreeRootAbs.startsWith(`${REPO_ROOT}/`)) {
-    faults.push('project.worktreeRoot must resolve outside the repository root');
-  }
-  if (faults.length > 0) {
-    console.error([`config ${CONFIG_FILE} is invalid:`, ...faults.map((fault) => `  - ${fault}`)].join('\n'));
-    process.exit(1);
-  }
-  return merged;
-})();
+  ],
+  help: [
+    'This loop is shared across repositories; everything true of a repository lives in that file.',
+    'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
+  ],
+});
 
 const PROJECT = CONFIG.project;
 const REMOTE = PROJECT.remote;
@@ -370,22 +173,9 @@ const BASE = PROJECT.baseBranch;
 
 const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 
-/** Where an agent's final message lands, used as the fallback verdict channel. */
-const LAST_MESSAGE_FILE = 'loop-last-message.txt';
-const VERDICT_FILE = 'loop-verdict.json';
-const APPRAISAL_FILE = 'loop-appraisal.json';
-const REVIEW_FILE = 'loop-review.json';
-
-/**
- * The driver's own scratch, written untracked into each worktree root. Every dirty-tree judgement
- * must look through these: they exist in every worktree the moment an agent finishes, so a bare
- * `git status --porcelain` would call every tree dirty and park every issue.
- */
-const CONTROL_FILES = new Set([LAST_MESSAGE_FILE, VERDICT_FILE, APPRAISAL_FILE, REVIEW_FILE]);
-
 /** Porcelain status of a worktree, minus the loop's own control files. */
 function dirtyPaths(cwd: string): string[] {
-  return sh(['git', 'status', '--porcelain'], cwd)
+  return sh(ctx, ['git', 'status', '--porcelain'], cwd)
     .split('\n')
     .filter(Boolean)
     .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()));
@@ -562,54 +352,20 @@ const SEATS = (() => {
   }
 })();
 
-const log = (msg: string) => console.log(`${new Date().toISOString().slice(11, 19)}  ${msg}`);
-const step = (msg: string) => console.log(`\n\x1b[1m${msg}\x1b[0m`);
-
 /**
- * Failures that mean "someone else is holding a shared resource", not "this command is wrong".
- * Concurrent lanes share one `.git` and one GitHub token, so both are contended by construction.
+ * Everything the fix pipeline reads, gathered once. The loop's own concerns (age, appraisal, the
+ * appraiser seat) stay here; the pipeline never sees them.
  */
-const CONTENTION = [
-  'index.lock', // another lane is writing the shared index or refs
-  'cannot lock ref',
-  'unable to create',
-  'reference already exists',
-  'secondary rate limit', // gh; a burst of label edits is enough to trigger one
-  'was submitted too quickly',
-  'API rate limit',
-];
-
-function sh(cmd: string[], cwd = REPO_ROOT, attempts = 4): string {
-  // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
-  // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is
-  // one that can comment on a downstream tracker: an adopting checkout can carry two remotes
-  // pointing at two different repositories.
-  const argv = cmd[0] === 'gh' && !cmd.includes('-R') ? [...cmd, '-R', PROJECT.repo] : cmd;
-  let lastError = '';
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    const proc = Bun.spawnSync(argv, { cwd, stderr: 'pipe' });
-    if (proc.exitCode === 0) return proc.stdout.toString().trim();
-
-    lastError = proc.stderr.toString().trim();
-    const contended = CONTENTION.some((needle) => lastError.toLowerCase().includes(needle.toLowerCase()));
-    if (!contended || attempt === attempts) break;
-
-    // Backoff rather than a tight retry: git holds a lock for the length of another lane's write,
-    // and GitHub's secondary limit lengthens the more you push against it.
-    Bun.sleepSync(500 * 2 ** (attempt - 1));
-  }
-  throw new Error(`${cmd.join(' ')}\n${lastError}`);
-}
-
-/** A mutation the loop performs on GitHub. Every one routes through here so --dry-run is total. */
-function mutate(description: string, cmd: string[]): void {
-  if (DRY_RUN) {
-    log(`  DRY RUN  ${description}`);
-    return;
-  }
-  log(`  ${description}`);
-  sh(cmd);
-}
+const ctx = createContext({
+  project: PROJECT,
+  knobs: { autoMerge: CONFIG.autoMerge, maxReviewRounds: CONFIG.maxReviewRounds },
+  seats: { worker: SEATS.worker, reviewer: SEATS.reviewer },
+  repoRoot: REPO_ROOT,
+  invokeRoot: INVOKE_ROOT,
+  runDir: RUN_DIR,
+  promptsDirs: [PROMPTS],
+  dryRun: DRY_RUN,
+});
 
 /**
  * The largest size label the issue carries. Max rather than first match: a relabel is add-then-
@@ -636,7 +392,7 @@ function pointsFromLabels(labels: Array<{ name: string }>): number | null {
  */
 function allIssues(): Issue[] {
   return JSON.parse(
-    sh(['gh', 'issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,title,createdAt,labels']),
+    sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,title,createdAt,labels']),
   );
 }
 
@@ -655,7 +411,7 @@ function selectForAppraisal(all: Issue[]): Issue[] {
  * and re-judging it every run is churn.
  */
 function selectCandidates(): Issue[] {
-  const raw = sh([
+  const raw = sh(ctx, [
     'gh',
     'issue',
     'list',
@@ -704,7 +460,7 @@ function selectCandidates(): Issue[] {
  * receipt reading "1,234 packages" claim issue 1234 and silently drop it from selection.
  */
 function openPullRequestIssueRefs(): number[] {
-  const raw = sh(['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'body,title,headRefName']);
+  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'body,title,headRefName']);
   const prs: Array<{ body: string; title: string; headRefName: string }> = JSON.parse(raw);
   const refs: number[] = [];
   for (const pr of prs) {
@@ -721,7 +477,7 @@ function openPullRequestIssueRefs(): number[] {
 }
 
 function ensureLabels(): void {
-  const existing = new Set(sh(['gh', 'label', 'list', '--limit', '200', '--json', 'name', '--jq', '.[].name']).split('\n'));
+  const existing = new Set(sh(ctx, ['gh', 'label', 'list', '--limit', '200', '--json', 'name', '--jq', '.[].name']).split('\n'));
   const wanted: Array<[string, string, string]> = [
     ['needs-decision', 'ededed', 'Blocked on a product decision, not on effort'],
     ['needs-human', 'ededed', 'Needs access or authority an agent does not have'],
@@ -731,7 +487,7 @@ function ensureLabels(): void {
   ];
   for (const [name, color, description] of wanted) {
     if (existing.has(name)) continue;
-    mutate(`create label ${name}`, ['gh', 'label', 'create', name, '--color', color, '--description', description]);
+    mutate(ctx, `create label ${name}`, ['gh', 'label', 'create', name, '--color', color, '--description', description]);
   }
 }
 
@@ -767,15 +523,15 @@ function recordReview(issue: number, previous: number): number {
   const next = previous + 1;
   const label = `loop/reviews: ${next}`;
   try {
-    sh(['gh', 'label', 'create', label, '--color', 'd4c5f9', '--description', 'Review rounds consumed']);
+    sh(ctx, ['gh', 'label', 'create', label, '--color', 'd4c5f9', '--description', 'Review rounds consumed']);
   } catch {
     // already exists
   }
   // Add the new count before removing the old one. A crash between the two leaves both labels,
   // and reviewCount reads the max; the other order would refund every spent round on a crash.
-  mutate(`mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
+  mutate(ctx, `mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
   if (previous > 0) {
-    mutate(`clear loop/reviews: ${previous} on #${issue}`, [
+    mutate(ctx, `clear loop/reviews: ${previous} on #${issue}`, [
       'gh',
       'issue',
       'edit',
@@ -791,7 +547,7 @@ function recordReview(issue: number, previous: number): number {
 function sendToDlq(issue: number, rounds: number, reason: string): void {
   // Reason first, label second: a crash between the two leaves an explained issue that is not yet
   // ejected, which the next run finishes; the other order hides an issue with no explanation.
-  mutate(`comment on #${issue}`, [
+  mutate(ctx, `comment on #${issue}`, [
     'gh',
     'issue',
     'comment',
@@ -799,16 +555,16 @@ function sendToDlq(issue: number, rounds: number, reason: string): void {
     '--body',
     `Moved to the dead-letter queue after ${rounds} review rounds without a merge.\n\n${reason}\n\nRemove the \`loop/dlq\` label to put it back in the queue with a fresh review budget.`,
   ]);
-  mutate(`send #${issue} to the DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/dlq']);
+  mutate(ctx, `send #${issue} to the DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/dlq']);
   // Every count label comes off, or the redrive is a lie: with any `loop/reviews: N` surviving,
   // removing `loop/dlq` would put the issue somewhere selection still refuses to look, or hand it
   // back with a short budget. Read the labels live rather than trusting the caller's snapshot,
   // since an earlier add-before-remove crash can have left lower counts behind.
-  const current = sh(['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name'])
+  const current = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name'])
     .split('\n')
     .filter((name) => /^loop\/reviews:/.test(name));
   for (const label of current) {
-    mutate(`clear ${label} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
+    mutate(ctx, `clear ${label} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
   }
 }
 
@@ -828,7 +584,7 @@ function repairDurableState(all: Issue[]): void {
 
     if (dlq && counts.length > 0) {
       for (const label of counts) {
-        mutate(`repair: clear ${label} on DLQed #${issue.number}`, [
+        mutate(ctx, `repair: clear ${label} on DLQed #${issue.number}`, [
           'gh',
           'issue',
           'edit',
@@ -864,7 +620,7 @@ function reconcile(): void {
   const claimed = new Set(openPullRequestIssueRefs());
   let repaired = 0;
 
-  for (const line of sh(['git', 'worktree', 'list', '--porcelain']).split('\n')) {
+  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
     if (!line.startsWith('worktree ')) continue;
     const dir = resolve(line.slice('worktree '.length).trim());
     if (!dir.startsWith(`${managed}/`)) continue;
@@ -904,7 +660,7 @@ function reconcile(): void {
     if (isSibling) {
       log(`reconcile: removing abandoned scratch worktree ${dir}`);
       try {
-        sh(['git', 'worktree', 'remove', '--force', dir]);
+        sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
       } catch {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -931,16 +687,16 @@ function reconcile(): void {
  */
 function resetLane(issue: number, cwd: string): void {
   try {
-    const branch = sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-    sh(['git', 'fetch', REMOTE, BASE]);
-    sh(['git', 'checkout', '--detach', `${REMOTE}/${BASE}`], cwd);
-    sh(['git', 'reset', '--hard', `${REMOTE}/${BASE}`], cwd);
+    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    sh(ctx, ['git', 'fetch', REMOTE, BASE]);
+    sh(ctx, ['git', 'checkout', '--detach', `${REMOTE}/${BASE}`], cwd);
+    sh(ctx, ['git', 'reset', '--hard', `${REMOTE}/${BASE}`], cwd);
     // Ignored files go too, so a half-written artifact cannot be read as this attempt's, but the
     // installed dependencies stay: reinstalling them is minutes of nothing.
-    sh(['git', 'clean', '-fdx', '-e', 'node_modules'], cwd);
+    sh(ctx, ['git', 'clean', '-fdx', '-e', 'node_modules'], cwd);
     if (branch && branch !== 'HEAD') {
       try {
-        sh(['git', 'branch', '-D', branch], cwd);
+        sh(ctx, ['git', 'branch', '-D', branch], cwd);
       } catch {
         // the branch was never created, or is already gone
       }
@@ -962,8 +718,8 @@ function worktreeFor(issue: number): string {
   }
 
   mkdirSync(dirname(dir), { recursive: true });
-  sh(['git', 'fetch', REMOTE, BASE]);
-  sh(['git', 'worktree', 'add', '--detach', dir, `${REMOTE}/${BASE}`]);
+  sh(ctx, ['git', 'fetch', REMOTE, BASE]);
+  sh(ctx, ['git', 'worktree', 'add', '--detach', dir, `${REMOTE}/${BASE}`]);
   return dir;
 }
 
@@ -982,7 +738,7 @@ function removeWorktree(issue: number): void {
   const dir = resolve(REPO_ROOT, PROJECT.worktreeRoot, `issue-${issue}`);
   if (existsSync(dir)) {
     try {
-      sh(['git', 'worktree', 'remove', '--force', dir]);
+      sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
     } catch {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1005,7 +761,7 @@ function removeStrayWorktrees(issue: number): void {
   const managed = resolve(REPO_ROOT, PROJECT.worktreeRoot);
   const own = resolve(managed, `issue-${issue}`);
 
-  for (const line of sh(['git', 'worktree', 'list', '--porcelain']).split('\n')) {
+  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
     if (!line.startsWith('worktree ')) continue;
     const dir = resolve(line.slice('worktree '.length).trim());
     if (dir === REPO_ROOT || dir === own) continue;
@@ -1015,7 +771,7 @@ function removeStrayWorktrees(issue: number): void {
     if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(dir.slice(managed.length + 1))) continue;
     log(`  removing scratch worktree left by an agent: ${dir}`);
     try {
-      sh(['git', 'worktree', 'remove', '--force', dir]);
+      sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
     } catch {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1085,18 +841,18 @@ function claimSingleInstance(): () => void {
  * leaving the tree clean, since a conflicted catch-up is a human's problem and not the loop's.
  */
 function updateFromBase(cwd: string): boolean {
-  sh(['git', 'fetch', REMOTE, BASE], cwd);
+  sh(ctx, ['git', 'fetch', REMOTE, BASE], cwd);
   try {
-    sh(['git', 'merge', '--no-edit', `${REMOTE}/${BASE}`], cwd);
+    sh(ctx, ['git', 'merge', '--no-edit', `${REMOTE}/${BASE}`], cwd);
   } catch {
     try {
-      sh(['git', 'merge', '--abort'], cwd);
+      sh(ctx, ['git', 'merge', '--abort'], cwd);
     } catch {
       // nothing to abort
     }
     return false;
   }
-  sh(['git', 'push', REMOTE, 'HEAD'], cwd);
+  sh(ctx, ['git', 'push', REMOTE, 'HEAD'], cwd);
   return true;
 }
 
@@ -1195,13 +951,13 @@ function importClosure(cwd: string, entries: string[]): Set<string> {
  * a dependency change, which genuinely invalidates any proof in flight.
  */
 function isVersionOnlyPackageJsonBump(cwd: string, sinceSha: string): boolean {
-  const diff = sh(['git', 'diff', '--unified=0', `${sinceSha}...${REMOTE}/${BASE}`, '--', 'package.json'], cwd);
+  const diff = sh(ctx, ['git', 'diff', '--unified=0', `${sinceSha}...${REMOTE}/${BASE}`, '--', 'package.json'], cwd);
   const changed = diff.split('\n').filter((line) => /^[+-](?![+-])/.test(line));
   return changed.length > 0 && changed.every((line) => /^[+-]\s*"version":/.test(line));
 }
 
 function staleAgainstBase(cwd: string, sinceSha: string): string[] {
-  sh(['git', 'fetch', REMOTE, BASE], cwd);
+  sh(ctx, ['git', 'fetch', REMOTE, BASE], cwd);
   const lines = (out: string) => out.split('\n').filter(Boolean);
 
   // Release machinery rewrites its artifacts on every landing; a queue where each merge
@@ -1213,7 +969,7 @@ function staleAgainstBase(cwd: string, sinceSha: string): string[] {
     RELEASE_ARTIFACTS.some((pattern) => matchesPath(file, pattern)) ||
     (file === 'package.json' && isVersionOnlyPackageJsonBump(cwd, sinceSha));
 
-  const incoming = lines(sh(['git', 'diff', '--name-only', `${sinceSha}...${REMOTE}/${BASE}`], cwd)).filter(
+  const incoming = lines(sh(ctx, ['git', 'diff', '--name-only', `${sinceSha}...${REMOTE}/${BASE}`], cwd)).filter(
     (file) => !machineNoise(file),
   );
   if (incoming.length === 0) return [];
@@ -1221,7 +977,7 @@ function staleAgainstBase(cwd: string, sinceSha: string): string[] {
   const global = incoming.filter((file) => ALWAYS_INVALIDATES.some((pattern) => matchesPath(file, pattern)));
   if (global.length > 0) return global;
 
-  const mine = lines(sh(['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd));
+  const mine = lines(sh(ctx, ['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd));
   const closure = importClosure(cwd, mine);
   if (closure.size > CLOSURE_CAP) return incoming;
 
@@ -1477,7 +1233,7 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
 
     case 'needs-decision':
     case 'needs-human':
-      mutate(`label #${issue.number} ${result.verdict}`, [
+      mutate(ctx, `label #${issue.number} ${result.verdict}`, [
         'gh',
         'issue',
         'edit',
@@ -1485,12 +1241,12 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
         '--add-label',
         result.verdict,
       ]);
-      mutate(`comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
       break;
 
     case 'valid':
       if (result.points) {
-        mutate(`size #${issue.number} at ${result.points}`, [
+        mutate(ctx, `size #${issue.number} at ${result.points}`, [
           'gh',
           'issue',
           'edit',
@@ -1499,7 +1255,7 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
           `size: ${result.points}`,
         ]);
         if (result.disagrees && result.priorSize) {
-          mutate(`note the sizing disagreement on #${issue.number}`, [
+          mutate(ctx, `note the sizing disagreement on #${issue.number}`, [
             'gh',
             'issue',
             'comment',
@@ -1591,7 +1347,7 @@ async function runReviewer(issue: number, pr: number, cwd: string, round: number
  * path cannot reveal, so those remain self-reported by worker and reviewer.
  */
 function computedTouches(cwd: string): Array<'migration' | 'ci'> {
-  const files = sh(['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd)
+  const files = sh(ctx, ['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd)
     .split('\n')
     .filter(Boolean);
   const found: Array<'migration' | 'ci'> = [];
@@ -1638,9 +1394,9 @@ function mergeAllowed(touches: WorkerResult['touches'] | null): boolean {
  * after the review, merges something no reviewer ever read.
  */
 function pullRequestMatchesReview(pr: number, issue: number, cwd: string, reviewedSha: string): string | null {
-  const raw = sh(['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']);
+  const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']);
   const view: { headRefOid: string; baseRefName: string; headRefName: string; state: string } = JSON.parse(raw);
-  const localHead = sh(['git', 'rev-parse', 'HEAD'], cwd);
+  const localHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
 
   if (view.state !== 'OPEN') return `pull request is ${view.state}`;
   if (view.baseRefName !== BASE) return `targets ${view.baseRefName}, not ${BASE}`;
@@ -1655,7 +1411,7 @@ function pullRequestMatchesReview(pr: number, issue: number, cwd: string, review
 
 /** Whether a pull request is still a draft, which is the worker saying the work is unfinished. */
 function isDraft(pr: number): boolean {
-  return sh(['gh', 'pr', 'view', String(pr), '--json', 'isDraft', '--jq', '.isDraft']) === 'true';
+  return sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'isDraft', '--jq', '.isDraft']) === 'true';
 }
 
 /**
@@ -1678,7 +1434,7 @@ async function awaitGreenChecks(pr: number, say: (message: string) => void): Pro
 
   const deadline = Date.now() + CHECKS_TIMEOUT_MS;
   for (;;) {
-    const raw = sh(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup']);
+    const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup']);
     const rollup: CheckNode[] = raw ? JSON.parse(raw) : [];
 
     const failed = rollup.filter((c) => classify(c) === 'failed');
@@ -1697,8 +1453,8 @@ async function awaitGreenChecks(pr: number, say: (message: string) => void): Pro
 }
 
 function closeIssue(issue: number, comment: string): void {
-  mutate(`comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', comment]);
-  mutate(`close #${issue}`, ['gh', 'issue', 'close', String(issue)]);
+  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', comment]);
+  mutate(ctx, `close #${issue}`, ['gh', 'issue', 'close', String(issue)]);
 }
 
 /**
@@ -1749,7 +1505,7 @@ async function review(
     return null;
   }
 
-  const reviewedSha = sh(['git', 'rev-parse', 'HEAD'], cwd);
+  const reviewedSha = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
   const verdict = await runReviewer(issue.number, pr, cwd, round);
   if (!verdict) {
     say('reviewer wrote no verdict');
@@ -1791,7 +1547,7 @@ async function land(
   if (verdict.decision === 'block' || verdict.decision === 'gather-more') {
     // Back to draft before anything is pushed: the catch-up below and the revision pushes that
     // follow must not each spend a CI run on a pull request still marked ready.
-    mutate(`return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
+    mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
     // Catch up anyway, so the revision happens against current code rather than against the base as
     // it stood when this branch started. Cheap here, and it saves the next review a refresh.
     const behind = staleAgainstBase(cwd, reviewedSha);
@@ -1800,7 +1556,7 @@ async function land(
       if (!updateFromBase(cwd)) {
         // A parked pull request must not sit in draft: the human reading loop/parked would find a
         // branch the CI guard is configured to skip, and nothing else would ever flip it back.
-        mutate(`mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
+        mutate(ctx, `mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
         say(`conflicts with ${BASE}; a human has to resolve it`);
         return 'park';
       }
@@ -1821,7 +1577,7 @@ async function land(
 
   const effective = effectiveTouches(touches, verdict.touches, cwd);
   if (!mergeAllowed(effective)) {
-    mutate(`park PR #${pr} (autoMerge: ${CONFIG.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
+    mutate(ctx, `park PR #${pr} (autoMerge: ${CONFIG.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
       'gh',
       'pr',
       'edit',
@@ -1850,15 +1606,15 @@ async function land(
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
-  mutate(`merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
+  mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
   // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
   // later while this driver has already parked it, so cancel whatever was scheduled first.
-  const merged = sh(['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
+  const merged = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
   if (!merged || merged === 'null') {
     try {
-      sh(['gh', 'pr', 'merge', String(pr), '--disable-auto']);
+      sh(ctx, ['gh', 'pr', 'merge', String(pr), '--disable-auto']);
     } catch {
       // nothing was scheduled
     }
@@ -1867,10 +1623,10 @@ async function land(
   }
 
   // Read the branch name while the worktree still exists, then drop it.
-  const branch = sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
   removeWorktree(issue.number);
   try {
-    sh(['git', 'push', REMOTE, '--delete', branch]);
+    sh(ctx, ['git', 'push', REMOTE, '--delete', branch]);
   } catch {
     say(`merged branch ${branch} was already deleted`);
   }
@@ -1916,7 +1672,7 @@ async function handleIssue(issue: Issue): Promise<void> {
  */
 function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number): boolean {
   const closePullRequest = () => {
-    if (pr) mutate(`close PR #${pr}`, ['gh', 'pr', 'close', String(pr), '--comment', 'Superseded; see the issue.']);
+    if (pr) mutate(ctx, `close PR #${pr}`, ['gh', 'pr', 'close', String(pr), '--comment', 'Superseded; see the issue.']);
   };
 
   switch (result.verdict) {
@@ -1929,7 +1685,7 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
 
     case 'needs-decision':
     case 'needs-human':
-      mutate(`label #${issue.number} ${result.verdict}`, [
+      mutate(ctx, `label #${issue.number} ${result.verdict}`, [
         'gh',
         'issue',
         'edit',
@@ -1937,14 +1693,14 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
         '--add-label',
         result.verdict,
       ]);
-      mutate(`comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
       closePullRequest();
       removeWorktree(issue.number);
       return true;
 
     case 'out-of-band': {
       if (result.points) {
-        mutate(`size #${issue.number} at ${result.points}`, [
+        mutate(ctx, `size #${issue.number} at ${result.points}`, [
           'gh',
           'issue',
           'edit',
@@ -1956,7 +1712,7 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
         // pointsFromLabels reading the max keeps the issue out of the band during the swap.
         const prior = issue.labels.find((l) => /^size:\s*\d+$/.test(l.name) && l.name !== `size: ${result.points}`);
         if (prior) {
-          mutate(`clear ${prior.name} on #${issue.number}`, [
+          mutate(ctx, `clear ${prior.name} on #${issue.number}`, [
             'gh',
             'issue',
             'edit',
@@ -2067,7 +1823,7 @@ async function reviewAndLand(
     if (settleTerminalVerdict(issue, result, pr)) return;
   }
 
-  mutate(`park #${issue.number}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'loop/parked']);
+  mutate(ctx, `park #${issue.number}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'loop/parked']);
   say('parked for a human');
 }
 
@@ -2084,7 +1840,7 @@ function findStranded(all: Issue[]): Array<{ issue: Issue; cwd: string; result: 
   const managed = resolve(REPO_ROOT, PROJECT.worktreeRoot);
   const found: Array<{ issue: Issue; cwd: string; result: WorkerResult }> = [];
 
-  for (const line of sh(['git', 'worktree', 'list', '--porcelain']).split('\n')) {
+  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
     if (!line.startsWith('worktree ')) continue;
     const dir = resolve(line.slice('worktree '.length).trim());
     if (!dir.startsWith(`${managed}/`)) continue;
@@ -2113,10 +1869,10 @@ function findStranded(all: Issue[]): Array<{ issue: Issue; cwd: string; result: 
       continue;
     }
     const view: { state: string; headRefOid: string } = JSON.parse(
-      sh(['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
+      sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
     );
     if (view.state !== 'OPEN') continue;
-    if (view.headRefOid !== sh(['git', 'rev-parse', 'HEAD'], dir)) {
+    if (view.headRefOid !== sh(ctx, ['git', 'rev-parse', 'HEAD'], dir)) {
       log(`#${num}  stranded worktree head is not the pull request head; leaving it for a human`);
       continue;
     }
@@ -2197,6 +1953,7 @@ async function main(): Promise<void> {
             inFlight.delete(issue.number);
           }
         },
+        (issue) => `#${issue.number}`,
       );
     }
   }
@@ -2207,16 +1964,21 @@ async function main(): Promise<void> {
   if (!SKIP_APPRAISAL) {
     // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
     // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
-    if (!DRY_RUN) sh(['git', 'fetch', REMOTE, BASE]);
+    if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
     const toAppraise = selectForAppraisal(allIssues()).slice(0, APPRAISE_LIMIT);
     if (toAppraise.length === 0) {
       log('nothing to appraise; the window is fully sized');
     } else {
       step(`Appraising ${toAppraise.length} issue(s), ${CONFIG.appraiserConcurrency} at a time`);
       log(toAppraise.map((i) => `#${i.number}`).join(', '));
-      await pool(toAppraise, CONFIG.appraiserConcurrency, async (issue) => {
-        await appraise(issue);
-      });
+      await pool(
+        toAppraise,
+        CONFIG.appraiserConcurrency,
+        async (issue) => {
+          await appraise(issue);
+        },
+        (issue) => `#${issue.number}`,
+      );
     }
   }
 
@@ -2231,29 +1993,9 @@ async function main(): Promise<void> {
 
   step(`Working ${candidates.length} issue(s), ${Math.min(CONFIG.concurrency, candidates.length)} at a time`);
   log(candidates.map((i) => `#${i.number}`).join(', '));
-  await pool(candidates, CONFIG.concurrency, handleIssue);
+  await pool(candidates, CONFIG.concurrency, handleIssue, (issue) => `#${issue.number}`);
 
   step('done');
-}
-
-/**
- * Runs `work` over `items` with at most `size` in flight, each lane pulling the next item as its
- * own finishes so one slow item does not hold up the rest. A thrown item does not stop the pool.
- */
-async function pool(items: Issue[], size: number, work: (issue: Issue) => Promise<void>): Promise<void> {
-  const queue = [...items];
-  const lanes = Array.from({ length: Math.max(1, Math.min(size, queue.length)) }, async () => {
-    for (;;) {
-      const issue = queue.shift();
-      if (!issue) return;
-      try {
-        await work(issue);
-      } catch (error) {
-        console.error(`\n#${issue.number} threw: ${(error as Error).message}`);
-      }
-    }
-  });
-  await Promise.all(lanes);
 }
 
 await main();
