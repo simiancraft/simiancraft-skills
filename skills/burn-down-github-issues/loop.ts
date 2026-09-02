@@ -568,6 +568,8 @@ async function main(): Promise<void> {
   }
   // A polite kill should leave nothing behind: release the lock and take the agents with it. Only
   // SIGKILL can still leave wreckage, which is what `reconcile` exists to clear on the next run.
+  // The walker is a child that would otherwise keep this process alive after the run is done, so
+  // it is stopped explicitly at the end of main as well as on every exit path.
   const stopWalker = CONFIG.floor && !DRY_RUN ? startWalker(CONFIG.floor.cadenceMinutes) : () => {};
   process.on('exit', () => {
     stopWalker();
@@ -633,6 +635,7 @@ async function main(): Promise<void> {
   if (candidates.length === 0) {
     log('no sized candidates in the window; widen CONFIG.ageDays or raise --max-points');
     step('done');
+    stopWalker();
     return;
   }
 
@@ -649,6 +652,7 @@ async function main(): Promise<void> {
   );
 
   step('done');
+  stopWalker();
 }
 
 await main();
