@@ -57,7 +57,7 @@ themselves. A test receipt or a rendered frame depends on the whole module graph
 component; a base change to a shared chassis module or a generated type invalidates the proof
 while touching nothing the diff touched, and comparing filenames alone calls that fresh.
 
-The working method, run in the field by the merge gate in the `burn-down-github-issues` skill in
+The working method, applied by the merge gate in the `burn-down-github-issues` skill in
 its whole-change form (see the honest limits below for what "whole-change" concedes):
 
 1. **Incoming**: `git diff --name-only <captureSha>...<remote>/<base>`, the base's movement since

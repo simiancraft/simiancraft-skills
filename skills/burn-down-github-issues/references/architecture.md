@@ -61,9 +61,6 @@ Install it where each engine can read it. For Claude, the simiancraft-skills plu
 skills. For an engine with no skill loader, the prompt's "load the skill" instruction has to
 resolve to files on disk, so keep a checkout of the repo readable from the worktrees.
 
-The loop was written for one repository, adopted by a second, and abstracted here once the shape
-held in both; the incidents below are cited by shape, not by tracker.
-
 ## Boundaries
 
 The loop-level knobs live in `DEFAULTS` at the top of `loop.ts`; every one of them, and everything
@@ -274,4 +271,4 @@ are bypassed; the worktree and read-only contracts are prompts, not sandboxes. T
 today is scope (small sized issues, code-only merges, a second-engine gate) and trust in the
 tracker's authors, not enforcement.
 
-One path has never executed in a production run: DLQ ejection. It is written; it is not proven.
+DLQ ejection has not been exercised end to end. It is written; it is not proven.

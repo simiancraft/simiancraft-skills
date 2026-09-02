@@ -97,4 +97,4 @@ holds. The merge boundary computes `migration` and `ci` from the diff's paths, b
 `data` and `stored-string` are runtime effects a path cannot reveal; for those it holds two
 independent self-reports and parks rather than trusts. The reviewer runs as the same GitHub
 account as the worker, so its independence is model-level, not identity-level. And dead-letter-queue
-ejection has executed in no production run yet; it is written, not proven.
+ejection has not been exercised end to end; it is written, not proven.

@@ -14,11 +14,11 @@ PID=$(cat <worktreeRoot>/runs/loop.lock)
 tr '\0' ' ' < /proc/$PID/cmdline     # confirm it names loop.ts before you trust it
 ```
 
-**Do not find the driver with `pgrep -f loop.ts`.** Two ways that goes wrong, both observed:
+**Do not find the driver with `pgrep -f loop.ts`.** Two ways that goes wrong:
 
 - Launching under `nohup` or a shell wrapper leaves a short-lived parent that matches the pattern
-  and exits within a second. A watcher armed on it reports the run finished about thirty seconds
-  in, while the real run continues for an hour.
+  and exits within a second. A watcher armed on it reports the run finished moments in, while the
+  real run continues for an hour.
 - A monitor whose own command line contains the pattern matches itself, so the process never looks
   absent and the watch never ends.
 

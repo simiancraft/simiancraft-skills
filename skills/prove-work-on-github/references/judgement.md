@@ -58,7 +58,7 @@ Two checks apply to the change as a whole rather than to any one claim:
 - **The deciding command is covered.** Whatever else is captured, one receipt must exercise the
   command the pipeline itself uses to gate the change, not only a focused invocation the author
   chose. A proof can be sound, pinned, and reproducible and still miss the gate that determines
-  the outcome; a real merge gate has refused on exactly this after reproducing every other
+  the outcome; a merge gate can refuse on exactly this after reproducing every other
   receipt. Read the CI configuration to learn what runs, and expect proof of that.
 - **Nothing load-bearing rests on narrative alone.** If any claim that would change the decision
   has no receipt, adequacy fails no matter how strong the rest is.
@@ -123,7 +123,7 @@ change.
 
 ## Provenance
 
-The scorecard rows and both change-level checks are distilled from the merge gate of the
-`burn-down-github-issues` skill, where they ran as an inline rubric before this section existed;
-the deciding-command and remote-resolvable rows each entered the rubric after costing a real
-review round in the field.
+The scorecard rows and both change-level checks are shared with the merge gate of the
+`burn-down-github-issues` skill, which applies them as its review rubric; the deciding-command
+and remote-resolvable rows exist because each names a way a proof can look complete and still
+fail the gate.

@@ -997,9 +997,8 @@ function removeWorktree(issue: number): void {
  *
  * An earlier version did the opposite: it removed any registered worktree OUTSIDE the managed
  * directory whose path contained the issue number, force-removing it and then recursively deleting
- * the directory if git refused. An adopting repository kept a human's checkout at a path like
- * `worktrees/fix-1234-typo`, so working issue 1234 would have destroyed that checkout
- * and any uncommitted work in it.
+ * the directory if git refused. A human's checkout kept at a path like `worktrees/fix-1234-typo`
+ * would be destroyed, with any uncommitted work in it, the moment the loop worked issue 1234.
  * Path substring is not ownership. Nothing outside `worktreeRoot` is ever touched.
  */
 function removeStrayWorktrees(issue: number): void {
@@ -1011,8 +1010,8 @@ function removeStrayWorktrees(issue: number): void {
     const dir = resolve(line.slice('worktree '.length).trim());
     if (dir === REPO_ROOT || dir === own) continue;
     if (!dir.startsWith(`${managed}/`)) continue;
-    // The issue number must stand alone between non-digits: cleaning #334 must not match a scratch
-    // directory another lane made for #1334. Substring is not ownership even inside the root.
+    // The issue number must stand alone between non-digits: cleaning issue 234 must not match a scratch
+    // directory another lane made for issue 1234. Substring is not ownership even inside the root.
     if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(dir.slice(managed.length + 1))) continue;
     log(`  removing scratch worktree left by an agent: ${dir}`);
     try {

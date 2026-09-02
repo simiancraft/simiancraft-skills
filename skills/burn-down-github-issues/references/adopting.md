@@ -33,8 +33,8 @@ export default {
     installCommand: 'bun install --frozen-lockfile',
     conventionDocs: ['AGENTS.md', 'CLAUDE.md'],
     sizingScale: 'where your point scale is documented',
-    sharedServices: ['the local database', 'the shared staging stage'],
-    portBase: 9100,
+    sharedServices: ['the local database', 'the shared staging environment'],
+    portBase: 9100, // any band your own dev servers do not use
     portSpan: 800,
     pathAliases: [{ prefix: '~/', dir: '.' }],
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
