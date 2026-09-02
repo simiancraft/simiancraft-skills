@@ -43,10 +43,10 @@ in the window can be far older than it looks, and its claim may no longer hold.
 
 Three rules decide most of the hard cases:
 
-- **A decision beats a small diff.** If the correct value depends on knowledge of the catalog, the
-  shop floor, the brand, or the customer, and nobody has ruled on it in the thread, it is
+- **A decision beats a small diff.** If the correct value depends on knowledge of the product, the
+  business, its operations, or its customers, and nobody has ruled on it in the thread, it is
   `needs-decision` however small the change would be.
-- **Production data is not ours to edit.** An issue asking for a record to be corrected is
+- **Never edit production data.** An issue asking for a record to be corrected is
   `needs-human`.
 - **A well-argued issue can still prescribe the wrong remedy, and the convention wins.** Issues
   often prescribe a fix, not just a defect, and that prescription is the author's opinion rather

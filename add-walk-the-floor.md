@@ -4,14 +4,14 @@
 **Scope:** cross-stack
 **Date:** 2026-09-01
 **Last reviewed:** 2026-09-01
-**Context:** A merged change took a deployed base branch down and nothing in the burndown could see it: every gate the loop runs is a build, a type check, or a test, and none of them boots the result.
+**Context:** A merged change can take a deployed base branch down without any gate in the burndown seeing it: every gate is a build, a type check, or a test, and none of them boots the result.
 **Depends on:** `extract-fix-github-issue.md` fully shipped; `fixIssue(ctx, issue)` importable from `skills/fix-github-issue/lib/pipeline.ts`.
 
 ## Goal
 
 The burndown proves each change before it merges, and that proof has a ceiling: it never runs the deployed result. A change that passes every check and then crashes the environment on boot, or renders the site wrong, or empties the search index, goes unnoticed until a person looks, and every merge after it lands on a broken base.
 
-This plan adds a second skill, `walk-the-floor`: a machine that wakes on a cadence, reads a list of things that should now be true in a running environment, goes and looks at each one to a sanity standard (would a client notice), records what it found in a ledger, and when something is wrong files an incident and fixes it through `fix-github-issue`. It knows nothing about the burndown. Two conventional callback slots, `on-pass` and `on-fail`, let whoever started it add behavior; the burndown uses `on-fail` to pause its own line.
+This plan adds a second skill, `walk-the-floor`: a machine that wakes on a cadence, reads a list of things that should now be true in a running environment, goes and looks at each one to a sanity standard (would a user notice), records what it found in a ledger, and when something is wrong files an incident and fixes it through `fix-github-issue`. It knows nothing about the burndown. Two conventional callback slots, `on-pass` and `on-fail`, let whoever started it add behavior; the burndown uses `on-fail` to pause its own line.
 
 Done looks like: the walker runs alone against any configured environment from a hand-written list, and the burndown, when configured with a floor directory, starts it, feeds it every merge, and stops merging the moment a walk fails.
 
@@ -157,7 +157,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 **Goal:** The agent part: one turn per wake, every walkable item, three rungs, one verdict file.
 
 **Files created:**
-- `skills/walk-the-floor/prompts/walk.md`: the sanity standard stated as "would a client notice"; the rung ladder; the rule that writes are additive, tagged with an `inspector-` prefix and a timestamp, soft-deleted on the way out, and only ever posted to a `safeEndpoints` entry; the standing walks matched to each item's paths, rendered in; the environment driver to load by kind (`playwright-harness` for web; `expo-ios-simulator` or `android-emulator-harness` otherwise); the verdict file contract: `walk-verdict.json` with one entry per item (`itemId`, `rung`, `verdict`, `reason`, `evidence` path under the floor's `evidence/`), and the rule that an item the walker cannot classify honestly is `not-checkable` with the reason, never `intact` by default.
+- `skills/walk-the-floor/prompts/walk.md`: the sanity standard stated as "would a user notice"; the rung ladder; the rule that writes are additive, tagged with an `inspector-` prefix and a timestamp, soft-deleted on the way out, and only ever posted to a `safeEndpoints` entry; the standing walks matched to each item's paths, rendered in; the environment driver to load by kind (`playwright-harness` for web; `expo-ios-simulator` or `android-emulator-harness` otherwise); the verdict file contract: `walk-verdict.json` with one entry per item (`itemId`, `rung`, `verdict`, `reason`, `evidence` path under the floor's `evidence/`), and the rule that an item the walker cannot classify honestly is `not-checkable` with the reason, never `intact` by default.
 
 **Files rewritten:**
 - `skills/walk-the-floor/walk.ts`: builds the walker turn from the pending walkable items and runs it through the fix skill's `runAgent` with the walker seat, in a scratch checkout of the base at the deployed revision so the agent can read the diffs it is checking; validates the verdict file (every pending item present, every verdict in the vocabulary), appends ledger entries, runs callbacks per entry. An item missing from the verdict file gets no entry and is walked again next wake.
@@ -206,7 +206,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 - `skills/walk-the-floor/references/operating.md`: once versus forever, reading the ledger (`jq` one-liners), what an incident looks like on the forge, and stopping.
 
 **Files rewritten:**
-- `skills/walk-the-floor/SKILL.md`: full body: what it is (a list checker and fixer), when to use it (alone against a hand-written list; forever as a sanity heartbeat; as the floor of a burndown), the two callbacks, the standard ("would a client notice"), hard dependencies (`fix-github-issue`, and one environment driver skill), and the ceiling (agent judgment decides what "the change is there" means; a walk proves a client would not hit a wall, not that the change is correct; writes touch shared state and are tagged and reverted, which is a contract, not a sandbox).
+- `skills/walk-the-floor/SKILL.md`: full body: what it is (a list checker and fixer), when to use it (alone against a hand-written list; forever as a sanity heartbeat; as the floor of a burndown), the two callbacks, the standard ("would a user notice"), hard dependencies (`fix-github-issue`, and one environment driver skill), and the ceiling (agent judgment decides what "the change is there" means; a walk proves a user would not hit a wall, not that the change is correct; writes touch shared state and are tagged and reverted, which is a contract, not a sandbox).
 - `README.md`: a row and a paragraph for `walk-the-floor`.
 
 **Gate:** every relative link in the new files resolves; no em dashes; no project name, path, or issue number from any adopter anywhere in the skill.
@@ -216,7 +216,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 **Goal:** One real floor, in the adopting repository's tooling worktree, not in this repository.
 
 **Files created (in the adopter's tooling worktree):**
-- `walk-the-floor.config.ts`: re-exports `project` from the burndown config; `environment.kind: 'web'`, its deployed base URL and health paths, `revisionCommand` if the host can answer it, `logsCommand`, login as environment variable names, `safeEndpoints: []` until a webhook is confirmed side-effect free, four standing walks (sign in and open the dashboard; global search returns records; open a record editor; open a print preview), `cadenceMinutes: 10`.
+- `walk-the-floor.config.ts`: re-exports `project` from the burndown config; `environment.kind: 'web'`, its deployed base URL and health paths, `revisionCommand` if the host can answer it, `logsCommand`, login as environment variable names, `safeEndpoints: []` until a webhook is confirmed side-effect free, four standing walks (sign in and open the landing screen; search returns records; open one record; open one print or export view), `cadenceMinutes: 10`.
 
 **Files rewritten (in the adopter's tooling worktree):**
 - `burn-down-github-issues.config.ts`: `floor: { cadenceMinutes: 10 }` and `project.smokeCommand` set to a command that boots the server and exits on the first request served.

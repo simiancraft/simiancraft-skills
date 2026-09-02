@@ -155,9 +155,9 @@ section a year from now, while a comment is loose prose in a timeline:
 
     gh pr review {{PR}} --comment --body-file <your-file>
 
-Use the `--comment` event, never `--approve` and never `--request-changes`. This repository's pull
-requests are authored by the same account you are running as, and GitHub refuses to let an account
-approve its own pull request; attempting it fails the step for nothing. If `gh pr review` is
+Use the `--comment` event, never `--approve` and never `--request-changes`. When the pull request was
+authored by the account you are running as, GitHub refuses to let it approve its own pull request,
+and attempting it fails the step for nothing. If `gh pr review` is
 rejected for any reason, fall back to `gh pr comment {{PR}} --body-file <your-file>`, and say in one
 line of your `confidence` field that the verdict is a comment rather than a review, so the record
 shows which it was.

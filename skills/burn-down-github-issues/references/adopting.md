@@ -8,9 +8,8 @@ point; almost every field that bit an adopter bit them differently.
 ## What you are adopting
 
 A headless loop that appraises recent issues, fixes the small ones, proves the work on a pull
-request, and lets a second agent with no shared context decide whether it can merge. Four roles:
-an appraiser pool that sizes issues read-only, a worker pool that fixes them one worktree each, a
-reviewer pool that judges, and a single pull master that merges one branch at a time.
+request, and lets a second agent with no shared context decide whether it can merge. The roles and
+the reasoning behind them are in `architecture.md`.
 
 Read `architecture.md` first. It describes the shape and the reasoning; this file is only the
 adoption.
@@ -40,7 +39,7 @@ export default {
     pathAliases: [{ prefix: '~/', dir: '.' }],
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
-    releaseArtifacts: [/* optional; see below */],
+    releaseArtifacts: [] /* optional string[]; same pattern rules as alwaysInvalidates; see below */,
     touchPaths: {
       migration: ['db/migrations/'],
       ci: ['.github/workflows/'],
@@ -48,7 +47,9 @@ export default {
     worktreeRoot: '../.your-app-loop',
   },
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
-  // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, seats.
+  // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
+  // seats: { appraiser: 'codex', worker: 'codex', reviewer: 'claude:claude-opus-5' }.
+  // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
 };
 ```
 
@@ -68,7 +69,7 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `remote` | **check this**, not every checkout says `origin` | `origin` | `origin`, but it carried a second remote (see below) |
 | `baseBranch` | cut from and merged into | `development` | `preview` |
 | `evidenceBranch` | long-lived, append only | `__evidence_locker__` | create one |
-| `checkCommand` | the local gate | `bun check` | `bun check` (a script fanning out to 14 checks) |
+| `checkCommand` | the local gate | `bun check` | `bun check` (a script fanning out to many checks) |
 | `installCommand` | frozen-lockfile install | `bun ci` | `bun install --frozen-lockfile`; there was no `ci` script |
 | `conventionDocs` | what a prescribed remedy is read against | `AGENTS.md`, `CLAUDE.md` | both present |
 | `sizingScale` | where the point scale is written | a wiki page | the same wiki convention |
@@ -76,8 +77,8 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `sourceExtensions` | closure walk candidates | ts, tsx, js, jsx | same |
 | `alwaysInvalidates` | see below | Prisma and Vite shaped | Expo and Drizzle shaped |
 | `touchPaths` | mechanical merge-boundary classification | Prisma schema + workflows | Drizzle schema and migrations + workflows |
-| `sharedServices` | what an agent must not reset | database, Elasticsearch, Redis | database, a shared staging stage, test identities |
-| `portBase` / `portSpan` | `portBase + (issue % portSpan)` | 3000 / 900 | chosen to avoid the dev server's 8081 |
+| `sharedServices` | what an agent must not reset | database, search index, cache | database, a shared staging stage, test identities |
+| `portBase` / `portSpan` | `portBase + (issue % portSpan)` | 3000 / 900 | chosen to avoid the dev server's own port |
 
 Also set `worktreeRoot`, which is a sibling directory outside the repository root so no tool that
 walks the working tree has to be told to ignore it.
@@ -88,14 +89,14 @@ walks the working tree has to be told to ignore it.
 pointing at **two different repositories**:
 
 ```
-client   https://github.com/client-org/the-app.git
-origin   git@github.com:your-org/the-app.git
+delivery   https://github.com/downstream-org/the-app.git
+origin     git@github.com:your-org/the-app.git
 ```
 
-That is a dual-repository delivery pattern: all development happens in the working repository,
-and the client-facing repository receives delivery pull requests only. So the loop works
-`origin` with the working repository's base branch; pointing it at the client remote would put
-agent PRs and issue comments on a client-visible surface, which is the wrong answer however
+That is a two-repository delivery pattern: all development happens in the working repository,
+and the downstream repository receives delivery pull requests only. So the loop works
+`origin` with the working repository's base branch; pointing it at the delivery remote would put
+agent PRs and issue comments on a surface other people read, which is the wrong answer however
 plausible the remote's name makes it look. The general rule: `remote` and `repo` must name the
 same repository, because `repo` builds the evidence links and `gh` resolves pull requests against
 a repository of its own choosing; a mismatch means the loop pushes branches to one repository and
@@ -131,14 +132,13 @@ boundary independent of anyone's say-so.
 
 ### `releaseArtifacts`: carve the machine's own noise out of staleness
 
-If every merge to your base branch triggers release automation that commits files back (a deploy
-constants file, a generated changelog), each landing rewrites paths that `alwaysInvalidates`
-matches, which discards the approval of every pull request still queued and re-reviews the same
-code for noise the machine itself produced. List those machine-rewritten files here and their base
-movement stops invalidating approvals entirely, so only list a file whose every landing-time
-change is machine-produced; a file humans also edit does not belong here. `package.json` needs no
-entry: a base change that only bumps its `"version"` field is recognized as release noise
-automatically, while a dependency change still invalidates. One adopter's release bot committed a
+List every file your release automation rewrites on each merge to the base: a deploy-constants
+file, a generated changelog. Movement in these stops invalidating approvals. Only list a file whose
+every landing-time change is machine-produced; a file humans also edit does not belong here.
+`package.json` needs no entry: a base change that only bumps its `"version"` field is recognized
+as release noise automatically, while a dependency change still invalidates. Without this key,
+each landing rewrites paths that `alwaysInvalidates` matches, so every queued pull request loses
+its approval and is re-reviewed for noise the machine produced. One adopter's release bot committed a
 deploy-constants file and a version bump on every landing, and a two-merge queue paid three full
 re-reviews before this key existed.
 
@@ -149,10 +149,8 @@ re-reviews before this key existed.
   in `CONFIG.seats`, and any run can override them with `--appraiser`, `--worker`, and `--reviewer`.
   The known engines are the `ENGINES` registry in `loop.ts`; a CLI the loop does not yet know is
   one registry entry (how to run one prompt to completion, non-interactively, with its approval
-  gate bypassed), not a refactor. **Keep the worker and reviewer on different engines**; a reviewer
-  built from the same model as the author shares its blind spots by construction, and that
-  isolation is the only thing catching a worker that convinced itself. The driver warns, but does
-  not refuse, when they match.
+  gate bypassed), not a refactor. **Keep the worker and reviewer on different engines** (why: `architecture.md`). The driver
+  warns, but does not refuse, when they match.
 - The sibling `prove-work-on-github` skill available to both worker and reviewer. This is a hard
   dependency: both prompts load it by name, and the merge gate's freshness rule implements its
   `references/freshness-and-reproof.md`. It ships in the same collection as this loop, so
@@ -165,14 +163,16 @@ re-reviews before this key existed.
   typical guard is `types: [..., ready_for_review]` plus
   `if: github.event.pull_request.draft == false`. Verify it before a batch run: open one draft pull
   request by hand and confirm nothing queues.
-- An issue tracker where issues carry `size: N` labels, or an appraiser run to create them.
+- An issue tracker where issues carry `size: N` labels, or an appraiser run to create them. The
+  driver creates every label it uses (`size: N`, `needs-decision`, `needs-human`, `loop/*`) on
+  start and applies the appraiser's verdict itself; nothing needs pre-creating.
 
 ## Order of work
 
 1. Write `burn-down-github-issues.config.ts` from the template above. Copy nothing else.
 2. From the repository root: `bun run <skill-dir>/loop.ts --dry-run --limit 2`. This mutates
    nothing and starts no agent. It prints what it would select and writes each rendered prompt to
-   a log.
+   `<worktreeRoot>/runs/<issue>-<role>-<timestamp>.log`.
 3. **Read one rendered prompt.** `grep -oE "\{\{[A-Z_]+\}\}"` against it must return nothing; an
    unresolved placeholder means a field you did not set. Confirm the prose names your repository,
    your commands, and your branches.
@@ -180,7 +180,7 @@ re-reviews before this key existed.
    `bun run <skill-dir>/loop.ts --closure <file-with-an-aliased-import>` prints every module
    the walk reaches and exits without touching anything. A result of one module (only the entry
    itself) means the aliases resolve nothing, which is the silent failure described above.
-5. One real issue, alone: `--issue <n> --appraise-limit 0`. Watch it end to end.
+5. One real issue, alone: `--issue <n>`; it implies `--no-appraise`. Watch it end to end.
 6. Then a small batch. `--limit 3` before `--limit 5`.
 
 ## Boundaries to set deliberately
@@ -213,10 +213,10 @@ that put it there, and removing `loop/dlq` is the redrive.
 
 ## Stopping a run
 
-Ctrl+C, or SIGTERM to the pid in `runs/loop.lock`, stops the loop politely: agents are killed with
+Ctrl+C, or SIGTERM to the pid in `<worktreeRoot>/runs/loop.lock`, stops the loop politely: agents are killed with
 their process groups and the lock is released. Everything durable is already on GitHub, so after a
 stop, check three places: open drafts (work finished but never marked ready), issues labelled
-`loop/parked`, and `runs/*.log` for the lanes that were in flight. Worktrees left behind are
+`loop/parked`, and `<worktreeRoot>/runs/*.log` for the lanes that were in flight. Worktrees left behind are
 reclaimed by `reconcile` on the next start; nothing needs hand-cleanup, and `--dry-run` is always
 safe to run while deciding what to do next.
 

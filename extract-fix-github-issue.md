@@ -108,7 +108,7 @@ simiancraft-skills/
 
 ## Commits
 
-Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository with no test suite is the pair the loop already offers: a dry run from the first adopter's tooling worktree (`bun run <skill>/loop.ts --dry-run`), which loads every module and exercises selection without mutation, and the closure probe (`--closure app/main.tsx`), which exercises the staleness walk. Commit 1 adds the typecheck that makes the rest safe.
+Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository with no test suite is the pair the loop already offers: a dry run from the first adopter's tooling worktree (`bun run <skill>/loop.ts --dry-run`), which loads every module and exercises selection without mutation, and the closure probe (`--closure <entry file>`), which exercises the staleness walk. Commit 1 adds the typecheck that makes the rest safe.
 
 ### Commit 1: add a typecheck gate to the skills repository
 
@@ -202,7 +202,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 - `skills/fix-github-issue/references/pipeline.md`: the verdict-file contract, the review-round budget as a per-issue high-water mark, the merge boundary (`autoMerge`, computed versus self-reported touches), staleness via import closure and the global-invalidator short-circuit, the resume windows, and the known gaps that belong to the pipeline (the pull master in-process, the closure walk's blind spots). Lifted from `burn-down-github-issues/references/architecture.md` with the loop-shaped material left behind.
 
 **Files rewritten:**
-- `skills/burn-down-github-issues/references/architecture.md`: keeps the shape (four roles, appraisal, selection, the pool) and links to `pipeline.md` for the rest. Drops the "import-closure walk has never fired" line from Known gaps; it fired in runs 9 and 10.
+- `skills/burn-down-github-issues/references/architecture.md`: keeps the shape (four roles, appraisal, selection, the pool) and links to `pipeline.md` for the rest. Drops the "import-closure walk has never fired" line from Known gaps; it has since fired in production runs.
 - `skills/burn-down-github-issues/references/operating.md`: "Run it" and "Landing a parked pull request by hand" point at `fix.ts` where they said `--issue N`.
 - `skills/burn-down-github-issues/references/adopting.md`: the config template imports `ProjectConfig` from `../fix-github-issue/lib/config.ts` for its type; the "two fields that bite" section is unchanged.
 - `skills/burn-down-github-issues/SKILL.md`: hard dependencies gain `fix-github-issue`; "Run it" drops `--issue`.

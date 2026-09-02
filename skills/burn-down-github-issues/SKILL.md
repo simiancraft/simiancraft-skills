@@ -52,16 +52,20 @@ into the prompts and checked by the reviewer.
 From inside the target repository (any directory of it, including a worktree):
 
 ```bash
-bun run <this-skill-dir>/loop.ts --dry-run          # select and print; no agent, no mutation
-bun run <this-skill-dir>/loop.ts --limit 3          # work three issues
-bun run <this-skill-dir>/loop.ts --issue 3327       # one issue, ignoring the age and size filters
-bun run <this-skill-dir>/loop.ts --closure <file>   # print the import closure; verifies pathAliases
+bun run <this-skill-dir>/loop.ts --dry-run             # select and print; no agent, no mutation
+bun run <this-skill-dir>/loop.ts --limit 3             # work three issues
+bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
+bun run <this-skill-dir>/loop.ts --issue <n>           # one issue; skips the age and size window, never the safety filters
+bun run <this-skill-dir>/loop.ts --no-appraise         # skip the sizing pass; --appraise-limit N caps it instead
+bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
 ```
 
-`--appraiser`, `--worker`, and `--reviewer` take `engine[:model]` specs resolved against the
-engine registry in `loop.ts`; the config file can override the same seats, along with any loop
-knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and the rest).
+`<this-skill-dir>` is the filesystem path of this directory wherever the collection is checked out
+or installed; it is a path, not a skill name. `--appraiser`, `--worker`, and `--reviewer` take
+`engine[:model]` specs resolved against the engine registry in `loop.ts`. The config file sets the
+same seats and every loop knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and
+the rest); a flag beats the config for the run it is given on.
 
 ## Read next
 
@@ -76,6 +80,7 @@ knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and the rest)
 - The [`prove-work-on-github`](../prove-work-on-github/SKILL.md) skill, loaded by name in the
   worker and reviewer prompts; the pull master's staleness rule implements its
   `references/freshness-and-reproof.md`.
+- Bun, which runs `loop.ts`.
 - `gh` authenticated with push and merge rights on the target repository.
 - The CLIs the seats name (by default `codex` and `claude`), on `PATH`. Keep worker and reviewer
   on different engines; a reviewer built from the same model as the author shares its blind spots

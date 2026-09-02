@@ -16,7 +16,7 @@
  *
  *   bun run <skill-dir>/loop.ts --dry-run
  *   bun run <skill-dir>/loop.ts --limit 3
- *   bun run <skill-dir>/loop.ts --issue 3327
+ *   bun run <skill-dir>/loop.ts --issue <n>
  *   bun run <skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
  *
  * Hard dependency: the sibling `prove-work-on-github` skill, shipped alongside this one in
@@ -574,7 +574,7 @@ const CONTENTION = [
   'cannot lock ref',
   'unable to create',
   'reference already exists',
-  'secondary rate limit', // gh, hit in this repo during a burst of label edits
+  'secondary rate limit', // gh; a burst of label edits is enough to trigger one
   'was submitted too quickly',
   'API rate limit',
 ];
@@ -582,7 +582,7 @@ const CONTENTION = [
 function sh(cmd: string[], cwd = REPO_ROOT, attempts = 4): string {
   // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
   // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is
-  // one that can comment on a client's tracker: an adopting checkout can carry two remotes
+  // one that can comment on a downstream tracker: an adopting checkout can carry two remotes
   // pointing at two different repositories, so this is not hypothetical.
   const argv = cmd[0] === 'gh' && !cmd.includes('-R') ? [...cmd, '-R', PROJECT.repo] : cmd;
   let lastError = '';
@@ -712,7 +712,7 @@ function openPullRequestIssueRefs(): number[] {
       refs.push(Number(match[1]));
     }
     // A branch name is structured, so a number standing alone between separators is a reference:
-    // `fix/3348-prod-to-dev-copy` and `feat/3200-understocked-quick-add` both name their issue.
+    // `fix/1234-null-guard` and `feat/1240-export-button` both name their issue.
     for (const match of pr.headRefName.matchAll(/(?:^|[/_-])(\d{2,6})(?=$|[/_-])/g)) {
       refs.push(Number(match[1]));
     }
@@ -869,7 +869,7 @@ function reconcile(): void {
     const dir = resolve(line.slice('worktree '.length).trim());
     if (!dir.startsWith(`${managed}/`)) continue;
 
-    // Agents make scratch siblings next to their own worktree (`issue-3293-evidence`) to capture a
+    // Agents make scratch siblings next to their own worktree (`issue-1234-evidence`) to capture a
     // before state or write to the evidence branch. A pattern anchored on the number alone could
     // not see them, so a crashed lane left them behind permanently: nothing else walks this root.
     // They belong to the parent issue, so the claimed and dirty rules below judge them by the
@@ -998,7 +998,7 @@ function removeWorktree(issue: number): void {
  * An earlier version did the opposite: it removed any registered worktree OUTSIDE the managed
  * directory whose path contained the issue number, force-removing it and then recursively deleting
  * the directory if git refused. An adopting repository kept a human's checkout at a path like
- * `worktrees/fix-3117-label-feedback`, so working issue #3117 would have destroyed that checkout
+ * `worktrees/fix-1234-label-feedback`, so working issue 1234 would have destroyed that checkout
  * and any uncommitted work in it.
  * Path substring is not ownership. Nothing outside `worktreeRoot` is ever touched.
  */
@@ -1104,7 +1104,7 @@ function updateFromBase(cwd: string): boolean {
 /**
  * Paths whose change invalidates any proof in flight, whatever the pull request touched.
  *
- * Import scanning cannot reach these: a lockfile, a Prisma schema, generated output, or a build
+ * Import scanning cannot reach these: a lockfile, an ORM schema, generated output, or a build
  * config is not imported by a module path, yet everything downstream depends on it.
  */
 const ALWAYS_INVALIDATES: readonly string[] = PROJECT.alwaysInvalidates;
@@ -1112,7 +1112,7 @@ const RELEASE_ARTIFACTS: readonly string[] = PROJECT.releaseArtifacts ?? [];
 
 /**
  * Path patterns for `alwaysInvalidates` and `touchPaths`: a pattern that starts with '.' and
- * carries no '/' matches as a filename suffix ('.sql.ts' catches every Drizzle schema file
+ * carries no '/' matches as a filename suffix ('.sql.ts' catches every schema file so named
  * wherever it lives); anything else matches as a prefix from the repository root, so
  * '.github/workflows/' stays a prefix.
  */

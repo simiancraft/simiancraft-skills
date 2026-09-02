@@ -3,12 +3,6 @@
 How and why burn-down-github-issues works: it triages recent issues, fixes the small ones, proves
 the work on a pull request, and lets a second agent decide whether it can merge.
 
-```bash
-bun run <skill-dir>/loop.ts --dry-run          # select and print; no agent, no mutation
-bun run <skill-dir>/loop.ts --limit 3          # work three issues
-bun run <skill-dir>/loop.ts --issue 3327       # one issue, ignoring the age and size filters
-```
-
 ## Shape
 
 Three isolated agent roles, and several issues in flight at once.
@@ -36,8 +30,8 @@ separately whether that judgement still holds when the branch reaches the front 
 earlier version updated branches from the base after they were reviewed, which moved the head out
 from under a finished approval and forced every second lane to park.
 
-**Codex implements, Opus judges.** The worker runs on `codex exec` (`gpt-5.6-sol`); the reviewer runs on
-`claude -p` (Opus 5). Splitting the engines is not a preference: a reviewer built from the same
+**One engine implements, another judges.** By default the worker runs on `codex exec` and the
+reviewer on `claude -p`; both are seats you can reassign. Splitting the engines is not a preference: a reviewer built from the same
 model as the author shares its blind spots by construction, and the merge gate exists precisely to
 have blind spots the author does not.
 
@@ -67,9 +61,8 @@ Install it where each engine can read it. For Claude, the simiancraft-skills plu
 skills. For an engine with no skill loader, the prompt's "load the skill" instruction has to
 resolve to files on disk, so keep a checkout of the repo readable from the worktrees.
 
-Provenance: this loop was written for one repository, adopted by a second, and abstracted here
-once the shape held in both. The two histories are why the reasoning below cites concrete issue
-numbers; they are the first adopter's.
+The loop was written for one repository, adopted by a second, and abstracted here once the shape
+held in both; the incidents below are cited by shape, not by tracker.
 
 ## Boundaries
 
@@ -135,7 +128,7 @@ serialize the whole thing and let one agent's `git switch` disturb another's tre
 
 Two things do not follow the work into isolation, and both are handled:
 
-- **The base branch.** Two pull requests landing on `development` at the same moment is real
+- **The base branch.** Two pull requests landing on the base at the same moment is real
   contention, so the merge step queues and happens one at a time.
 - **The main checkout.** It is never an agent's working directory; the driver throws rather than
   hand it over, because it holds your branch and your uncommitted work.
@@ -214,10 +207,10 @@ handled somewhere specific rather than hoped about.
 |---|---|
 | Two loop processes claiming the same issues | pid lock in `runs/loop.lock`; a stale lock is reclaimed |
 | Shared `.git` index and refs under parallel git | `sh()` retries contention failures with backoff |
-| GitHub secondary rate limits | same retry list; this repo hit one during a burst of label edits |
+| GitHub secondary rate limits | same retry list; a burst of label edits is enough to trigger one |
 | A fresh worktree having no `node_modules` | each installs its own; sharing the main checkout's would let the install command write into it |
-| The local database, Elasticsearch, and Redis | both prompts forbid seeding, resetting, or migrating them |
-| Dev-server and Storybook ports | prompts require a port derived from the issue number |
+| Whatever `sharedServices` names | both prompts forbid seeding, resetting, or migrating them |
+| Server ports | prompts require a port derived from the issue number |
 | The shared evidence branch | prompts forbid force-push and require re-parenting on rejection |
 
 The rule the prompts state plainly: your worktree is yours, and almost nothing else is. An agent
@@ -249,29 +242,25 @@ pull request. Neither stops for it. A documented convention is a decision alread
 to it is following that decision rather than making one, and the point ceiling does the stopping
 when the convention-respecting fix turns out to be larger.
 
-That rule exists because of an issue that asked for a Python syntax gate in a repository whose
-scripts are TypeScript. Every stage executed it faithfully, because every stage judges the diff
+That rule exists because of an issue that prescribed a gate for a language the repository's
+tooling does not use. Every stage executed it faithfully, because every stage judges the diff
 against the issue and nothing was judging the issue against the conventions.
 
 ## Known gaps
 
-The adequacy-versus-confidence scorecard now lives where it belongs, in the sibling skill's
-[`references/judgement.md`](../../prove-work-on-github/references/judgement.md), and
-`prompts/review.md` defers to it rather than stating it inline. The scorecard was distilled from
-this loop's field rejections, so the two carry-ups happened: the deciding-command coverage check
-and the remote-resolvable-SHA check are judgement rows now, and the import-closure walk is written
-up as the covered-paths method in `references/freshness-and-reproof.md`. The abilities sit in the
-right skills: proof judgement in the proof skill, and only what is loop-shaped (rounds, budgets,
-the verdict file contract, the loop's own verification list) in this one.
+Proof judgement lives in the sibling proof skill's
+[`references/judgement.md`](../../prove-work-on-github/references/judgement.md) and the
+covered-paths freshness method in its `references/freshness-and-reproof.md`; this file keeps only
+what is loop-shaped: rounds, budgets, and the verdict-file contract.
 
 The pull master runs inside the loop process rather than as its own, so merging happens only while
 a run is alive. A run that dies after opening pull requests no longer strands them outright: the
 next start resumes each stranded pull request from the worker verdict file its worktree still
 holds, before selecting anything new. Result-file clearing is role-specific precisely so that
-starting a reviewer does not destroy the verdict this resume depends on. What remains
-unrecoverable are the windows when no trusted verdict exists on disk: after the pull request
-opens and before the verdict file is written, and during a revision after the old verdict is
-cleared and before the new one lands. Both are reported rather than resumed. Extracting the pull master into its own process, with enough durable state on the PR to
+starting a reviewer does not destroy the verdict this resume depends on. Two windows
+remain unrecoverable, because no trusted verdict exists on disk during them: after the pull
+request opens and before the verdict file is written, and during a revision between clearing the
+old verdict and landing the new one. Both are reported rather than resumed. Extracting the pull master into its own process, with enough durable state on the PR to
 land without the lane's memory, is still the standing design gap.
 
 The import-closure walk follows outgoing imports from the diff's files only: it does not see

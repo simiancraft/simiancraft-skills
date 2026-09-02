@@ -46,6 +46,7 @@ The counters worth watching, and what a stall in each means:
 | `review round N of M` | a rejection was recorded; the issue is being revised |
 | `merge PR #N` | the pull master landed it |
 | `park #N` | the loop stopped and handed the issue to a human |
+| `label #N needs-decision` or `needs-human` | handed off before any pull request; the reason is a comment on the issue, and the label keeps it out of selection until removed |
 | `to the DLQ` | the per-issue review budget is spent |
 
 **Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** That
@@ -100,7 +101,7 @@ removing `loop/dlq` is the redrive.
 
 A parked pull request is finished work that the loop declined to land. Landing it is not
 `gh pr merge`; the freshness rules that govern the pull master govern you too, and skipping them
-has already cost a broken base branch once.
+has cost a broken base branch before.
 
 1. **Judge adequacy** against `prove-work-on-github`'s `references/judgement.md`: every
    load-bearing claim receipted, pinned, resolvable **on the remote**, fresh, re-checkable, clean,
@@ -148,4 +149,5 @@ git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -D
 - Conventional Commits, imperative, facts only, no section headers in a commit body.
 - Pull request prose describes the code, never the process. No mention of loops, agents, prompts,
   or local tooling; a reader on the forge has no idea those exist.
-- Issues are closed manually with a pointer to the pull request, not by a closing keyword.
+- The loop closes issues itself with a pointer to the pull request; never a closing keyword, which
+  would close on merge before the loop records the outcome.

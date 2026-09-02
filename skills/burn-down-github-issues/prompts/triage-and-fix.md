@@ -60,8 +60,8 @@ these turns out to be true, stop, write the matching verdict, and do not start w
 
 Three rules stand whatever the appraisal said:
 
-- **A decision beats a small diff.** If the correct value depends on knowledge of the catalog, the
-  shop floor, the brand, or the customer, and nobody has ruled on it, you are not authorised to
+- **A decision beats a small diff.** If the correct value depends on knowledge of the product, the
+  business, its operations, or its customers, and nobody has ruled on it, you are not authorised to
   invent one and write it into stored data.
 - **Never edit production data.** An issue asking for a record to be corrected is `needs-human`.
 - **The issue's prescribed remedy is an opinion; a written convention is a ruling.** You are in the
@@ -109,22 +109,18 @@ proof; this section does not restate it, only what is specific to this loop:
   in the `https://github.com/{{REPO}}/raw/<sha>/evidence/<file>` form. If the repository is private,
   bare `raw.githubusercontent.com` links render as 404 for the reader.
 
-Two requirements that reviews here have actually turned on:
+Two requirements the merge gate rejects on:
 
-**Cover the command CI runs.** Whatever else you capture, one receipt must exercise the command the
-pipeline itself uses to decide, not only a focused invocation you chose. A proof can be sound,
-pinned, and reproducible and still miss the gate that determines the outcome; a reviewer refused a
-merge on exactly that, having reproduced every receipt first. Read `.github/workflows/` to see what
-runs, and prove that.
+**Cover the command CI runs.** Read `.github/workflows/`, and make one receipt exercise the command
+the pipeline uses to decide, not only a focused invocation you chose. A proof can be sound, pinned,
+and reproducible and still miss the deciding gate.
 
-**Cite only SHAs that exist on the remote.** Capture receipts after your final push, never before,
-and verify every SHA you write down resolves on the remote rather than only in your local
-repository: `git fetch {{REMOTE}} <branch>` then `git merge-base --is-ancestor <sha> {{REMOTE}}/<branch>`
-for a repository commit (`git cat-file -e` proves only that your own object store has it, which is
-exactly the false comfort this rule exists to remove), plus a fetch of the evidence branch for
-artifact links. An amended or rebased commit leaves you quoting a SHA that no longer
-exists while its first nine characters still look right, which is what happened once here and cost a
-full review round. A receipt pinned to a commit nobody else can resolve is not a receipt.
+**Cite only SHAs that exist on the remote.** Capture receipts after your final push, never before.
+Verify each SHA with `git fetch {{REMOTE}} <branch>` then
+`git merge-base --is-ancestor <sha> {{REMOTE}}/<branch>`, and fetch the evidence branch before
+citing an artifact link; `git cat-file -e` proves only that your own object store has it. An amend
+or rebase leaves a SHA whose first nine characters still look right and which nobody else can
+resolve, and a receipt pinned to that is not a receipt.
 
 ## Step 4: open the pull request, as a draft
 
@@ -146,7 +142,7 @@ saves, so do it once.
 Title in the same Conventional Commits form as the commit. The body describes what changed in the
 code and renders the proof inline. Do not mention the loop, agents, prompts, or any local tooling; a
 reader on GitHub has no idea those exist and does not care. Reference the issue as `Refs #{{ISSUE}}`
-rather than a closing keyword; this repository closes issues manually.
+rather than a closing keyword; the loop closes the issue itself after the merge.
 
 ## Step 5: write the verdict file
 
