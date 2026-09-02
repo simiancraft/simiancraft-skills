@@ -31,17 +31,25 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { ensureLabels } from '../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
+import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
-import { allOpenIssues, APPRAISE_DEFAULTS, type AppraiseKnobs, appraiseIssue, selectForAppraisal } from './lib/appraise.ts';
+import { allOpenIssues, APPRAISE_DEFAULTS, type AppraiseKnobs, appraiseIssue, assertConfirmCloses, isHeld, selectForAppraisal } from './lib/appraise.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
+/** The value after `--name`; a present flag with no value (end of argv, or another flag) is an error, not an absence. */
 const opt = (name: string) => {
   const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = args[i + 1];
+  if (value === undefined || value.startsWith('--')) {
+    console.error(`--${name} needs a value`);
+    process.exit(1);
+  }
+  return value;
 };
 const positive = (name: string, fallback: number): number => {
   const raw = opt(name);
@@ -85,6 +93,7 @@ const CONFIG = await loadProjectConfig<PipelineKnobs & AppraiseKnobs & { seats: 
   ],
 });
 
+assertConfirmCloses(CONFIG.confirmCloses, CONFIG_FILE ?? 'appraise-github-issues.config.ts');
 const LIMIT = positive('limit', CONFIG.appraiseLimit);
 const AGE_DAYS = positive('age-days', CONFIG.ageDays);
 
@@ -117,11 +126,24 @@ teeConsole(join(ctx.runDir, 'appraise.log'));
 step(`${ctx.project.name} appraise-github-issues`);
 log(`run pid ${process.pid} started ${new Date().toISOString()}`);
 log(`base ${ctx.project.baseBranch} | ${ALL_AGES ? 'all ages' : `last ${AGE_DAYS} days`} | ${INCLUDE_SIZED ? 'sized and unsized' : 'unsized only'} | config ${CONFIG_FILE}`);
-log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | closes ${NO_CONFIRM || !CONFIG.confirmCloses ? 'on the appraiser alone' : 'confirmed by the second engine'}`);
+log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | closes ${NO_CONFIRM || CONFIG.confirmCloses === false ? 'on the appraiser alone' : 'confirmed by the second engine'}`);
 if (SEATS.appraiser.engine === SEATS.confirmer.engine) {
   log("WARNING: appraiser and confirmer share an engine, so the close check shares the appraiser's blind spots");
 }
-if (DRY_RUN) log('DRY RUN: no GitHub mutation and no agent will run');
+if (DRY_RUN) log('DRY RUN: selection only; no lock, no agent, no GitHub mutation; only this log is written');
+
+/** A dry run stops at selection: it prints what a real run would appraise and touches nothing else. */
+if (DRY_RUN) {
+  const selected = ISSUE_NUMBER
+    ? [JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels'])) as Issue]
+    : selectForAppraisal(allOpenIssues(ctx), { ageDays: AGE_DAYS, skipLabels: CONFIG.skipLabels }, { allAges: ALL_AGES, includeSized: INCLUDE_SIZED }).slice(0, LIMIT);
+  const held = selected.filter((issue) => isHeld(issue.labels, CONFIG.skipLabels));
+  for (const issue of held) log(`#${issue.number} carries a hold label; a person holds it, so it would not be appraised`);
+  const would = selected.filter((issue) => !isHeld(issue.labels, CONFIG.skipLabels));
+  log(would.length === 0 ? 'would appraise nothing' : `would appraise ${would.map((i) => `#${i.number}`).join(', ')}`);
+  step('done');
+  process.exit(0);
+}
 
 const releaseLock = (() => {
   try {
@@ -134,7 +156,8 @@ const releaseLock = (() => {
 process.on('exit', releaseLock);
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {
-    log(`received ${signal}; releasing the lock`);
+    log(`received ${signal}; stopping agents and releasing the lock`);
+    for (const child of children) killAgent(child);
     releaseLock();
     process.exit(signal === 'SIGINT' ? 130 : 143);
   });
@@ -145,15 +168,14 @@ ensureLabels(ctx);
 async function once(): Promise<void> {
   // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
   // working state, which may be stale, dirty, or on another branch.
-  if (!DRY_RUN) sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch]);
+  sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch]);
 
   let issues: Issue[];
   if (ISSUE_NUMBER) {
     // Bypasses the window and the size filter, never the labels a person set to hold an issue.
     const one: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels']));
-    const held = one.labels.map((l) => l.name).filter((name) => CONFIG.skipLabels.includes(name) || name === 'loop/dlq');
-    if (held.length > 0) {
-      log(`#${one.number} carries ${held.join(', ')}; a person holds it, so it is not appraised. Remove the label to put it back in reach.`);
+    if (isHeld(one.labels, CONFIG.skipLabels)) {
+      log(`#${one.number} carries a hold label; a person holds it, so it is not appraised. Remove the label to put it back in reach.`);
       return;
     }
     issues = [one];
@@ -177,7 +199,8 @@ async function once(): Promise<void> {
       const outcome = await appraiseIssue(ctx, issue, {
         ageDays: AGE_DAYS,
         seats: SEATS,
-        confirmCloses: CONFIG.confirmCloses && !NO_CONFIRM,
+        confirmCloses: !(NO_CONFIRM || CONFIG.confirmCloses === false),
+        skipLabels: CONFIG.skipLabels,
       });
       const key = outcome.close ? `${outcome.verdict} (${outcome.close})` : outcome.verdict;
       tally.set(key, (tally.get(key) ?? 0) + 1);

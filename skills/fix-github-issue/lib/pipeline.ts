@@ -113,6 +113,12 @@ async function runWorker(
         : `no verdict from the worker; log ends: ${logTail(logPath)}`,
     };
   }
+  if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
+    return { issue: issue.number, verdict: 'failed', reason: `worker verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}` };
+  }
+  // A malformed classification must read as no classification, which fails closed at the merge
+  // boundary; a bare string would otherwise spread into characters that match no risky kind.
+  result.touches = validTouches(result.touches);
   return result;
 }
 
@@ -141,7 +147,18 @@ async function runReviewer(
   if (!['merge', 'gather-more', 'block'].includes(result.decision) || Number(result.pr) !== pr) {
     return null;
   }
+  if (!Array.isArray(result.blocking) || result.blocking.some((b) => typeof b !== 'string')) return null;
+  result.touches = validTouches(result.touches);
   return result;
+}
+
+const TOUCH_KINDS = ['code', 'data', 'migration', 'stored-string', 'ci'] as const;
+
+/** The classification as written, or undefined when it is not a non-empty array of known kinds. */
+function validTouches(raw: unknown): WorkerResult['touches'] {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  if (raw.some((t) => !TOUCH_KINDS.includes(t))) return undefined;
+  return raw as WorkerResult['touches'];
 }
 
 /**
@@ -496,13 +513,17 @@ function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult,
   switch (result.verdict) {
     case 'already-fixed':
     case 'obsolete':
-      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
+      // The obsolete pull request goes first: a crash after it leaves retryable work, whereas a
+      // crash after the close would leave an open pull request attached to a closed issue.
       closePullRequest();
+      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
       removeWorktree(ctx, issue.number);
       return { outcome: 'closed', reason: result.reason };
 
     case 'needs-decision':
     case 'needs-human':
+      // Comment first, then the label that hides the issue from selection.
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
       mutate(ctx, `label #${issue.number} ${result.verdict}`, [
         'gh',
         'issue',
@@ -511,7 +532,6 @@ function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult,
         '--add-label',
         result.verdict,
       ]);
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
       closePullRequest();
       removeWorktree(ctx, issue.number);
       return { outcome: 'handed-off', reason: result.reason };

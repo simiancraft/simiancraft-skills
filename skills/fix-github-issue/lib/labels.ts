@@ -26,7 +26,8 @@ export function ensureLabels(ctx: Context): void {
   ];
   for (const [name, color, description] of wanted) {
     if (existing.has(name)) continue;
-    mutate(ctx, `create label ${name}`, ['gh', 'label', 'create', name, '--color', color, '--description', description]);
+    // --force: two drivers starting together can both see the label missing; the loser must not abort.
+    mutate(ctx, `create label ${name}`, ['gh', 'label', 'create', name, '--force', '--color', color, '--description', description]);
   }
 }
 
@@ -150,6 +151,8 @@ export function closeIssue(ctx: Context, issue: number, comment: string): void {
  * issue is one a person now owns, so it has to say what stopped it.
  */
 export function parkIssue(ctx: Context, issue: number, reason: string): void {
-  mutate(ctx, `park #${issue}`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/parked']);
+  // Comment first, then the label that hides the issue from selection: a crash between the two
+  // leaves an issue that is still selectable, never one held without a reason on its thread.
   mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', reason]);
+  mutate(ctx, `park #${issue}`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/parked']);
 }

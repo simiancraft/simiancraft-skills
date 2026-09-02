@@ -23,7 +23,7 @@
  * references/freshness-and-reproof.md.
  */
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
@@ -35,9 +35,9 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
-import { log, mutate, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
+import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { appraiseIssue, pointsFromLabels, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
+import { appraiseIssue, assertConfirmCloses, pointsFromLabels, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
@@ -156,7 +156,6 @@ const DEFAULTS: LoopKnobs = {
 // ---------------------------------------------------------------------------
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROMPTS = join(HERE, 'prompts');
 /** The appraisal prompts, shipped with the sibling skill this loop depends on for sizing. */
 const APPRAISE_PROMPTS = join(HERE, '..', 'appraise-github-issues', 'prompts');
 /** The fix pipeline's own prompts, shipped with the sibling skill this loop depends on. */
@@ -196,6 +195,7 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
   ],
 });
 
+assertConfirmCloses(CONFIG.confirmCloses, 'burn-down-github-issues.config.ts');
 if (CONFIG.floor) {
   for (const key of ['cadenceMinutes', 'drainMinutes'] as const) {
     const value = CONFIG.floor[key];
@@ -414,7 +414,7 @@ const ctx = createContext({
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
-  promptsDirs: [PROMPTS, APPRAISE_PROMPTS, FIX_PROMPTS],
+  promptsDirs: [APPRAISE_PROMPTS, FIX_PROMPTS],
   dryRun: DRY_RUN,
   mayMerge: async () => {
     await waitForGo('the merge queue');
@@ -501,6 +501,61 @@ function openPullRequestIssueRefs(): number[] {
     }
   }
   return refs;
+}
+
+let SKIP_APPRAISAL_THIS_RUN = false;
+
+/** The sizing stage: fetch the base ref, select the unsized window, appraise it through the sibling skill. */
+async function sizeTheWindow(): Promise<void> {
+  // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
+  // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
+  if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
+  const toAppraise = selectForAppraisal(allIssues(), CONFIG).slice(0, APPRAISE_LIMIT);
+  if (toAppraise.length === 0) {
+    log('nothing to appraise; the window is fully sized');
+  } else {
+    step(`Appraising ${toAppraise.length} issue(s), ${CONFIG.appraiserConcurrency} at a time`);
+    log(toAppraise.map((i) => `#${i.number}`).join(', '));
+    await pool(
+      toAppraise,
+      CONFIG.appraiserConcurrency,
+      async (issue) => {
+        mark(issue.number, issue.title, 'appraising');
+        let outcome: Awaited<ReturnType<typeof appraiseIssue>>;
+        try {
+          outcome = await appraiseIssue(ctx, issue, {
+            ageDays: CONFIG.ageDays,
+            seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
+            confirmCloses: CONFIG.confirmCloses,
+            skipLabels: CONFIG.skipLabels,
+          });
+        } catch (error) {
+          // The board must not be left saying "appraising" for a lane that threw.
+          mark(issue.number, issue.title, 'failed', (error as Error).message.slice(0, 80));
+          throw error;
+        }
+        // `retry` means nothing changed on the issue and the next run tries again; the board
+        // says so rather than claiming a size or a hand-off that never landed.
+        const stage = outcome.retry
+          ? 'failed'
+          : outcome.verdict === 'valid'
+            ? 'sized'
+            : outcome.close === 'confirmed' || outcome.close === 'skipped'
+              ? 'closed'
+              : 'handed-off';
+        const note = outcome.retry
+          ? outcome.reason
+          : outcome.points
+            ? `${outcome.verdict}, ${outcome.points} points`
+            : outcome.close
+              ? `${outcome.verdict}, close ${outcome.close}`
+              : outcome.verdict;
+        mark(issue.number, issue.title, stage, note);
+      },
+      (issue) => `#${issue.number}`,
+    );
+  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -590,50 +645,24 @@ async function main(): Promise<void> {
   // already fixed. This queue drains: once the window is appraised there is nothing here to do.
   if (!SKIP_APPRAISAL) {
     await waitForGo('appraisal');
-    // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
-    // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
-    if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
-    const toAppraise = selectForAppraisal(allIssues(), CONFIG).slice(0, APPRAISE_LIMIT);
-    if (toAppraise.length === 0) {
-      log('nothing to appraise; the window is fully sized');
-    } else {
-      step(`Appraising ${toAppraise.length} issue(s), ${CONFIG.appraiserConcurrency} at a time`);
-      log(toAppraise.map((i) => `#${i.number}`).join(', '));
-      await pool(
-        toAppraise,
-        CONFIG.appraiserConcurrency,
-        async (issue) => {
-          mark(issue.number, issue.title, 'appraising');
-          const outcome = await appraiseIssue(ctx, issue, {
-            ageDays: CONFIG.ageDays,
-            seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
-            confirmCloses: CONFIG.confirmCloses,
-          });
-          const stage =
-            outcome.verdict === 'failed'
-              ? 'failed'
-              : outcome.verdict === 'valid'
-                ? 'sized'
-                : outcome.verdict === 'already-fixed' || outcome.verdict === 'obsolete'
-                  ? outcome.close === 'confirmed' || outcome.close === 'skipped'
-                    ? 'closed'
-                    : 'handed-off'
-                  : 'handed-off';
-          const note =
-            outcome.verdict === 'failed'
-              ? outcome.reason
-              : outcome.points
-                ? `${outcome.verdict}, ${outcome.points} points`
-                : outcome.close
-                  ? `${outcome.verdict}, close ${outcome.close}`
-                  : outcome.verdict;
-          mark(issue.number, issue.title, stage, note);
-        },
-        (issue) => `#${issue.number}`,
-      );
+    // The same lock the standalone appraiser holds, so a heartbeat and a burndown never size the
+    // same issue at once. Held only around the sizing stage; the lanes hold loop.lock.
+    let releaseAppraisal: () => void;
+    try {
+      releaseAppraisal = claimLock(ctx, 'appraise.lock');
+    } catch (error) {
+      log(`${(error as Error).message}; skipping the sizing stage this run`);
+      releaseAppraisal = () => {};
+      SKIP_APPRAISAL_THIS_RUN = true;
+    }
+    try {
+      if (!SKIP_APPRAISAL_THIS_RUN) await sizeTheWindow();
+    } finally {
+      releaseAppraisal();
     }
   }
 
+  // Selection is re-read rather than reused
   // Selection is re-read rather than reused: the appraisal above has just changed the labels this
   // depends on, and a worker must see them.
   const candidates = selectCandidates().slice(0, LIMIT);

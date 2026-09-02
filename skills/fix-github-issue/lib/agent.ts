@@ -6,7 +6,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { APPRAISAL_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
+import { APPRAISAL_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, type Seat, seatLabel } from './engines.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
 
@@ -190,11 +190,12 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   // during review or merging stranded the pull request the resume path exists to save.
   const clearsByRole: Record<string, string[]> = {
     appraiser: [APPRAISAL_FILE, LAST_MESSAGE_FILE],
+    confirmer: [CONFIRMATION_FILE, LAST_MESSAGE_FILE],
     worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
     'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
   };
-  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, LAST_MESSAGE_FILE]) {
+  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE]) {
     rmSync(join(cwd, stale), { force: true });
   }
 
