@@ -58,7 +58,11 @@ bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling 
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the sizing pass; --appraise-limit N caps it instead
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
+bun run <this-skill-dir>/watch.ts                      # follow the current run; --wait for its terminal lines only
 ```
+
+Everything an operator or agent does to a run is one of these commands. Watching in particular is
+`watch.ts`, never a `tail`/`kill`/`pgrep` pipeline; `references/operating.md` says why.
 
 `<this-skill-dir>` is the filesystem path of this directory wherever the collection is checked out
 or installed; it is a path, not a skill name. `--appraiser`, `--worker`, and `--reviewer` take

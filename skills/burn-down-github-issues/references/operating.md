@@ -29,13 +29,29 @@ log, and verify process state with a direct check on a pid you already confirmed
 
 ## Watch the run
 
-Everything the driver says goes to the file you redirected stdout to; each agent additionally gets
-`<worktreeRoot>/runs/<issue>-<role>-<timestamp>.log`. Driver lines are timestamped `HH:MM:SS`;
+The driver tees everything it prints to `<worktreeRoot>/runs/driver.log` (every run, appended,
+each opened by a `run pid N started` header) and its walker child to `runs/floor.log`; each agent
+additionally gets `runs/<issue>-<role>-<timestamp>.log`. Driver lines are timestamped `HH:MM:SS`;
 everything else is agent output echoed through.
 
+**Watch with the shipped watcher, not with shell.** From inside the repository:
+
 ```bash
-tr -d '\033' < run.log | sed 's/\[[01]m//g' | grep -E "^[0-9]{2}:[0-9]{2}:[0-9]{2}"
+bun run <this-skill-dir>/watch.ts           # events from the current run; exits when the driver exits
+bun run <this-skill-dir>/watch.ts --all     # every line
+bun run <this-skill-dir>/watch.ts --wait    # silent until the run ends, then its terminal lines
 ```
+
+It finds the driver by the lock, follows the two logs in-process, and exits on its own, so it is
+one command with nothing to approve. An agent must not compose the equivalent from `tail -F`,
+`kill -0`, `pgrep`, `nohup`, or a subshell: each of those is a separate thing a harness has to
+approve, the approval prompts stall the run they were meant to watch, and the hand-rolled version
+gets line-buffering wrong often enough that silence and health look the same. If the watcher
+cannot show you something you need, that is a change to `watch.ts`, not a reason to write a
+pipeline.
+
+Start the driver the same way: `bun run <this-skill-dir>/loop.ts ...` in a terminal of its own,
+or as a harness background task with stdout sent to a file. It does not need `nohup`.
 
 The counters worth watching, and what a stall in each means:
 

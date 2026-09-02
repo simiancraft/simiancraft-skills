@@ -19,7 +19,7 @@ import { children, killAgent, readResult, runAgent } from '../fix-github-issue/l
 import { invokeRootFrom, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { log, sh, step } from '../fix-github-issue/lib/shell.ts';
+import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { matchesPath } from '../fix-github-issue/lib/staleness.ts';
 import { runCallback } from './lib/callbacks.ts';
 import { DRIVER_SKILLS, inQuietWindow, loadWalkConfig, type Walk } from './lib/config.ts';
@@ -64,6 +64,8 @@ if (!DIR_ARG) {
   process.exit(2);
 }
 const DIR = resolve(DIR_ARG);
+// Every wake appends to <floor>/walk.log, which `watch.ts --floor <dir>` follows.
+teeConsole(join(DIR, 'walk.log'));
 const DRY_RUN = flag('dry-run');
 const LIVENESS_ONLY = flag('liveness-only');
 const NO_FORGE = flag('no-forge');

@@ -3,10 +3,30 @@
  * mutation wrapper that makes `--dry-run` total, and the two console writers.
  */
 
+import { mkdirSync, openSync, writeSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { Context } from './context.ts';
 
 export const log = (msg: string) => console.log(`${new Date().toISOString().slice(11, 19)}  ${msg}`);
 export const step = (msg: string) => console.log(`\n\x1b[1m${msg}\x1b[0m`);
+
+/**
+ * Copies everything the driver prints to a file of its own, stripped of colour, so a watcher has a
+ * canonical place to read a run from regardless of where the operator sent stdout. Append only:
+ * one file holds every run, each opened by the header line the driver prints first.
+ */
+export function teeConsole(file: string): void {
+  mkdirSync(dirname(file), { recursive: true });
+  const fd = openSync(file, 'a');
+  const plain = (args: unknown[]) => `${args.map(String).join(' ')}\n`.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const name of ['log', 'error'] as const) {
+    const original = console[name].bind(console);
+    console[name] = (...args: unknown[]) => {
+      original(...args);
+      writeSync(fd, plain(args));
+    };
+  }
+}
 
 /**
  * Failures that mean "someone else is holding a shared resource", not "this command is wrong".

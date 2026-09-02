@@ -36,7 +36,7 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
-import { log, mutate, sh, step } from '../fix-github-issue/lib/shell.ts';
+import { log, mutate, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 
 // ---------------------------------------------------------------------------
@@ -550,7 +550,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Every run appends to runs/driver.log, which is what `watch.ts` follows; stdout is still
+  // whatever the operator pointed it at. The header names the pid so a reader can tell runs apart.
+  teeConsole(join(RUN_DIR, 'driver.log'));
   step(`${PROJECT.name} burn-down-github-issues`);
+  log(`run pid ${process.pid} started ${new Date().toISOString()}`);
   log(`base ${BASE} | last ${CONFIG.ageDays} days | up to ${MAX_POINTS} points | merge: ${CONFIG.autoMerge}`);
   log(`appraiser ${seatLabel(SEATS.appraiser)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)}`);
   if (SEATS.worker.engine === SEATS.reviewer.engine) {

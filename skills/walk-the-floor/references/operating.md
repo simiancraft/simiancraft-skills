@@ -26,6 +26,20 @@ left behind, and what to do when it pauses something.
 `--every N` loops on the cadence, holds the lock for the process lifetime, and re-notifies at most
 once an hour while the environment stays down.
 
+## Watching a walker
+
+Every wake is teed to `<floor>/walk.log`. Follow a running walker with the burndown's watcher
+rather than shell:
+
+```bash
+bun run <burn-down-github-issues-dir>/watch.ts --floor <floor>          # events; exits when the walker exits
+bun run <burn-down-github-issues-dir>/watch.ts --floor <floor> --wait   # silent until it exits, then the terminal lines
+```
+
+It finds the walker by `<floor>/floor.lock` and reads the log in-process. An agent must not build
+the equivalent from `tail -F`, `kill -0`, or a subshell; each is a separate approval for a harness
+to stall on, and the shipped watcher exists so that watching is one command.
+
 ## Reading the ledger
 
 ```bash
