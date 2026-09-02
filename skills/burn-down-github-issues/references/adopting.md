@@ -211,6 +211,17 @@ before the merge, so a change that builds but does not boot parks instead of lan
 5. One real issue, alone: `--issue <n>`; it implies `--no-appraise`. Watch it end to end.
 6. Then a small batch. `--limit 3` before `--limit 5`.
 
+## Let an agent operate it without approval stalls
+
+Every operation on a run is `bun run <skill-dir>/<script>.ts ...`: `loop.ts` to start, `watch.ts`
+to follow, and the walker's `walk.ts`. That is deliberate, so a harness that gates shell commands
+has one shape to allow. If the agent driving the loop runs under such a harness, allow that shape
+up front in the adopting repository's settings rather than approving each invocation; in Claude
+Code that is a `Bash(bun run *burn-down-github-issues/*.ts*)` entry (and the `walk-the-floor`
+equivalent) in `.claude/settings.json`. An agent that reaches for `tail -F`, `kill`, `pgrep`, or
+`nohup` around the loop is missing a script, and the fix is to add the script here, not to widen
+the allowlist.
+
 ## Boundaries to set deliberately
 
 `autoMerge` defaults to `code-only`: merge code, park anything touching production data, a
