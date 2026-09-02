@@ -232,8 +232,8 @@ carried on issues by the `size: N` labels. An issue already sized above the band
 alone; an unsized issue is sized by the appraiser, which runs as its own cheap population ahead of
 the workers.
 
-Where the issue prescribes a remedy that contradicts a written convention (`AGENTS.md`,
-`CLAUDE.md`, or what the surrounding code plainly does), the convention wins and the work continues:
+Where the issue prescribes a remedy that contradicts a written convention (the files
+`conventionDocs` names, or what the surrounding code plainly does), the convention wins and the work continues:
 the appraiser sizes the remedy the convention implies, and the worker records the divergence in the
 pull request. Neither stops for it. A documented convention is a decision already made, so deferring
 to it is following that decision rather than making one, and the point ceiling does the stopping

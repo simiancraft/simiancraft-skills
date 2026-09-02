@@ -223,7 +223,7 @@ type ProjectConfig = {
   /**
    * Paths whose change invalidates any proof in flight, whatever the pull request touched.
    * Prefix patterns, except that a pattern starting with '.' and carrying no '/' matches as a
-   * filename suffix ('.sql.ts' catches schema files wherever they live).
+   * filename suffix ('.schema.ts' catches files so named wherever they live).
    */
   alwaysInvalidates: string[];
   /**
@@ -399,8 +399,8 @@ const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
  * How long the merge gate waits for a pull request's checks before parking instead of merging.
- * Size this to the repository's slowest required check; a native mobile build can legitimately
- * take over 30 minutes on a fresh head.
+ * Size this to the repository's slowest required check; some builds legitimately take over half
+ * an hour on a fresh head.
  */
 const CHECKS_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -1111,7 +1111,7 @@ const RELEASE_ARTIFACTS: readonly string[] = PROJECT.releaseArtifacts ?? [];
 
 /**
  * Path patterns for `alwaysInvalidates` and `touchPaths`: a pattern that starts with '.' and
- * carries no '/' matches as a filename suffix ('.sql.ts' catches every schema file so named
+ * carries no '/' matches as a filename suffix ('.schema.ts' catches every file so named
  * wherever it lives); anything else matches as a prefix from the repository root, so
  * '.github/workflows/' stays a prefix.
  */
@@ -1191,8 +1191,8 @@ function importClosure(cwd: string, entries: string[]): Set<string> {
  */
 /**
  * Whether the base's package.json movement since `sinceSha` is nothing but a version bump.
- * Release automation bumps the version on every landing; that noise must not read as a
- * dependency change, which genuinely invalidates any proof in flight.
+ * Release automation that bumps the version on every landing produces noise that must not read as
+ * a dependency change, which genuinely invalidates any proof in flight.
  */
 function isVersionOnlyPackageJsonBump(cwd: string, sinceSha: string): boolean {
   const diff = sh(['git', 'diff', '--unified=0', `${sinceSha}...${REMOTE}/${BASE}`, '--', 'package.json'], cwd);
