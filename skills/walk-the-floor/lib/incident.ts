@@ -104,6 +104,14 @@ export async function handleIncident(
   const suspects = suspectsBetween(ctx, lastGood, entry);
   const logs = readLogs(options.logsCommand, ctx.invokeRoot);
 
+  // An incident already open for this item, checked first: one a person owns needs no diagnosis
+  // turn and no fix, only the fresh ledger entry the walk just wrote.
+  const existing = ctx.dryRun ? null : openIncidentFor(ctx, entry.itemId);
+  if (existing?.withAPerson) {
+    ctx.log(`incident #${existing.number} is already open for ${entry.itemId} and with a person; not working it again`);
+    return { issue: existing.number, created: false, fix: null, diagnosis: null, withAPerson: true };
+  }
+
   // Diagnosis is one agent turn, read-only, in the checkout at the failing revision.
   let diagnosis: Diagnosis | null = null;
   if (!ctx.dryRun) {
@@ -121,7 +129,6 @@ export async function handleIncident(
   }
 
   const title = incidentTitle(entry.itemId, entry.verdict);
-  const existing = ctx.dryRun ? null : openIncidentFor(ctx, entry.itemId);
   let issue = existing?.number ?? null;
   if (issue === null) {
     const body = [
@@ -166,13 +173,6 @@ export async function handleIncident(
     ctx.log(`filed incident #${issue}: ${title}`);
   } else {
     ctx.log(`incident #${issue} is already open for ${entry.itemId}; not filing again`);
-    // The pipeline stopped on it once and left it with a person (parked, dead-lettered, needs a
-    // human). Walking the item again keeps the ledger honest; working it again would spend a
-    // lane on a call nobody has made. Removing the label is how a person hands it back.
-    if (existing?.withAPerson) {
-      ctx.log(`incident #${issue} is with a person; not working it again`);
-      return { issue, created: false, fix: null, diagnosis, withAPerson: true };
-    }
   }
 
   // A remedy outside the repository (a reindex, a config value, a vendor outage) is not code; a
