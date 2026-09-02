@@ -16,7 +16,6 @@
  *
  *   bun run <skill-dir>/loop.ts --dry-run
  *   bun run <skill-dir>/loop.ts --limit 3
- *   bun run <skill-dir>/loop.ts --issue <n>
  *   bun run <skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
  *
  * Hard dependency: the sibling `prove-work-on-github` skill, shipped alongside this one in
@@ -214,20 +213,12 @@ const MAX_POINTS = (() => {
   }
   return parsed;
 })();
-const ONLY_ISSUE = (() => {
-  const raw = opt('issue');
-  if (raw === undefined) return undefined;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    // A mistyped issue number must not silently degrade into a full batch run.
-    console.error(`--issue expects an issue number, got '${raw}'`);
-    process.exit(1);
-  }
-  return parsed;
-})();
-// A single-issue run is a focused run; appraising the rest of the backlog alongside it would
-// surprise, so --issue implies no appraisal unless an appraise limit was asked for explicitly.
-const SKIP_APPRAISAL = flag('no-appraise') || (ONLY_ISSUE !== undefined && opt('appraise-limit') === undefined);
+// One named issue is what the sibling fix skill is; the loop is selection over a backlog.
+if (opt('issue') !== undefined) {
+  console.error('--issue moved to the fix-github-issue skill: bun run <skill-dir>/fix.ts --issue <n>');
+  process.exit(2);
+}
+const SKIP_APPRAISAL = flag('no-appraise');
 const APPRAISE_LIMIT = Number(opt('appraise-limit') ?? CONFIG.appraiseLimit);
 const CLOSURE_PROBE = opt('closure');
 
@@ -319,16 +310,6 @@ function selectCandidates(): Issue[] {
   const all: Issue[] = JSON.parse(raw);
 
   const claimed = new Set(openPullRequestIssueRefs());
-
-  // --issue overrides the age and size filters, never the safety ones: a skipped, parked, DLQed,
-  // budget-exhausted, or already-claimed issue stays out of reach even when named directly.
-  if (ONLY_ISSUE) {
-    return all
-      .filter((i) => i.number === ONLY_ISSUE)
-      .filter((issue) => !issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq'))
-      .filter((issue) => reviewCount(issue.labels) < CONFIG.maxReviewRounds)
-      .filter((issue) => !claimed.has(issue.number));
-  }
 
   const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
 
