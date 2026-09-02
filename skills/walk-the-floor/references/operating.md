@@ -63,7 +63,11 @@ One issue, labelled `floor/incident`, titled for the item that failed, with:
 
 The issue is then worked by `fix-github-issue` exactly as any other issue: a worker in a worktree,
 a reviewer on another engine, a gated merge. Its outcome is on the issue and the pull request. A
-second `absent` or `down` for the same item while that issue is open does not file again.
+second `absent` or `down` for the same item while that issue is open does not file again, and if
+the issue carries a label the pipeline leaves for a person (`loop/parked`, `loop/dlq`,
+`needs-human`, `needs-decision`, `loop/skip`) it is not worked again either: the item is still
+walked every wake so the ledger notices when it comes right, and removing the label hands the
+incident back to the walker.
 
 One exception: a diagnosis whose remedy is `outside-repository` (a reindex, a configuration value,
 a vendor outage) parks the issue for a person with the diagnosis attached and runs no worker; the
@@ -95,5 +99,7 @@ flight is killed with its process group and leaves no ledger entry; the next wak
 SIGUSR1 to the same pid drains instead: a forever walker finishes every pending item on the floor,
 then exits 0 on its own. A sleeping walker wakes at once; a walking one finishes its wake first.
 A producer that started the walker sends this when its own run is done, so the last items it put
-on the floor still get walked. An item that stays pending (`not-yet-deployed` against a deploy
-that never lands) keeps the walker draining at its cadence; the producer decides how long to wait.
+on the floor still get walked. An item whose incident a person now owns (parked, dead-lettered,
+needs a human) does not hold the drain open; the walker says so and stops. An item that stays
+pending for any other reason (`not-yet-deployed` against a deploy that never lands) keeps the
+walker draining at its cadence; the producer decides how long to wait.

@@ -26,7 +26,17 @@ export type Diagnosis = {
   summary: string;
 };
 
-export type IncidentResult = { issue: number; created: boolean; fix: FixOutcome | null; diagnosis: Diagnosis | null };
+export type IncidentResult = {
+  issue: number;
+  created: boolean;
+  fix: FixOutcome | null;
+  diagnosis: Diagnosis | null;
+  /** True when a person now owns the incident, so walking it again should not start another fix. */
+  withAPerson: boolean;
+};
+
+/** Labels the fix pipeline leaves when it stops and hands an issue to a person. */
+const HUMAN_LABELS = new Set(['loop/parked', 'loop/dlq', 'needs-human', 'needs-decision', 'loop/skip']);
 
 function readLogs(command: string | undefined, cwd: string): string {
   if (!command) return '';
@@ -59,14 +69,16 @@ export function incidentTitle(itemId: string, verdict: string): string {
   return `floor: ${itemId} is ${verdict}`;
 }
 
-/** An open incident already naming this item, or null. */
-export function openIncidentFor(ctx: Context, itemId: string): number | null {
+/** An open incident already naming this item, with whether a person owns it, or null. */
+export function openIncidentFor(ctx: Context, itemId: string): { number: number; withAPerson: boolean } | null {
   const raw = sh(ctx, [
-    'gh', 'issue', 'list', '--state', 'open', '--label', INCIDENT_LABEL, '--limit', '50', '--json', 'number,title',
+    'gh', 'issue', 'list', '--state', 'open', '--label', INCIDENT_LABEL, '--limit', '50', '--json', 'number,title,labels',
   ]);
-  const rows = JSON.parse(raw) as Array<{ number: number; title: string }>;
+  const rows = JSON.parse(raw) as Array<{ number: number; title: string; labels: Array<{ name: string }> }>;
   const prefix = `floor: ${itemId} is `;
-  return rows.find((row) => row.title.startsWith(prefix))?.number ?? null;
+  const row = rows.find((candidate) => candidate.title.startsWith(prefix));
+  if (!row) return null;
+  return { number: row.number, withAPerson: row.labels.some((label) => HUMAN_LABELS.has(label.name)) };
 }
 
 export function ensureIncidentLabel(ctx: Context): void {
@@ -110,7 +122,7 @@ export async function handleIncident(
 
   const title = incidentTitle(entry.itemId, entry.verdict);
   const existing = ctx.dryRun ? null : openIncidentFor(ctx, entry.itemId);
-  let issue = existing;
+  let issue = existing?.number ?? null;
   if (issue === null) {
     const body = [
       `A walk of the running environment found \`${entry.itemId}\` **${entry.verdict}** at ${entry.checkedAt}.`,
@@ -146,7 +158,7 @@ export async function handleIncident(
     ].join('\n');
     if (ctx.dryRun) {
       ctx.log(`  DRY RUN  would file incident "${title}"`);
-      return { issue: 0, created: false, fix: null, diagnosis };
+      return { issue: 0, created: false, fix: null, diagnosis, withAPerson: false };
     }
     ensureIncidentLabel(ctx);
     const url = sh(ctx, ['gh', 'issue', 'create', '--title', title, '--body', body, '--label', INCIDENT_LABEL]);
@@ -154,6 +166,13 @@ export async function handleIncident(
     ctx.log(`filed incident #${issue}: ${title}`);
   } else {
     ctx.log(`incident #${issue} is already open for ${entry.itemId}; not filing again`);
+    // The pipeline stopped on it once and left it with a person (parked, dead-lettered, needs a
+    // human). Walking the item again keeps the ledger honest; working it again would spend a
+    // lane on a call nobody has made. Removing the label is how a person hands it back.
+    if (existing?.withAPerson) {
+      ctx.log(`incident #${issue} is with a person; not working it again`);
+      return { issue, created: false, fix: null, diagnosis, withAPerson: true };
+    }
   }
 
   // A remedy outside the repository (a reindex, a config value, a vendor outage) is not code; a
@@ -163,7 +182,7 @@ export async function handleIncident(
       parkIssue(ctx, issue, 'The diagnosis places the remedy outside this repository, so no fix was attempted; a person has to act on the environment. See the diagnosis above.');
     }
     ctx.log(`incident #${issue}: parked; the remedy is outside the repository`);
-    return { issue, created: existing === null, fix: null, diagnosis };
+    return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true };
   }
 
   // The fix is the pipeline's job, exactly as for any other issue.
@@ -173,5 +192,5 @@ export async function handleIncident(
     { maxPoints: options.maxPoints },
   );
   ctx.log(`incident #${issue}: ${fix.outcome}; ${fix.reason}`);
-  return { issue, created: existing === null, fix, diagnosis };
+  return { issue, created: existing === null, fix, diagnosis, withAPerson: fix.outcome !== 'merged' };
 }

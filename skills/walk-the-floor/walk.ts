@@ -370,6 +370,13 @@ async function wake(): Promise<boolean> {
   return wrong;
 }
 
+/**
+ * Items whose incident a person now owns. They stay on the floor and are walked every wake, so
+ * the ledger notices when they come right, but a drain does not wait on them: nothing the walker
+ * can do moves them.
+ */
+const withAPerson = new Set<string>();
+
 async function repair(entry: LedgerEntry, deployed: string | null, checkout?: string): Promise<void> {
   const cwd = checkout ?? makeCheckout(deployed ?? `${PROJECT.remote}/${PROJECT.baseBranch}`);
   try {
@@ -381,6 +388,8 @@ async function repair(entry: LedgerEntry, deployed: string | null, checkout?: st
       logsCommand: ENV.logsCommand,
       maxPoints: MAX_POINTS,
     });
+    if (result.withAPerson) withAPerson.add(entry.itemId);
+    else withAPerson.delete(entry.itemId);
     if (entry.itemId === LIVENESS_ITEM && ENV.baseUrl && result.fix?.outcome === 'merged') {
       // The fix landed; say whether the environment came back, once it has had a moment.
       await Bun.sleep(60_000);
@@ -445,12 +454,17 @@ async function main(): Promise<void> {
     draining = true;
     wakeEarly?.();
   });
-  const floorIsClear = () => pending(readList(DIR), readLedger(DIR)).length === 0;
+  // Clear enough to stop: nothing pending that is not already in a person's hands.
+  const stillMine = () => pending(readList(DIR), readLedger(DIR)).filter((item) => !withAPerson.has(item.id));
+  const floorIsClear = () => stillMine().length === 0;
+  const stopClear = () => {
+    log(withAPerson.size > 0 ? `the floor is clear but for ${[...withAPerson].join(', ')}, which a person owns; stopping` : 'the floor is clear; stopping');
+    step('done');
+  };
 
   for (;;) {
     if (draining && floorIsClear()) {
-      log('the floor is clear; stopping');
-      step('done');
+      stopClear();
       return;
     }
     try {
@@ -460,11 +474,10 @@ async function main(): Promise<void> {
     }
     if (draining) {
       if (floorIsClear()) {
-        log('the floor is clear; stopping');
-        step('done');
+        stopClear();
         return;
       }
-      log(`draining: ${pending(readList(DIR), readLedger(DIR)).length} item(s) still pending`);
+      log(`draining: ${stillMine().length} item(s) still pending`);
     }
     log(`sleeping ${EVERY} minute(s)`);
     await new Promise<void>((done) => {
