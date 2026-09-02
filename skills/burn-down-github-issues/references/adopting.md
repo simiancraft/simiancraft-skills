@@ -29,7 +29,7 @@ export default {
     remote: 'origin',
     baseBranch: 'main',
     evidenceBranch: '__evidence_locker__',
-    checkCommand: 'bun check',
+    checkCommand: 'bun run verify',
     installCommand: 'bun install --frozen-lockfile',
     conventionDocs: ['AGENTS.md', 'CLAUDE.md'],
     sizingScale: 'where your point scale is documented',
@@ -69,7 +69,7 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `remote` | **check this**, not every checkout says `origin` | `origin` | `origin`, beside a second remote (see below) |
 | `baseBranch` | cut from and merged into | `main` | `develop` |
 | `evidenceBranch` | long-lived, append only | `__evidence_locker__` | create one |
-| `checkCommand` | the local gate | `bun run check` | `bun run verify` (a script fanning out to many checks) |
+| `checkCommand` | the local gate | `bun run lint && bun run test` | `bun run verify` (a script fanning out to many checks) |
 | `installCommand` | frozen-lockfile install | `bun install --frozen-lockfile` | the same |
 | `conventionDocs` | what a prescribed remedy is read against | `CONTRIBUTING.md` | `AGENTS.md` |
 | `sizingScale` | where the point scale is written | a docs page | an issue template |
