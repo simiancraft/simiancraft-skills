@@ -60,7 +60,7 @@ window and the size filter but not those labels.
 3. `appraise.ts --limit 3`, then a full window.
 4. `appraise.ts --all` once, if the backlog predates the window. Expect the closes to be the
    highest-yield part; read a few of the receipts before trusting the rest.
-5. `appraise.ts --every 60` in a terminal you can watch, if you want the backlog kept sized
+5. `appraise.ts --every <minutes>` in a terminal you can watch, if you want the backlog kept sized
    between burndown runs.
 
 ## Boundaries

@@ -16,7 +16,7 @@
  *   bun run <skill-dir>/appraise.ts --issue <n>           # one issue, whatever its age or size
  *   bun run <skill-dir>/appraise.ts --all                 # the whole open backlog, not only the window
  *   bun run <skill-dir>/appraise.ts --include-sized       # re-judge issues that already carry a size
- *   bun run <skill-dir>/appraise.ts --every 60            # a heartbeat: appraise whatever is new, hourly
+ *   bun run <skill-dir>/appraise.ts --every <minutes>     # a heartbeat: appraise whatever is new, on a cadence you choose
  *   bun run <skill-dir>/appraise.ts --no-confirm          # close on the appraiser's word alone
  *   bun run <skill-dir>/appraise.ts --appraiser codex:gpt-5.6-sol --confirmer claude:claude-opus-5
  */
@@ -111,7 +111,7 @@ const SEATS = (() => {
 
 const ctx = createContext({
   project: CONFIG.project,
-  knobs: { autoMerge: 'never', maxReviewRounds: 1 },
+  knobs: { autoMerge: 'never', maxReviewRounds: 1, checksTimeoutMinutes: CONFIG.checksTimeoutMinutes, smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes },
   seats: {
     worker: parseSeat(CONFIG.seats.worker, 'seats.worker'),
     reviewer: parseSeat(CONFIG.seats.reviewer, 'seats.reviewer'),

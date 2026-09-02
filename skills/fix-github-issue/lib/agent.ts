@@ -19,13 +19,6 @@ export const children = new Set<{ pid: number; kill: () => void; exitCode: numbe
 export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
- * How long the merge gate waits for a pull request's checks before parking instead of merging.
- * Size this to the repository's slowest required check; some builds legitimately take a long
- * time on a fresh head.
- */
-export const CHECKS_TIMEOUT_MS = 45 * 60 * 1000;
-
-/**
  * Extra attempts an agent gets when the upstream refused for a reason that is not about the work.
  * A model at capacity is a different fact from a model that tried and failed: the first is worth
  * asking again, the second is not, and spending the lane on the first loses an issue for the run.

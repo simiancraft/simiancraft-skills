@@ -9,7 +9,8 @@ description: >-
   "keep an eye on the deployed base branch", "smoke-check what just merged", "walk the site every
   ten minutes", or "tell me the moment the deployed environment goes down". Requires a per-repository
   walk-the-floor.config.ts, the fix-github-issue skill, and one environment driver skill
-  (playwright-harness for web, expo-ios-simulator or android-emulator-harness for mobile). Skip
+  (playwright-harness for web, ios-simulator or android-emulator-harness for mobile, or the
+  stack-specific driver the config names). Skip
   for a rigorous integration suite, which this is not, and for environments with no reachable
   running instance.
 ---
@@ -69,10 +70,12 @@ it off for a hand-written list.
 
 - The [`fix-github-issue`](../fix-github-issue/SKILL.md) skill, imported for the agent runner, the
   project config, and the fix pipeline an incident is handed to.
-- One environment driver skill, loaded by name in the walk prompt according to the configured
-  kind: [`playwright-harness`](../playwright-harness/SKILL.md) for `web`,
-  [`expo-ios-simulator`](../expo-ios-simulator/SKILL.md) for `ios`,
-  [`android-emulator-harness`](../android-emulator-harness/SKILL.md) for `android`.
+- One environment driver skill, loaded by name in the walk prompt: by default
+  [`playwright-harness`](../playwright-harness/SKILL.md) for `web`,
+  [`ios-simulator`](../ios-simulator/SKILL.md) for `ios`, and
+  [`android-emulator-harness`](../android-emulator-harness/SKILL.md) for `android`, or whatever
+  `environment.driverSkill` names instead (an Expo app names
+  [`expo-ios-simulator`](../expo-ios-simulator/SKILL.md)).
 - `gh` authenticated with issue-creation rights on the target repository, and the CLI the walker
   seat names on `PATH`.
 

@@ -25,7 +25,7 @@ export type Context = {
   /** Everything true of the repository being worked. */
   project: ProjectConfig;
   /** The pipeline's own boundaries. A driver's extra knobs stay with the driver. */
-  knobs: { autoMerge: PipelineKnobs['autoMerge']; maxReviewRounds: number };
+  knobs: Omit<PipelineKnobs, 'seats'>;
   /** The two seats the pipeline fills. A driver's third seat is never visible here. */
   seats: { worker: Seat; reviewer: Seat };
   /** The main checkout. Never an agent's working directory. */
@@ -52,7 +52,7 @@ export type Context = {
 
 export function createContext(options: {
   project: ProjectConfig;
-  knobs: { autoMerge: PipelineKnobs['autoMerge']; maxReviewRounds: number };
+  knobs: Omit<PipelineKnobs, 'seats'>;
   seats: { worker: Seat; reviewer: Seat };
   repoRoot: string;
   invokeRoot: string;

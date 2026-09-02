@@ -12,7 +12,7 @@ is the only trustworthy identity.
 
 ```bash
 PID=$(cat <worktreeRoot>/runs/loop.lock)
-tr '\0' ' ' < /proc/$PID/cmdline     # confirm it names loop.ts before you trust it
+ps -o command= -p "$PID"            # confirm it names loop.ts before you trust it
 ```
 
 **Do not find the driver with `pgrep -f loop.ts`.** Two ways that goes wrong:

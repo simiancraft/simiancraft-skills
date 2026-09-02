@@ -51,6 +51,10 @@ type LoopKnobs = {
   maxPoints: number;
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
+  checksTimeoutMinutes: number;
+  smokeTimeoutMinutes: number;
+  /** How far back merged pull requests are read at startup to close issues a dead run merged. */
+  reconciliationDays: number;
   limit: number;
   concurrency: number;
   appraiserConcurrency: number;
@@ -98,6 +102,13 @@ const DEFAULTS: LoopKnobs = {
    * between worker and reviewer indefinitely because each new run starts its counting over.
    */
   maxReviewRounds: 3,
+
+  /** See the fix pipeline's PIPELINE_DEFAULTS for both. */
+  checksTimeoutMinutes: 45,
+  smokeTimeoutMinutes: 10,
+
+  /** Merged pull requests this recent are checked against open sized issues on start. */
+  reconciliationDays: 14,
 
   /** Issues to process in one run. */
   limit: 5,
@@ -188,6 +199,9 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
     'concurrency',
     'appraiserConcurrency',
     'appraiseLimit',
+    'checksTimeoutMinutes',
+    'smokeTimeoutMinutes',
+    'reconciliationDays',
   ],
   help: [
     'This loop is shared across repositories; everything true of a repository lives in that file.',
@@ -432,7 +446,12 @@ const SEATS = (() => {
  */
 const ctx = createContext({
   project: PROJECT,
-  knobs: { autoMerge: CONFIG.autoMerge, maxReviewRounds: CONFIG.maxReviewRounds },
+  knobs: {
+    autoMerge: CONFIG.autoMerge,
+    maxReviewRounds: CONFIG.maxReviewRounds,
+    checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
+  },
   seats: { worker: SEATS.worker, reviewer: SEATS.reviewer },
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
@@ -475,7 +494,7 @@ function reconcileMergedPullRequests(all: Issue[]): void {
     mergeCommit: { oid: string } | null;
     files: Array<{ path: string }>;
   };
-  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const since = new Date(Date.now() - CONFIG.reconciliationDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   let merged: Merged[];
   try {
     merged = JSON.parse(

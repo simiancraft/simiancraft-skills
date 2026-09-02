@@ -55,7 +55,9 @@ export default {
     worktreeRoot: '../.your-app-loop',
   } satisfies ProjectConfig,
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
-  // limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
+  // checksTimeoutMinutes (how long the pull master waits on checks), smokeTimeoutMinutes,
+  // reconciliationDays (how far back merged pull requests are checked against open issues on
+  // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
   // seats: { appraiser: 'codex', confirmer: 'claude:claude-opus-5', worker: 'codex', reviewer: 'claude:claude-opus-5' },
   // and confirmCloses (default true): a close proposed by the appraiser needs the confirmer's agreement.
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.

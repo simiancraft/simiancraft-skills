@@ -9,10 +9,14 @@ import type { HealthPath } from './liveness.ts';
 
 export type EnvironmentKind = 'web' | 'ios' | 'android';
 
-/** Which driver skill the walk prompt loads for each kind. A fourth kind is a new row here. */
+/**
+ * Which driver skill the walk prompt loads for each kind when the config names none. These are
+ * the project-agnostic drivers; an environment built on a particular stack sets
+ * `environment.driverSkill` to the specialised one (an Expo app names `expo-ios-simulator`).
+ */
 export const DRIVER_SKILLS: Record<EnvironmentKind, string> = {
   web: 'playwright-harness',
-  ios: 'expo-ios-simulator',
+  ios: 'ios-simulator',
   android: 'android-emulator-harness',
 };
 
@@ -27,6 +31,12 @@ export type Login = {
 
 export type Environment = {
   kind: EnvironmentKind;
+  /** The driver skill the walker loads, when the kind's default is not the right one. */
+  driverSkill?: string;
+  /** How long one health request may take before it counts as no response. */
+  probeTimeoutMs: number;
+  /** After a fix for a `down` merges, how long to wait before re-probing the environment. */
+  postFixProbeDelaySeconds: number;
   /** The running instance. Absent means no liveness probe and no walks; only classification. */
   baseUrl?: string;
   /** Requests the in-process probe makes on every wake. Empty means `/`. */
@@ -52,7 +62,14 @@ export type Walk = { name: string; paths: string[]; steps: string };
 export type WalkKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
+  checksTimeoutMinutes: number;
+  smokeTimeoutMinutes: number;
+  /** The size ceiling an incident's fix may attempt. */
+  maxPoints: number;
+  /** The default wake cadence for `--every` with no value. */
   cadenceMinutes: number;
+  /** While the environment stays down across wakes, one notification per this many minutes. */
+  notifyCooldownMinutes: number;
   /** Receives the on-fail ledger entry on stdin. Optional. */
   notifyCommand?: string;
   environment: Environment;
@@ -61,13 +78,17 @@ export type WalkKnobs = {
 };
 
 /** What an adopting repository exports from `walk-the-floor.config.ts`. */
-export type WalkConfig = Partial<Omit<WalkKnobs, 'environment'>> & {
+export type WalkConfig = Partial<Omit<WalkKnobs, 'environment' | 'seats'>> & {
   project: ProjectConfig;
   environment: Partial<Environment> & { kind: EnvironmentKind };
+  /** Any seat left out keeps its default. */
+  seats?: Partial<WalkKnobs['seats']>;
 };
 
 const DEFAULT_ENVIRONMENT: Environment = {
   kind: 'web',
+  probeTimeoutMs: 10_000,
+  postFixProbeDelaySeconds: 60,
   healthPaths: [],
   safeEndpoints: [],
   graceMinutes: 15,
@@ -77,7 +98,11 @@ const DEFAULT_ENVIRONMENT: Environment = {
 export const DEFAULTS: WalkKnobs = {
   autoMerge: 'code-only',
   maxReviewRounds: 3,
+  checksTimeoutMinutes: 45,
+  smokeTimeoutMinutes: 10,
+  maxPoints: 5,
   cadenceMinutes: 10,
+  notifyCooldownMinutes: 60,
   environment: DEFAULT_ENVIRONMENT,
   walks: [],
   seats: {
@@ -109,7 +134,7 @@ export async function loadWalkConfig(invokeRoot: string, repoRoot: string): Prom
     repoRoot,
     fileName: CONFIG_FILE,
     defaults: DEFAULTS,
-    positiveIntegers: ['maxReviewRounds', 'cadenceMinutes'],
+    positiveIntegers: ['maxReviewRounds', 'cadenceMinutes', 'maxPoints', 'notifyCooldownMinutes', 'checksTimeoutMinutes', 'smokeTimeoutMinutes'],
     help: [
       'The walker is shared across repositories; everything true of an environment lives in that file.',
       'Copy the template from references/adopting.md in the walk-the-floor skill and fill it in.',
@@ -134,6 +159,15 @@ export async function loadWalkConfig(invokeRoot: string, repoRoot: string): Prom
   }
   if (!Number.isInteger(environment.graceMinutes) || environment.graceMinutes <= 0) {
     faults.push('environment.graceMinutes must be a positive integer');
+  }
+  if (!Number.isInteger(environment.probeTimeoutMs) || environment.probeTimeoutMs <= 0) {
+    faults.push('environment.probeTimeoutMs must be a positive integer');
+  }
+  if (!Number.isInteger(environment.postFixProbeDelaySeconds) || environment.postFixProbeDelaySeconds < 0) {
+    faults.push('environment.postFixProbeDelaySeconds must be a non-negative integer');
+  }
+  if (environment.driverSkill !== undefined && (typeof environment.driverSkill !== 'string' || environment.driverSkill.trim() === '')) {
+    faults.push('environment.driverSkill must be a skill name');
   }
   const login = environment.login;
   if (login) {

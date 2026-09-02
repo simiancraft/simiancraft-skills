@@ -10,7 +10,7 @@
  */
 
 import { resolve } from 'node:path';
-import { CHECKS_TIMEOUT_MS, logTail, readResult, renderPrompt, runAgent } from './agent.ts';
+import { logTail, readResult, renderPrompt, runAgent } from './agent.ts';
 import type { Context } from './context.ts';
 import { closeIssue, parkIssue, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeFor } from './lane.ts';
@@ -262,7 +262,7 @@ async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string)
   };
   const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
 
-  const deadline = Date.now() + CHECKS_TIMEOUT_MS;
+  const deadline = Date.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
   for (;;) {
     const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup']);
     const rollup: CheckNode[] = raw ? JSON.parse(raw) : [];
@@ -275,7 +275,7 @@ async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string)
     const pending = rollup.filter((c) => classify(c) === 'pending');
     if (pending.length === 0) return null;
     if (Date.now() >= deadline) {
-      return `checks still unfinished after ${Math.round(CHECKS_TIMEOUT_MS / 60000)} minutes: ${pending.map(nameOf).join(', ')}`;
+      return `checks still unfinished after ${ctx.knobs.checksTimeoutMinutes} minutes: ${pending.map(nameOf).join(', ')}`;
     }
     say(`waiting on ${pending.length} unfinished check(s) before merging`);
     await Bun.sleep(30_000);
@@ -301,7 +301,6 @@ export type Reviewed = { review: ReviewResult; reviewedSha: string };
 export type Landing = 'merged' | 'revise' | 'stale' | { park: string };
 
 /** How long the smoke command may run before the pull request parks as unbootable. */
-const SMOKE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Judge one branch. Runs outside the queue, so reviews overlap.
@@ -445,7 +444,7 @@ async function land(
       cwd,
       stdout: 'pipe',
       stderr: 'pipe',
-      timeout: SMOKE_TIMEOUT_MS,
+      timeout: ctx.knobs.smokeTimeoutMinutes * 60_000,
       killSignal: 'SIGKILL',
     });
     if (smoke.exitCode !== 0) {

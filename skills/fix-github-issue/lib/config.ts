@@ -70,6 +70,10 @@ export type ProjectConfig = {
 export type PipelineKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
+  /** How long the pull master waits for a pull request's checks before parking instead of merging. */
+  checksTimeoutMinutes: number;
+  /** How long `project.smokeCommand` may run before the pull request parks. */
+  smokeTimeoutMinutes: number;
   seats: { worker: string; reviewer: string };
 };
 
@@ -91,6 +95,15 @@ export const PIPELINE_DEFAULTS: PipelineKnobs = {
    * between worker and reviewer indefinitely because each new run starts its counting over.
    */
   maxReviewRounds: 3,
+
+  /**
+   * Size this to the repository's slowest required check; some builds legitimately take a long
+   * time on a fresh head, and a merge that parks on a slow check is not a defect in the change.
+   */
+  checksTimeoutMinutes: 45,
+
+  /** A boot that has not answered in this long is a failed boot. */
+  smokeTimeoutMinutes: 10,
 
   /**
    * Who sits in each seat, as an `engine` or `engine:model` spec resolved against the ENGINES

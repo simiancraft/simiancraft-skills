@@ -5,7 +5,7 @@ description: >-
   how big it is, then apply the answer to the tracker as a size label, a needs-decision or
   needs-human label with the question stated, or a close carrying a re-checkable receipt. A close
   is confirmed by a second engine before it is made. Runs once, on one issue, over the whole
-  backlog, or as an hourly heartbeat, and is the sizing stage of burn-down-github-issues. Use when
+  backlog, or as a periodic heartbeat, and is the sizing stage of burn-down-github-issues. Use when
   the task is "size the backlog", "appraise every issue in this repo", "close what is already
   done", "triage recent issues without fixing them", or "keep the backlog sized". Requires a
   per-repository config (its own, or the burndown's) and the codex and claude CLIs for the default
@@ -54,7 +54,7 @@ bun run <this-skill-dir>/appraise.ts --limit 12            # up to 12 unsized is
 bun run <this-skill-dir>/appraise.ts --issue <n>           # one issue, whatever its age or size
 bun run <this-skill-dir>/appraise.ts --all                 # the whole open backlog, not only the window
 bun run <this-skill-dir>/appraise.ts --all --include-sized # re-judge everything, sized or not
-bun run <this-skill-dir>/appraise.ts --every 60            # heartbeat: appraise whatever is new, hourly
+bun run <this-skill-dir>/appraise.ts --every <minutes>     # heartbeat: appraise whatever is new, on a cadence you choose
 bun run <this-skill-dir>/appraise.ts --appraiser codex:gpt-5.6-sol --confirmer claude:claude-opus-5
 ```
 

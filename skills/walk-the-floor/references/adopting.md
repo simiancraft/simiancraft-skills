@@ -34,9 +34,11 @@ export default {
   },
 
   environment: {
-    kind: 'web', // 'web' | 'ios' | 'android'; picks the driver skill the walker loads
+    kind: 'web', // 'web' | 'ios' | 'android'; picks the default driver skill the walker loads
+    // driverSkill: 'expo-ios-simulator', // optional; a stack-specific driver in place of the kind's default
     baseUrl: 'https://staging.example.com',
     healthPaths: ['/', '/api/health'], // fetched by the in-process probe on every wake
+    probeTimeoutMs: 10000, // one health request slower than this counts as no response
     revisionCommand: 'curl -s https://staging.example.com/version', // optional; prints a SHA
     logsCommand: 'your-host logs --tail 200', // optional; read when a walk fails
     login: {
@@ -48,6 +50,7 @@ export default {
     },
     safeEndpoints: [], // paths the walker may POST to; default none
     graceMinutes: 15, // with no revisionCommand, how long after a merge an item stays `unverified`
+    postFixProbeDelaySeconds: 60, // after a fix for a `down` merges, how long before re-probing
     quietWindows: [{ start: '02:00', end: '02:30' }], // UTC; a nightly copy or deploy is not an incident
   },
 
@@ -65,9 +68,17 @@ export default {
     },
   ],
 
-  cadenceMinutes: 10,
+  cadenceMinutes: 10, // the wake cadence for `--every` with no value
   notifyCommand: undefined, // optional; receives the on-fail ledger entry on stdin
-  seats: { walker: 'claude:claude-opus-5' },
+  notifyCooldownMinutes: 60, // while the environment stays down, one notification per this many minutes
+
+  // Incident repair goes through fix-github-issue with these boundaries; any seat left out keeps its default.
+  maxPoints: 5, // the size ceiling an incident's fix may attempt
+  autoMerge: 'code-only', // what a repair may merge on its own; 'never' parks every fix for a person
+  maxReviewRounds: 3, // review rounds an incident's fix gets before the dead-letter queue
+  checksTimeoutMinutes: 45, // how long a repair waits on its pull request's checks
+  smokeTimeoutMinutes: 10, // how long project.smokeCommand may run before the repair parks
+  seats: { walker: 'claude:claude-opus-5', worker: 'codex:gpt-5.6-sol', reviewer: 'claude:claude-opus-5' },
 } satisfies WalkConfig;
 ```
 
@@ -76,15 +87,16 @@ than a variable name; credentials never live in the config.
 
 ## Environment kinds and their drivers
 
-| `kind` | Driver skill the walk prompt loads | What "go and look" means |
+| `kind` | Default driver skill | What "go and look" means |
 |---|---|---|
 | `web` | `playwright-harness` | navigate, read, click, screenshot in headless Chromium |
-| `ios` | `expo-ios-simulator` | boot the simulator, launch the app, drive by accessibility |
+| `ios` | `ios-simulator` | boot the simulator, launch the app, drive by accessibility |
 | `android` | `android-emulator-harness` | boot the emulator, install the build, drive with Maestro |
 
 The walker does not carry any of that knowledge itself; the prompt names the skill and the agent
-loads it. Adopting a fourth kind is a new row here and a new driver skill, not a change to the
-walker.
+loads it. `environment.driverSkill` replaces the kind's default with a stack-specific driver when
+one exists (an Expo app names `expo-ios-simulator`, which sits on top of `ios-simulator`).
+Adopting a fourth kind is a new row here and a new driver skill, not a change to the walker.
 
 ## Authoring a standing walk
 

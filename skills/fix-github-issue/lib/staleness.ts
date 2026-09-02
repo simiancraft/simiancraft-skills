@@ -66,7 +66,7 @@ export function importClosure(ctx: Context, cwd: string, entries: string[]): Set
     const file = queue.pop();
     if (!file || seen.has(file)) continue;
     seen.add(file);
-    if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
+    if (!ctx.project.sourceExtensions.some((ext) => file.endsWith(ext))) continue;
 
     const abs = join(cwd, file);
     if (!existsSync(abs)) continue;

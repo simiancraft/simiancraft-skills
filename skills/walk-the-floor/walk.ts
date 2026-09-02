@@ -73,17 +73,6 @@ teeConsole(join(DIR, 'walk.log'));
 const DRY_RUN = flag('dry-run');
 const LIVENESS_ONLY = flag('liveness-only');
 const NO_FORGE = flag('no-forge');
-const EVERY = opt('every') !== undefined ? Number(opt('every')) : null;
-const ONCE = flag('once') || EVERY === null;
-if (EVERY !== null && (!Number.isInteger(EVERY) || EVERY <= 0)) {
-  console.error(`--every expects minutes as a positive integer, got '${opt('every')}'`);
-  process.exit(2);
-}
-const MAX_POINTS = Number(opt('max-points') ?? 5);
-if (!Number.isInteger(MAX_POINTS) || MAX_POINTS <= 0) {
-  console.error(`--max-points expects a positive integer, got '${opt('max-points')}'`);
-  process.exit(2);
-}
 
 // ---------------------------------------------------------------------------
 // Config and context
@@ -96,10 +85,29 @@ const PROJECT = CONFIG.project;
 /** `--base-url` overrides the configured instance for one run: a preview deploy, or a dead port to prove the down path. */
 const ENV = { ...CONFIG.environment, ...(opt('base-url') ? { baseUrl: opt('base-url') } : {}) };
 
+// `--every` alone wakes on the configured cadence; `--every N` overrides it for this run.
+const everyRaw = opt('every');
+const EVERY = !flag('every') ? null : everyRaw === undefined || everyRaw.startsWith('--') ? CONFIG.cadenceMinutes : Number(everyRaw);
+const ONCE = flag('once') || EVERY === null;
+if (EVERY !== null && (!Number.isInteger(EVERY) || EVERY <= 0)) {
+  console.error(`--every expects minutes as a positive integer, got '${everyRaw}'`);
+  process.exit(2);
+}
+const MAX_POINTS = Number(opt('max-points') ?? CONFIG.maxPoints);
+if (!Number.isInteger(MAX_POINTS) || MAX_POINTS <= 0) {
+  console.error(`--max-points expects a positive integer, got '${opt('max-points')}'`);
+  process.exit(2);
+}
+
 const WALKER = parseSeat(opt('walker') ?? CONFIG.seats.walker, '--walker');
 const ctx = createContext({
   project: PROJECT,
-  knobs: { autoMerge: CONFIG.autoMerge, maxReviewRounds: CONFIG.maxReviewRounds },
+  knobs: {
+    autoMerge: CONFIG.autoMerge,
+    maxReviewRounds: CONFIG.maxReviewRounds,
+    checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
+  },
   seats: { worker: parseSeat(CONFIG.seats.worker, 'seats.worker'), reviewer: parseSeat(CONFIG.seats.reviewer, 'seats.reviewer') },
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
@@ -176,8 +184,8 @@ function notify(entry: LedgerEntry): void {
 let lastNotified = 0;
 async function onFail(entry: LedgerEntry): Promise<void> {
   await callback('on-fail', entry);
-  // While the environment stays down across wakes, one notification an hour is enough.
-  if (Date.now() - lastNotified > 60 * 60 * 1000) {
+  // While the environment stays down across wakes, one notification per cooldown is enough.
+  if (Date.now() - lastNotified > CONFIG.notifyCooldownMinutes * 60 * 1000) {
     notify(entry);
     lastNotified = Date.now();
   }
@@ -244,7 +252,7 @@ async function wake(): Promise<boolean> {
 
   // 1. Liveness, in-process. A wake that finds the environment down walks nothing else.
   if (ENV.baseUrl) {
-    const result = await probe(ENV.baseUrl, ENV.healthPaths);
+    const result = await probe(ENV.baseUrl, ENV.healthPaths, ENV.probeTimeoutMs);
     const entry: LedgerEntry = {
       itemId: LIVENESS_ITEM,
       checkedAt: now,
@@ -332,7 +340,7 @@ async function wake(): Promise<boolean> {
   try {
     const prompt = renderWalkerPrompt(ctx, 'walk.md', {
       KIND: ENV.kind,
-      DRIVER_SKILL: DRIVER_SKILLS[ENV.kind],
+      DRIVER_SKILL: ENV.driverSkill ?? DRIVER_SKILLS[ENV.kind],
       BASE_URL: ENV.baseUrl,
       DEPLOYED_REVISION: deployed ?? 'unknown',
       LOGIN: loginText(),
@@ -412,8 +420,8 @@ async function repair(entry: LedgerEntry, deployed: string | null, checkout?: st
     else withAPerson.delete(entry.itemId);
     if (entry.itemId === LIVENESS_ITEM && ENV.baseUrl && result.fix?.outcome === 'merged') {
       // The fix landed; say whether the environment came back, once it has had a moment.
-      await Bun.sleep(60_000);
-      const again = await probe(ENV.baseUrl, ENV.healthPaths);
+      await Bun.sleep(ENV.postFixProbeDelaySeconds * 1000);
+      const again = await probe(ENV.baseUrl, ENV.healthPaths, ENV.probeTimeoutMs);
       record({
         itemId: LIVENESS_ITEM,
         checkedAt: new Date().toISOString(),

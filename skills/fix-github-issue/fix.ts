@@ -76,7 +76,7 @@ const CONFIG = await loadProjectConfig<FixKnobs>({
   repoRoot: REPO_ROOT,
   fileName: CONFIG_FILE ?? 'fix-github-issue.config.ts',
   defaults: FIX_DEFAULTS,
-  positiveIntegers: ['maxReviewRounds', 'maxPoints'],
+  positiveIntegers: ['maxReviewRounds', 'maxPoints', 'checksTimeoutMinutes', 'smokeTimeoutMinutes'],
   help: [
     'This pipeline is shared across repositories; everything true of a repository lives in that file.',
     'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
@@ -98,7 +98,12 @@ const SEATS = (() => {
 
 const ctx = createContext({
   project: CONFIG.project,
-  knobs: { autoMerge: CONFIG.autoMerge, maxReviewRounds: CONFIG.maxReviewRounds },
+  knobs: {
+    autoMerge: CONFIG.autoMerge,
+    maxReviewRounds: CONFIG.maxReviewRounds,
+    checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
+  },
   seats: SEATS,
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
