@@ -59,7 +59,12 @@ bun run <this-skill-dir>/loop.ts --no-appraise         # skip the sizing pass; -
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
 bun run <this-skill-dir>/watch.ts                      # follow the current run; --wait for its terminal lines only
+bun run <this-skill-dir>/loop.ts --pulse 2             # operator board every 2 minutes (default 5); --silent turns it off
 ```
+
+The driver reports to the operator by default: an emoji board line per issue on every change, the
+whole board on a cadence, and the elapsed pause on every poll while the line is paused
+(`references/operating.md`, "The operator board").
 
 Everything an operator or agent does to a run is one of these commands. Watching in particular is
 `watch.ts`, never a `tail`/`kill`/`pgrep` pipeline; `references/operating.md` says why.

@@ -38,6 +38,7 @@ import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, mutate, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
+import { configureStatus, elapsed, lineState, mark, pulse, setLine, startPulse } from './status.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -205,18 +206,25 @@ function readSwitch(): { state: 'go' | 'pause'; reason: string } {
   return { state: word === 'go' ? 'go' : 'pause', reason: rest.join(' ').trim() || first.trim() };
 }
 
-/** Holds until the switch says go. Logs once per pause, not once per poll. */
+/**
+ * Holds until the switch says go. The log gets one line per pause; the operator board gets the
+ * elapsed pause on every poll, so a paused line is never mistaken for a quiet one.
+ */
 async function waitForGo(where: string): Promise<void> {
   let announced = false;
   for (;;) {
     const sw = readSwitch();
     if (sw.state === 'go') {
+      setLine('active');
       if (announced) log(`line is go again; resuming ${where}`);
       return;
     }
+    setLine('paused', sw.reason);
     if (!announced) {
       log(`line is paused (${sw.reason || 'no reason given'}); holding ${where} until ${SWITCH_FILE} says go`);
       announced = true;
+    } else if (!SILENT) {
+      console.log(`⏸️ paused ${elapsed(lineState().since)}  holding ${where}  ⏱ ${new Date().toISOString().slice(11, 19)}`);
     }
     await Bun.sleep(SWITCH_POLL_MS);
   }
@@ -321,6 +329,20 @@ if (opt('issue') !== undefined) {
 const SKIP_APPRAISAL = flag('no-appraise');
 const APPRAISE_LIMIT = Number(opt('appraise-limit') ?? CONFIG.appraiseLimit);
 const CLOSURE_PROBE = opt('closure');
+// Operator feedback is on by default: a board line per issue on every change, the whole board on
+// a cadence, and the pause duration on every poll of the switch. `--silent` keeps only the log.
+const SILENT = flag('silent');
+const PULSE_MINUTES = (() => {
+  const raw = opt('pulse');
+  if (raw === undefined) return 5;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.error(`--pulse expects minutes as a positive integer, got '${raw}'`);
+    process.exit(1);
+  }
+  return parsed;
+})();
+configureStatus({ silent: SILENT });
 
 /** Who actually sits in each seat this run: the flag when given, the configured default otherwise. */
 const SEATS = (() => {
@@ -354,7 +376,10 @@ const ctx = createContext({
     await waitForGo('the merge queue');
     return { ok: true } as const;
   },
-  afterMerge: putOnTheFloor,
+  afterMerge: (event) => {
+    mark(event.issue, event.title, 'merged', `PR #${event.pr} ${event.sha.slice(0, 10)}`);
+    putOnTheFloor(event);
+  },
 });
 
 /**
@@ -472,9 +497,11 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
     TITLE: issue.title,
     AGE_DAYS: String(CONFIG.ageDays),
   });
+  mark(issue.number, issue.title, 'appraising');
   const run = await runAgent(ctx, 'appraiser', issue.number, cwd, SEATS.appraiser, prompt);
   if (run.exitCode !== 0) {
     say(`appraiser exited ${run.exitCode}; its verdict is not trusted and the issue stays unsized`);
+    mark(issue.number, issue.title, 'failed', `appraiser exited ${run.exitCode}`);
     rmSync(cwd, { recursive: true, force: true });
     return 'failed';
   }
@@ -482,9 +509,13 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
   const result = readResult<AppraisalResult>(cwd, APPRAISAL_FILE);
   if (!result) {
     say('appraiser wrote no verdict; leaving the issue unsized');
+    mark(issue.number, issue.title, 'failed', 'no appraisal verdict');
     return 'failed';
   }
   say(`appraisal: ${result.verdict}${result.points ? ` at ${result.points} points` : ''}; ${result.reason}`);
+  const stage =
+    result.verdict === 'valid' ? 'sized' : result.verdict === 'already-fixed' || result.verdict === 'obsolete' ? 'closed' : 'handed-off';
+  mark(issue.number, issue.title, stage, result.points ? `${result.verdict}, ${result.points} points` : result.verdict);
 
   switch (result.verdict) {
     case 'already-fixed':
@@ -575,7 +606,10 @@ async function main(): Promise<void> {
   // The walker is a child that would otherwise keep this process alive after the run is done, so
   // it is stopped explicitly at the end of main as well as on every exit path.
   const stopWalker = CONFIG.floor && !DRY_RUN ? startWalker(CONFIG.floor.cadenceMinutes) : () => {};
+  const stopPulse = startPulse(PULSE_MINUTES);
+  if (!SILENT) log(`operator board: a line per issue on every change, the whole board every ${PULSE_MINUTES} minute(s); --silent turns it off`);
   process.on('exit', () => {
+    stopPulse();
     stopWalker();
     releaseLock();
   });
@@ -639,6 +673,8 @@ async function main(): Promise<void> {
   if (candidates.length === 0) {
     log('no sized candidates in the window; widen CONFIG.ageDays or raise --max-points');
     step('done');
+    pulse('final');
+    stopPulse();
     stopWalker();
     return;
   }
@@ -650,12 +686,22 @@ async function main(): Promise<void> {
     CONFIG.concurrency,
     async (issue) => {
       await waitForGo(`#${issue.number}`);
-      await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
+      mark(issue.number, issue.title, 'working');
+      const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
+      const stage =
+        result.outcome === 'merged' || result.outcome === 'parked' || result.outcome === 'dlq' || result.outcome === 'failed'
+          ? result.outcome
+          : result.outcome === 'closed'
+            ? 'closed'
+            : 'handed-off';
+      mark(issue.number, issue.title, stage, result.reason.slice(0, 80));
     },
     (issue) => `#${issue.number}`,
   );
 
   step('done');
+  pulse('final');
+  stopPulse();
   stopWalker();
 }
 

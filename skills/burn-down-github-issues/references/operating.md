@@ -53,6 +53,29 @@ pipeline.
 Start the driver the same way: `bun run <this-skill-dir>/loop.ts ...` in a terminal of its own,
 or as a harness background task with stdout sent to a file. It does not need `nohup`.
 
+## The operator board
+
+On by default. Besides the timestamped log, the driver prints one board line per issue the moment
+its state changes, the whole board every five minutes (`--pulse <minutes>` changes the cadence),
+and the elapsed pause on every poll of the switch while the line is paused. `--silent` turns all
+three off and leaves the log alone.
+
+```
+🎫 #1234  ✅ merged (PR #1250 3f2a9c1d0e)  🟢 active  ⏱ 14:56 3/3/2026  fix(search): return a page
+🎫 #1240  🅿️ parked (autoMerge: code-only, touches migration)  🟢 active  ⏱ 15:02 3/3/2026  feat(...)
+⏸️ paused 4m 30s  holding the merge queue  ⏱ 20:07:12
+💓 pulse  ⏸️ paused 5m 0s (floor: liveness is down)  ⏱ 15:07 3/3/2026  ✅ 1 merged  🅿️ 1 parked  🔨 2 working
+```
+
+Stages: 📏 appraising, 🏷️ sized, 🗂️ closed, 🙋 handed-off (needs-decision or needs-human), 🔨
+working, ✅ merged, 🅿️ parked, ☠️ dlq, ❌ failed, 🌀 out-of-band. A merge line is printed by the
+pull master at the moment of the merge, before the lane finishes, so it never waits for the pulse.
+
+A pause is silent at one place by design: a lane already inside the check-wait for its pull request
+consults the switch only once the checks are green, so a `pause` written during a long CI run shows
+its first board line when that wait ends. The `🟢 active` or `⏸️ paused` segment on every other
+board line reflects the switch as the driver last read it.
+
 The counters worth watching, and what a stall in each means:
 
 | Signal | Meaning |
