@@ -40,6 +40,14 @@ import {
 import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { APPRAISAL_FILE, VERDICT_FILE } from '../fix-github-issue/lib/control-files.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
+import {
+  closeIssue,
+  ensureLabels,
+  recordReview,
+  repairDurableState,
+  reviewCount,
+  sendToDlq,
+} from '../fix-github-issue/lib/labels.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
 import {
   claimLock,
@@ -51,6 +59,12 @@ import {
   worktreeFor,
 } from '../fix-github-issue/lib/lane.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
+import {
+  importClosure,
+  matchesPath,
+  MAX_BASE_REFRESHES,
+  staleAgainstBase,
+} from '../fix-github-issue/lib/staleness.ts';
 import { log, mutate, sh, step } from '../fix-github-issue/lib/shell.ts';
 
 // ---------------------------------------------------------------------------
@@ -415,132 +429,6 @@ function openPullRequestIssueRefs(): number[] {
   return refs;
 }
 
-function ensureLabels(): void {
-  const existing = new Set(sh(ctx, ['gh', 'label', 'list', '--limit', '200', '--json', 'name', '--jq', '.[].name']).split('\n'));
-  const wanted: Array<[string, string, string]> = [
-    ['needs-decision', 'ededed', 'Blocked on a product decision, not on effort'],
-    ['needs-human', 'ededed', 'Needs access or authority an agent does not have'],
-    ['loop/skip', 'ededed', 'Permanently out of the issue loop'],
-    ['loop/parked', 'fbca04', 'The loop worked it and a human needs to finish the call'],
-    ['loop/dlq', 'b60205', 'Exhausted its reviews; retained with a reason, redrive by removing this label'],
-  ];
-  for (const [name, color, description] of wanted) {
-    if (existing.has(name)) continue;
-    mutate(ctx, `create label ${name}`, ['gh', 'label', 'create', name, '--color', color, '--description', description]);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Durable state
-//
-// Every fact the loop needs across runs lives on the issue, not in this process. A run that dies
-// loses only the agents in flight; the next one reads the same labels and carries on. It also means
-// the state is legible on GitHub rather than in a log nobody kept.
-// ---------------------------------------------------------------------------
-
-/**
- * How many review rounds this issue has already consumed, read from its `loop/reviews: N` label.
- * Max rather than first match: the increment is add-then-remove, so a crash between the two
- * leaves both labels, and the honest reading of that state is the higher count.
- */
-function reviewCount(labels: Array<{ name: string }>): number {
-  let count = 0;
-  for (const { name } of labels) {
-    const match = /^loop\/reviews:\s*(\d+)$/.exec(name);
-    if (match) count = Math.max(count, Number(match[1]));
-  }
-  return count;
-}
-
-/**
- * Records a completed review round. Written by one role only, so the count cannot be lost.
- *
- * Label edits are not compare-and-swap, so two writers incrementing concurrently would drop an
- * increment and silently break the burndown guarantee. The pull master is the only writer.
- */
-function recordReview(issue: number, previous: number): number {
-  const next = previous + 1;
-  const label = `loop/reviews: ${next}`;
-  try {
-    sh(ctx, ['gh', 'label', 'create', label, '--color', 'd4c5f9', '--description', 'Review rounds consumed']);
-  } catch {
-    // already exists
-  }
-  // Add the new count before removing the old one. A crash between the two leaves both labels,
-  // and reviewCount reads the max; the other order would refund every spent round on a crash.
-  mutate(ctx, `mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
-  if (previous > 0) {
-    mutate(ctx, `clear loop/reviews: ${previous} on #${issue}`, [
-      'gh',
-      'issue',
-      'edit',
-      String(issue),
-      '--remove-label',
-      `loop/reviews: ${previous}`,
-    ]);
-  }
-  return next;
-}
-
-/** Ejects an issue to the dead-letter queue, retained with the reason that put it there. */
-function sendToDlq(issue: number, rounds: number, reason: string): void {
-  // Reason first, label second: a crash between the two leaves an explained issue that is not yet
-  // ejected, which the next run finishes; the other order hides an issue with no explanation.
-  mutate(ctx, `comment on #${issue}`, [
-    'gh',
-    'issue',
-    'comment',
-    String(issue),
-    '--body',
-    `Moved to the dead-letter queue after ${rounds} review rounds without a merge.\n\n${reason}\n\nRemove the \`loop/dlq\` label to put it back in the queue with a fresh review budget.`,
-  ]);
-  mutate(ctx, `send #${issue} to the DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/dlq']);
-  // Every count label comes off, or the redrive is a lie: with any `loop/reviews: N` surviving,
-  // removing `loop/dlq` would put the issue somewhere selection still refuses to look, or hand it
-  // back with a short budget. Read the labels live rather than trusting the caller's snapshot,
-  // since an earlier add-before-remove crash can have left lower counts behind.
-  const current = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name'])
-    .split('\n')
-    .filter((name) => /^loop\/reviews:/.test(name));
-  for (const label of current) {
-    mutate(ctx, `clear ${label} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
-  }
-}
-
-/**
- * Repairs label states a crash can leave half-written, so every durable transition is
- * re-runnable rather than a one-shot. Two known wrecks: an issue at the review cap that never
- * received `loop/dlq` (its ejection half done, invisible to selection forever), and a DLQed issue
- * still carrying `loop/reviews:*` counts (its redrive would not actually requeue it). Runs under
- * the instance lock, before any lane starts.
- */
-function repairDurableState(all: Issue[]): void {
-  for (const issue of all) {
-    const names = issue.labels.map((l) => l.name);
-    const counts = names.filter((name) => /^loop\/reviews:/.test(name));
-    const dlq = names.includes('loop/dlq');
-    const shelved = names.some((name) => CONFIG.skipLabels.includes(name));
-
-    if (dlq && counts.length > 0) {
-      for (const label of counts) {
-        mutate(ctx, `repair: clear ${label} on DLQed #${issue.number}`, [
-          'gh',
-          'issue',
-          'edit',
-          String(issue.number),
-          '--remove-label',
-          label,
-        ]);
-      }
-      continue;
-    }
-    if (!dlq && !shelved && reviewCount(issue.labels) >= CONFIG.maxReviewRounds) {
-      log(`repair: #${issue.number} sits at the review cap without loop/dlq; finishing the ejection`);
-      sendToDlq(issue.number, reviewCount(issue.labels), 'Completing an ejection an earlier run started and did not finish.');
-    }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Self repair
 // ---------------------------------------------------------------------------
@@ -614,134 +502,6 @@ function reconcile(): void {
 }
 
 /**
- * Paths whose change invalidates any proof in flight, whatever the pull request touched.
- *
- * Import scanning cannot reach these: a lockfile, an ORM schema, generated output, or a build
- * config is not imported by a module path, yet everything downstream depends on it.
- */
-const ALWAYS_INVALIDATES: readonly string[] = PROJECT.alwaysInvalidates;
-const RELEASE_ARTIFACTS: readonly string[] = PROJECT.releaseArtifacts ?? [];
-
-/**
- * Path patterns for `alwaysInvalidates` and `touchPaths`: a pattern that starts with '.' and
- * carries no '/' matches as a filename suffix ('.schema.ts' catches every file so named
- * wherever it lives); anything else matches as a prefix from the repository root, so
- * '.github/workflows/' stays a prefix.
- */
-function matchesPath(file: string, pattern: string): boolean {
-  return pattern.startsWith('.') && !pattern.includes('/') ? file.endsWith(pattern) : file.startsWith(pattern);
-}
-
-/** Beyond this the closure is not worth computing; treat the proof as stale and re-review. */
-const MAX_BASE_REFRESHES = 2;
-
-const CLOSURE_CAP = 3000;
-
-/** Resolves an import specifier to a repository-relative file, or null when it leaves the tree. */
-function resolveSpecifier(cwd: string, fromFile: string, specifier: string): string | null {
-  let base: string | undefined;
-  // Longest prefix wins, so a project declaring both `~/` and `~/components/` resolves the more
-  // specific one rather than whichever happens to be listed first.
-  for (const alias of [...PROJECT.pathAliases].sort((a, b) => b.prefix.length - a.prefix.length)) {
-    if (specifier.startsWith(alias.prefix)) {
-      base = join(alias.dir, specifier.slice(alias.prefix.length));
-      break;
-    }
-  }
-  if (base === undefined && specifier.startsWith('.')) base = join(dirname(fromFile), specifier);
-  if (base === undefined) return null; // a bare package; dependency changes are caught by the lockfile above
-
-  const stem = base;
-  for (const candidate of [
-    stem,
-    ...PROJECT.sourceExtensions.map((ext) => `${stem}${ext}`),
-    ...PROJECT.sourceExtensions.map((ext) => join(stem, `index${ext}`)),
-  ]) {
-    const abs = join(cwd, candidate);
-    if (existsSync(abs) && statSync(abs).isFile()) return candidate;
-  }
-  return null;
-}
-
-/**
- * Every module the given files reach by following imports, transitively, plus the files themselves.
- *
- * This is what an artifact actually covers. A check-command receipt or a rendered frame depends on the
- * whole graph beneath the component, not on the handful of files the diff happens to edit.
- */
-function importClosure(cwd: string, entries: string[]): Set<string> {
-  const seen = new Set<string>();
-  const queue = [...entries];
-
-  while (queue.length > 0 && seen.size <= CLOSURE_CAP) {
-    const file = queue.pop();
-    if (!file || seen.has(file)) continue;
-    seen.add(file);
-    if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(file)) continue;
-
-    const abs = join(cwd, file);
-    if (!existsSync(abs)) continue;
-
-    // `import\s*\(` before `import` in the alternation, so dynamic imports with a literal
-    // specifier are followed too; string-built paths remain invisible, as documented.
-    for (const match of readFileSync(abs, 'utf8').matchAll(/(?:from|import\s*\(|import|require\()\s*['"]([^'"]+)['"]/g)) {
-      const resolved = resolveSpecifier(cwd, file, match[1]);
-      if (resolved && !seen.has(resolved)) queue.push(resolved);
-    }
-  }
-  return seen;
-}
-
-/**
- * What the base has changed since `sinceSha` that this branch's proof actually depends on.
- *
- * Being behind the base is not by itself stale proof. Per the freshness rule in the sibling
- * prove-work-on-github skill's references/freshness-and-reproof.md, decay is a
- * function of distance from the base AND of how much of the incoming change intersects the paths
- * the proof covers. Covered paths are the import closure, not the edited files: a base change to a shared
- * chassis module, a generated type, or a lockfile invalidates a receipt while touching nothing the
- * diff touched, and comparing filenames alone would call that fresh and merge it.
- */
-/**
- * Whether the base's package.json movement since `sinceSha` is nothing but a version bump.
- * Release automation that bumps the version on every landing produces noise that must not read as
- * a dependency change, which genuinely invalidates any proof in flight.
- */
-function isVersionOnlyPackageJsonBump(cwd: string, sinceSha: string): boolean {
-  const diff = sh(ctx, ['git', 'diff', '--unified=0', `${sinceSha}...${REMOTE}/${BASE}`, '--', 'package.json'], cwd);
-  const changed = diff.split('\n').filter((line) => /^[+-](?![+-])/.test(line));
-  return changed.length > 0 && changed.every((line) => /^[+-]\s*"version":/.test(line));
-}
-
-function staleAgainstBase(cwd: string, sinceSha: string): string[] {
-  sh(ctx, ['git', 'fetch', REMOTE, BASE], cwd);
-  const lines = (out: string) => out.split('\n').filter(Boolean);
-
-  // Release machinery rewrites its artifacts on every landing; a queue where each merge
-  // invalidates every approval behind it re-reviews the same code for noise. Filter that
-  // movement out before anything judges freshness. The branch merges without catching up on
-  // these files: it does not touch them, so git merges them cleanly, and if a branch ever does
-  // touch one, the merge conflicts and fails closed rather than landing anything unreviewed.
-  const machineNoise = (file: string) =>
-    RELEASE_ARTIFACTS.some((pattern) => matchesPath(file, pattern)) ||
-    (file === 'package.json' && isVersionOnlyPackageJsonBump(cwd, sinceSha));
-
-  const incoming = lines(sh(ctx, ['git', 'diff', '--name-only', `${sinceSha}...${REMOTE}/${BASE}`], cwd)).filter(
-    (file) => !machineNoise(file),
-  );
-  if (incoming.length === 0) return [];
-
-  const global = incoming.filter((file) => ALWAYS_INVALIDATES.some((pattern) => matchesPath(file, pattern)));
-  if (global.length > 0) return global;
-
-  const mine = lines(sh(ctx, ['git', 'diff', '--name-only', `${REMOTE}/${BASE}...HEAD`], cwd));
-  const closure = importClosure(cwd, mine);
-  if (closure.size > CLOSURE_CAP) return incoming;
-
-  return incoming.filter((file) => closure.has(file));
-}
-
-/**
  * Appraises one issue and acts on the answer.
  *
  * Runs in the loop's own directory rather than a worktree: appraisal is read-only, so it needs no
@@ -774,7 +534,7 @@ async function appraise(issue: Issue): Promise<AppraisalVerdict> {
   switch (result.verdict) {
     case 'already-fixed':
     case 'obsolete':
-      closeIssue(issue.number, result.closeComment ?? result.reason);
+      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
       break;
 
     case 'needs-decision':
@@ -1003,11 +763,6 @@ async function awaitGreenChecks(pr: number, say: (message: string) => void): Pro
   }
 }
 
-function closeIssue(issue: number, comment: string): void {
-  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', comment]);
-  mutate(ctx, `close #${issue}`, ['gh', 'issue', 'close', String(issue)]);
-}
-
 /**
  * The integration queue: the pull master.
  *
@@ -1101,7 +856,7 @@ async function land(
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
     // Catch up anyway, so the revision happens against current code rather than against the base as
     // it stood when this branch started. Cheap here, and it saves the next review a refresh.
-    const behind = staleAgainstBase(cwd, reviewedSha);
+    const behind = staleAgainstBase(ctx, cwd, reviewedSha);
     if (behind.length > 0) {
       say(`catching up before the revision (${behind.join(', ')})`);
       if (!updateFromBase(ctx, cwd)) {
@@ -1116,7 +871,7 @@ async function land(
   }
 
   // From here the verdict is `merge`, and only now does freshness decide anything.
-  const overlap = staleAgainstBase(cwd, reviewedSha);
+  const overlap = staleAgainstBase(ctx, cwd, reviewedSha);
   if (overlap.length > 0) {
     say(`base moved into this work (${overlap.join(', ')}); the approval no longer describes what would land`);
     if (!updateFromBase(ctx, cwd)) {
@@ -1181,7 +936,7 @@ async function land(
   } catch {
     say(`merged branch ${branch} was already deleted`);
   }
-  closeIssue(issue.number, `Closed by #${pr}.`);
+  closeIssue(ctx, issue.number, `Closed by #${pr}.`);
   return 'merged';
 }
 
@@ -1229,7 +984,7 @@ function settleTerminalVerdict(issue: Issue, result: WorkerResult, pr?: number):
   switch (result.verdict) {
     case 'already-fixed':
     case 'obsolete':
-      closeIssue(issue.number, result.closeComment ?? result.reason);
+      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
       closePullRequest();
       removeWorktree(ctx, issue.number);
       return true;
@@ -1355,13 +1110,13 @@ async function reviewAndLand(
     // finishes, so a run killed mid-revision still leaves the budget honest; the alternative
     // silently refunds a round every time a run dies. A merge ends the accounting instead: the
     // issue is closing, and label churn on a closed issue records nothing anyone reads.
-    consumed = recordReview(issue.number, consumed);
+    consumed = recordReview(ctx, issue.number, consumed);
     say(`review round ${consumed} of ${CONFIG.maxReviewRounds}`);
 
     if (outcome === 'park') break;
 
     if (consumed >= CONFIG.maxReviewRounds) {
-      sendToDlq(issue.number, consumed, verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy);
+      sendToDlq(ctx, issue.number, consumed, verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy);
       say(`ejected to the DLQ after ${consumed} review rounds`);
       return;
     }
@@ -1441,7 +1196,7 @@ async function main(): Promise<void> {
   if (CLOSURE_PROBE) {
     // Scan the invoking checkout, not the main one: from a linked worktree the two can hold
     // different branches, and the probe must inspect the tree the config under test describes.
-    const closure = importClosure(INVOKE_ROOT, [CLOSURE_PROBE]);
+    const closure = importClosure(ctx, INVOKE_ROOT, [CLOSURE_PROBE]);
     for (const file of [...closure].sort()) console.log(file);
     log(`${closure.size} module(s) reachable from ${CLOSURE_PROBE}`);
     return;
@@ -1475,13 +1230,13 @@ async function main(): Promise<void> {
     });
   }
 
-  ensureLabels();
+  ensureLabels(ctx);
   if (!DRY_RUN) {
     reconcile();
 
     // Half-written label transitions are repaired before anything reads them, so a crash mid-DLQ
     // or mid-count-swap costs one repair pass rather than a permanently wedged issue.
-    repairDurableState(allIssues());
+    repairDurableState(ctx, allIssues(), CONFIG.skipLabels);
 
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the
