@@ -66,7 +66,9 @@ and why it no longer applies.
 
 ## Step 2: how big is it
 
-Size it against the scale on {{SIZING_SCALE}}. Points measure complexity, effort, uncertainty, and dependencies together, not hours alone:
+Size it against the scale on {{SIZING_SCALE}}; where that scale differs from the table below, the
+repository's scale wins. Points measure complexity, effort, uncertainty, and dependencies
+together, not hours alone:
 
 | Points | Meaning |
 |---|---|
@@ -83,8 +85,8 @@ is one line but which needs a rendered before-and-after across four surfaces is 
 proof the change will owe as part of its size.
 
 If the issue is already carrying a `size: N` label, still form your own judgement and say so; a
-disagreement is worth recording. If it carries an old `size/small`, `size/medium`, or `size/large`
-label, give it the point value that replaces it.
+disagreement is worth recording. If it carries a label from an older sizing scheme, give it the
+point value that replaces it.
 
 ## Step 3: write the verdict
 

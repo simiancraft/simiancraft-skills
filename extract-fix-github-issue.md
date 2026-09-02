@@ -20,7 +20,7 @@ Done looks like: `bun run skills/fix-github-issue/fix.ts --issue N` fixes one is
 - **Context.** The object that replaces the module globals: the project config, the knobs the pipeline needs, the seats, the repository roots, the run directory, the dry-run flag, and the loggers. Every extracted function takes it as its first parameter. This is the refactor idea in one phrase: **from module globals to an explicit context**.
 - **Seat.** An `engine[:model]` spec resolved against the engine registry. The pipeline needs two, worker and reviewer; the burndown keeps a third, appraiser, that the pipeline never sees.
 - **Lane.** One issue's worktree plus the control files an agent writes into it. Lane lifecycle (create, reset, remove, sweep strays) belongs to the pipeline because the pipeline is what runs agents in it.
-- **Skill as import target.** Skills sync individually into `~/.claude/skills/`, so a shared module must live inside a skill directory; a bare `lib/` at the repository root would not be present at runtime. `burn-down-github-issues/SKILL.md` already depends on `../prove-work-on-github/` by relative path, which is the precedent this plan follows.
+- **Skill as import target.** Skills are installed one directory at a time, so a shared module must live inside a skill directory; a bare `lib/` at the repository root would not be present at runtime. `burn-down-github-issues/SKILL.md` already depends on `../prove-work-on-github/` by relative path, which is the precedent this plan follows.
 
 ## Current surface area
 
@@ -108,7 +108,7 @@ simiancraft-skills/
 
 ## Commits
 
-Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository with no test suite is the pair the loop already offers: a dry run from the first adopter's tooling worktree (`bun run <skill>/loop.ts --dry-run`), which loads every module and exercises selection without mutation, and the closure probe (`--closure <entry file>`), which exercises the staleness walk. Commit 1 adds the typecheck that makes the rest safe.
+Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository with no test suite is the pair the loop already offers: a dry run from an adopting repository (`bun run <skill>/loop.ts --dry-run`), which loads every module and exercises selection without mutation, and the closure probe (`--closure <entry file>`), which exercises the staleness walk. Commit 1 adds the typecheck that makes the rest safe.
 
 ### Commit 1: add a typecheck gate to the skills repository
 
@@ -158,7 +158,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 
 **Files created:**
 - `skills/fix-github-issue/lib/staleness.ts`: `matchesPath`, `MAX_BASE_REFRESHES`, `CLOSURE_CAP`, `resolveSpecifier`, `importClosure`, `isVersionOnlyPackageJsonBump`, `staleAgainstBase`; `ctx` supplies `project.pathAliases`, `sourceExtensions`, `alwaysInvalidates`, `releaseArtifacts`, `remote`, `baseBranch`.
-- `skills/fix-github-issue/lib/labels.ts`: `ensureLabels`, `reviewCount`, `recordReview`, `sendToDlq`, `repairDurableState`, `closeIssue`, and a new one-line `parkIssue(ctx, issue, reason)` that labels the issue and comments the reason, which is the first of two hardening fixes from the field (a parked issue currently carries no comment, so the reason lives only in the local log).
+- `skills/fix-github-issue/lib/labels.ts`: `ensureLabels`, `reviewCount`, `recordReview`, `sendToDlq`, `repairDurableState`, `closeIssue`, and a new one-line `parkIssue(ctx, issue, reason)` that labels the issue and comments the reason, which is the first of two hardening fixes (a parked issue currently carries no comment, so the reason lives only in the local log).
 
 **Files rewritten:**
 - `skills/burn-down-github-issues/loop.ts`: deletes the moved functions; the `--closure` probe in `main` calls the imported `importClosure`.
@@ -170,7 +170,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 **Goal:** The load-bearing commit. Worker, reviewer, pull master, and the stranded-PR resume move as one unit because they share the verdict-file contract and the serial queue.
 
 **Files created:**
-- `skills/fix-github-issue/lib/pipeline.ts`: the types (`Verdict`, `WorkerResult`, `ReviewResult`, `Reviewed`, `Landing`, `Issue`), `runWorker`, `runReviewer`, `computedTouches`, `effectiveTouches`, `mergeAllowed`, `pullRequestMatchesReview`, `isDraft`, `awaitGreenChecks`, `serializePullMaster` with its queue held on `ctx` rather than the module (two contexts in one process must not share a queue), `review`, `land`, `settleTerminalVerdict`, `workIssue`, `reviewAndLand`, and the new entry point `fixIssue(ctx, issue, options?): Promise<FixOutcome>` which is `handleIssue` returning the terminal outcome instead of `void`. `FixOutcome` is `'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed'`, each with the reason string. The reviewer-crash path that today calls `parkIssue` only labels the issue; it now also labels the pull request `loop/parked`, which is the second hardening fix from the field.
+- `skills/fix-github-issue/lib/pipeline.ts`: the types (`Verdict`, `WorkerResult`, `ReviewResult`, `Reviewed`, `Landing`, `Issue`), `runWorker`, `runReviewer`, `computedTouches`, `effectiveTouches`, `mergeAllowed`, `pullRequestMatchesReview`, `isDraft`, `awaitGreenChecks`, `serializePullMaster` with its queue held on `ctx` rather than the module (two contexts in one process must not share a queue), `review`, `land`, `settleTerminalVerdict`, `workIssue`, `reviewAndLand`, and the new entry point `fixIssue(ctx, issue, options?): Promise<FixOutcome>` which is `handleIssue` returning the terminal outcome instead of `void`. `FixOutcome` is `'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed'`, each with the reason string. The reviewer-crash path that today calls `parkIssue` only labels the issue; it now also labels the pull request `loop/parked`, which is the second hardening fix.
 - `skills/fix-github-issue/lib/resume.ts`: `reconcile`, `findStranded`, and `resumeStranded(ctx, issues, concurrency)` which is the resume block from `main` :2177-2196.
 
 **Files moved/renamed:**
@@ -180,7 +180,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 **Files rewritten:**
 - `skills/burn-down-github-issues/loop.ts`: `main` calls `reconcile(ctx)`, `repairDurableState(ctx, ...)`, `resumeStranded(ctx, ...)`, then `pool(candidates, concurrency, (issue) => fixIssue(ctx, issue, { maxPoints }))`. Appraisal and selection are untouched. `renderPrompt` for `appraise.md` reads from the burndown's own `prompts/`, so `ctx.promptsDir` is a list searched in order: the caller's directory first, the fix skill's second.
 
-**Gate:** typecheck, dry run, closure probe, and a real run: `bun run loop.ts --limit 1` from the first adopter's tooling worktree against a fresh sized issue in the window (raise `ageDays` in the config if the window is empty). Confirm on the forge: the draft pull request opens, the reviewer verdict file lands, the merge or park matches the log, the worktree is removed. Compare the run log's driver lines against the last pre-extraction run: the same events in the same order.
+**Gate:** typecheck, dry run, closure probe, and a real run: `bun run loop.ts --limit 1` from an adopting repository against a fresh sized issue in the window (raise `ageDays` in the config if the window is empty). Confirm on the forge: the draft pull request opens, the reviewer verdict file lands, the merge or park matches the log, the worktree is removed. Compare the run log's driver lines against the last pre-extraction run: the same events in the same order.
 
 ### Commit 6: add the `fix.ts` command
 
@@ -192,7 +192,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 **Files rewritten:**
 - `skills/burn-down-github-issues/loop.ts`: `--issue N` now prints "use fix.ts" and exits 2; the flag's remaining role (skip age and size filters for one issue) is gone because that is what `fix.ts` is.
 
-**Gate:** typecheck; `bun run skills/fix-github-issue/fix.ts --issue N --dry-run` from the first adopter's tooling worktree prints the plan and mutates nothing; a real `fix.ts --issue N` on a known `already-fixed` issue closes it with the receipt.
+**Gate:** typecheck; `bun run skills/fix-github-issue/fix.ts --issue N --dry-run` from an adopting repository prints the plan and mutates nothing; a real `fix.ts --issue N` on a known `already-fixed` issue closes it with the receipt.
 
 ### Commit 7: write the fix skill's reference
 
@@ -202,7 +202,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 - `skills/fix-github-issue/references/pipeline.md`: the verdict-file contract, the review-round budget as a per-issue high-water mark, the merge boundary (`autoMerge`, computed versus self-reported touches), staleness via import closure and the global-invalidator short-circuit, the resume windows, and the known gaps that belong to the pipeline (the pull master in-process, the closure walk's blind spots). Lifted from `burn-down-github-issues/references/architecture.md` with the loop-shaped material left behind.
 
 **Files rewritten:**
-- `skills/burn-down-github-issues/references/architecture.md`: keeps the shape (four roles, appraisal, selection, the pool) and links to `pipeline.md` for the rest. Drops the "import-closure walk has never fired" line from Known gaps; it has since fired in production runs.
+- `skills/burn-down-github-issues/references/architecture.md`: keeps the shape (four roles, appraisal, selection, the pool) and links to `pipeline.md` for the rest. Keeps the Known gaps list as it stands.
 - `skills/burn-down-github-issues/references/operating.md`: "Run it" and "Landing a parked pull request by hand" point at `fix.ts` where they said `--issue N`.
 - `skills/burn-down-github-issues/references/adopting.md`: the config template imports `ProjectConfig` from `../fix-github-issue/lib/config.ts` for its type; the "two fields that bite" section is unchanged.
 - `skills/burn-down-github-issues/SKILL.md`: hard dependencies gain `fix-github-issue`; "Run it" drops `--issue`.
@@ -211,15 +211,14 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 
 **Gate:** every relative link in the four SKILL and reference files resolves (`grep -oE '\]\([^)]+\.md[^)]*\)'` over them, then `test -e` each target). No em dashes in any changed file (`grep -rnP '\x{2014}'` over the diff is empty).
 
-### Commit 8: update the first adopter's config for the new layout
+### Commit 8: update an adopting repository's config for the new layout
 
-**Goal:** The one existing adopter's config typechecks against the moved type, and its operator handoff notes the move. These files live in the adopting repository's tooling worktree, not in this repository.
+**Goal:** An existing config typechecks against the moved type. This file lives in the adopting repository, not in this one.
 
-**Files rewritten (in the adopter's tooling worktree):**
+**Files rewritten (in the adopting repository):**
 - `burn-down-github-issues.config.ts`: the `ProjectConfig` import path.
-- the adopter's operator handoff: "Where things are" gains the fix skill; the launch section gains the `fix.ts` one-liner.
 
-**Gate:** dry run from the adopter's tooling worktree loads the config without error.
+**Gate:** dry run from the adopting repository loads the config without error.
 
 ### Commit 9: delete this plan
 
@@ -231,7 +230,7 @@ Every commit leaves `loop.ts` runnable. The gate for "runnable" in a repository 
 ## Verification checklist
 
 - [ ] `bunx tsc --noEmit -p .` passes at every commit.
-- [ ] Dry run and closure probe from the first adopter's tooling worktree match the pre-extraction capture at every commit.
+- [ ] Dry run and closure probe from an adopting repository match the pre-extraction capture at every commit.
 - [ ] One real burndown run (`--limit 1`) after Commit 5 produces the same driver-line sequence as the last pre-extraction run and the same forge state (draft opened, marked ready, reviewed, merged or parked, worktree removed).
 - [ ] One real standalone `fix.ts --issue N` after Commit 6.
 - [ ] `loop.ts` is under 800 lines and contains no worker, reviewer, or merge logic.

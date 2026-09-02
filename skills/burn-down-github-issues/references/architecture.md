@@ -122,7 +122,7 @@ real harm.
 ## Why worktrees
 
 Every issue gets its own worktree, and that is what lets the loop move on. Work on separate issues
-cannot overlap, so a nine-minute fix does not block the queue behind it; `concurrency` lanes run at
+cannot overlap, so a long fix does not block the queue behind it; `concurrency` lanes run at
 once and each pulls the next issue as its own finishes. Branches in a single checkout would
 serialize the whole thing and let one agent's `git switch` disturb another's tree.
 
@@ -150,7 +150,7 @@ mechanism. A check-command receipt or a rendered frame depends on every module b
 so a base change to a shared chassis file invalidates the proof while touching nothing the diff
 touched. Comparing filenames alone calls that fresh and merges it. At merge time the loop therefore
 walks the branch's imports transitively and intersects the incoming change against that graph.
-Measured on one adopter's list screen: 70 modules, including a shared table helper that a
+On a typical screen component the closure runs to dozens of modules, including shared helpers a
 filename comparison misses entirely.
 
 Some paths are outside any import graph and invalidate everything in flight: whatever the config's
@@ -159,8 +159,8 @@ generated output, build configs, and the workflows. Those short-circuit to stale
 
 Freshness gates an **approval**, not a rejection. A rejection names a gap in the work, and the base
 moving does not fill it, so a rejected change catches up and goes straight to its revision rather
-than being re-reviewed first. Re-reviewing one only re-derives it; in one run that cost ten minutes of a
-reviewer reaching the same verdict twice.
+than being re-reviewed first. Re-reviewing one only re-derives it, at the cost of a full review reaching the same verdict
+twice.
 
 | Incoming change | What happens |
 |---|---|
@@ -179,7 +179,7 @@ Staleness is measured from the commit the reviewer actually judged, not from wha
 holds by the time it reaches the front of the merge queue.
 
 Only the merge is serialized. A catch-up and its re-review run outside the lock, because holding it
-across a six-minute review would stall every other lane behind one stale branch; the lock is then
+across a review would stall every other lane behind one stale branch; the lock is then
 re-entered with a fresh staleness check, since the base can move again while queued.
 
 ## Draft until complete, to protect the CI budget
@@ -242,9 +242,9 @@ pull request. Neither stops for it. A documented convention is a decision alread
 to it is following that decision rather than making one, and the point ceiling does the stopping
 when the convention-respecting fix turns out to be larger.
 
-That rule exists because of an issue that prescribed a gate for a language the repository's
-tooling does not use. Every stage executed it faithfully, because every stage judges the diff
-against the issue and nothing was judging the issue against the conventions.
+That rule exists because an issue can prescribe a remedy the repository's own conventions rule
+out, and without it every stage executes the prescription faithfully: each judges the diff
+against the issue, and nothing judges the issue against the conventions.
 
 ## Known gaps
 
@@ -274,5 +274,4 @@ are bypassed; the worktree and read-only contracts are prompts, not sandboxes. T
 today is scope (small sized issues, code-only merges, a second-engine gate) and trust in the
 tracker's authors, not enforcement.
 
-Two paths have never executed in a production run: the transitive import-closure walk (only the
-blunt global invalidators have fired so far) and DLQ ejection. Both are written; neither is proven.
+One path has never executed in a production run: DLQ ejection. It is written; it is not proven.

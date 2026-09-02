@@ -96,7 +96,5 @@ sandbox, so run this only on trackers whose authors you trust as far as the cred
 holds. The merge boundary computes `migration` and `ci` from the diff's paths, but
 `data` and `stored-string` are runtime effects a path cannot reveal; for those it holds two
 independent self-reports and parks rather than trusts. The reviewer runs as the same GitHub
-account as the worker, so its independence is model-level, not identity-level. And two paths have
-executed in no production run yet: staleness detected by the import-closure walk itself (the
-global-invalidator path has fired in anger; the graph walk has not), and dead-letter-queue
-ejection. Both are written; neither is proven.
+account as the worker, so its independence is model-level, not identity-level. And dead-letter-queue
+ejection has executed in no production run yet; it is written, not proven.

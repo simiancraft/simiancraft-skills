@@ -7,7 +7,7 @@
  * isolation is the point: it is the only thing that catches a worker that convinced itself.
  *
  * Issues are worked concurrently, each in its own git worktree. The worktree is what makes that
- * safe: two agents never share a working tree, so a nine-minute fix on one issue does not hold up
+ * safe: two agents never share a working tree, so a long fix on one issue does not hold up
  * the queue behind it.
  *
  * This file is shared: it ships with the skill and is not copied into a repository. Everything
@@ -76,7 +76,7 @@ const DEFAULTS: LoopKnobs = {
 
   /**
    * Workers running at once. Each gets its own worktree, so two agents never share a working tree
-   * and the loop does not wait out a nine-minute fix before starting the next issue. That isolation
+   * and the loop does not wait out a long fix before starting the next issue. That isolation
    * is the whole reason the loop uses worktrees rather than branches in one checkout.
    */
   concurrency: 2,
@@ -399,8 +399,8 @@ const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
  * How long the merge gate waits for a pull request's checks before parking instead of merging.
- * Size this to the repository's slowest required check; a mobile CI with EAS-style builds can
- * legitimately take over 30 minutes on a fresh head.
+ * Size this to the repository's slowest required check; a native mobile build can legitimately
+ * take over 30 minutes on a fresh head.
  */
 const CHECKS_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -701,7 +701,7 @@ function selectCandidates(): Issue[] {
  *
  * Only `#1234` in the title or body, and a trailing `-1234` on the branch name, count as a claim. A
  * bare number is not a reference: proof bodies are full of them, and matching those would let a
- * receipt reading "2,692 packages" claim issue #2692 and silently drop it from selection.
+ * receipt reading "1,234 packages" claim issue 1234 and silently drop it from selection.
  */
 function openPullRequestIssueRefs(): number[] {
   const raw = sh(['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'body,title,headRefName']);
@@ -853,8 +853,8 @@ function repairDurableState(all: Issue[]): void {
 /**
  * Clears the wreckage of a run that died, so a crash costs the next run nothing.
  *
- * The loop is killed sometimes and we have not established why, so the answer is to make the cause
- * irrelevant rather than to guess at it. Everything durable lives on GitHub; what a dead run leaves
+ * A loop process can die for reasons that are never established, so the answer is to make the
+ * cause irrelevant rather than to guess at it. Everything durable lives on GitHub; what a dead run leaves
  * behind locally is a worktree with no owner and possibly a branch that never became a pull request.
  * Both are safe to reason about because no process holds them any more: this runs before any lane
  * starts, under the instance lock.
@@ -998,7 +998,7 @@ function removeWorktree(issue: number): void {
  * An earlier version did the opposite: it removed any registered worktree OUTSIDE the managed
  * directory whose path contained the issue number, force-removing it and then recursively deleting
  * the directory if git refused. An adopting repository kept a human's checkout at a path like
- * `worktrees/fix-1234-label-feedback`, so working issue 1234 would have destroyed that checkout
+ * `worktrees/fix-1234-typo`, so working issue 1234 would have destroyed that checkout
  * and any uncommitted work in it.
  * Path substring is not ownership. Nothing outside `worktreeRoot` is ever touched.
  */
@@ -1358,7 +1358,7 @@ async function runAgentOnce(role: string, issue: number, cwd: string, seat: Seat
   if (entry) entry.busy = true;
 
   // ANTHROPIC_API_KEY takes precedence over the claude.ai login, so a key inherited from the shell
-  // sends a Claude worker to an API account rather than the subscription this session runs on.
+  // sends a Claude worker to an API account rather than the login the operator intended.
   const { ANTHROPIC_API_KEY: _inheritedKey, ...childEnv } = process.env;
 
   const argv = agentCommand(seat, cwd, prompt);
@@ -1607,7 +1607,7 @@ function computedTouches(cwd: string): Array<'migration' | 'ci'> {
  * computed paths, unioned, so an omission on any side can never widen what the loop may merge.
  *
  * Null when either agent did not classify at all, which fails closed downstream. An absent field
- * is not evidence of a code-only change (treating it as `[]` once let a migration through), and
+ * is not evidence of a code-only change (treating it as `[]` would let a migration through), and
  * the requirement is symmetric: for `data` and `stored-string` the path scan sees nothing, so the
  * reviewer's classification is the only independent check on the worker's, and a merge without it
  * would rest on one self-report.
@@ -1784,8 +1784,8 @@ async function land(
   // Rejections are judged before freshness, because staleness invalidates an approval and not a
   // rejection. A proof is pinned to the commit it was captured at, so movement into that commit can
   // make an approval describe something other than what would land; a rejection names a gap in the
-  // work, and the base moving does not fill it. Re-reviewing one just re-derives it: one branch blocked,
-  // caught up, and blocked again ten minutes later for the same reason.
+  // work, and the base moving does not fill it. Re-reviewing one just re-derives it: the branch blocks,
+  // catches up, and blocks again for the same reason.
   //
   // `gather-more` says the evidence is short; `block` says the change is. Both spend a round, both
   // go back to the author, and the per-issue budget bounds the retries with the DLQ underneath.

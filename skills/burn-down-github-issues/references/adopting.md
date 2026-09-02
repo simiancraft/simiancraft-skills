@@ -1,9 +1,9 @@
 # Adopting burn-down-github-issues
 
 Instructions for bringing this loop to another repository, written for an agent doing the
-adoption. Examples below contrast the loop's first two field adopters, anonymized to their
-shapes: a web monorepo (Vite + Prisma) and a mobile app (Expo + Drizzle). The contrast is the
-point; almost every field that bit an adopter bit them differently.
+adoption. Examples below contrast two invented repositories of different shapes, a web monorepo
+and a mobile app, because almost every field that bites bites them differently. Neither column is
+a real project; both are the kind of answer the field wants.
 
 ## What you are adopting
 
@@ -62,53 +62,48 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 
 ## Fill this in
 
-| Field | What it is | Web monorepo | Mobile app |
+| Field | What it is | Web monorepo (invented) | Mobile app (invented) |
 |---|---|---|---|
-| `name` | banner only | its product name | its product name |
-| `repo` | `owner/repo`, builds evidence links | the org's working repo | the org's working repo (see below) |
-| `remote` | **check this**, not every checkout says `origin` | `origin` | `origin`, but it carried a second remote (see below) |
-| `baseBranch` | cut from and merged into | `development` | `preview` |
+| `name` | banner only | the product name | the product name |
+| `repo` | `owner/repo`, builds evidence links | the repository where development happens | the same, even when a second remote exists (see below) |
+| `remote` | **check this**, not every checkout says `origin` | `origin` | `origin`, beside a second remote (see below) |
+| `baseBranch` | cut from and merged into | `main` | `develop` |
 | `evidenceBranch` | long-lived, append only | `__evidence_locker__` | create one |
-| `checkCommand` | the local gate | `bun check` | `bun check` (a script fanning out to many checks) |
-| `installCommand` | frozen-lockfile install | `bun ci` | `bun install --frozen-lockfile`; there was no `ci` script |
-| `conventionDocs` | what a prescribed remedy is read against | `AGENTS.md`, `CLAUDE.md` | both present |
-| `sizingScale` | where the point scale is written | a wiki page | the same wiki convention |
-| `pathAliases` | **check this**, alias to directory | `~/` to `app` | `~/` to `.` |
+| `checkCommand` | the local gate | `bun run check` | `bun run verify` (a script fanning out to many checks) |
+| `installCommand` | frozen-lockfile install | `bun install --frozen-lockfile` | the same |
+| `conventionDocs` | what a prescribed remedy is read against | `CONTRIBUTING.md` | `AGENTS.md` |
+| `sizingScale` | where the point scale is written | a docs page | an issue template |
+| `pathAliases` | **check this**, alias to directory | `@/` to `src` | `~/` to `.` |
 | `sourceExtensions` | closure walk candidates | ts, tsx, js, jsx | same |
-| `alwaysInvalidates` | see below | Prisma and Vite shaped | Expo and Drizzle shaped |
-| `touchPaths` | mechanical merge-boundary classification | Prisma schema + workflows | Drizzle schema and migrations + workflows |
-| `sharedServices` | what an agent must not reset | database, search index, cache | database, a shared staging stage, test identities |
-| `portBase` / `portSpan` | `portBase + (issue % portSpan)` | 3000 / 900 | chosen to avoid the dev server's own port |
+| `alwaysInvalidates` | see below | ORM schema and bundler config | app config and native build files |
+| `touchPaths` | mechanical merge-boundary classification | schema directory + workflows | migrations directory + workflows |
+| `sharedServices` | what an agent must not reset | database, message queue | database, a shared staging tenant |
+| `portBase` / `portSpan` | `portBase + (issue % portSpan)` | 9100 / 800 | chosen to avoid the dev server's own port |
 
 Also set `worktreeRoot`, which is a sibling directory outside the repository root so no tool that
 walks the working tree has to be told to ignore it.
 
 ### The two that actually bite
 
-**`remote`, and it is worse than a rename.** One adopter's checkout carried **two** remotes
-pointing at **two different repositories**:
+**`remote`, and it is worse than a rename.** A checkout can carry **two** remotes pointing at
+**two different repositories**, a fork and its upstream, or a working repository and a mirror:
 
 ```
-delivery   https://github.com/downstream-org/the-app.git
-origin     git@github.com:your-org/the-app.git
+mirror   https://github.com/other-org/the-app.git
+origin   git@github.com:your-org/the-app.git
 ```
 
-That is a two-repository delivery pattern: all development happens in the working repository,
-and the downstream repository receives delivery pull requests only. So the loop works
-`origin` with the working repository's base branch; pointing it at the delivery remote would put
-agent PRs and issue comments on a surface other people read, which is the wrong answer however
-plausible the remote's name makes it look. The general rule: `remote` and `repo` must name the
-same repository, because `repo` builds the evidence links and `gh` resolves pull requests against
-a repository of its own choosing; a mismatch means the loop pushes branches to one repository and
-opens pull requests against another, and the failure is confusing rather than loud. And the loop
-must work the repository where development actually happens, which in a delivery pattern is not
-always the remote whose name matches the product.
+The loop must work the repository where development actually happens, which is not always the
+remote whose name looks most official. `remote` and `repo` must name the same repository, because
+`repo` builds the evidence links and `gh` resolves pull requests against a repository of its own
+choosing; a mismatch means the loop pushes branches to one repository and opens pull requests
+against another, and the failure is confusing rather than loud.
 
 Before the first run, confirm `gh repo set-default` matches `repo`. Every fetch, push, and
 `git diff base...HEAD` goes through `remote`. Run `git remote -v` and read it; do not assume
 `origin`, and do not assume the obvious-looking remote is the workspace.
 
-**`pathAliases`.** One adopter maps `~/*` to `./app/*`; the other maps `~/*` to `./*`. Get this
+**`pathAliases`.** One repository maps `@/*` to `./src/*`; another maps `~/*` to `./*`. Get this
 wrong and the import-closure walk silently resolves nothing, which does not error. It degrades to
 filename comparison, so proofs stop being invalidated when they should be and a stale approval can
 merge. Read `tsconfig.json` `compilerOptions.paths` and transcribe it.
@@ -120,10 +115,10 @@ because import scanning cannot reach them. Ask: what does everything depend on t
 imports by a module path? Lockfile, package manifest, type and lint config, build config,
 generated output, schema and migrations, CI workflows.
 
-The web monorepo's list names `server/prisma/` and `vite.config`. Neither exists in the mobile
-app, which instead has its generated GraphQL output, its Drizzle schema, `app.config.ts`,
-`metro.config.js`, and `tailwind.config`. Copying either list verbatim into a third repository
-gives you a list that matches nothing.
+A web monorepo's list might name its ORM schema directory and its bundler config. Neither exists
+in a mobile app, whose list names its app config, its native build files, and its generated API
+types instead. Copying either list verbatim into a third repository gives you a list that matches
+nothing.
 
 The same reasoning applies to `touchPaths`, which mechanically classifies a diff as `migration` or
 `ci` for the merge boundary: point it at your schema, migration, and workflow directories. The
@@ -138,9 +133,7 @@ every landing-time change is machine-produced; a file humans also edit does not 
 `package.json` needs no entry: a base change that only bumps its `"version"` field is recognized
 as release noise automatically, while a dependency change still invalidates. Without this key,
 each landing rewrites paths that `alwaysInvalidates` matches, so every queued pull request loses
-its approval and is re-reviewed for noise the machine produced. One adopter's release bot committed a
-deploy-constants file and a version bump on every landing, and a two-merge queue paid three full
-re-reviews before this key existed.
+its approval and is re-reviewed for noise the machine produced.
 
 ## Preconditions
 
@@ -196,15 +189,15 @@ that put it there, and removing `loop/dlq` is the redrive.
 
 ## What will surprise you
 
-- **The appraisers are the highest-yield role.** Across the first field runs, more issues were
-  closed as already-fixed or obsolete with re-checkable receipts than were fixed by workers.
-  Expect a stale backlog to shrink before anything is coded.
+- **The appraisers are the highest-yield role.** Expect more issues to close as already-fixed or
+  obsolete, with re-checkable receipts, than get fixed by workers; a stale backlog shrinks before
+  anything is coded.
 - **The loop executes the tracker, not your intent.** An issue that is internally coherent and
   points the wrong way will be implemented competently in the wrong direction; every stage judges
   the diff against the issue. The guard is `conventionDocs`, which is why those files must actually
   state your conventions.
-- **Reviews take eight to twelve minutes**, mostly waiting on CI inside the reviewer's single turn.
-  That is expected, not a hang.
+- **Reviews take as long as CI does**, since the reviewer waits on the checks inside its single
+  turn. That is expected, not a hang.
 - **A merge taxes the queue behind it.** If your pipeline writes follow-up commits to the base
   after every merge (a generated-constants write, a release version bump), each lands in
   `alwaysInvalidates` and each discards the approval of every pull request still queued, at the

@@ -41,16 +41,16 @@ The counters worth watching, and what a stall in each means:
 | Signal | Meaning |
 |---|---|
 | `running appraiser on #N` | sizing; read-only, minutes each, three at a time by default |
-| `running worker on #N` | fixing and proving; 10 to 25 minutes is normal |
-| `running reviewer on #N` | judging; 8 to 12 minutes, mostly waiting on CI inside one turn |
+| `running worker on #N` | fixing and proving; tens of minutes is normal |
+| `running reviewer on #N` | judging; as long as CI takes, waited on inside one turn |
 | `review round N of M` | a rejection was recorded; the issue is being revised |
 | `merge PR #N` | the pull master landed it |
 | `park #N` | the loop stopped and handed the issue to a human |
 | `label #N needs-decision` or `needs-human` | handed off before any pull request; the reason is a comment on the issue, and the label keeps it out of selection until removed |
 | `to the DLQ` | the per-issue review budget is spent |
 
-**Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** That
-is what a dirty-worktree bug looked like: five workers, five parks, no reviewer ever ran.
+**Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** A
+dirty-worktree bug looks like this: every worker parks and no reviewer ever runs.
 
 When watching for failure, match every terminal state rather than the happy path. Silence from a
 filter that only greps for success is indistinguishable from a healthy run:
@@ -68,7 +68,7 @@ worker failed|reviewer wrote no verdict|exceeded [0-9]+ minutes|refusing to merg
 - **An issue is parked.** Parking is a handoff, not an error. The work is on the pull request.
 - **An appraiser closes an issue without a worker.** That is the highest-yield thing the loop does.
   The `closeComment` carries a re-checkable receipt; read it rather than reopening on instinct.
-- **A worker returns `already-fixed` in four minutes.** It opened the file and found the fix
+- **A worker returns `already-fixed` in minutes.** It opened the file and found the fix
   already there.
 - **A sizing disagreement is recorded on the issue.** The appraiser sizes the work the written
   convention implies, not the remedy the issue proposed, and says so.
@@ -91,7 +91,7 @@ untrustworthy for whether GitHub actually did the thing.
 gh pr list --state merged --limit 10 --json number,title,mergedAt
 gh issue list --label loop/parked --state open
 gh issue list --label loop/dlq --state open
-git worktree list | grep <worktreeRoot>          # expect none but your own tooling checkout
+git worktree list | grep <worktreeRoot>          # expect none but checkouts you made yourself
 ```
 
 Then decide about anything parked or DLQed. A DLQed issue keeps the reason that put it there;
@@ -101,7 +101,7 @@ removing `loop/dlq` is the redrive.
 
 A parked pull request is finished work that the loop declined to land. Landing it is not
 `gh pr merge`; the freshness rules that govern the pull master govern you too, and skipping them
-has cost a broken base branch before.
+is how a base branch gets broken.
 
 1. **Judge adequacy** against `prove-work-on-github`'s `references/judgement.md`: every
    load-bearing claim receipted, pinned, resolvable **on the remote**, fresh, re-checkable, clean,
@@ -122,8 +122,9 @@ has cost a broken base branch before.
    manually and clear `loop/parked`.
 
 `mergeable` from GitHub is not freshness. A pull request can be MERGEABLE and CLEAN while its
-green check describes a tree that no longer exists: a test-runner consolidation landed six minutes
-after one worker finished, and that branch's suite failed to import the moment it was caught up.
+green check describes a tree that no longer exists: a change to the test runner can land on the
+base minutes after a worker finishes, and that branch's suite fails to import the moment it is
+caught up.
 
 ## Cleaning up
 
@@ -137,7 +138,7 @@ and any `issue-N-<scratch>` sibling whatever the outcome. Two things it does not
   checkouts, so they cost little, but they accumulate. Prune the ones whose upstream is gone:
 
 ```bash
-git fetch --prune origin
+git fetch --prune <remote>
 git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -D
 ```
 

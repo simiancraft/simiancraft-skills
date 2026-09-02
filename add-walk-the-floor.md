@@ -9,7 +9,7 @@
 
 ## Goal
 
-The burndown proves each change before it merges, and that proof has a ceiling: it never runs the deployed result. A change that passes every check and then crashes the environment on boot, or renders the site wrong, or empties the search index, goes unnoticed until a person looks, and every merge after it lands on a broken base.
+The burndown proves each change before it merges, and that proof has a ceiling: it never runs the deployed result. A change that passes every check and then crashes the environment on boot, or renders the site wrong, or empties a search index, goes unnoticed until a person looks, and every merge after it lands on a broken base.
 
 This plan adds a second skill, `walk-the-floor`: a machine that wakes on a cadence, reads a list of things that should now be true in a running environment, goes and looks at each one to a sanity standard (would a user notice), records what it found in a ledger, and when something is wrong files an incident and fixes it through `fix-github-issue`. It knows nothing about the burndown. Two conventional callback slots, `on-pass` and `on-fail`, let whoever started it add behavior; the burndown uses `on-fail` to pause its own line.
 
@@ -100,7 +100,7 @@ simiancraft-skills/
 
 ## Commits
 
-Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the burndown's `--dry-run` from the first adopter's tooling worktree; **scratch floor** is a temporary directory created for the gate and removed after it.
+Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the burndown's `--dry-run` from an adopting repository; **scratch floor** is a temporary directory created for the gate and removed after it.
 
 ### Commit 1: give the pull master a smoke gate and two hooks
 
@@ -112,7 +112,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 - `skills/fix-github-issue/lib/pipeline.ts` `land()`: after `awaitGreenChecks` succeeds and before `gh pr merge`, run `smokeCommand` in the lane if set, park on failure; then consult `ctx.mayMerge` and return `'park'` with its reason when refused, without spending a review round; after a confirmed `mergedAt`, call `ctx.afterMerge`.
 - `skills/fix-github-issue/references/pipeline.md`: the smoke gate paragraph, and the two hooks under "Embedding the pipeline".
 
-**Gate:** typecheck. A `fix.ts --issue N` run with `smokeCommand: 'false'` in a scratch copy of the adopter config parks with the reason naming the smoke command; with `smokeCommand` unset, behavior is unchanged from the extraction plan's final run.
+**Gate:** typecheck. A `fix.ts --issue N` run with `smokeCommand: 'false'` in a scratch copy of an adopting repository's config parks with the reason naming the smoke command; with `smokeCommand` unset, behavior is unchanged from the extraction plan's final run.
 
 ### Commit 2: create the floor contract and the liveness probe
 
@@ -125,7 +125,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 - `skills/walk-the-floor/walk.ts`: argv (`--dir`, `--once`, `--every`, `--liveness-only`, `--walker`, `--dry-run`), loads config, claims the lock, runs the probe, appends a `liveness` ledger entry with verdict `intact` or `down`, prints it, exits non-zero on `down`. `--every` is parsed but only `--once` runs in this commit.
 - `skills/walk-the-floor/SKILL.md`: frontmatter and a two-paragraph body; the full description lands in Commit 9.
 
-**Gate:** typecheck. `walk.ts --dir <scratch floor> --once --liveness-only` against the first adopter's deployed environment appends one `intact` entry; the same against an unroutable `baseUrl` appends one `down` entry and exits non-zero.
+**Gate:** typecheck. `walk.ts --dir <scratch floor> --once --liveness-only` against an adopting repository's deployed environment appends one `intact` entry; the same against an unroutable `baseUrl` appends one `down` entry and exits non-zero.
 
 ### Commit 3: run the callbacks
 
@@ -150,7 +150,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 **Files rewritten:**
 - `skills/walk-the-floor/walk.ts`: `--from-forge` (default on when `project.repo` is set) runs `appendFromForge` after liveness; pending items are classified by revision before any agent runs, and pending verdicts are appended without a walk.
 
-**Gate:** typecheck. Against the first adopter, a scratch floor fills with the pull requests merged since a chosen timestamp, none walked yet, each with a `not-yet-deployed` or `unverified` entry as the environment dictates.
+**Gate:** typecheck. Against an adopting repository, a scratch floor fills with the pull requests merged since a chosen timestamp, none walked yet, each with a `not-yet-deployed` or `unverified` entry as the environment dictates.
 
 ### Commit 5: walk the pending items
 
@@ -162,7 +162,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 **Files rewritten:**
 - `skills/walk-the-floor/walk.ts`: builds the walker turn from the pending walkable items and runs it through the fix skill's `runAgent` with the walker seat, in a scratch checkout of the base at the deployed revision so the agent can read the diffs it is checking; validates the verdict file (every pending item present, every verdict in the vocabulary), appends ledger entries, runs callbacks per entry. An item missing from the verdict file gets no entry and is walked again next wake.
 
-**Gate:** typecheck. Against the first adopter with a list of five recent merges spanning a visible change, a server-only change, and a docs-only change, the ledger shows `present` or `intact` for the first two kinds with screenshots under `evidence/`, and `exists-in-git` for the third. Every entry names its rung.
+**Gate:** typecheck. Against an adopting repository with a list of five recent merges spanning a visible change, a server-only change, and a docs-only change, the ledger shows `present` or `intact` for the first two kinds with screenshots under `evidence/`, and `exists-in-git` for the third. Every entry names its rung.
 
 ### Commit 6: file incidents and fix them
 
@@ -184,7 +184,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 **Files rewritten:**
 - `skills/walk-the-floor/walk.ts`: `--every <minutes>` loops a wake on the cadence, holding the lock for the process lifetime, trapping signals to release it; a wake that finds the environment still `down` after an incident is filed does not re-file, it re-probes and re-notifies at most once an hour. `notifyCommand`, when set, is spawned with the `on-fail` entry on stdin.
 
-**Gate:** typecheck. `walk.ts --every 1` against the first adopter runs three wakes in a scratch floor, appends three liveness entries, and exits cleanly on SIGTERM with the lock released.
+**Gate:** typecheck. `walk.ts --every 1` against an adopting repository runs three wakes in a scratch floor, appends three liveness entries, and exits cleanly on SIGTERM with the lock released.
 
 ### Commit 8: connect the burndown to the floor
 
@@ -211,18 +211,17 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 
 **Gate:** every relative link in the new files resolves; no em dashes; no project name, path, or issue number from any adopter anywhere in the skill.
 
-### Commit 10: configure the first adopter
+### Commit 10: configure an adopting repository
 
-**Goal:** One real floor, in the adopting repository's tooling worktree, not in this repository.
+**Goal:** One real floor, in an adopting repository, not in this one.
 
-**Files created (in the adopter's tooling worktree):**
-- `walk-the-floor.config.ts`: re-exports `project` from the burndown config; `environment.kind: 'web'`, its deployed base URL and health paths, `revisionCommand` if the host can answer it, `logsCommand`, login as environment variable names, `safeEndpoints: []` until a webhook is confirmed side-effect free, four standing walks (sign in and open the landing screen; search returns records; open one record; open one print or export view), `cadenceMinutes: 10`.
+**Files created (in the adopting repository):**
+- `walk-the-floor.config.ts`: re-exports `project` from the burndown config; `environment.kind: 'web'`, its deployed base URL and health paths, `revisionCommand` if the host can answer it, `logsCommand`, login as environment variable names, `safeEndpoints: []` until a webhook is confirmed side-effect free, a few standing walks (sign in; a list view renders rows; open one row; open one secondary view), `cadenceMinutes: 10`.
 
-**Files rewritten (in the adopter's tooling worktree):**
+**Files rewritten (in the adopting repository):**
 - `burn-down-github-issues.config.ts`: `floor: { cadenceMinutes: 10 }` and `project.smokeCommand` set to a command that boots the server and exits on the first request served.
-- the adopter's operator handoff: the floor, the switch, and the launch line.
 
-**Gate:** `walk.ts --dir <floor> --once` from the adopter's tooling worktree completes a full wake against the deployed environment with a hand-written three-item list; every entry has a rung and a verdict; the evidence directory holds one screenshot per `look`.
+**Gate:** `walk.ts --dir <floor> --once` from the adopting repository completes a full wake against the deployed environment with a hand-written three-item list; every entry has a rung and a verdict; the evidence directory holds one screenshot per `look`.
 
 ### Commit 11: delete this plan
 
@@ -234,7 +233,7 @@ Gate vocabulary: **typecheck** is `bunx tsc --noEmit -p .`; **dry run** is the b
 ## Verification checklist
 
 - [ ] `bunx tsc --noEmit -p .` passes at every commit.
-- [ ] The walker runs alone: `--liveness-only`, then `--once` with a hand-written list, then `--every`, each against the first adopter's deployed environment.
+- [ ] The walker runs alone: `--liveness-only`, then `--once` with a hand-written list, then `--every`, each against an adopting repository's deployed environment.
 - [ ] An `on-fail` executable runs before any fix begins, and an `on-pass` executable runs after every terminal passing verdict; neither runs for a pending verdict.
 - [ ] A forced liveness failure files exactly one incident, attempts one fix through `fix-github-issue`, and re-probes.
 - [ ] With `floor` configured, the burndown starts and stops the walker with itself, appends one item per merge, and honors `runs/line-switch` at all three seams.

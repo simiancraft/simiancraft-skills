@@ -23,7 +23,7 @@ repository and this same machine. Your worktree is yours; almost nothing else is
   delete records in them. Another agent may be reading that data as its own evidence, and a reset
   destroys their run silently. If your issue cannot be proven without mutating shared data, that is
   a `needs-human` verdict; say so rather than doing it.
-- **Ports are shared.** Do not start a dev server, Storybook, or a database container on the default
+- **Ports are shared.** Do not start a dev server, a component explorer, or a database container on the default
   ports; another agent may already hold them. If you must run a server, bind a port derived from the
   issue number (for example `{{PORT_BASE}} + (issue % {{PORT_SPAN}})`); if that port is already
   taken, increment until one is free. Stop every server you started before you finish.
