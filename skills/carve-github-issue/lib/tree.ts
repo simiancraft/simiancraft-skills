@@ -91,6 +91,8 @@ export type TrackerIo = {
   view: (n: number) => Node | null;
   search: (q: string) => Issue[];
   write: (op: TrackerWrite) => void;
+  /** `gh issue create ...`, answering the new issue's number (gh prints its URL). */
+  create: (op: TrackerWrite) => number;
 };
 
 export const SIZE_LABEL = /^size:\s*(\d+)$/;
@@ -181,6 +183,12 @@ export function ghIo(ctx: Context): TrackerIo {
     },
     write(op) {
       sh(ctx, op.argv);
+    },
+    create(op) {
+      const url = sh(ctx, op.argv);
+      const number = Number(/(\d+)\s*$/.exec(url)?.[1]);
+      if (!Number.isInteger(number) || number <= 0) throw new Error(`could not read the new issue number from: ${url}`);
+      return number;
     },
   };
 }

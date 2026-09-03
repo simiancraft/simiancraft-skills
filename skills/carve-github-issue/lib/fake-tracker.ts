@@ -199,6 +199,11 @@ export class FakeTracker implements TrackerIo {
     return this.nextNumber - 1;
   }
 
+  create(op: TrackerWrite): number {
+    this.write(op);
+    return this.lastCreated();
+  }
+
   attach(parent: number, child: number): void {
     const p = this.must(parent);
     if (!p.subIssues.includes(child)) p.subIssues.push(child);

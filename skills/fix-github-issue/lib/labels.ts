@@ -225,8 +225,9 @@ export async function closeIssue(
   const stateReason = event.kind === 'closed' && /^(obsolete|not-planned)/.test(event.reason) ? 'not planned' : 'completed';
   mutate(ctx, `close #${issue}`, ['gh', 'issue', 'close', String(issue), '--reason', stateReason]);
   if (ctx.dryRun) return;
+  const viewed = ctx.io?.view?.(issue) as { closedAt?: string | null } | null | undefined;
   const closedAt =
-    sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'closedAt', '--jq', '.closedAt']) || new Date().toISOString();
+    (ctx.io?.view ? viewed?.closedAt : sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'closedAt', '--jq', '.closedAt'])) || new Date().toISOString();
   if (!ctx.onClosed) return;
   try {
     await ctx.onClosed({ ...event, issue, closedAt });
@@ -240,20 +241,21 @@ const CLOSE_ANNOUNCEMENT_FRESH_MS = 30 * 60 * 1000;
 /** True when this account already announced this close on the thread recently and the issue is still open. */
 function pendingClose(ctx: Context, issue: number, marker: string): boolean {
   if (ctx.dryRun) return false;
-  let raw: string;
-  try {
-    raw = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'state,comments']);
-  } catch {
-    return false;
+  let view: { state: string; comments: Array<{ author: string; body: string; createdAt: string }> };
+  if (ctx.io?.view) {
+    const node = ctx.io.view(issue) as { state: string; comments: Array<{ author: string; body: string; createdAt: string }> } | null;
+    if (!node) return false;
+    view = node;
+  } else {
+    try {
+      const raw = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'state,comments'])) as { state: string; comments: Array<{ author: { login: string } | null; body: string; createdAt: string }> };
+      view = { state: raw.state, comments: raw.comments.map((c) => ({ author: c.author?.login ?? 'ghost', body: c.body, createdAt: c.createdAt })) };
+    } catch {
+      return false;
+    }
   }
-  const view = JSON.parse(raw) as { state: string; comments: Array<{ author: { login: string }; body: string; createdAt: string }> };
   if (view.state !== 'OPEN') return false;
-  return view.comments.some(
-    (c) =>
-      c.author?.login === ctx.botLogin &&
-      c.body.startsWith(marker) &&
-      Date.now() - Date.parse(c.createdAt) < CLOSE_ANNOUNCEMENT_FRESH_MS,
-  );
+  return view.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(marker) && Date.now() - Date.parse(c.createdAt) < CLOSE_ANNOUNCEMENT_FRESH_MS);
 }
 
 /**
