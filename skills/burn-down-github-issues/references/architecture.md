@@ -214,6 +214,27 @@ Reconciliation closes an open, sized leaf a merged pull request names with a clo
 It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it re-reads
 the issue immediately before closing.
 
+## Carving and revisits
+
+An issue the appraiser sizes over the ceiling is the knife's (the sibling `carve-github-issue`
+skill), reached through the size callback the loop renders into the callbacks directory. The knife
+turns it into a trunk: sub-issues the loop works as leaves, and a carving record on the trunk's
+thread that says their order, their edges, and which are paused.
+
+Every close the loop makes fires the context's close hook: a roll-up comment on the trunk, then one
+revisit of the trunk per run, which asks the knife whether the carving is still good. A revisit
+that answers `exhausted` releases the trunk (`loop/released`), and the loop runs the release
+appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
+a small remainder becomes a leaf, an oversized one is carved again in process.
+
+At the start of every run, after stranded pull requests are resumed, the sweep reads the open
+backlog three times: first every issue carrying a trunk, claim, or pause label (finish an
+unfinished announcement, clear a claim whose run died, remove a torn pause, redrive a trunk whose
+hold a person removed, revisit a trunk whose fingerprint moved); second every unlabelled issue that
+is oversized inside the window or has an open child at any age; third every leaf whose blocker is
+closed not planned or gone (its open parent is revisited, else it goes to a person) and every pause
+a closed trunk left behind. `--only` restricts all three passes.
+
 ## Known gaps
 
 Proof judgement lives in the sibling proof skill's

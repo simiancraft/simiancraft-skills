@@ -40,6 +40,8 @@ import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { appraiseIssue, assertConfirmCloses, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
+import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
+import { Carving } from './lib/carving.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
@@ -55,6 +57,8 @@ type LoopKnobs = {
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
   smokeTimeoutMinutes: number;
+  pointScale: number[];
+  maxWorkerAttempts: number;
   /** How far back merged pull requests are read at startup to close issues a dead run merged. */
   reconciliationDays: number;
   limit: number;
@@ -72,7 +76,9 @@ type LoopKnobs = {
    * references/callbacks.md for the ladder.
    */
   callbacksDir: string;
-  seats: { appraiser: string; confirmer: string; callback: string; worker: string; reviewer: string };
+  seats: { appraiser: string; confirmer: string; callback: string; worker: string; reviewer: string; carver?: string; carveConfirmer?: string };
+  /** The knife's knobs; see carve-github-issue/references/adopting.md. */
+  carve: typeof CARVE_DEFAULTS;
   /**
    * When set, the loop starts the walk-the-floor skill beside itself, puts every merge on the
    * floor, and stops merging the moment a walk finds the deployed base wrong. Requires a
@@ -170,6 +176,12 @@ const DEFAULTS: LoopKnobs = {
 
   callbacksDir: '<worktreeRoot>/appraisal-callbacks',
 
+  carve: CARVE_DEFAULTS,
+
+  /** The scale every size is on, and the worker's attempt budget; see fix-github-issue/lib/config.ts. */
+  pointScale: [1, 2, 3, 5, 8, 13, 21, 34],
+  maxWorkerAttempts: 3,
+
   seats: {
     appraiser: 'codex:gpt-5.6-sol',
     confirmer: 'claude:claude-opus-5',
@@ -222,8 +234,16 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
     'smokeTimeoutMinutes',
     'reconciliationDays',
     'maxAppraiseAttempts',
+    'maxWorkerAttempts',
+    'carve.maxDepth',
+    'carve.maxChildren',
+    'carve.maxCarveRounds',
+    'carve.maxCarveAttempts',
+    'carve.maxGenerations',
+    'carve.maxRevisitsPerGeneration',
   ],
   nonNegativeIntegers: ['sizeCallbackTimeoutMinutes'],
+  blocks: ['carve'],
   help: [
     'This loop is shared across repositories; everything true of a repository lives in that file.',
     'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
@@ -468,6 +488,9 @@ const SEATS = (() => {
       callback: parseSeat(opt('callback-seat') ?? CONFIG.seats.callback, '--callback-seat'),
       worker: parseSeat(opt('worker') ?? CONFIG.seats.worker, '--worker'),
       reviewer: parseSeat(opt('reviewer') ?? CONFIG.seats.reviewer, '--reviewer'),
+      // The knife's seats resolve after the merge, so an adopter's worker override carries.
+      carver: parseSeat(opt('carver') ?? CONFIG.seats.carver ?? CONFIG.seats.worker, '--carver'),
+      carveConfirmer: parseSeat(opt('carve-confirmer') ?? CONFIG.seats.carveConfirmer ?? CONFIG.seats.confirmer ?? CONFIG.seats.reviewer, '--carve-confirmer'),
     };
   } catch (error) {
     // A mistyped engine deserves the composed message, not a raw stack trace.
@@ -487,8 +510,11 @@ const ctx = createContext({
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
+    pointScale: CONFIG.pointScale,
+    maxWorkerAttempts: CONFIG.maxWorkerAttempts,
   },
   seats: { worker: SEATS.worker, reviewer: SEATS.reviewer, confirmer: SEATS.confirmer },
+  onClosed: (event) => CARVING.onClosed(event),
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
@@ -502,6 +528,33 @@ const ctx = createContext({
     mark(event.issue, event.title, 'merged', `PR #${event.pr} ${event.sha.slice(0, 10)}`);
     putOnTheFloor(event);
   },
+});
+
+/** The knife, as the loop runs it: the loop's ceiling, the config's carve block, the resolved seats. */
+const CARVE_KNOBS: CarveKnobs = {
+  ceiling: MAX_POINTS,
+  ...CONFIG.carve,
+  callbacksDir: resolveCallbacksDir(ctx, CONFIG.callbacksDir),
+  seats: { carver: SEATS.carver, confirmer: SEATS.carveConfirmer },
+};
+// The size callback runs the knife in its own process; it inherits the seats this run chose.
+process.env.LOOP_CARVER = seatLabel(SEATS.carver);
+process.env.LOOP_CARVE_CONFIRMER = seatLabel(SEATS.carveConfirmer);
+
+const CARVING = new Carving({
+  ctx,
+  knobs: CARVE_KNOBS,
+  appraisal: {
+    seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
+    confirmCloses: CONFIG.confirmCloses,
+    skipLabels: CONFIG.skipLabels,
+    maxAppraiseAttempts: CONFIG.maxAppraiseAttempts,
+    sizeCallbackTimeoutMinutes: CONFIG.sizeCallbackTimeoutMinutes,
+  },
+  only: ONLY,
+  ageDays: CONFIG.ageDays,
+  mark,
+  log,
 });
 
 // ---------------------------------------------------------------------------
@@ -825,7 +878,7 @@ async function main(): Promise<void> {
   step(`${PROJECT.name} burn-down-github-issues`);
   log(`run pid ${process.pid} started ${new Date().toISOString()}`);
   log(`base ${BASE} | last ${CONFIG.ageDays} days | up to ${MAX_POINTS} points | merge: ${CONFIG.autoMerge}`);
-  log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)}`);
+  log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)} | carver ${seatLabel(SEATS.carver)} | carve confirmer ${seatLabel(SEATS.carveConfirmer)}`);
   if (SEATS.worker.engine === SEATS.reviewer.engine) {
     log('WARNING: worker and reviewer share an engine, so the merge gate shares the author\'s blind spots');
   }
@@ -892,6 +945,12 @@ async function main(): Promise<void> {
       MAX_POINTS,
     );
   }
+
+  // The sweep: finish what a crash left announced, repair torn claims and pauses, and hand the
+  // knife every trunk the tracker says needs it, so closes, edits, and holds made outside the loop
+  // are seen before anything new is selected.
+  step('Sweeping trunks, claims, and pauses');
+  await CARVING.sweep(allIssues());
 
   // Appraisal first, and on its own timeline. Workers only ever pick up something already judged
   // real and sized, so the expensive population never pays for a worktree to discover an issue was
