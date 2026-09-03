@@ -6,8 +6,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { APPRAISAL_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
-import { ENGINES, type Seat, seatLabel } from './engines.ts';
+import { APPRAISAL_FILE, CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
+import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
 
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
@@ -204,11 +204,14 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   mkdirSync(ctx.runDir, { recursive: true });
   const logPath = join(ctx.runDir, `${issue}-${role}-${Date.now()}.log`);
 
-  if (ctx.dryRun) {
+  // A fixture seat runs in a dry run: it copies a file and mutates nothing, and a gate that drives a
+  // whole flow in a dry run needs its answers.
+  if (ctx.dryRun && !isFixture(seat)) {
     writeFileSync(logPath, prompt);
     ctx.log(`  DRY RUN  would run ${role} (${seatLabel(seat)}) on #${issue} (prompt written to ${logPath})`);
     return { logPath, exitCode: 0 };
   }
+  mkdirSync(cwd, { recursive: true });
 
   assertNotMainCheckout(ctx, cwd, role);
   ctx.log(`  running ${role} on #${issue} via ${seatLabel(seat)} (log: ${logPath})`);
@@ -223,9 +226,10 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
     'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
+    carver: [CARVING_FILE, LAST_MESSAGE_FILE],
     callback: ['loop-callback.json', LAST_MESSAGE_FILE],
   };
-  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE]) {
+  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, CARVING_FILE, LAST_MESSAGE_FILE]) {
     rmSync(join(cwd, stale), { force: true });
   }
 
@@ -235,7 +239,9 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
 
   // ANTHROPIC_API_KEY takes precedence over the claude.ai login, so a key inherited from the shell
   // sends a Claude worker to an API account rather than the login the operator intended.
-  const { ANTHROPIC_API_KEY: _inheritedKey, ...childEnv } = process.env;
+  // LOOP_ROLE tells a fixture which control file the seat writes; a real engine ignores it.
+  const { ANTHROPIC_API_KEY: _inheritedKey, ...inherited } = process.env;
+  const childEnv = { ...inherited, LOOP_ROLE: role };
 
   const argv = agentCommand(seat, cwd, prompt);
   const proc = Bun.spawn(SETSID ? [SETSID, ...argv] : argv, {

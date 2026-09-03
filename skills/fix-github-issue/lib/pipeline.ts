@@ -500,11 +500,11 @@ async function land(
   } catch {
     say(`merged branch ${branch} was already deleted`);
   }
-  closeIssue(ctx, issue.number, `Closed by #${pr}.`);
+  await closeIssue(ctx, issue.number, `Closed by #${pr}.`, { kind: 'merged', pr, mergeSha: reviewedSha, reason: `merged #${pr}`, by: 'worker' });
   return 'merged';
 }
 
-function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult, pr?: number): FixOutcome | null {
+async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult, pr?: number): Promise<FixOutcome | null> {
   const closePullRequest = () => {
     if (pr) mutate(ctx, `close PR #${pr}`, ['gh', 'pr', 'close', String(pr), '--comment', 'Superseded; see the issue.']);
   };
@@ -515,7 +515,7 @@ function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult,
       // The obsolete pull request goes first: a crash after it leaves retryable work, whereas a
       // crash after the close would leave an open pull request attached to a closed issue.
       closePullRequest();
-      closeIssue(ctx, issue.number, result.closeComment ?? result.reason);
+      await closeIssue(ctx, issue.number, result.closeComment ?? result.reason, { kind: 'closed', reason: result.verdict, by: 'worker' });
       removeWorktree(ctx, issue.number);
       return { outcome: 'closed', reason: result.reason };
 
@@ -583,7 +583,7 @@ async function workIssue(
     say('worker failed; leaving it untouched');
     return { outcome: 'failed', reason: result.reason };
   }
-  const settled = settleTerminalVerdict(ctx, issue, result);
+  const settled = await settleTerminalVerdict(ctx, issue, result);
   if (settled) return settled;
 
   return reviewAndLand(ctx, issue, cwd, result, maxPoints, say);
@@ -685,7 +685,7 @@ export async function reviewAndLand(
       parkReason = result.reason;
       break;
     }
-    const settled = settleTerminalVerdict(ctx, issue, result, pr);
+    const settled = await settleTerminalVerdict(ctx, issue, result, pr);
     if (settled) return settled;
   }
 

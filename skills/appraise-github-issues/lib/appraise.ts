@@ -304,7 +304,7 @@ export async function appraiseIssue(
     case 'obsolete': {
       const closeComment = result.closeComment ?? result.reason;
       if (!options.confirmCloses) {
-        closeIssue(ctx, issue.number, closeComment);
+        await closeIssue(ctx, issue.number, closeComment, { kind: 'closed', reason: result.verdict, by: 'appraiser' });
         outcome.close = 'skipped';
         break;
       }
@@ -317,7 +317,7 @@ export async function appraiseIssue(
       }
       if (confirmation.agree) {
         say(`confirmer agrees: ${confirmation.reason}`);
-        closeIssue(ctx, issue.number, `${closeComment}\n\nIndependently re-checked: ${confirmation.reason}`);
+        await closeIssue(ctx, issue.number, `${closeComment}\n\nIndependently re-checked: ${confirmation.reason}`, { kind: 'closed', reason: result.verdict, by: 'appraiser' });
         outcome.close = 'confirmed';
       } else {
         say(`confirmer disagrees: ${confirmation.reason}`);

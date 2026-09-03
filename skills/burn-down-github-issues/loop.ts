@@ -494,7 +494,7 @@ function allIssues(): Issue[] {
  * pull requests that reference an open, unheld, sized issue close it with a pointer, and the merge
  * goes on the floor as it would have. Runs under the lock before anything is selected.
  */
-function reconcileMergedPullRequests(all: Issue[]): void {
+async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
   type Merged = {
     number: number;
     title: string;
@@ -536,7 +536,13 @@ function reconcileMergedPullRequests(all: Issue[]): void {
       if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) continue;
       if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
       log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} references it; closing with a pointer`);
-      closeIssue(ctx, issue.number, `Resolved by #${pr.number}, merged at ${pr.mergedAt}. The run that merged it did not finish recording the close.`);
+      await closeIssue(ctx, issue.number, `Resolved by #${pr.number}, merged at ${pr.mergedAt}. The run that merged it did not finish recording the close.`, {
+        kind: 'merged',
+        pr: pr.number,
+        mergeSha: pr.mergeCommit?.oid,
+        reason: `merged #${pr.number} by reconciliation`,
+        by: 'reconcile',
+      });
       mark(issue.number, issue.title, 'merged', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
       if (!DRY_RUN && pr.mergeCommit) {
         putOnTheFloor({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
@@ -764,8 +770,8 @@ async function main(): Promise<void> {
 
     // Half-written label transitions are repaired before anything reads them, so a crash mid-DLQ
     // or mid-count-swap costs one repair pass rather than a permanently wedged issue.
-    repairDurableState(ctx, allIssues(), CONFIG.skipLabels);
-    reconcileMergedPullRequests(allIssues());
+    repairDurableState(ctx, allIssues(), CONFIG.skipLabels, { reviews: CONFIG.maxReviewRounds });
+    await reconcileMergedPullRequests(allIssues());
 
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the

@@ -68,8 +68,10 @@ export function sh(ctx: Context, cmd: string[], cwd = ctx.repoRoot, attempts = 4
   // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
   // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is
   // one that can comment on a downstream tracker: an adopting checkout can carry two remotes
-  // pointing at two different repositories.
-  const argv = cmd[0] === 'gh' && !cmd.includes('-R') ? [...cmd, '-R', ctx.project.repo] : cmd;
+  // pointing at two different repositories. `gh api` is the exception: it takes no -R, and its
+  // callers build repository paths themselves through api() below.
+  const pin = cmd[0] === 'gh' && cmd[1] !== 'api' && !cmd.includes('-R');
+  const argv = pin ? [...cmd, '-R', ctx.project.repo] : cmd;
   let lastError = '';
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const proc = Bun.spawnSync(argv, { cwd, stderr: 'pipe' });
@@ -86,9 +88,19 @@ export function sh(ctx: Context, cmd: string[], cwd = ctx.repoRoot, attempts = 4
   throw new Error(`${cmd.join(' ')}\n${lastError}`);
 }
 
+/**
+ * `gh api <path> ...` for the REST and search endpoints the subcommands do not expose. A path
+ * carrying `{repo}` gets the configured repository, so a caller never spells it. A read: it never
+ * routes through mutate(), so use it only for GET-shaped calls.
+ */
+export function api(ctx: Context, path: string, args: string[] = []): string {
+  return sh(ctx, ['gh', 'api', path.replaceAll('{repo}', ctx.project.repo), ...args]);
+}
+
 /** A mutation the pipeline performs on GitHub. Every one routes through here so --dry-run is total. */
 export function mutate(ctx: Context, description: string, cmd: string[]): void {
   if (ctx.dryRun) {
+    ctx.dryRunLog.push(description);
     ctx.log(`  DRY RUN  ${description}`);
     return;
   }

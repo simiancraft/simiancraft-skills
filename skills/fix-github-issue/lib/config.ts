@@ -74,7 +74,15 @@ export type PipelineKnobs = {
   checksTimeoutMinutes: number;
   /** How long `project.smokeCommand` may run before the pull request parks. */
   smokeTimeoutMinutes: number;
-  seats: { worker: string; reviewer: string };
+  /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
+  pointScale: number[];
+  /** Worker or confirmer failures an issue may absorb before it parks; kept on the issue as `loop/attempts: N`. */
+  maxWorkerAttempts: number;
+  /**
+   * `confirmer` re-checks a worker's close; `carver` and `carveConfirmer` are the knife's, resolved
+   * after the merge as `carver ?? worker` and `carveConfirmer ?? confirmer ?? reviewer`.
+   */
+  seats: { worker: string; reviewer: string; confirmer?: string; carver?: string; carveConfirmer?: string };
 };
 
 export const PIPELINE_DEFAULTS: PipelineKnobs = {
@@ -104,6 +112,12 @@ export const PIPELINE_DEFAULTS: PipelineKnobs = {
 
   /** A boot that has not answered in this long is a failed boot. */
   smokeTimeoutMinutes: 10,
+
+  /** The Fibonacci rungs; an adopter with another scale lists its own. */
+  pointScale: [1, 2, 3, 5, 8, 13, 21, 34],
+
+  /** Like maxReviewRounds: a per-issue high-water mark on the issue, so a crash never refunds an attempt. */
+  maxWorkerAttempts: 3,
 
   /**
    * Who sits in each seat, as an `engine` or `engine:model` spec resolved against the ENGINES
@@ -160,7 +174,24 @@ const REQUIRED_PROJECT_FIELDS: Array<keyof ProjectConfig> = [
   'worktreeRoot',
 ];
 
-type Knobs = Record<string, unknown> & { seats?: Record<string, string> };
+type Knobs = Record<string, unknown> & { seats?: Record<string, string | undefined> };
+
+/**
+ * `--only 12,34`: the issue numbers a command restricts itself to. Comma-separated positive
+ * integers, whitespace trimmed, duplicates collapsed; anything else is a refusal naming the token,
+ * since a mistyped number silently widening to the whole backlog is the wrong failure.
+ */
+export function parseOnly(value: string): number[] {
+  const numbers = new Set<number>();
+  for (const raw of value.split(',')) {
+    const token = raw.trim();
+    if (token === '') continue;
+    if (!/^[1-9]\d*$/.test(token)) throw new Error(`--only: '${token}' is not an issue number`);
+    numbers.add(Number(token));
+  }
+  if (numbers.size === 0) throw new Error('--only: no issue numbers given');
+  return [...numbers];
+}
 
 /**
  * Refuses to run an unconfigured repository. A shared driver guessing at a repository's remotes,
@@ -176,6 +207,13 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   fileName: string;
   defaults: K;
   positiveIntegers: ReadonlyArray<keyof K & string>;
+  /** Knobs that may be zero (a timeout of 0 meaning no timer, say). */
+  nonNegativeIntegers?: ReadonlyArray<keyof K & string>;
+  /**
+   * Nested knob blocks (`carve: { maxDepth: 3 }`) merged one level deep over their defaults, whose
+   * keys are validated as `block.key` when named in positiveIntegers or nonNegativeIntegers.
+   */
+  blocks?: ReadonlyArray<keyof K & string>;
   help: string[];
 }): Promise<K & { project: ProjectConfig }> {
   const configFile = join(options.invokeRoot, options.fileName);
@@ -197,6 +235,15 @@ export async function loadProjectConfig<K extends Knobs>(options: {
     seats: { ...(options.defaults.seats ?? {}), ...((overrides as Knobs).seats ?? {}) },
     project,
   } as K & { project: ProjectConfig };
+  for (const block of options.blocks ?? []) {
+    const defaults = (options.defaults[block] ?? {}) as Record<string, unknown>;
+    const given = ((overrides as Record<string, unknown>)[block] ?? {}) as Record<string, unknown>;
+    (merged as Record<string, unknown>)[block] = { ...defaults, ...given };
+  }
+  const knobAt = (key: string): unknown => {
+    const [block, sub] = key.split('.');
+    return sub ? ((merged as Record<string, unknown>)[block] as Record<string, unknown> | undefined)?.[sub] : merged[key];
+  };
 
   // Presence is not validity. A shallow undefined check let null enums, empty strings, partial
   // touchPaths, and an in-repository worktreeRoot through to fail later and stranger.
@@ -219,8 +266,20 @@ export async function loadProjectConfig<K extends Knobs>(options: {
     if (!Number.isInteger(project[key]) || project[key] <= 0) faults.push(`project.${key} must be a positive integer`);
   }
   for (const key of options.positiveIntegers) {
-    const value = merged[key];
+    const value = knobAt(key);
     if (!Number.isInteger(value) || (value as number) <= 0) faults.push(`${key} must be a positive integer`);
+  }
+  for (const key of options.nonNegativeIntegers ?? []) {
+    const value = knobAt(key);
+    if (!Number.isInteger(value) || (value as number) < 0) faults.push(`${key} must be a non-negative integer`);
+  }
+  const scale = (merged as Knobs).pointScale;
+  if (scale !== undefined) {
+    const ascending =
+      Array.isArray(scale) &&
+      scale.length > 0 &&
+      scale.every((n, i) => Number.isInteger(n) && n > 0 && (i === 0 || n > scale[i - 1]));
+    if (!ascending) faults.push('pointScale must be an ascending array of positive integers');
   }
   if (!['always', 'code-only', 'never'].includes((merged as Knobs).autoMerge as string)) {
     faults.push(`autoMerge must be 'always', 'code-only', or 'never'`);
