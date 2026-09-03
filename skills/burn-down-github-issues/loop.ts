@@ -42,6 +42,7 @@ import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
 import { Carving } from './lib/carving.ts';
+import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
@@ -786,15 +787,8 @@ const SHIPPED_CALLBACKS = join(HERE, 'callbacks');
  */
 function placeSizeCallbacks(): string {
   const dir = resolveCallbacksDir(ctx, CONFIG.callbacksDir);
-  mkdirSync(dir, { recursive: true });
-  if (!existsSync(SHIPPED_CALLBACKS)) return dir;
-  for (const name of readdirSync(SHIPPED_CALLBACKS)) {
-    if (!/^on-size/.test(name)) continue; // a README beside the slots is documentation, not a slot
-    const from = join(SHIPPED_CALLBACKS, name);
-    const to = join(dir, name);
-    copyFileSync(from, to);
-    chmodSync(to, statSync(from).mode & 0o777);
-  }
+  const template = readFileSync(join(SHIPPED_CALLBACKS, 'on-size-over-ceiling'), 'utf8');
+  renderSizeCallbacks(dir, template, { repoRoot: REPO_ROOT, carveDir: join(HERE, '..', 'carve-github-issue'), maxPoints: MAX_POINTS }, log, DRY_RUN);
   return dir;
 }
 

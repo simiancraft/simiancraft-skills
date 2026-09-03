@@ -76,6 +76,18 @@ or installed; it is a path, not a skill name. `--appraiser`, `--worker`, and `--
 same seats and every loop knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and
 the rest); a flag beats the config for the run it is given on.
 
+## Carving what is over the ceiling
+
+An issue the appraiser sizes over `maxPoints` is not skipped any more: the size callback the loop
+renders hands it to the sibling `carve-github-issue` skill, which expresses it as sub-issues along
+its highest natural seam, confirmed by a second engine, and posts a carving record on the parent's
+thread. The parent is then a **trunk**, never handed to a worker; its children are leaves the loop
+works in the order the record gives. Every close the loop makes rolls up to the trunk and revisits
+it; the sweep at the start of every run revisits trunks whose tree moved outside the loop, finishes
+what a crashed run announced, and clears claims a dead run left. A trunk with nothing left is
+released to the appraiser, which sizes the remainder. The config's `carve` block and the
+`seats.carver` and `seats.carveConfirmer` seats are the knife's (see its `references/adopting.md`).
+
 ## Read next
 
 | Need | Read |

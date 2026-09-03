@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# rendered by burn-down-github-issues; edits are overwritten
+# The size callback the burndown ships: an issue the appraiser sized over the loop's ceiling is
+# handed to the knife (carve-github-issue), which expresses it as sub-issues. The loop renders
+# this template into the adopter's callbacks directory on every start as on-size-over-<ceiling>,
+# substituting the two paths and the ceiling; a file at that name without the marker on line 2 is
+# the adopter's and is left alone.
+set -u
+payload="$(cat)"
+issue="$(printf '%s' "$payload" | bun -e 'const p = JSON.parse(await Bun.stdin.text()); console.log(p.issue);')"
+if [ -z "$issue" ]; then
+  echo "on-size-over: no issue number in the payload" >&2
+  exit 2
+fi
+cd '{{REPO_ROOT}}' || exit 2
+exec bun run '{{CARVE_DIR}}/carve.ts' --issue "$issue" --ceiling {{MAX_POINTS}}

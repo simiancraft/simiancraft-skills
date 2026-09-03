@@ -61,6 +61,10 @@ export default {
   // callbacksDir (where the loop writes its size callbacks for the appraiser; see the appraise skill's
   // references/callbacks.md), and
   // seats: { appraiser: 'codex', confirmer: 'claude:claude-opus-5', callback: 'codex', worker: 'codex', reviewer: 'claude:claude-opus-5' },
+  // The knife's seats, resolved after the merge: carver defaults to worker, carveConfirmer to confirmer then reviewer.
+  // seats: { ..., carver: 'codex', carveConfirmer: 'claude:claude-opus-5' },
+  // The knife's knobs; every one a positive integer. See carve-github-issue/references/adopting.md.
+  // carve: { maxDepth: 3, maxChildren: 8, maxCarveRounds: 5, maxCarveAttempts: 3, maxGenerations: 5, maxRevisitsPerGeneration: 10 },
   // and confirmCloses (default true): a close proposed by the appraiser needs the confirmer's agreement.
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
   // floor: { cadenceMinutes: 10, drainMinutes: 60 } starts walk-the-floor beside the loop; see "The line" below.

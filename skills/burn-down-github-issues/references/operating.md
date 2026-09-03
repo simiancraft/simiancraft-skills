@@ -209,3 +209,13 @@ git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -D
   or local tooling; a reader on the forge has no idea those exist.
 - The loop closes issues itself with a pointer to the pull request; never a closing keyword, which
   would close on merge before the loop records the outcome.
+
+## When a trunk reaches the revisit cap
+
+A carved issue (a trunk, `loop/carved`) is revisited by the knife after every child close and
+whenever its tree moves; each revisit is counted in its carving record. At
+`carve.maxRevisitsPerGeneration` (default 10) in one epoch the trunk goes to a person with
+`needs-human`, and removing the label starts a new epoch with the count at zero. How often a
+healthy trunk is revisited is unmeasured: the record makes it measurable. If trunks reach the cap
+routinely, raise it in the config, or rethink the trigger (a fingerprint change that is not a leaf
+close is the usual cause: a person editing children's bodies one at a time, say).
