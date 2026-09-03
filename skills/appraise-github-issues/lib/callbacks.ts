@@ -33,6 +33,8 @@ export type SizePayload = {
   reason: string;
   repo: string;
   baseBranch: string;
+  /** The main checkout, so an executable can run a command from the repository root. */
+  repoRoot: string;
 };
 
 /** What a callback prompt may write to `loop-callback.json` to be recorded; optional. */
@@ -83,12 +85,13 @@ export async function runSizeCallback(
   issue: Issue,
   payload: SizePayload,
   say: (message: string) => void,
+  options: { timeoutMs?: number } = {},
 ): Promise<SizeCallbackResult> {
   const name = resolveSizeCallback(dir, payload.points);
   if (!name) return { name: null };
   say(`size callback ${name} for ${payload.points} points`);
   const result: SizeCallbackResult = { name };
-  const slot = await runCallback(dir, name, payload, say);
+  const slot = await runCallback(dir, name, payload, say, options);
   if (slot.ran && slot.exitCode !== undefined) result.executable = { exitCode: slot.exitCode };
   if (slot.prompt === undefined) return result;
 

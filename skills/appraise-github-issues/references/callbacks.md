@@ -30,8 +30,9 @@ second, and nothing runs for 8 or less unless `on-size` exists.
 
 Each slot name may exist as an executable, as a Markdown prompt (`<name>.md`), or both.
 
-- **The executable** runs first, with the appraisal payload as one line of JSON on stdin, a
-  sixty-second timeout, and its exit code logged. This is the form for anything load-bearing: a
+- **The executable** runs first, with the appraisal payload as one line of JSON on stdin, its own
+  process group, a timeout of `sizeCallbackTimeoutMinutes` (default 0: no timer, since a callback
+  that runs agents cannot be bounded by a minute), and its exit code logged. This is the form for anything load-bearing: a
   label, a pause, a notification. An executable never depends on an agent following prose.
 - **The prompt** is one agent turn on the callback seat (`seats.callback`, by default the
   appraiser's own seat), in a scratch directory that is not a checkout. It is rendered with the
@@ -43,7 +44,7 @@ The payload on stdin:
 
 ```json
 { "issue": 1234, "title": "…", "points": 13, "priorPoints": null, "verdict": "valid",
-  "reason": "…", "repo": "owner/repo", "baseBranch": "main" }
+  "reason": "…", "repo": "owner/repo", "baseBranch": "main", "repoRoot": "/abs/path/to/checkout" }
 ```
 
 ## What a prompt may report

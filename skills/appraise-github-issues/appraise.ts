@@ -43,6 +43,7 @@ import {
   isHeld,
   resolveCallbacksDir,
   selectForAppraisal,
+  ISSUE_LIST_FIELDS,
 } from './lib/appraise.ts';
 import { existsSync as dirExists } from 'node:fs';
 
@@ -97,7 +98,8 @@ const CONFIG = await loadProjectConfig<PipelineKnobs & AppraiseKnobs & { seats: 
   fileName: CONFIG_FILE ?? 'appraise-github-issues.config.ts',
   // The loader validates the pipeline's own knobs whatever the caller, so they ride along with defaults.
   defaults: { ...PIPELINE_DEFAULTS, ...APPRAISE_DEFAULTS, seats: { ...PIPELINE_DEFAULTS.seats, ...APPRAISE_DEFAULTS.seats } },
-  positiveIntegers: ['ageDays', 'appraiseLimit', 'appraiserConcurrency', 'maxReviewRounds'],
+  positiveIntegers: ['ageDays', 'appraiseLimit', 'appraiserConcurrency', 'maxReviewRounds', 'maxAppraiseAttempts'],
+  nonNegativeIntegers: ['sizeCallbackTimeoutMinutes'],
   help: [
     'Appraisal is shared across repositories; everything true of a repository lives in that file.',
     'Copy the template from references/adopting.md in this skill (or adopt burn-down-github-issues, whose config this command also reads).',
@@ -123,7 +125,7 @@ const SEATS = (() => {
 
 const ctx = createContext({
   project: CONFIG.project,
-  knobs: { autoMerge: 'never', maxReviewRounds: 1, checksTimeoutMinutes: CONFIG.checksTimeoutMinutes, smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes },
+  knobs: { autoMerge: 'never', maxReviewRounds: 1, checksTimeoutMinutes: CONFIG.checksTimeoutMinutes, smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes, pointScale: CONFIG.pointScale },
   seats: {
     worker: parseSeat(CONFIG.seats.worker, 'seats.worker'),
     reviewer: parseSeat(CONFIG.seats.reviewer, 'seats.reviewer'),
@@ -150,7 +152,7 @@ if (DRY_RUN) log('DRY RUN: selection only; no lock, no agent, no GitHub mutation
 /** A dry run stops at selection: it prints what a real run would appraise and touches nothing else. */
 if (DRY_RUN) {
   const selected = ISSUE_NUMBER
-    ? [JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels'])) as Issue]
+    ? [JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', ISSUE_LIST_FIELDS])) as Issue]
     : selectForAppraisal(allOpenIssues(ctx), { ageDays: AGE_DAYS, skipLabels: CONFIG.skipLabels }, { allAges: ALL_AGES, includeSized: INCLUDE_SIZED }).slice(0, LIMIT);
   const held = selected.filter((issue) => isHeld(issue.labels, CONFIG.skipLabels));
   for (const issue of held) log(`#${issue.number} carries a hold label; a person holds it, so it would not be appraised`);
@@ -189,7 +191,7 @@ async function once(): Promise<void> {
   let issues: Issue[];
   if (ISSUE_NUMBER) {
     // Bypasses the window and the size filter, never the labels a person set to hold an issue.
-    const one: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels']));
+    const one: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', ISSUE_LIST_FIELDS]));
     if (isHeld(one.labels, CONFIG.skipLabels)) {
       log(`#${one.number} carries a hold label; a person holds it, so it is not appraised. Remove the label to put it back in reach.`);
       return;
@@ -213,10 +215,12 @@ async function once(): Promise<void> {
     CONFIG.appraiserConcurrency,
     async (issue) => {
       const outcome = await appraiseIssue(ctx, issue, {
-        ageDays: AGE_DAYS,
+        ageDays: ALL_AGES ? null : AGE_DAYS,
         seats: SEATS,
         confirmCloses: !(NO_CONFIRM || CONFIG.confirmCloses === false),
         skipLabels: CONFIG.skipLabels,
+        maxAppraiseAttempts: CONFIG.maxAppraiseAttempts,
+        sizeCallbackTimeoutMinutes: CONFIG.sizeCallbackTimeoutMinutes,
         callbacks: { dir: CALLBACKS_DIR, seat: SEATS.callback },
       });
       const key = outcome.close

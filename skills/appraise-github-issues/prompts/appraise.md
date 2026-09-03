@@ -20,8 +20,8 @@ refreshes before you start: `git -C {{MAIN_CHECKOUT}} show {{REMOTE}}/{{BASE_BRA
 reads a file as the base holds it, and `git -C {{MAIN_CHECKOUT}} log {{REMOTE}}/{{BASE_BRANCH}}`
 its history.
 
-The driver only hands you issues opened in the last {{AGE_DAYS}} days, so the window is already
-decided; your judgement is whether the issue's claim still holds, not whether it is recent.
+When the driver applies a window it is {{AGE_DAYS}} days (`any` means no window), so recency is
+already decided; your judgement is whether the issue's claim still holds, not whether it is recent.
 
 ## Step 1: is it still real
 

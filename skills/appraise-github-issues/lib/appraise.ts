@@ -19,11 +19,13 @@
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { isTrunk, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
+import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
-import type { Seat } from '../../fix-github-issue/lib/engines.ts';
-import { closeIssue } from '../../fix-github-issue/lib/labels.ts';
+import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
+import { appraisalCount, clearAppraisals, closeIssue, recordAppraisal } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { mutate, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
@@ -72,6 +74,10 @@ export type AppraiseKnobs = {
    * files there; the appraiser only looks them up. See lib/callbacks.ts for the ladder.
    */
   callbacksDir: string;
+  /** Failed appraisals an issue may absorb before it goes to a person; kept on the issue as `loop/appraisals: N`. */
+  maxAppraiseAttempts: number;
+  /** How long a size callback's executable may run; 0 means no timer, for a callback that runs agents. */
+  sizeCallbackTimeoutMinutes: number;
   seats: { appraiser: string; confirmer: string; callback: string };
 };
 
@@ -80,6 +86,8 @@ export const APPRAISE_DEFAULTS: AppraiseKnobs = {
   appraiseLimit: 12,
   appraiserConcurrency: 3,
   confirmCloses: true,
+  maxAppraiseAttempts: 3,
+  sizeCallbackTimeoutMinutes: 0,
   skipLabels: ['needs-decision', 'needs-human', 'loop/skip', 'loop/parked'],
   callbacksDir: '<worktreeRoot>/appraisal-callbacks',
   seats: {
@@ -124,15 +132,26 @@ function sizeLabels(labels: Array<{ name: string }>): string[] {
   return labels.map((l) => l.name).filter((name) => SIZE_LABEL.test(name));
 }
 
+export const ISSUE_LIST_FIELDS = 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy';
+
 export function allOpenIssues(ctx: Context): Issue[] {
-  return JSON.parse(
-    sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,title,createdAt,labels']),
-  );
+  return JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '5000', '--json', ISSUE_LIST_FIELDS]));
+}
+
+/** The labels that mark a trunk or a claimed issue without reading its thread. */
+const TRUNK_LABELS = ['loop/carved', 'loop/released', 'loop/carving', 'loop/working'];
+
+/** True when the listing alone says the issue is a trunk or claimed: a trunk label, or an open child. */
+export function looksLikeTrunk(issue: Issue): boolean {
+  if (issue.labels.some((l) => TRUNK_LABELS.includes(l.name) || l.name.startsWith('loop/carve-gen'))) return true;
+  const summary = issue.subIssuesSummary;
+  return summary !== undefined && summary.total > summary.completed;
 }
 
 /**
- * The population an appraiser run works: open, inside the window unless `allAges`, not held by a
- * skip label or the dead-letter queue, and unsized unless `includeSized`. Newest first.
+ * The population an appraiser run works: open, inside the window unless `allAges` (an issue with a
+ * parent is exempt from the window), not held by a skip label or the dead-letter queue, not a trunk
+ * or a claimed issue, and unsized unless `includeSized`. Newest first.
  */
 export function selectForAppraisal(
   all: Issue[],
@@ -141,8 +160,9 @@ export function selectForAppraisal(
 ): Issue[] {
   const cutoff = Date.now() - knobs.ageDays * 24 * 60 * 60 * 1000;
   return all
-    .filter((issue) => options.allAges || Date.parse(issue.createdAt) >= cutoff)
+    .filter((issue) => options.allAges || issue.parent || Date.parse(issue.createdAt) >= cutoff)
     .filter((issue) => !isHeld(issue.labels, knobs.skipLabels))
+    .filter((issue) => !looksLikeTrunk(issue))
     .filter((issue) => options.includeSized || pointsFromLabels(issue.labels) === null)
     .sort((a, b) => b.number - a.number);
 }
@@ -231,9 +251,35 @@ export async function confirmClose(
   return checked.result;
 }
 
-/** The issue as GitHub holds it now; a verdict is applied to this, not to the snapshot selection made. */
-function liveIssue(ctx: Context, number: number): { state: string; labels: Array<{ name: string }> } {
-  return JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(number), '--json', 'state,labels']));
+const ANNOUNCEMENT_FRESH_MS = 30 * 60 * 1000;
+
+/** True when this account announced the same hand-off on this open issue within the last thirty minutes. */
+function recentAnnouncement(ctx: Context, issue: number, marker: string): boolean {
+  if (ctx.dryRun) return false;
+  const node = trackerIo(ctx).view(issue);
+  if (!node || node.state !== 'OPEN') return false;
+  return node.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(marker) && Date.now() - Date.parse(c.createdAt) < ANNOUNCEMENT_FRESH_MS);
+}
+
+/** The hand-off intent: the announcement with its payload, then the hold label. */
+function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs-human', reason: string, extra: Record<string, unknown> = {}): void {
+  const marker = `<!-- appraise-handoff verdict=${verdict} -->`;
+  if (!recentAnnouncement(ctx, issue, marker)) {
+    const body = [marker, '```json', JSON.stringify({ verdict, reason, ...extra }), '```', reason].join('\n');
+    mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', body]);
+  }
+  mutate(ctx, `label #${issue} ${verdict}`, ['gh', 'issue', 'edit', String(issue), '--add-label', verdict]);
+}
+
+/** One more failed appraisal; at the cap the issue goes to a person with the log tail. */
+function countFailedAppraisal(ctx: Context, issue: Issue, cap: number, reason: string, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
+  if (ctx.dryRun) return { verdict: 'failed', reason, retry: true };
+  const attempts = recordAppraisal(ctx, issue.number, appraisalCount(issue.labels));
+  say(`appraisal attempt ${attempts} of ${cap} failed: ${reason}`);
+  if (attempts < cap) return { verdict: 'failed', reason, retry: true };
+  const tail = logPath ? logTail(logPath) : 'no log';
+  handOff(ctx, issue.number, 'needs-human', `The appraiser failed ${attempts} times on this issue and stops trying. Last failure: ${reason}. Log tail: ${tail}`, { attempts, logTail: tail });
+  return { verdict: 'needs-human', reason: `handed off after ${attempts} failed appraisals: ${reason}` };
 }
 
 /**
@@ -244,16 +290,36 @@ export async function appraiseIssue(
   ctx: Context,
   issue: Issue,
   options: {
-    ageDays: number;
+    /** The window the driver applied; null when it applied none. Rendered into the prompt. */
+    ageDays: number | null;
     seats: { appraiser: Seat; confirmer: Seat };
     confirmCloses: boolean;
     skipLabels: string[];
+    maxAppraiseAttempts?: number;
+    sizeCallbackTimeoutMinutes?: number;
     /** Where a producer put its size callbacks, and the seat a callback prompt runs on. */
     callbacks?: { dir: string; seat: Seat };
+    /** Accept the one trunk carrying `loop/released`, size its remainder, and fire no size callback. */
+    release?: boolean;
+    /** The runId whose claim is not foreign; the burndown's release appraisal runs under its own. */
+    ownClaim?: string;
     onVerdict?: (outcome: AppraisalOutcome) => void;
   },
 ): Promise<AppraisalOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  const cap = options.maxAppraiseAttempts ?? APPRAISE_DEFAULTS.maxAppraiseAttempts;
+  assertDistinctEngines(options.seats.appraiser, options.seats.confirmer, 'appraiser and confirmer');
+
+  // A trunk is worked by closing its children, never re-sized while they are open; the one
+  // exception is a released trunk the burndown asks this to finish.
+  const io = trackerIo(ctx);
+  const before = readTree(ctx, issue.number, io);
+  const released = before.issue.labels.some((l) => l.name === 'loop/released');
+  if (isTrunk(before) && !(options.release && released)) {
+    say('a trunk is not appraised; it is worked by closing its children');
+    return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
+  }
+
   const cwd = join(ctx.runDir, `appraise-${issue.number}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
@@ -261,13 +327,13 @@ export async function appraiseIssue(
   const prompt = renderPrompt(ctx, 'appraise.md', {
     ISSUE: String(issue.number),
     TITLE: issue.title,
-    AGE_DAYS: String(options.ageDays),
+    AGE_DAYS: options.ageDays === null ? 'any' : String(options.ageDays),
   });
   const run = await runAgent(ctx, 'appraiser', issue.number, cwd, options.seats.appraiser, prompt);
   if (run.exitCode !== 0) {
-    say(`appraiser exited ${run.exitCode}; its verdict is not trusted and the issue stays unsized`);
+    say(`appraiser exited ${run.exitCode}; its verdict is not trusted`);
     rmSync(cwd, { recursive: true, force: true });
-    return { verdict: 'failed', reason: `appraiser exited ${run.exitCode}`, retry: true };
+    return countFailedAppraisal(ctx, issue, cap, `appraiser exited ${run.exitCode}`, run.logPath, say);
   }
   if (ctx.dryRun) {
     rmSync(cwd, { recursive: true, force: true });
@@ -275,17 +341,22 @@ export async function appraiseIssue(
   }
   const checked = validateAppraisal(readResult<unknown>(cwd, APPRAISAL_FILE), issue.number);
   if (!checked.ok) {
-    say(`appraiser's answer is unusable (${checked.why}); leaving the issue unsized, scratch kept at ${cwd}`);
-    return { verdict: 'failed', reason: `no usable appraisal: ${checked.why}`, retry: true };
+    say(`appraiser's answer is unusable (${checked.why}); scratch kept at ${cwd}`);
+    return countFailedAppraisal(ctx, issue, cap, `no usable appraisal: ${checked.why}`, run.logPath, say);
   }
   const result = checked.result;
+  if (result.verdict === 'valid' && result.points !== undefined && !ctx.knobs.pointScale.includes(result.points)) {
+    say(`appraiser sized it ${result.points}, which is not on the scale ${ctx.knobs.pointScale.join(', ')}`);
+    return countFailedAppraisal(ctx, issue, cap, `size ${result.points} is not on the scale`, run.logPath, say);
+  }
   say(`appraisal: ${result.verdict}${result.points ? ` at ${result.points} points` : ''}; ${result.reason}`);
   const outcome: AppraisalOutcome = { verdict: result.verdict, points: result.points, reason: result.reason };
   options.onVerdict?.(outcome);
 
   // The selection was a snapshot; a person, another driver, or a merge may have moved the issue
   // while the appraiser read it. Apply the verdict to the issue as it is now, or not at all.
-  const live = liveIssue(ctx, issue.number);
+  const now = readTree(ctx, issue.number, io);
+  const live = { state: now.issue.state, labels: now.issue.labels };
   if (live.state !== 'OPEN') {
     say(`closed while being appraised; nothing applied`);
     rmSync(cwd, { recursive: true, force: true });
@@ -296,8 +367,21 @@ export async function appraiseIssue(
     rmSync(cwd, { recursive: true, force: true });
     return { ...outcome, verdict: 'failed', reason: 'issue held while being appraised' };
   }
+  if (isTrunk(now) && !(options.release && now.issue.labels.some((l) => l.name === 'loop/released'))) {
+    say('became a trunk while being appraised; nothing applied');
+    rmSync(cwd, { recursive: true, force: true });
+    return { ...outcome, verdict: 'failed', reason: 'issue became a trunk while being appraised', retry: false };
+  }
+  const foreign = liveClaim(now, new Date().toISOString(), options.ownClaim ?? ctx.runId);
+  if (foreign) {
+    say(`claimed by ${foreign.runId} while being appraised; nothing applied`);
+    rmSync(cwd, { recursive: true, force: true });
+    return { ...outcome, verdict: 'failed', reason: `issue claimed by ${foreign.runId} while being appraised`, retry: true };
+  }
   const priorSizes = sizeLabels(live.labels);
   const priorPoints = pointsFromLabels(live.labels);
+  // A verdict that lands clears the failure count; the next failure starts a fresh budget.
+  if (result.verdict !== 'failed' && appraisalCount(live.labels) > 0) clearAppraisals(ctx, issue.number);
 
   switch (result.verdict) {
     case 'already-fixed':
@@ -345,8 +429,7 @@ export async function appraiseIssue(
 
     case 'needs-decision':
     case 'needs-human':
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
-      mutate(ctx, `label #${issue.number} ${result.verdict}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', result.verdict]);
+      handOff(ctx, issue.number, result.verdict, result.reason);
       break;
 
     case 'valid':
@@ -373,23 +456,34 @@ export async function appraiseIssue(
         }
       }
       // The size is on the issue; what happens next for an issue of this size is the producer's.
-      if (options.callbacks) {
-        outcome.callback = await runSizeCallback(ctx, options.callbacks.dir, options.callbacks.seat, issue, {
-          issue: issue.number,
-          title: issue.title,
-          points: result.points,
-          priorPoints,
-          verdict: 'valid',
-          reason: result.reason,
-          repo: ctx.project.repo,
-          baseBranch: ctx.project.baseBranch,
-        }, say);
+      // A released trunk fires no callback: the burndown that asked for the release appraisal
+      // carves an oversized remainder itself, under the claim it already holds.
+      if (options.callbacks && !options.release) {
+        outcome.callback = await runSizeCallback(
+          ctx,
+          options.callbacks.dir,
+          options.callbacks.seat,
+          issue,
+          {
+            issue: issue.number,
+            title: issue.title,
+            points: result.points,
+            priorPoints,
+            verdict: 'valid',
+            reason: result.reason,
+            repo: ctx.project.repo,
+            baseBranch: ctx.project.baseBranch,
+            repoRoot: ctx.repoRoot,
+          },
+          say,
+          { timeoutMs: (options.sizeCallbackTimeoutMinutes ?? APPRAISE_DEFAULTS.sizeCallbackTimeoutMinutes) * 60_000 },
+        );
       }
       break;
 
     case 'failed':
-      outcome.retry = true;
-      break;
+      if (existsSync(cwd)) rmSync(cwd, { recursive: true, force: true });
+      return countFailedAppraisal(ctx, issue, cap, result.reason, run.logPath, say);
   }
   if (existsSync(cwd)) rmSync(cwd, { recursive: true, force: true });
   return outcome;

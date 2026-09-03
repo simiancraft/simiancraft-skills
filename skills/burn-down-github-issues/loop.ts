@@ -59,6 +59,8 @@ type LoopKnobs = {
   concurrency: number;
   appraiserConcurrency: number;
   appraiseLimit: number;
+  maxAppraiseAttempts: number;
+  sizeCallbackTimeoutMinutes: number;
   skipLabels: string[];
   /** Whether a close verdict from the appraiser needs the confirmer's agreement; see appraise-github-issues. */
   confirmCloses: boolean;
@@ -138,6 +140,12 @@ const DEFAULTS: LoopKnobs = {
   /** Issues to appraise in one run. */
   appraiseLimit: 12,
 
+  /** Failed appraisals an issue may absorb before it goes to a person. */
+  maxAppraiseAttempts: 3,
+
+  /** How long a size callback may run; 0 means no timer, since the knife runs agents. */
+  sizeCallbackTimeoutMinutes: 0,
+
   /**
    * Labels that take an issue out of the loop's reach until a human removes them. `loop/parked`
    * belongs here: parked means a human owns the next call, and without it a parked issue slid
@@ -211,7 +219,9 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
     'checksTimeoutMinutes',
     'smokeTimeoutMinutes',
     'reconciliationDays',
+    'maxAppraiseAttempts',
   ],
+  nonNegativeIntegers: ['sizeCallbackTimeoutMinutes'],
   help: [
     'This loop is shared across repositories; everything true of a repository lives in that file.',
     'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
@@ -666,6 +676,8 @@ async function sizeTheWindow(): Promise<void> {
             seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
             confirmCloses: CONFIG.confirmCloses,
             skipLabels: CONFIG.skipLabels,
+            maxAppraiseAttempts: CONFIG.maxAppraiseAttempts,
+            sizeCallbackTimeoutMinutes: CONFIG.sizeCallbackTimeoutMinutes,
             callbacks: { dir: callbacksDir, seat: SEATS.callback },
           });
         } catch (error) {
