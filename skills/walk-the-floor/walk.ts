@@ -158,7 +158,7 @@ function record(entry: LedgerEntry): void {
     log(`DRY RUN  would record ${entry.itemId}: ${entry.verdict} by ${entry.rung}`);
     return;
   }
-  record(entry);
+  appendEntry(DIR, entry);
 }
 
 async function callback(name: 'on-pass' | 'on-fail', entry: LedgerEntry): Promise<void> {
