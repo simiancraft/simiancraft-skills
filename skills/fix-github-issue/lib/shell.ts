@@ -105,5 +105,9 @@ export function mutate(ctx: Context, description: string, cmd: string[]): void {
     return;
   }
   ctx.log(`  ${description}`);
+  if (ctx.io) {
+    ctx.io.write({ description, argv: cmd });
+    return;
+  }
   sh(ctx, cmd);
 }

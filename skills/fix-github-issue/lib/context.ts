@@ -70,6 +70,8 @@ export type Context = {
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
   onClosed?: (event: CloseEvent) => Promise<void>;
+  /** When set, every mutation goes here instead of to gh: a fake tracker under test. */
+  io?: { write: (op: { description: string; argv: string[] }) => void };
 };
 
 /**
@@ -102,6 +104,7 @@ export function createContext(options: {
   onClosed?: (event: CloseEvent) => Promise<void>;
   /** A test supplies its own; production reads it from gh. */
   botLogin?: string;
+  io?: Context['io'];
 }): Context {
   return {
     project: options.project,
@@ -125,5 +128,6 @@ export function createContext(options: {
     mayMerge: options.mayMerge,
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
+    io: options.io,
   };
 }

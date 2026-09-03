@@ -64,7 +64,16 @@ export type ReviewResult = {
   touches?: WorkerResult['touches'];
 };
 
-export type Issue = { number: number; title: string; createdAt: string; labels: Array<{ name: string }> };
+export type Issue = {
+  number: number;
+  title: string;
+  createdAt: string;
+  labels: Array<{ name: string }>;
+  /** The tree fields; optional until every listing requests them. */
+  parent?: { number: number } | null;
+  subIssuesSummary?: { total: number; completed: number };
+  blockedBy?: { nodes: Array<{ number: number; state: string; stateReason: string | null }> };
+};
 
 async function runWorker(
   ctx: Context,
