@@ -18,7 +18,10 @@ export type Stage =
   | 'parked'
   | 'dlq'
   | 'failed'
-  | 'out-of-band';
+  | 'out-of-band'
+  | 'carved'
+  | 'revisited'
+  | 'released';
 
 const STAGE_EMOJI: Record<Stage, string> = {
   appraising: '📏',
@@ -31,6 +34,9 @@ const STAGE_EMOJI: Record<Stage, string> = {
   dlq: '☠️',
   failed: '❌',
   'out-of-band': '🌀',
+  carved: '🔪',
+  revisited: '🔁',
+  released: '🪵',
 };
 
 type Card = { title: string; stage: Stage; note: string; at: Date };

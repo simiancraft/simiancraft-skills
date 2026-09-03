@@ -27,17 +27,19 @@ import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { children, killAgent, shutdownAgents } from '../fix-github-issue/lib/agent.ts';
-import { invokeRootFrom, loadProjectConfig, repoRootFrom } from '../fix-github-issue/lib/config.ts';
+import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { closeIssue, ensureLabels, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { closeIssue, ensureLabels, HOLD_LABELS, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { appraiseIssue, assertConfirmCloses, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
+import { appraiseIssue, assertConfirmCloses, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
+import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
+import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
@@ -426,6 +428,20 @@ if (opt('issue') !== undefined) {
   process.exit(2);
 }
 const SKIP_APPRAISAL = flag('no-appraise');
+/**
+ * `--only 12,34`: the run restricts itself to these issues, in appraisal, selection, and the sweep,
+ * and lifts the age window for them; every other filter still applies and an exclusion is logged.
+ */
+const ONLY: Set<number> | null = (() => {
+  const raw = opt('only');
+  if (raw === undefined) return null;
+  try {
+    return new Set(parseOnly(raw));
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+})();
 const APPRAISE_LIMIT = Number(opt('appraise-limit') ?? CONFIG.appraiseLimit);
 const CLOSURE_PROBE = opt('closure');
 // Operator feedback is on by default: a board line per issue on every change, the whole board on
@@ -493,9 +509,14 @@ const ctx = createContext({
 // ---------------------------------------------------------------------------
 
 function allIssues(): Issue[] {
-  return JSON.parse(
-    sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,title,createdAt,labels']),
-  );
+  return JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '5000', '--json', ISSUE_LIST_FIELDS]));
+}
+
+/** Labels under which an issue is a trunk, a claimed issue, or a paused leaf: never a worker's. */
+const NOT_A_LEAF = ['loop/carved', 'loop/released', 'loop/carving', 'loop/working', 'loop/paused'];
+
+function notALeafLabel(issue: Issue): string | null {
+  return issue.labels.map((l) => l.name).find((name) => NOT_A_LEAF.includes(name) || name.startsWith('loop/carve-gen')) ?? null;
 }
 
 /**
@@ -527,7 +548,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
         '--base',
         BASE,
         '--limit',
-        '100',
+        '500',
         '--search',
         `merged:>=${since}`,
         '--json',
@@ -539,13 +560,27 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
     return;
   }
   const open = new Map(all.map((issue) => [issue.number, issue]));
+  const io = trackerIo(ctx);
   for (const pr of merged) {
-    for (const ref of new Set(issueRefs([pr]))) {
+    // Only a closing keyword counts: a merged pull request that mentions an issue did not
+    // necessarily resolve it, and closing a trunk or a held leaf by reconciliation is a wrong close.
+    for (const ref of new Set(issueRefs([pr], 'closing'))) {
       const issue = open.get(ref);
       if (!issue) continue;
-      if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) continue;
+      if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq' || HOLD_LABELS.includes(l.name))) continue;
+      if (notALeafLabel(issue) || looksLikeTrunk(issue)) continue;
+      if ((issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED'))) continue;
       if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
-      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} references it; closing with a pointer`);
+      // Immediately before the close, once more against the live issue.
+      if (!DRY_RUN) {
+        const tree = readTree(ctx, issue.number, io);
+        const why = refusal(tree, MAX_POINTS);
+        if (why) {
+          log(`repair: #${issue.number} is referenced by merged PR #${pr.number} but is not closed, because ${why}`);
+          continue;
+        }
+      }
+      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} closes it; closing with a pointer`);
       await closeIssue(ctx, issue.number, `Resolved by #${pr.number}, merged at ${pr.mergedAt}. The run that merged it did not finish recording the close.`, {
         kind: 'merged',
         pr: pr.number,
@@ -563,40 +598,86 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
 }
 
 /**
- * Candidates are recent, open, unclaimed issues that are either already sized within the band or
- * not yet sized at all. An issue already sized above the band is left alone: it has been judged,
- * and re-judging it every run is churn.
+ * Candidates are open, unclaimed leaves sized within the band: recent unless they have a parent,
+ * not held, not a trunk, not paused (themselves or an ancestor), not blocked. An issue sized above
+ * the band is the knife's; an unsized one is the appraiser's. A trunk's leaves are worked in the
+ * order its newest carving record says, grouped where the trunk's newest leaf would have sat; the
+ * rest of the backlog stays newest-first.
  */
 function selectCandidates(): Issue[] {
-  const raw = sh(ctx, [
-    'gh',
-    'issue',
-    'list',
-    '--state',
-    'open',
-    '--limit',
-    '500',
-    '--json',
-    'number,title,createdAt,labels',
-  ]);
-  const all: Issue[] = JSON.parse(raw);
-
+  const all = allIssues();
   const claimed = new Set(openPullRequestIssueRefs());
-
   const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
+  const io = trackerIo(ctx);
+  const orderIn = new Map<number, Map<number, number>>();
+  const excluded = new Map<number, string>();
+  const exclude = (issue: Issue, rule: string): false => {
+    excluded.set(issue.number, rule);
+    log(`  #${issue.number} not selected: ${rule}`);
+    return false;
+  };
 
-  return all
-    .filter((issue) => Date.parse(issue.createdAt) >= cutoff)
-    .filter((issue) => !issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq'))
-    .filter((issue) => reviewCount(issue.labels) < CONFIG.maxReviewRounds)
-    .filter((issue) => !claimed.has(issue.number))
-    // Sized only. An unsized issue belongs to the appraisers; handing one to a worker is what the
-    // split exists to stop, since a worker pays for a worktree before discovering it is not work.
-    .filter((issue) => {
-      const points = pointsFromLabels(issue.labels);
-      return points !== null && points <= MAX_POINTS;
-    })
-    .sort((a, b) => b.number - a.number);
+  const kept = all.filter((issue) => {
+    if (ONLY && !ONLY.has(issue.number)) return false;
+    if (!ONLY && !issue.parent && Date.parse(issue.createdAt) < cutoff) return false;
+    if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) return ONLY ? exclude(issue, 'a person holds it') : false;
+    if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) return ONLY ? exclude(issue, 'its review budget is spent') : false;
+    if (claimed.has(issue.number)) return ONLY ? exclude(issue, 'an open pull request references it') : false;
+    const label = notALeafLabel(issue);
+    if (label) return exclude(issue, `it carries ${label}`);
+    if (looksLikeTrunk(issue)) return exclude(issue, 'it has an open child');
+    // Sized only, within the band. An unsized issue belongs to the appraisers; handing one to a
+    // worker is what the split exists to stop, since a worker pays for a worktree before
+    // discovering it is not work. Oversized is the knife's.
+    const points = pointsFromLabels(issue.labels);
+    if (points === null) return ONLY ? exclude(issue, 'it is unsized') : false;
+    if (points > MAX_POINTS) return ONLY ? exclude(issue, `it is sized ${points}, over ${MAX_POINTS}`) : false;
+    // Ancestors and blockers need the thread: a pause above, an edge on the tracker or in a record.
+    if (issue.parent || (issue.blockedBy?.nodes.length ?? 0) > 0) {
+      const tree = readTree(ctx, issue.number, io);
+      const why = refusal(tree, MAX_POINTS);
+      if (why) return exclude(issue, why);
+      const trunk = tree.ancestors[0];
+      if (trunk?.record) {
+        const orders = orderIn.get(trunk.number) ?? new Map<number, number>();
+        for (const child of trunk.record.children) if (child.number !== null) orders.set(child.number, child.order);
+        orderIn.set(trunk.number, orders);
+      }
+    }
+    return true;
+  });
+
+  if (ONLY) {
+    const present = new Set(all.map((i) => i.number));
+    for (const n of ONLY) {
+      if (!present.has(n)) log(`  #${n} is not an open issue`);
+      else if (!excluded.has(n) && !kept.some((i) => i.number === n)) log(`  #${n} not selected`);
+    }
+  }
+
+  // Newest first, with each trunk's leaves grouped at the position of the group's newest member and
+  // ordered within the group by the record (a leaf the record does not know sorts by number).
+  const newestFirst = [...kept].sort((a, b) => b.number - a.number);
+  const emitted = new Set<number>();
+  const out: Issue[] = [];
+  for (const issue of newestFirst) {
+    if (emitted.has(issue.number)) continue;
+    const parent = issue.parent?.number ?? null;
+    if (parent === null) {
+      out.push(issue);
+      emitted.add(issue.number);
+      continue;
+    }
+    const orders = orderIn.get(parent) ?? new Map<number, number>();
+    const group = newestFirst
+      .filter((i) => i.parent?.number === parent)
+      .sort((a, b) => (orders.get(a.number) ?? Number.POSITIVE_INFINITY) - (orders.get(b.number) ?? Number.POSITIVE_INFINITY) || a.number - b.number);
+    for (const member of group) {
+      out.push(member);
+      emitted.add(member.number);
+    }
+  }
+  return out;
 }
 
 /**
@@ -607,14 +688,27 @@ function selectCandidates(): Issue[] {
  * receipt reading "1,234 packages" claim issue 1234 and silently drop it from selection.
  */
 function openPullRequestIssueRefs(): number[] {
-  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'body,title,headRefName']);
+  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'body,title,headRefName']);
   return issueRefs(JSON.parse(raw));
 }
 
-/** The issue numbers a set of pull requests reference, by `#1234` in title or body or `-1234` in the branch. */
-function issueRefs(prs: Array<{ body: string; title: string; headRefName: string }>): number[] {
+/**
+ * The issue numbers a set of pull requests reference: by `#1234` in title or body or `-1234` in
+ * the branch (`any`), or only by a closing keyword before the number at the start of a line or a
+ * sentence (`closing`), which is what makes a merge a resolution rather than a mention. Lexical:
+ * a sentence that starts with the keyword counts, one that starts with "not" or "does not" does not.
+ */
+export function issueRefs(prs: Array<{ body: string; title: string; headRefName: string }>, mode: 'any' | 'closing' = 'any'): number[] {
   const refs: number[] = [];
+  const CLOSING = /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d{2,6})\b/i;
   for (const pr of prs) {
+    if (mode === 'closing') {
+      for (const sentence of `${pr.title}\n${pr.body}`.split(/\r?\n|[.!?]\s+/)) {
+        const match = CLOSING.exec(sentence.trim());
+        if (match) refs.push(Number(match[1]));
+      }
+      continue;
+    }
     for (const match of `${pr.title}\n${pr.body}`.matchAll(/#(\d{2,6})\b/g)) {
       refs.push(Number(match[1]));
     }
@@ -658,7 +752,8 @@ async function sizeTheWindow(): Promise<void> {
   if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
   const callbacksDir = placeSizeCallbacks();
   log(`size callbacks in ${callbacksDir}`);
-  const toAppraise = selectForAppraisal(allIssues(), CONFIG).slice(0, APPRAISE_LIMIT);
+  const population = ONLY ? allIssues().filter((i) => ONLY.has(i.number)) : allIssues();
+  const toAppraise = selectForAppraisal(population, CONFIG, { allAges: ONLY !== null }).slice(0, APPRAISE_LIMIT);
   if (toAppraise.length === 0) {
     log('nothing to appraise; the window is fully sized');
   } else {
@@ -859,4 +954,4 @@ async function main(): Promise<void> {
   await walker.drain();
 }
 
-await main();
+if (import.meta.main) await main();

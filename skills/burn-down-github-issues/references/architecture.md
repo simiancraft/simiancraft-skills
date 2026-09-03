@@ -196,6 +196,24 @@ That rule exists because an issue can prescribe a remedy the repository's own co
 out, and without it every stage executes the prescription faithfully: each judges the diff
 against the issue, and nothing judges the issue against the conventions.
 
+## Selection and reconciliation
+
+A candidate is an open leaf sized within the band. Selection drops, and logs with its rule, any
+issue that carries `loop/carved`, `loop/carve-gen: N`, `loop/released`, `loop/carving`,
+`loop/working`, or `loop/paused`; any issue with an open child; any leaf with `loop/paused` on an
+ancestor; and any leaf with a blocker, on the tracker or in an ancestor's carving record, that is
+not closed `COMPLETED`. An issue with a parent is exempt from the age window, since its trunk was
+selected when it was recent. `--only 12,34` restricts the run (appraisal, selection, and the sweep)
+to those numbers and lifts the age window for them; every other filter still applies.
+
+A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
+position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
+
+Reconciliation closes an open, sized leaf a merged pull request names with a closing keyword
+(`fixes #12` at the start of a line or a sentence; a sentence starting with "not" does not count).
+It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it re-reads
+the issue immediately before closing.
+
 ## Known gaps
 
 Proof judgement lives in the sibling proof skill's
