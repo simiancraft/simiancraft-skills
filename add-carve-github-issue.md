@@ -25,7 +25,7 @@ The burndown works issues up to a size ceiling and never touches anything above 
 - **Cover.** The confirmer's verdict that the union of the pieces is the parent: no criterion unowned (`gap`), nothing the parent did not ask for (`overreach`). A width cut, one job over interchangeable instances, is judged for partition integrity instead (`partition-intact` or `partition-broken`).
 - **Relation** of one cut's children: `shards` (disjoint slices of one job; any order; parallel), `layers` (each builds on the one before; source of truth first), `mixed` (edges listed per child), `waiting` (everything unlisted depends on a named spike). An edge is a `blocked-by` link on the tracker, recorded in the record as well so its removal by hand is visible.
 - **Revisit.** The knife on a trunk whose latest record is `live`, asked one question: is this carving still good? It answers `still-good`, `amend`, `exhausted`, or a hand-off, and the second engine confirms the answer as it confirms a carve. The knife's mode is chosen from the latest record alone: `live` means revisit; none, or `released`, means carve; `applying` means finish that generation first.
-- **Generation.** One carve or amend of a trunk, numbered from 1. The number is carried in every record, in every authored child's marker, and on a `loop/carve-gen: N` label while the trunk is unreleased, so successive generations never match each other's children. An **epoch** counts a person's redrives of a trunk: it starts at 1 and increments each time a person removes a hold from a trunk, and the generation and revisit caps count within the current epoch.
+- **Generation.** One carve or amend of a trunk, numbered from 1; a hand-off before any carve writes its record and marker as generation 0. The number is carried in every record, in every authored child's marker, and on a `loop/carve-gen: N` label while the trunk is unreleased, so successive generations never match each other's children. An **epoch** counts a person's redrives of a trunk: it starts at 1 and increments each time a person removes a hold from a trunk, and the generation and revisit caps count within the current epoch.
 - **Intent.** A transition the knife or the appraiser makes with more than one tracker write, announced on the tracker before its first write by a comment carrying a marker and the full payload the transition needs, so that any machine that finds the announcement without its completion can finish it exactly. There are five: the `applying` record, the `released` record, the knife's hand-off comment, the appraiser's hand-off comment, and the close comment `closeIssue` posts before every close. The last write of every intent is the one its completion predicate names. A claim is not an intent: it is a lease on an issue, released after the intent completes, and a claim still standing after that is torn and swept. Everything else with more than one write (pauses, size labels, the release appraisal) is a repair: derivable from labels and records, re-run idempotently from the tracker's state. The local journal, `runs/carve-<n>-gen<g>.json`, only remembers which steps this machine already saw done.
 - **Sweep.** The burndown's start-of-run pass that finishes announced intents, clears expired claims, and hands the knife every issue the tracker says needs it, so closes, edits, and holds made outside the loop are seen on the next run.
 - **Roll-up.** The comment the loop posts on a trunk when one of its leaves closes: which leaf, how, when, and where the proof is.
@@ -254,15 +254,15 @@ Closed, and every Held state. Nothing else is terminal, and every non-terminal s
 
 ### Intents and repairs
 
-Every intent is announced first, with everything a finisher needs. A knife intent is finished by whoever finds it, beginning with a claim, so two machines that find one announcement do not both finish it; a finisher that finds the announcement younger than two minutes waits thirty seconds and re-reads before creating anything, so read lag does not turn a finished write into a second one. An appraiser intent (a hand-off, a close) is finished by the run that announced it, in process; the sweep finishes one only while it is younger than the claim expiry (thirty minutes) and otherwise marks it abandoned with a comment, so a person's later reopen or hold removal is never undone by a stale announcement. Only the newest announcement on an issue is ever finished; an older one is superseded by it. A finisher re-checks each pending write's target before making it: a write whose precondition a person has since undone (a counteraction) is marked `abandoned` in the journal and skipped, the rest of the intent is finished, and a revisit follows so the person's change is judged rather than overwritten.
+Every intent is announced first, with everything a finisher needs. A knife intent is finished by whoever finds it, beginning with a claim, so two machines that find one announcement do not both finish it; a finisher that finds the announcement younger than two minutes waits thirty seconds and re-reads before creating anything, so read lag does not turn a finished write into a second one. An appraiser intent (a hand-off, a close) is finished by the run that announced it, in process, and by nothing else: the sweep neither finishes nor abandons one, and a later appraisal of the issue re-derives its own verdict, reusing a matching announcement younger than thirty minutes on the same open issue rather than posting a second and otherwise ignoring it. A crash between an appraiser's announcement and its label or close therefore costs one duplicated comment, never a hold or a close a person did not ask for. Only the newest announcement on an issue is ever finished; an older one is superseded by it. A finisher re-checks each pending write's target before making it: a write whose precondition a person has since undone (a counteraction) is marked `abandoned` in the journal and skipped, the rest of the intent is finished, and a revisit follows so the person's change is judged rather than overwritten.
 
 | Intent (the announcement, with its payload) | Finished by, in order | Completion predicate |
 |---|---|---|
 | `applying` record: the accepted cut, the ledger, the supersessions, the pause set | children, adoptions, references, edges (obsolete edges removed), supersessions (each a close intent with `reason: superseded by #n`), pauses, callback, `loop/carve-gen: N`, `loop/carved`, `loop/handed-off` off, counters cleared, `live` record | a `live` record of the same generation exists |
-| `released` record, linking every closed child | size label off, `loop/carved` and `loop/carve-gen` off, counters off, callback, `loop/released` on | `loop/released` is present |
+| `released` record, linking every closed child | size label off, `loop/carved` and `loop/carve-gen` off, counters off, callback, `loop/released` on | `loop/released` is present; or the release appraisal has consumed it: a size label is present, a newer record exists, or the issue is closed. A later reopen never revives a consumed release |
 | `<!-- carve-handoff verdict=V gen=G -->` with the reason, the affected criteria, the pause set, both opinions when disputed, and the log tail when a counter tripped | `loop/handed-off` when the issue has no generation, hold label, pauses, callback, `live` record with the verdict | a `live` record with that verdict exists after the comment |
 | `<!-- appraise-handoff verdict=V -->` with the reason and the log tail when a counter tripped | the hold label | the hold label is present |
-| `<!-- loop-close verdict=V by=R -->`, the comment `closeIssue` posts, with the explanation and both opinions when a confirmer ran (R: `appraiser`, `worker`, `knife`, `reconcile`) | the close, `COMPLETED` or `NOT_PLANNED` as the verdict says | the issue is closed; a finisher that re-reads a trunk without `loop/released`, or a foreign claim, abandons it with a comment and leaves the issue selectable |
+| `<!-- loop-close verdict=V by=R -->`, the comment `closeIssue` posts, with the explanation and both opinions when a confirmer ran (R: `appraiser`, `worker`, `knife`, `reconcile`) | the close, `COMPLETED` or `NOT_PLANNED` as the verdict says | the issue is closed with the reason the verdict names (`NOT_PLANNED` for `obsolete` and `superseded`, else `COMPLETED`); a finisher that re-reads a trunk without `loop/released`, or a foreign claim, abandons it with a comment and leaves the issue selectable |
 
 Repairs, each re-run from the tracker's state by the sweep or on entry to an issue, none announced:
 
@@ -270,8 +270,8 @@ Repairs, each re-run from the tracker's state by the sweep or on entry to an iss
 |---|---|
 | claim | the claim comment, then the label; the work; the unclaim comment; then the label off when no other unreleased claim comment exists and the journal has no pending step. A run that leaves a step pending (a thrown write, a kill) posts its unclaim and leaves the label on, so the sweep's first pass finds the issue; the sweep finishes what it finds and only then removes a label with no live claim, an expired claim, or an unclaim with the label still on, each with a comment. A claim past `expires` is not live: the live gate and the knife ignore it before any sweep has run |
 | pauses | markers and `loop/paused` match the newest `live` record's pause commands: a marker naming this trunk on each commanded child, the label on; markers released and the label off where no unreleased marker remains; a `loop/paused` with no marker removed with a comment |
-| the appraiser's `valid` size | the size label, then the size callback; a crash between the two is harmless, since the sweep's second pass routes an oversized label without one |
-| the release appraisal | as the transition table's `loop/released` row: each step keyed on a label the previous step wrote, until `loop/released` is gone |
+| the appraiser's `valid` size | the size label, then the size callback; a crash between the two loses that callback invocation and nothing else, since the sweep's second pass routes an oversized label without one (a named boundary: the knife reads the label, so the label cannot follow the callback) |
+| the release appraisal | as the transition table's `loop/released` row: each step keyed on what the previous step wrote (no size label: appraise; size label at or under the ceiling: `loop/released` off; size label over it and no record newer than the `released` one: carve; a newer record: `loop/released` off), until `loop/released` is gone |
 | the held snapshot | a Held trunk whose newest record's `seen.holds` does not list its hold gets a record of the same state (`live` stays `live`, `released` stays `released`), the same ledger and `revisits`, a fresh fingerprint, and `note: hold-observed`, with no agent turn |
 
 Callbacks run before the write that completes their intent, so a crash between the two replays the callback on repair; that is the only way a callback runs twice, and the payload's idempotency key (`issue`, `generation`, `epoch`, `revisits`, `verdict`) lets an adopter drop the replay. A callback is invoked when its process has been spawned and reaped; its exit code is logged and a non-zero exit is not retried, since the collection has no way to tell a failed side effect from a completed one. `references/callbacks.md` says both.
@@ -393,7 +393,7 @@ export function readTree(ctx: Context, number: number, io?: TrackerIo): Tree;   
 export function descendants(number: number, io: TrackerIo): number[];             // subIssues, transitively, through io.view
 export function fingerprint(tree: Tree): Fingerprint;                          // arrays canonically sorted before hashing
 export function needsRevisit(record: Record | null, tree: Tree): string | null;    // the first differing field; 'no-record' when null; never for a released record
-export function liveClaim(tree: Tree, now: string, ours?: string): Claim | null;   // the earliest (by databaseId) unreleased, unexpired claim of either kind not ours
+export function liveClaim(tree: Tree, now: string, ours?: string, isDead?: (runId: string) => boolean): Claim | null;   // the earliest (by databaseId) unreleased, unexpired claim of either kind not ours; a claim by a dead process on this host (runId carries hostname and pid) is stale at once, so an injected hard exit does not block the next run
 
 // carve-github-issue/lib/record.ts
 export type CriterionStatus = 'open' | 'completed' | 'deferred' | 'withdrawn' | 'orphaned';
@@ -487,7 +487,7 @@ A revisit answer has the same envelope with `"mode": "revisit"`; `still-good` an
 - `mode` is set by the knife from the latest record, and an answer in the other mode is rejected.
 - `kind` is `author` (a new issue), `child` (an issue already in this trunk's tree, adopted as the piece: closed ones complete their criteria, open ones own them), or `reference` (an issue outside the tree: open ones are attached if they have no parent and depended on otherwise; one closed `COMPLETED` completes its criteria as a `closed-completed` reference). A `reference` inside the tree is rejected; that is what `child` is for.
 - For a chosen cut below `domain`, `higherRungs` names every rung above it with a non-empty reason it did not apply or was inadmissible; a lower cut is invalid while a higher one is admissible. Unchosen cuts may be `inadmissible` with empty pieces.
-- A `carve` or `amend` requires 2 to `maxChildren` pieces (1 allowed when `state` is `partial` and the piece is a spike), every authored piece's `points` on the scale and at most the ceiling, `dependsOn` acyclic, `order` a permutation consistent with `dependsOn`, every authored body carrying the headings Scope, Acceptance, and Proof, every groundwork item owned by exactly one piece, every `supersedes.old` a child of the latest record, and the trunk's `subIssuesSummary.total` plus authored pieces plus references that will be attached at or under 100.
+- A `carve` or `amend` requires 2 to `maxChildren` pieces (1 allowed when `state` is `partial` and the piece is a spike, or when the one piece is an adopted `child` owning every open criterion, which is how a re-carve keeps a single reopened leaf), every authored piece's `points` on the scale and at most the ceiling, `dependsOn` acyclic, `order` a permutation consistent with `dependsOn`, every authored body carrying the headings Scope, Acceptance, and Proof, every groundwork item owned by exactly one piece, every `supersedes.old` a child of the latest record, and the trunk's `subIssuesSummary.total` plus authored pieces plus references that will be attached at or under 100.
 - `width`, when present, makes the pieces chunks, the relation `shards`, and the confirmer's finding a partition one.
 - `small-enough` is the carver disputing the size; `nothing-left` is the carver finding every criterion `completed` or `withdrawn` in carve mode. Both are disagreements with the appraiser and go to a person.
 
@@ -503,7 +503,7 @@ Before any piece is authored, the carver matches every piece against the trunk's
 
 ## What lands on the tracker
 
-Every write below is a journal step and a tracker-visible one, in the order given, after the intent that announces it. On any entry to an issue the knife first claims, then finishes what a crash left (an `applying` record, a `released` record, a hand-off comment without its label, pause labels that disagree with the newest record, an expired or torn claim), honouring a person's counteraction as described under Intents, then proceeds.
+Every write below is a journal step and a tracker-visible one, in the order given, after the intent that announces it. On any entry to an issue the knife first claims, then finishes what a crash left (the newest unfinished knife intent: an `applying` record with no `live` record of its generation, a `released` record not yet consumed, a hand-off comment with no later `live` record carrying its verdict, pause labels that disagree with the newest record, an expired or torn claim), honouring a person's counteraction as described under Intents, then proceeds.
 
 | Verdict | Trunk | Children |
 |---|---|---|
@@ -544,7 +544,7 @@ Delivery order within one cut: hard dependency; closeness to the source of truth
 ## Revisit triggers
 
 - **Inside the loop.** `closeIssue` awaits `ctx.onClosed(event)` after the close, so every close path (the fix pipeline, stranded resume, reconciliation, the appraiser) fires it; a throw is logged and never changes an outcome. The burndown's hook: if the closed issue has a parent, post the roll-up on the trunk (its marker keyed by child, event, and `closedAt`), skipping one the thread already carries; then `carveIssue` on the trunk, at most once per trunk per run (an in-process set; later closes in the same run are seen by the next sweep); after a confirmed `exhausted`, the release appraisal as the transition table says. A closed parent is logged and left alone.
-- **Outside the loop.** The sweep runs after stranded-pull-request resume, under the loop lock, and in a dry run only logs. Three passes over `gh issue list --limit 5000 --state open --json <the tree fields>`. First, every issue labelled `loop/carved`, `loop/carve-gen: *`, `loop/released`, `loop/handed-off`, `loop/carving`, `loop/working`, or `loop/paused`: finish unfinished intents (a `loop/released` trunk that is not Held gets its release appraisal); reconcile pause markers and labels to the newest record, removing a torn `loop/paused`; clear expired or torn claims, after finishing; snapshot a Held trunk whose record does not list its hold; abandon an appraiser announcement older than the claim expiry; where a hold has been removed since the newest record (its `seen.holds` lists one the tracker lacks), hand the trunk to the knife as a redrive (a forced revisit whose record opens the next epoch; a released trunk re-enters the release appraisal instead) and take `loop/handed-off` off; otherwise `needsRevisit(record, tree)` decides, and `no-record` hands the trunk to the knife. Second, every issue not in the first pass, not Held, not Claimed, and either sized over the ceiling and inside the age window, or with an open child at any age, is handed to the knife. Third, every leaf whose blocker is closed `NOT_PLANNED`, deleted, or in a cycle: with an open parent, its parent is revisited; otherwise it goes to a person with `needs-human`; and every pause marker placed by a closed trunk is released, walking the closed trunk's records through interior children.
+- **Outside the loop.** The sweep runs after stranded-pull-request resume, under the loop lock, and in a dry run only logs. Three passes over `gh issue list --limit 5000 --state open --json <the tree fields>`. First, every issue labelled `loop/carved`, `loop/carve-gen: *`, `loop/released`, `loop/handed-off`, `loop/carving`, `loop/working`, or `loop/paused`: finish the newest unfinished knife intent (a `loop/released` trunk that is not Held gets its release appraisal); reconcile pause markers and labels to the newest record, removing a torn `loop/paused`; clear expired or torn claims, after finishing; snapshot a Held trunk whose record does not list its hold; where a hold has been removed since the newest record (its `seen.holds` lists one the tracker lacks), hand the trunk to the knife as a redrive (a forced revisit whose record opens the next epoch; a released trunk re-enters the release appraisal instead) and take `loop/handed-off` off; otherwise `needsRevisit(record, tree)` decides, and `no-record` hands the trunk to the knife. Second, every issue not in the first pass, not Held, not Claimed, and either sized over the ceiling and inside the age window, or with an open child at any age, is handed to the knife. Third, every leaf whose blocker is closed `NOT_PLANNED`, deleted, or in a cycle: with an open parent, its parent is revisited; otherwise it goes to a person with `needs-human`; and every pause marker placed by a closed trunk is released, walking the closed trunk's records through interior children.
 
 ## The seams reference
 
@@ -576,11 +576,11 @@ Named here so the lifecycle's claims are read with them, alongside the tracker w
 
 ## Commits
 
-`<skills>` below is the checkout of this collection and `<adopter>` is `~/Simiancraft_Programming/Lifeguides/lifeguides-application` (see Adopter under Domain categories); every live gate is run from `<adopter>` after substituting `<skills>`, and each is a complete block that stands alone after the prelude. Gates create fixture issues with `mkissue`, read records with `record_json` and `records`, and end with `cleanup`; the prelude:
+`<repo>` below is the checkout of this collection, `<skills>` is `<repo>/skills`, and `<adopter>` is `~/Simiancraft_Programming/Lifeguides/lifeguides-application` (see Adopter under Domain categories); every live gate is run from `<adopter>` after substituting `<skills>`, and each is a complete block that stands alone after the prelude. Gates create fixture issues with `mkissue`, read records with `record_json` and `records`, and end with `cleanup`; the prelude:
 
 ```bash
 mkissue() { gh issue create --title "$1" --body "$2" "${@:3}" | tail -1 | grep -oE '[0-9]+$'; }   # prints the new issue number
-cleanup() { gh issue list --search "[carve-test] in:title" --state open --limit 500 --json number --jq '.[].number' | xargs -r -n1 gh issue close --reason "not planned" 2>/dev/null; rm -rf <skills>/.gates "$CB/on-carve-pass" "$CB/on-carve-fail"; }
+cleanup() { gh issue list --search "[carve-test] in:title" --state open --limit 500 --json number --jq '.[].number' | xargs -r -n1 gh issue close --reason "not planned" 2>/dev/null; rm -rf <repo>/.gates "$CB/on-carve-pass" "$CB/on-carve-fail"; }
 record_json() { gh issue view "$1" --json comments --jq '[.comments[].body | select(contains("<!-- carve-record"))] | last' | sed -n '/^```json$/,/^```$/p' | sed '1d;$d'; }   # the newest record's JSON
 records() { gh issue view "$1" --json comments --jq -c '[.comments[].body | select(contains("<!-- carve-record")) | capture("state=(?<s>[a-z]+)").s]'; }   # every record's state, oldest first
 body=$'Criteria:\n- A1: a posts table with title and body\n- A2: a posts API with create and list\n- A3: an authors table with a name'
@@ -591,13 +591,13 @@ carving() { printf '{"issue":%s,"mode":"carve","verdict":"carve","reason":"two d
 carving_adopt() { carving "$1" | jq -c --argjson n "$2" '.cuts[0].pieces = [(.cuts[0].pieces[0] | .kind = "child" | .number = $n | .criteria = ["A1","A2","A3"] | del(.title, .body))] | .ledger = (.ledger | map(.owner = 0)) | .reason = "one child left"'; }
 cover() { printf '{"issue":%s,"mode":"carve","agree":true,"finding":"cover","seam":"agree","seamCase":"","reason":"A1 to A3 owned"}' "$1"; }
 for n in 1 2 3 5 8 13; do gh label create "size: $n" --color ededed --force >/dev/null; done
-mkdir -p <skills>/.gates
+mkdir -p <repo>/.gates
 export CB="$(bun run <skills>/burn-down-github-issues/loop.ts --dry-run | grep -oP 'size callbacks in \K\S+')"; mkdir -p "$CB"   # the adopter's resolved callbacks directory, as the loop logs it
 export WR="$(bun -e "import c from './burn-down-github-issues.config.ts'; console.log(c.default?.project?.worktreeRoot ?? c.project.worktreeRoot)")"   # runs/ lives under it
 printf '#!/usr/bin/env bash\ncat >> %s/.gates/pass.log; echo >> %s/.gates/pass.log\n' "<skills>" "<skills>" > "$CB/on-carve-pass"; printf '#!/usr/bin/env bash\ncat >> %s/.gates/fail.log; echo >> %s/.gates/fail.log\n' "<skills>" "<skills>" > "$CB/on-carve-fail"; chmod +x "$CB/on-carve-pass" "$CB/on-carve-fail"
 ```
 
-Authored children carry the trunk's title prefix, so `[carve-test]` reaches them. Fixture answer files are written by the gates into `<skills>/.gates/` (gitignored by Commit 1). Every commit leaves the burndown runnable, and no commit lets a trunk reach a worker.
+Authored children carry the trunk's title prefix, so `[carve-test]` reaches them. Fixture answer files are written by the gates into `<repo>/.gates/` (gitignored by Commit 1). Every commit leaves the burndown runnable, and no commit lets a trunk reach a worker.
 
 ### ❌ Commit 1: widen the shared runtime
 
@@ -618,7 +618,7 @@ Authored children carry the trunk's title prefix, so `[carve-test]` reaches them
 - `skills/fix-github-issue/lib/labels.ts`: `ensureLabels` adds `loop/carved` (`5319e7`, "Carved into sub-issues; worked by closing them"), `loop/carving` (`5319e7`, "A carve is in progress; other runs wait"), `loop/released` (`5319e7`, "Carving finished; awaiting re-appraisal"), `loop/working` (`1d76db`, "A worker has this issue; other runs wait"), `loop/paused` (`fbca04`, "Paused by its parent while a question is open"), `loop/handed-off` (`ededed`, "The knife handed this off before carving it; found by the sweep when the hold lifts"), `spike` (`0e8a16`, "Answer a question with evidence; no pull request"); the counter functions and `repairDurableState` as in Interfaces (the caps parameter optional, defaulting to the review cap alone); `closeIssue` async with the event and `by`, posting the comment with its `loop-close` marker (the close intent) before the close, finishing an unfinished one it finds on the same issue when younger than the claim expiry, awaiting `ctx.onClosed` except in a dry run, and reading `closedAt` back from the issue after the close; every existing call site passes its event and awaits (`land`: `merged` with `pr`, `mergeSha`, and `reason` as in Interfaces; `settleTerminalVerdict`: `closed`; the appraiser: `closed`; reconciliation: `closed`).
 - `skills/burn-down-github-issues/loop.ts`, `skills/appraise-github-issues/lib/appraise.ts`, `skills/fix-github-issue/lib/pipeline.ts`, `skills/fix-github-issue/lib/resume.ts`: only the `closeIssue` call sites above and `repairDurableState` called with the caps the burndown knows.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes. From `<adopter>`, before the commit, `bun run <skills>/appraise-github-issues/appraise.ts --dry-run > /tmp/appraise-before.log` and `bun run <skills>/burn-down-github-issues/loop.ts --dry-run > /tmp/loop-before.log`; after it, the same to `/tmp/appraise-after.log` and `/tmp/loop-after.log`; `diff` of each pair shows only timestamp and process-id lines. This gate straddles the commit; it is run once, when the commit is made.
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes. From `<adopter>`, before the commit, `bun run <skills>/appraise-github-issues/appraise.ts --dry-run > /tmp/appraise-before.log` and `bun run <skills>/burn-down-github-issues/loop.ts --dry-run > /tmp/loop-before.log`; after it, the same to `/tmp/appraise-after.log` and `/tmp/loop-after.log`; `diff` of each pair shows only timestamp and process-id lines and the seven new label creations the dry run announces. This gate straddles the commit; it is run once, when the commit is made.
 
 ### ❌ Commit 2: add the tree and record parsers
 
@@ -633,7 +633,7 @@ Authored children carry the trunk's title prefix, so `[carve-test]` reaches them
 - `skills/fix-github-issue/lib/pipeline.ts`: the tree fields on `Issue`, optional, and nothing else.
 - `skills/fix-github-issue/lib/shell.ts`: `mutate` routes through `ctx.io.write` when `ctx.io` is set, so a fake tracker sees every write.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes.
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes.
 
 ### ❌ Commit 3: teach the fix pipeline the tree
 
@@ -649,18 +649,18 @@ Authored children carry the trunk's title prefix, so `[carve-test]` reaches them
 - `skills/fix-github-issue/fix.ts`: `--confirmer` (config `seats.confirmer`); prompts dirs include `../appraise-github-issues/prompts`; the issue view requests the tree fields.
 - `skills/fix-github-issue/prompts/triage-and-fix.md`: when the issue has a parent, read the parent's thread and its latest carving record, and every ancestor's, before starting; when the issue carries `spike`, run the experiments its body names, put the answers with evidence in `answer`, and return `answered`; the verdict schema gains both.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes; from `<adopter>`, `bun run <skills>/burn-down-github-issues/loop.ts --dry-run > /tmp/loop-c3.log` and `diff /tmp/loop-after.log /tmp/loop-c3.log` shows only timestamp and process-id lines. Then, after the prelude:
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes; from `<adopter>`, `bun run <skills>/burn-down-github-issues/loop.ts --dry-run > /tmp/loop-c3.log` and `diff /tmp/loop-after.log /tmp/loop-c3.log` shows only timestamp and process-id lines. Then, after the prelude:
 
 ```bash
 gh label create spike --color 0e8a16 --description "Answer a question with evidence; no pull request" --force
 S1=$(mkissue "[carve-test] spike: which cache wins" $'Questions: A? B?' --label spike --label "size: 1")
 S2=$(mkissue "[carve-test] spike: which cache loses" $'Questions: A? B?' --label spike --label "size: 1")
-printf '{"issue":%s,"verdict":"answered","reason":"measured","answer":"A: x. B: y."}' "$S1" > <skills>/.gates/answered1.json
-printf '{"issue":%s,"verdict":"answered","reason":"measured","answer":"A: x. B: y."}' "$S2" > <skills>/.gates/answered2.json
-printf '{"issue":%s,"agree":true,"reason":"both answered with numbers"}' "$S1" > <skills>/.gates/agree.json
-printf '{"issue":%s,"agree":false,"reason":"B has no evidence"}' "$S2" > <skills>/.gates/disagree.json
-bun run <skills>/fix-github-issue/fix.ts --issue "$S1" --worker fixture:<skills>/.gates/answered1.json --reviewer fixture2:<skills>/.gates/agree.json --confirmer fixture2:<skills>/.gates/agree.json
-bun run <skills>/fix-github-issue/fix.ts --issue "$S2" --worker fixture:<skills>/.gates/answered2.json --reviewer fixture2:<skills>/.gates/disagree.json --confirmer fixture2:<skills>/.gates/disagree.json
+printf '{"issue":%s,"verdict":"answered","reason":"measured","answer":"A: x. B: y."}' "$S1" > <repo>/.gates/answered1.json
+printf '{"issue":%s,"verdict":"answered","reason":"measured","answer":"A: x. B: y."}' "$S2" > <repo>/.gates/answered2.json
+printf '{"issue":%s,"agree":true,"reason":"both answered with numbers"}' "$S1" > <repo>/.gates/agree.json
+printf '{"issue":%s,"agree":false,"reason":"B has no evidence"}' "$S2" > <repo>/.gates/disagree.json
+bun run <skills>/fix-github-issue/fix.ts --issue "$S1" --worker fixture:<repo>/.gates/answered1.json --reviewer fixture2:<repo>/.gates/agree.json --confirmer fixture2:<repo>/.gates/agree.json
+bun run <skills>/fix-github-issue/fix.ts --issue "$S2" --worker fixture:<repo>/.gates/answered2.json --reviewer fixture2:<repo>/.gates/disagree.json --confirmer fixture2:<repo>/.gates/disagree.json
 [ "$(gh issue view "$S1" --json state,labels,comments --jq -c '[.state, ([.labels[].name] | index("loop/working")), ([.comments[].body] | map(select(contains("carve-answer"))) | length)]')" = '["CLOSED",null,1]' ] || echo FAIL S1
 [ "$(gh issue view "$S2" --json state,labels --jq -c '[.state, ([.labels[].name] | index("needs-human") != null)]')" = '["OPEN",true]' ] || echo FAIL S2
 cleanup
@@ -678,13 +678,13 @@ cleanup
 - `skills/appraise-github-issues/references/callbacks.md`: the field and the timeout.
 - `skills/burn-down-github-issues/loop.ts`: `fixIssue` called with `confirmer: SEATS.reviewer` and `ceiling: MAX_POINTS`, nothing else.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes; from `<adopter>`, `bun run <skills>/appraise-github-issues/appraise.ts --dry-run > /tmp/appraise-c4.log` and `diff /tmp/appraise-after.log /tmp/appraise-c4.log` shows only timestamp and process-id lines. Then, after the prelude:
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes; from `<adopter>`, `bun run <skills>/appraise-github-issues/appraise.ts --dry-run > /tmp/appraise-c4.log` and `diff /tmp/appraise-after.log /tmp/appraise-c4.log` shows only timestamp and process-id lines. Then, after the prelude:
 
 ```bash
 U1=$(mkissue "[carve-test] already done" "Add the posts table. It is on the base branch already.")
-printf '{"issue":%s,"verdict":"already-fixed","points":null,"reason":"the table exists"}' "$U1" > <skills>/.gates/appraise-fixed.json
-printf '{"issue":%s,"agree":true,"reason":"it is on the base branch"}' "$U1" > <skills>/.gates/agree.json
-bun run <skills>/appraise-github-issues/appraise.ts --issue "$U1" --appraiser fixture:<skills>/.gates/appraise-fixed.json --confirmer fixture2:<skills>/.gates/agree.json
+printf '{"issue":%s,"verdict":"already-fixed","points":null,"reason":"the table exists"}' "$U1" > <repo>/.gates/appraise-fixed.json
+printf '{"issue":%s,"agree":true,"reason":"it is on the base branch"}' "$U1" > <repo>/.gates/agree.json
+bun run <skills>/appraise-github-issues/appraise.ts --issue "$U1" --appraiser fixture:<repo>/.gates/appraise-fixed.json --confirmer fixture2:<repo>/.gates/agree.json
 [ "$(gh issue view "$U1" --json state,comments --jq -c '[.state, ([.comments[].body] | map(select(contains("loop-close"))) | length)]')" = '["CLOSED",1]' ] || echo FAIL U1
 cleanup
 ```
@@ -697,7 +697,7 @@ cleanup
 - `skills/burn-down-github-issues/status.ts`: `Stage` gains `carved` (🔪), `revisited` (🔁), `released` (🪵) and the emoji map entries.
 - `skills/burn-down-github-issues/references/architecture.md`: the selection and reconciliation rules.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes; from `<adopter>`, `bun run <skills>/burn-down-github-issues/loop.ts --dry-run > /tmp/loop-c5.log` and `diff /tmp/loop-c3.log /tmp/loop-c5.log` shows only timestamp lines and the new exclusion lines, each with zero hits.
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes; from `<adopter>`, `bun run <skills>/burn-down-github-issues/loop.ts --dry-run > /tmp/loop-c5.log` and `diff /tmp/loop-c3.log /tmp/loop-c5.log` shows only timestamp lines and the new exclusion lines, each with zero hits.
 
 ### ❌ Commit 6: add the knife's validators, prompts, and references
 
@@ -713,7 +713,7 @@ cleanup
 **Files rewritten:**
 - `skills/carve-github-issue/lib/carve.test.ts` (second part): `validateCarving` (every enum, bounds, cycles, order consistency, headings, criterion ownership, `higherRungs` non-empty below domain, `supersedes.old` against a record, `reference` inside the tree rejected, fan-out with attached references, `affected` present on a hand-off, `ledger` required on every revisit verdict), `validateConfirmation` per mode and finding, `depthOf` at the boundary, `normalize` adopting a tree child and referencing a backlog issue through the fake.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes.
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes.
 
 ### ❌ Commit 7: add the knife's state machine
 
@@ -723,7 +723,7 @@ cleanup
 - `skills/carve-github-issue/lib/carve.ts` (second part): `claim` and `unclaim` with the renewal timer, `finishIntent` (from an `applying` or `released` record or a hand-off comment, honouring the counteractions), `reconcilePauses`, `snapshotHold`, `applyGeneration`, `carveIssue`: local lock; read tree; claim; finish the newest unfinished intent; repairs; guards and counters; mode from the latest record; run carver; validate; confirm with rounds; fingerprint re-read; apply; then unclaim and unlock in `finally`, leaving the claim label on when the journal has a pending step (a `busy` outcome releases only its own claim marker). `CarveOutcome` as in Interfaces; every write goes through `io.write`; a dry run keeps the journal in memory and returns it. `knobs.failAfter` is honoured by `process.exit(70)` immediately after the first journal step of that name, bypassing `finally` on purpose, so the next run must repair.
 - `skills/carve-github-issue/lib/carve.test.ts` (third part): `finishIntent` from an `applying` record with some children present, from a child that matches the marker but not the body (`needs-human`), from each interrupted release-appraisal step, from a hand-off comment without its label, and with a reopened superseded child (abandoned, not re-closed); a thrown tracker write mid-generation leaving the claim label on and the next run finishing; `reconcilePauses` in both directions and on a torn `loop/paused`; `snapshotHold` on a `live` and on a `released` trunk, and the redrive each enables; the counters' thresholds and that `busy` does not count; the revisit and generation caps per epoch; the cap-before-comment ordering; and a driven run of `carveIssue` with fixture seats and the fake tracker (not a dry run) through a full carve, a disputed carve to the cap (every leaf paused), a `still-good`, a hand-off with a pause set, an `exhausted` (ending at `loop/released`), and two runs racing on one `applying` record where the second returns `busy`, asserting the fake's write log and the returned journal.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes.
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes.
 ### ❌ Commit 8: add the `carve.ts` command
 
 **Goal:** The skill runs standalone.
@@ -734,19 +734,19 @@ cleanup
 - `skills/carve-github-issue/references/adopting.md`: the `carve` config block (`maxDepth: 3, maxChildren: 8, maxCarveRounds: 5, maxCarveAttempts: 3, maxGenerations: 5, maxRevisitsPerGeneration: 10`), `seats.carver`, the labels, what lands on the tracker, the guards, the boundaries, the one-account rule.
 - `skills/carve-github-issue/references/callbacks.md`: the two slots, both forms, the payload, when a callback replays, and the idempotency key.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes. From `<adopter>`, after the prelude:
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes. From `<adopter>`, after the prelude:
 
 ```bash
 N1=$(mkissue "[carve-test] carve 1" "$body" --label "size: 8"); N2=$(mkissue "[carve-test] carve 2" "$body" --label "size: 8"); N3=$(mkissue "[carve-test] carve 3" "$body" --label "size: 8"); N4=$(mkissue "[carve-test] carve 4" "$body" --label "size: 8")
-for n in "$N1" "$N2" "$N3"; do carving "$n" > <skills>/.gates/carving-$n.json; cover "$n" > <skills>/.gates/cover-$n.json; done
-printf '{"issue":%s,"mode":"carve","agree":false,"finding":"gap","seam":"agree","seamCase":"","reason":"A3 unowned"}' "$N2" > <skills>/.gates/gap.json
+for n in "$N1" "$N2" "$N3"; do carving "$n" > <repo>/.gates/carving-$n.json; cover "$n" > <repo>/.gates/cover-$n.json; done
+printf '{"issue":%s,"mode":"carve","agree":false,"finding":"gap","seam":"agree","seamCase":"","reason":"A3 unowned"}' "$N2" > <repo>/.gates/gap.json
 bun run <skills>/carve-github-issue/carve.ts --issue "$N4" --dry-run                                                                                  # real seats: left-alone, exit 0, nothing lands
-bun run <skills>/carve-github-issue/carve.ts --issue "$N1" --dry-run --carver fixture:<skills>/.gates/carving-$N1.json --confirmer fixture2:<skills>/.gates/cover-$N1.json   # fixture seats: the log lists every write; nothing lands
+bun run <skills>/carve-github-issue/carve.ts --issue "$N1" --dry-run --carver fixture:<repo>/.gates/carving-$N1.json --confirmer fixture2:<repo>/.gates/cover-$N1.json   # fixture seats: the log lists every write; nothing lands
 [ "$(gh issue view "$N1" --json subIssues,comments --jq -c '[(.subIssues.nodes | length), (.comments | length)]')" = '[0,0]' ] || echo FAIL dry
-bun run <skills>/carve-github-issue/carve.ts --issue "$N1" --carver fixture:<skills>/.gates/carving-$N1.json --confirmer fixture2:<skills>/.gates/cover-$N1.json
-bun run <skills>/carve-github-issue/carve.ts --issue "$N2" --carver fixture:<skills>/.gates/carving-$N2.json --confirmer fixture2:<skills>/.gates/gap.json
-CARVE_DEV=1 bun run <skills>/carve-github-issue/carve.ts --issue "$N3" --carver fixture:<skills>/.gates/carving-$N3.json --confirmer fixture2:<skills>/.gates/cover-$N3.json --fail-after create
-bun run <skills>/carve-github-issue/carve.ts --issue "$N3" --carver fixture:<skills>/.gates/carving-$N3.json --confirmer fixture2:<skills>/.gates/cover-$N3.json
+bun run <skills>/carve-github-issue/carve.ts --issue "$N1" --carver fixture:<repo>/.gates/carving-$N1.json --confirmer fixture2:<repo>/.gates/cover-$N1.json
+bun run <skills>/carve-github-issue/carve.ts --issue "$N2" --carver fixture:<repo>/.gates/carving-$N2.json --confirmer fixture2:<repo>/.gates/gap.json
+CARVE_DEV=1 bun run <skills>/carve-github-issue/carve.ts --issue "$N3" --carver fixture:<repo>/.gates/carving-$N3.json --confirmer fixture2:<repo>/.gates/cover-$N3.json --fail-after create
+bun run <skills>/carve-github-issue/carve.ts --issue "$N3" --carver fixture:<repo>/.gates/carving-$N3.json --confirmer fixture2:<repo>/.gates/cover-$N3.json
 [ "$(gh issue view "$N1" --json labels --jq -c '[.labels[].name] | map(select(startswith("loop/"))) | sort')" = '["loop/carve-gen: 1","loop/carved"]' ] || echo FAIL N1 labels
 [ "$(gh issue view "$N1" --json subIssues --jq -c '[.subIssues.nodes[] | .title]')" = '["[carve-test] carve 1: posts table and API","[carve-test] carve 1: authors table"]' ] || echo FAIL N1 children
 [ "$(gh issue view "$N1" --json subIssues --jq -c '[.subIssues.nodes[].number] | .[1]' | xargs -I{} gh issue view {} --json blockedBy,labels --jq -c '[(.blockedBy.nodes | length), ([.labels[].name] | map(select(startswith("size:"))) | length)]')" = '[1,0]' ] || echo FAIL N1 edge
@@ -755,7 +755,7 @@ bun run <skills>/carve-github-issue/carve.ts --issue "$N3" --carver fixture:<ski
 [ "$(records "$N2")" = '["live"]' ] || echo FAIL N2 record
 [ "$(gh issue view "$N3" --json subIssues --jq -c '[.subIssues.nodes[].title] | length')" = '2' ] || echo FAIL N3 duplicate
 [ "$(records "$N3")" = '["applying","live"]' ] || echo FAIL N3 records
-[ "$(wc -l < <skills>/.gates/pass.log)" = '2' ] && [ "$(wc -l < <skills>/.gates/fail.log)" = '1' ] || echo FAIL callbacks      # N1, N3 resumed; N2
+[ "$(wc -l < <repo>/.gates/pass.log)" = '2' ] && [ "$(wc -l < <repo>/.gates/fail.log)" = '1' ] || echo FAIL callbacks      # N1, N3 resumed; N2
 grep -c "issue $N2" "$WR/runs/carve.log" | grep -q '^[1-9]' || echo FAIL log; grep -c "round 5" "$WR/runs/carve.log" | grep -q '^[1-9]' || echo FAIL rounds
 cleanup
 ```
@@ -767,43 +767,43 @@ cleanup
 - `skills/burn-down-github-issues/loop.ts`: `seats.carver` and `seats.carveConfirmer` in the config, resolved after the merge as in Interfaces, and `--carver` and `--carve-confirmer` on the command line, exported to every callback as `LOOP_CARVER` and `LOOP_CARVE_CONFIRMER`; `CARVE_KNOBS` from the `carve` block; supplies `ctx.onClosed` and the three-pass sweep as under Revisit triggers (restricted by `--only` when given), including the release appraisal under its own claim and the in-process carve of an oversized remainder; the board marks `revisited` and `released`.
 - `skills/burn-down-github-issues/references/architecture.md`: the revisit stage, the sweep, the pause.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes. From `<adopter>`, after the prelude, every seat a fixture and every loop run restricted with `--only` so nothing else in the adopter's backlog is touched:
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes. From `<adopter>`, after the prelude, every seat a fixture and every loop run restricted with `--only` so nothing else in the adopter's backlog is touched:
 
 ```bash
-T=$(mkissue "[carve-test] carve 5" "$body" --label "size: 8"); carving "$T" > <skills>/.gates/carving.json; cover "$T" > <skills>/.gates/cover.json
-bun run <skills>/carve-github-issue/carve.ts --issue "$T" --carver fixture:<skills>/.gates/carving.json --confirmer fixture2:<skills>/.gates/cover.json
+T=$(mkissue "[carve-test] carve 5" "$body" --label "size: 8"); carving "$T" > <repo>/.gates/carving.json; cover "$T" > <repo>/.gates/cover.json
+bun run <skills>/carve-github-issue/carve.ts --issue "$T" --carver fixture:<repo>/.gates/carving.json --confirmer fixture2:<repo>/.gates/cover.json
 L1=$(record_json "$T" | jq '.children | min_by(.order) | .number'); L2=$(record_json "$T" | jq '.children | max_by(.order) | .number')   # the record is canonical for order
 gh issue edit "$L1" --add-label "size: 1"; gh issue edit "$L2" --add-label "size: 1"
-printf '{"issue":%s,"verdict":"already-fixed","reason":"landed elsewhere"}' "$L1" > <skills>/.gates/fixed.json
-printf '{"issue":%s,"agree":true,"reason":"it is on the base branch"}' "$L1" > <skills>/.gates/agree.json
+printf '{"issue":%s,"verdict":"already-fixed","reason":"landed elsewhere"}' "$L1" > <repo>/.gates/fixed.json
+printf '{"issue":%s,"agree":true,"reason":"it is on the base branch"}' "$L1" > <repo>/.gates/agree.json
 ledger1='[{"id":"A1","text":"a posts table with title and body","owner":0,"status":"completed"},{"id":"A2","text":"a posts API with create and list","owner":0,"status":"completed"},{"id":"A3","text":"an authors table with a name","owner":1,"status":"open"}]'
-printf '{"issue":%s,"mode":"revisit","verdict":"still-good","reason":"one down","criteria":%s,"ledger":%s}' "$T" "$crit" "$ledger1" > <skills>/.gates/stillgood.json
-printf '{"issue":%s,"mode":"revisit","agree":true,"finding":"still-good","seam":"agree","seamCase":"","reason":"yes"}' "$T" > <skills>/.gates/confirm-yes.json
-bun run <skills>/burn-down-github-issues/loop.ts --only "$L1" --limit 1 --worker fixture:<skills>/.gates/fixed.json --reviewer fixture2:<skills>/.gates/agree.json --confirmer fixture2:<skills>/.gates/agree.json --carver fixture:<skills>/.gates/stillgood.json --carve-confirmer fixture2:<skills>/.gates/confirm-yes.json
+printf '{"issue":%s,"mode":"revisit","verdict":"still-good","reason":"one down","criteria":%s,"ledger":%s}' "$T" "$crit" "$ledger1" > <repo>/.gates/stillgood.json
+printf '{"issue":%s,"mode":"revisit","agree":true,"finding":"still-good","seam":"agree","seamCase":"","reason":"yes"}' "$T" > <repo>/.gates/confirm-yes.json
+bun run <skills>/burn-down-github-issues/loop.ts --only "$L1" --limit 1 --worker fixture:<repo>/.gates/fixed.json --reviewer fixture2:<repo>/.gates/agree.json --confirmer fixture2:<repo>/.gates/agree.json --carver fixture:<repo>/.gates/stillgood.json --carve-confirmer fixture2:<repo>/.gates/confirm-yes.json
 [ "$(gh issue view "$L1" --json state,labels --jq -c '[.state, ([.labels[].name] | index("loop/working"))]')" = '["CLOSED",null]' ] || echo FAIL L1
 [ "$(gh issue view "$T" --json comments --jq -c '[.comments[].body] | map(select(contains("carve-rollup"))) | length')" = '1' ] || echo FAIL rollup
 [ "$(records "$T")" = '["applying","live","live"]' ] && [ "$(record_json "$T" | jq '.revisits')" = '1' ] || echo FAIL revisit
 gh issue comment "$T" --body "Product question: do we want authors as an entity, or a byline?"
-printf '{"issue":%s,"mode":"revisit","verdict":"too-uncertain","reason":"authors are undecided","criteria":%s,"ledger":%s,"affected":["A3"]}' "$T" "$crit" "$ledger1" > <skills>/.gates/uncertain.json
-printf '{"issue":%s,"mode":"revisit","agree":true,"finding":"hand-off-agree","seam":"agree","seamCase":"","reason":"nobody decided"}' "$T" > <skills>/.gates/confirm-handoff.json
-bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<skills>/.gates/uncertain.json --carve-confirmer fixture2:<skills>/.gates/confirm-handoff.json
+printf '{"issue":%s,"mode":"revisit","verdict":"too-uncertain","reason":"authors are undecided","criteria":%s,"ledger":%s,"affected":["A3"]}' "$T" "$crit" "$ledger1" > <repo>/.gates/uncertain.json
+printf '{"issue":%s,"mode":"revisit","agree":true,"finding":"hand-off-agree","seam":"agree","seamCase":"","reason":"nobody decided"}' "$T" > <repo>/.gates/confirm-handoff.json
+bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<repo>/.gates/uncertain.json --carve-confirmer fixture2:<repo>/.gates/confirm-handoff.json
 [ "$(gh issue view "$T" --json labels --jq -c '[.labels[].name] | index("needs-decision") != null')" = 'true' ] || echo FAIL held
 [ "$(gh issue list --search "[carve-test] in:title" --label loop/paused --limit 50 --json number --jq -c '[.[].number]')" = "[$L2]" ] || echo FAIL pause set   # the owner of A3 alone
 gh issue edit "$T" --remove-label needs-decision
-bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<skills>/.gates/stillgood.json --carve-confirmer fixture2:<skills>/.gates/confirm-yes.json
+bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<repo>/.gates/stillgood.json --carve-confirmer fixture2:<repo>/.gates/confirm-yes.json
 [ "$(record_json "$T" | jq -c '[.epoch, .revisits]')" = '[2,0]' ] || echo FAIL epoch
 [ "$(gh issue list --search "[carve-test] in:title" --label loop/paused --limit 50 --json number --jq -c 'length')" = '0' ] || echo FAIL unpause
 gh issue close "$L2" --reason completed
 ledger2=$(printf '%s' "$ledger1" | jq -c 'map(.status = "completed")')
-printf '{"issue":%s,"mode":"revisit","verdict":"exhausted","reason":"all done","criteria":%s,"ledger":%s}' "$T" "$crit" "$ledger2" > <skills>/.gates/exhausted.json
-printf '{"issue":%s,"mode":"revisit","agree":true,"finding":"exhausted","seam":"agree","seamCase":"","reason":"every criterion completed"}' "$T" > <skills>/.gates/confirm-exhausted.json
-printf '{"issue":%s,"verdict":"valid","points":1,"reason":"a small remainder"}' "$T" > <skills>/.gates/appraise-small.json
-bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<skills>/.gates/exhausted.json --carve-confirmer fixture2:<skills>/.gates/confirm-exhausted.json --appraiser fixture:<skills>/.gates/appraise-small.json   # sweep: exhausted; release; the release appraisal in the same run
+printf '{"issue":%s,"mode":"revisit","verdict":"exhausted","reason":"all done","criteria":%s,"ledger":%s}' "$T" "$crit" "$ledger2" > <repo>/.gates/exhausted.json
+printf '{"issue":%s,"mode":"revisit","agree":true,"finding":"exhausted","seam":"agree","seamCase":"","reason":"every criterion completed"}' "$T" > <repo>/.gates/confirm-exhausted.json
+printf '{"issue":%s,"verdict":"valid","points":1,"reason":"a small remainder"}' "$T" > <repo>/.gates/appraise-small.json
+bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<repo>/.gates/exhausted.json --carve-confirmer fixture2:<repo>/.gates/confirm-exhausted.json --appraiser fixture:<repo>/.gates/appraise-small.json   # sweep: exhausted; release; the release appraisal in the same run
 [ "$(gh issue view "$T" --json labels --jq -c '[.labels[].name] | map(select(startswith("loop/") or startswith("size:"))) | sort')" = '["size: 1"]' ] || echo FAIL released
 [ "$(records "$T")" = '["applying","live","live","live","live","released"]' ] || echo FAIL release record
 gh issue reopen "$L1"
-carving_adopt "$T" "$L1" > <skills>/.gates/carving-adopt.json
-bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<skills>/.gates/carving-adopt.json --carve-confirmer fixture2:<skills>/.gates/cover.json   # second pass: an open child routes T to the knife in carve mode; L1 is adopted
+carving_adopt "$T" "$L1" > <repo>/.gates/carving-adopt.json
+bun run <skills>/burn-down-github-issues/loop.ts --only "$T" --limit 0 --carver fixture:<repo>/.gates/carving-adopt.json --carve-confirmer fixture2:<repo>/.gates/cover.json   # second pass: an open child routes T to the knife in carve mode; L1 is adopted
 [ "$(record_json "$T" | jq -c '[.generation, (.children | map(select(.kind == "child")) | length), (.children | length)]')" = '[2,1,1]' ] || echo FAIL adopt
 [ "$(gh issue view "$T" --json subIssues --jq -c '.subIssues.nodes | length')" = '2' ] || echo FAIL no re-author
 cleanup
@@ -824,19 +824,19 @@ cleanup
 - `skills/burn-down-github-issues/SKILL.md`, `skills/burn-down-github-issues/references/adopting.md`, `skills/burn-down-github-issues/references/operating.md` (including the revisit-cap note), `README.md`: the carving stage, the `carve` config block and `seats.carver`, the labels, the skill row.
 - `skills/carve-github-issue/lib/carve.test.ts`: `placeSizeCallbacks` against a temporary directory: render, re-render on a ceiling change, marked file removed, unmarked file kept, dry run writes nothing.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes. From `<adopter>`, after the prelude (the adopter's config has no `maxPoints` today, so the ceiling is the default 2; the block edits it in place and restores the whole file on any exit):
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes. From `<adopter>`, after the prelude (the adopter's config has no `maxPoints` today, so the ceiling is the default 2; the block edits it in place and restores the whole file on any exit):
 
 ```bash
 cp burn-down-github-issues.config.ts /tmp/bdgi.config.bak; trap 'cp /tmp/bdgi.config.bak burn-down-github-issues.config.ts; rm -f /tmp/bdgi.config.bak' EXIT
-B=$(mkissue "[carve-test] big one" "$body"); carving "$B" > <skills>/.gates/carving.json; cover "$B" > <skills>/.gates/cover.json
-printf '{"issue":%s,"verdict":"valid","points":8,"reason":"three tables and an API"}' "$B" > <skills>/.gates/appraise-big.json
-CARVER="fixture:<skills>/.gates/carving.json"; CONFIRMER="fixture2:<skills>/.gates/cover.json"
-bun run <skills>/burn-down-github-issues/loop.ts --only "$B" --limit 0 --appraiser fixture:<skills>/.gates/appraise-big.json --carver "$CARVER" --carve-confirmer "$CONFIRMER"   # sized 8; the rendered callback fires with the ceiling; the knife carves under the loop's seats through the environment
+B=$(mkissue "[carve-test] big one" "$body"); carving "$B" > <repo>/.gates/carving.json; cover "$B" > <repo>/.gates/cover.json
+printf '{"issue":%s,"verdict":"valid","points":8,"reason":"three tables and an API"}' "$B" > <repo>/.gates/appraise-big.json
+CARVER="fixture:<repo>/.gates/carving.json"; CONFIRMER="fixture2:<repo>/.gates/cover.json"
+bun run <skills>/burn-down-github-issues/loop.ts --only "$B" --limit 0 --appraiser fixture:<repo>/.gates/appraise-big.json --carver "$CARVER" --carve-confirmer "$CONFIRMER"   # sized 8; the rendered callback fires with the ceiling; the knife carves under the loop's seats through the environment
 [ "$(sed -n 2p "$CB/on-size-over-2")" = '# rendered by burn-down-github-issues; edits are overwritten' ] || echo FAIL marker
 [ "$(records "$B")" = '["applying","live"]' ] || echo FAIL carved by callback
 touch "$CB/on-size-over-99"
 sed -i 's/^export default {/export default {\n  maxPoints: 3,/' burn-down-github-issues.config.ts
-bun run <skills>/burn-down-github-issues/loop.ts --dry-run | grep -q "on-size-over-3" || echo FAIL re-render
+bun run <skills>/burn-down-github-issues/loop.ts --only "$B" --limit 0 | grep -q "on-size-over-3" || echo FAIL re-render   # a real run: the dry run only names what it would render
 [ -f "$CB/on-size-over-99" ] && [ ! -f "$CB/on-size-over-2" ] || echo FAIL unmarked survives, marked removed
 rm -f "$CB/on-size-over-99" "$CB/on-size-over-3"; cleanup
 ```
@@ -847,11 +847,11 @@ rm -f "$CB/on-size-over-99" "$CB/on-size-over-3"; cleanup
 - On confirmation, check the path ends in `.md`, is repository-relative, exists in the working tree, and equals the `File:` line of this front matter; then delete and commit the deletion alone.
 - The methodology (`references/seams.md`), the lifecycle (`references/lifecycle.md`), and the record (`references/the-record.md`) are skill docs and stay.
 
-**Gate:** `bunx tsc --noEmit -p <skills>` passes and `bun test <skills>` passes; `! git grep -q add-carve-github-issue` succeeds.
+**Gate:** `bunx tsc --noEmit -p <repo>` passes and `bun test <repo>` passes; `! git grep -q add-carve-github-issue` succeeds.
 
 ## Verification checklist
 
-- [ ] `bunx tsc --noEmit -p <skills>` and `bun test <skills>` pass at every commit.
+- [ ] `bunx tsc --noEmit -p <repo>` and `bun test <repo>` pass at every commit.
 - [ ] Appraise and burndown dry runs from the adopter match the Commit 1 captures after Commits 1, 3, 4, and 5.
 - [ ] One standalone carve produced attached children in delivery order, edges, no size labels on children, an `applying` then a `live` record, the generation label, `loop/carved`, and no lingering claim; one adopted or referenced issue where one matched.
 - [ ] One forced dispute ran five rounds, left the trunk `needs-human` with a hand-off comment, a record, and every leaf paused, created nothing, and ran `on-carve-fail`.
