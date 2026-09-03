@@ -206,9 +206,9 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   repoRoot: string;
   fileName: string;
   defaults: K;
-  positiveIntegers: ReadonlyArray<keyof K & string>;
+  positiveIntegers: ReadonlyArray<(keyof K & string) | `${string}.${string}`>;
   /** Knobs that may be zero (a timeout of 0 meaning no timer, say). */
-  nonNegativeIntegers?: ReadonlyArray<keyof K & string>;
+  nonNegativeIntegers?: ReadonlyArray<(keyof K & string) | `${string}.${string}`>;
   /**
    * Nested knob blocks (`carve: { maxDepth: 3 }`) merged one level deep over their defaults, whose
    * keys are validated as `block.key` when named in positiveIntegers or nonNegativeIntegers.
