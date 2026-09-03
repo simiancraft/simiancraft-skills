@@ -188,6 +188,8 @@ simiancraft-skills/
             └── ✏️ triage-and-fix.md             // read the parent's record; spikes
 ```
 
+**As built (2026-09-03).** The library landed in more files than the after-tree names, each with the same contents: the state machine is `lib/knife.ts` rather than the second half of `lib/carve.ts`; claims and the live gate are `lib/claims.ts`; the in-memory tracker for tests is `lib/fake-tracker.ts`; the tests are `lib/carve.test.ts` (parsers), `lib/claims.test.ts`, `lib/validate.test.ts`, and `lib/knife.test.ts`; the burndown's hook, release appraisal, and sweep are `burn-down-github-issues/lib/carving.ts`, and the callback renderer's test is `burn-down-github-issues/lib/place-callbacks.test.ts`. Commits 1 to 10 are on the branch; the live gates that create issues on the adopter's tracker have not been run.
+
 ## The lifecycle
 
 Only so many things can happen to a ticket. This section names all of them; the rest of the plan is the machinery that makes each transition hold. Every state is derived from the issue itself (its labels, its sub-issue tree, its latest record); nothing in a run directory decides a state, and every multi-write transition is announced on the tracker with its full payload before it starts so any machine can finish it. That property is deliberate: these states are the columns of the board this work will eventually be shown on, and a state a person cannot read off the issue is a defect.
