@@ -462,7 +462,7 @@ const ctx = createContext({
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
   },
-  seats: { worker: SEATS.worker, reviewer: SEATS.reviewer },
+  seats: { worker: SEATS.worker, reviewer: SEATS.reviewer, confirmer: SEATS.confirmer },
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
@@ -829,7 +829,7 @@ async function main(): Promise<void> {
     async (issue) => {
       await waitForGo(`#${issue.number}`);
       mark(issue.number, issue.title, 'working');
-      const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
+      const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
       const stage =
         result.outcome === 'merged' || result.outcome === 'parked' || result.outcome === 'dlq' || result.outcome === 'failed'
           ? result.outcome

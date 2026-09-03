@@ -9,10 +9,15 @@
  * against two configurations without sharing a queue, a seat, or a run directory.
  */
 
-import { resolve } from 'node:path';
+import { mkdirSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
+import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { logTail, readResult, renderPrompt, runAgent } from './agent.ts';
 import type { Context } from './context.ts';
-import { closeIssue, parkIssue, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { CONFIRMATION_FILE } from './control-files.ts';
+import { assertDistinctEngines, type Seat } from './engines.ts';
+import { attemptCount, closeIssue, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeFor } from './lane.ts';
 import { mutate, sh } from './shell.ts';
 import { MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
@@ -25,7 +30,7 @@ import { MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.t
  * `parked` means a pull request exists and a human owns the next call.
  */
 export type FixOutcome = {
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed';
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy';
   reason: string;
 };
 
@@ -39,6 +44,7 @@ export type Verdict =
   | 'needs-human'
   | 'out-of-band'
   | 'fixed'
+  | 'answered'
   | 'failed';
 
 export type WorkerResult = {
@@ -48,6 +54,8 @@ export type WorkerResult = {
   reason: string;
   /** For already-fixed and obsolete: the comment to post before closing, receipt included. */
   closeComment?: string;
+  /** For answered: the spike's answers with their evidence, Markdown. */
+  answer?: string;
   pr?: number;
   branch?: string;
   /** What the change touches, which decides whether autoMerge: 'code-only' will merge it. */
@@ -112,7 +120,7 @@ async function runWorker(
   }
 
   const result = readResult<WorkerResult>(cwd, 'loop-verdict.json');
-  const KNOWN: Verdict[] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'failed'];
+  const KNOWN: Verdict[] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'answered', 'failed'];
   if (!result || !KNOWN.includes(result.verdict)) {
     return {
       issue: issue.number,
@@ -128,7 +136,48 @@ async function runWorker(
   // A malformed classification must read as no classification, which fails closed at the merge
   // boundary; a bare string would otherwise spread into characters that match no risky kind.
   result.touches = validTouches(result.touches);
+  // Out of band means "larger than the ceiling, on the scale"; anything else is a failed verdict,
+  // or the worker could re-size an issue into the band it just refused.
+  if (result.verdict === 'out-of-band') {
+    const points = Number(result.points);
+    if (!ctx.knobs.pointScale.includes(points) || points <= maxPoints) {
+      return { issue: issue.number, verdict: 'failed', reason: `out-of-band with points ${result.points ?? 'unstated'}, which is not on the scale above ${maxPoints}; log ends: ${logTail(logPath)}` };
+    }
+  }
+  if (result.verdict === 'answered' && typeof result.answer !== 'string') {
+    return { issue: issue.number, verdict: 'failed', reason: `answered without an answer; log ends: ${logTail(logPath)}` };
+  }
   return result;
+}
+
+/** The second engine on a worker's close: the appraiser's confirmer for a close, its own prompt for a spike's answer. */
+async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void): Promise<{ agree: boolean; reason: string } | null> {
+  const confirmer = ctx.seats.confirmer ?? ctx.seats.reviewer;
+  if (result.verdict !== 'answered') {
+    return confirmClose(ctx, issue, { verdict: result.verdict as 'already-fixed' | 'obsolete', reason: result.reason, closeComment: result.closeComment }, confirmer, say);
+  }
+  const cwd = join(ctx.runDir, `confirm-${issue.number}-${process.pid}`);
+  rmSync(cwd, { recursive: true, force: true });
+  mkdirSync(cwd, { recursive: true });
+  const prompt = renderPrompt(ctx, 'confirm-answer.md', { ISSUE: String(issue.number), TITLE: issue.title, WORKER_REASON: result.reason, ANSWER: result.answer ?? '' });
+  const run = await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt);
+  if (run.exitCode !== 0) return null;
+  const checked = validateConfirmation(readResult<unknown>(cwd, CONFIRMATION_FILE), issue.number);
+  if (!checked.ok) {
+    say(`confirmer's answer is unusable (${checked.why}); kept at ${cwd}`);
+    return null;
+  }
+  rmSync(cwd, { recursive: true, force: true });
+  return checked.result;
+}
+
+/** Hands a leaf to a person with both opinions on the thread. */
+function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, confirmation: { reason: string }, say: (m: string) => void): FixOutcome {
+  const body = `The worker judged this \`${result.verdict}\` (${result.reason}); the second engine disagreed: ${confirmation.reason}. A person decides.`;
+  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', body]);
+  mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+  say('the second engine disputed the close; handed to a person');
+  return { outcome: 'handed-off', reason: `close disputed: ${confirmation.reason}` };
 }
 
 async function runReviewer(
@@ -372,6 +421,7 @@ async function land(
   reviewed: Reviewed,
   cwd: string,
   say: (message: string) => void,
+  ceiling: number = DEFAULT_MAX_POINTS,
 ): Promise<Landing> {
   const { review: verdict, reviewedSha } = reviewed;
 
@@ -475,6 +525,16 @@ async function land(
     }
   }
 
+  // The last read before the merge: a hold, a pause, a child, or another run's claim that landed
+  // during the review makes the merge someone else's call.
+  if (!ctx.dryRun) {
+    const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+    if (!gate.ok) {
+      say(`refusing to merge PR #${pr}: ${gate.why}`);
+      return { park: `the issue changed under the review: ${gate.why}` };
+    }
+  }
+
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
   mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
@@ -509,24 +569,75 @@ async function land(
   } catch {
     say(`merged branch ${branch} was already deleted`);
   }
+  // Read once more before the close. The merge has landed either way; a refusal here parks the
+  // issue with the merge named, so a person sees a closed pull request against an open issue.
+  if (!ctx.dryRun) {
+    const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+    if (!gate.ok) {
+      say(`merged PR #${pr} but not closing the issue: ${gate.why}`);
+      parkIssue(ctx, issue.number, `Pull request #${pr} merged at ${merged}, but the issue was not closed because ${gate.why}. A person closes it or carries on.`);
+      return 'merged';
+    }
+  }
   await closeIssue(ctx, issue.number, `Closed by #${pr}.`, { kind: 'merged', pr, mergeSha: reviewedSha, reason: `merged #${pr}`, by: 'worker' });
   return 'merged';
 }
 
-async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult, pr?: number): Promise<FixOutcome | null> {
+async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult, ceiling: number, say: (message: string) => void, pr?: number): Promise<FixOutcome | null> {
   const closePullRequest = () => {
     if (pr) mutate(ctx, `close PR #${pr}`, ['gh', 'pr', 'close', String(pr), '--comment', 'Superseded; see the issue.']);
+  };
+  // Every close re-reads the issue and its ancestors first: a hold, a pause, a child, or a claim
+  // that landed since the worker started makes the close someone else's call.
+  const gateBeforeClose = (): FixOutcome | null => {
+    if (ctx.dryRun) return null;
+    const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+    if (gate.ok) return null;
+    say(`refusing to close: ${gate.why}`);
+    parkIssue(ctx, issue.number, `The loop reached a \`${result.verdict}\` verdict (${result.reason}) but did not close, because ${gate.why}.`);
+    closePullRequest();
+    removeWorktree(ctx, issue.number);
+    return { outcome: 'parked', reason: gate.why };
   };
 
   switch (result.verdict) {
     case 'already-fixed':
-    case 'obsolete':
+    case 'obsolete': {
+      const confirmation = await confirmWorkerClose(ctx, issue, result, say);
+      if (!confirmation) return { outcome: 'failed', reason: 'no usable confirmation of the close' };
+      if (!confirmation.agree) {
+        closePullRequest();
+        removeWorktree(ctx, issue.number);
+        return parkWithBothOpinions(ctx, issue, result, confirmation, say);
+      }
+      const refused = gateBeforeClose();
+      if (refused) return refused;
       // The obsolete pull request goes first: a crash after it leaves retryable work, whereas a
       // crash after the close would leave an open pull request attached to a closed issue.
       closePullRequest();
-      await closeIssue(ctx, issue.number, result.closeComment ?? result.reason, { kind: 'closed', reason: result.verdict, by: 'worker' });
+      await closeIssue(ctx, issue.number, `${result.closeComment ?? result.reason}\n\nIndependently re-checked: ${confirmation.reason}`, { kind: 'closed', reason: result.verdict, by: 'worker' });
       removeWorktree(ctx, issue.number);
       return { outcome: 'closed', reason: result.reason };
+    }
+
+    case 'answered': {
+      const confirmation = await confirmWorkerClose(ctx, issue, result, say);
+      if (!confirmation) return { outcome: 'failed', reason: 'no usable confirmation of the answer' };
+      if (!confirmation.agree) {
+        closePullRequest();
+        removeWorktree(ctx, issue.number);
+        return parkWithBothOpinions(ctx, issue, result, confirmation, say);
+      }
+      const refused = gateBeforeClose();
+      if (refused) return refused;
+      closePullRequest();
+      const marker = `<!-- carve-answer issue=${issue.number} -->`;
+      const already = ctx.dryRun ? false : trackerIo(ctx).view(issue.number)?.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(marker));
+      if (!already) mutate(ctx, `post the answer on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `${marker}\n${result.answer ?? ''}`]);
+      await closeIssue(ctx, issue.number, `Answered; see the answer above. Independently re-checked: ${confirmation.reason}`, { kind: 'answered', reason: 'answered', by: 'worker' });
+      removeWorktree(ctx, issue.number);
+      return { outcome: 'closed', reason: result.reason };
+    }
 
     case 'needs-decision':
     case 'needs-human':
@@ -578,11 +689,26 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
   }
 }
 
+/**
+ * One more worker or confirmer failure on the issue; at the cap the issue parks with the log tail,
+ * so a leaf nobody can work stops costing attempts. The count lives on the issue, like reviews.
+ */
+function countFailure(ctx: Context, issue: Issue, reason: string, say: (message: string) => void): FixOutcome {
+  const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
+  say(`attempt ${attempts} of ${ctx.knobs.maxWorkerAttempts} failed`);
+  if (attempts >= ctx.knobs.maxWorkerAttempts) {
+    parkIssue(ctx, issue.number, `The loop failed ${attempts} times on this issue and stops trying. Last failure: ${reason}\n\nRemove \`loop/parked\` to give it a fresh budget.`);
+    return { outcome: 'parked', reason: `parked after ${attempts} failed attempts: ${reason}` };
+  }
+  return { outcome: 'failed', reason };
+}
+
 async function workIssue(
   ctx: Context,
   issue: Issue,
   cwd: string,
   maxPoints: number,
+  ceiling: number,
   say: (message: string) => void,
 ): Promise<FixOutcome> {
   const result = await runWorker(ctx, issue, cwd, maxPoints);
@@ -590,12 +716,12 @@ async function workIssue(
 
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
-    return { outcome: 'failed', reason: result.reason };
+    return countFailure(ctx, issue, result.reason, say);
   }
-  const settled = await settleTerminalVerdict(ctx, issue, result);
-  if (settled) return settled;
+  const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say);
+  if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say) : settled;
 
-  return reviewAndLand(ctx, issue, cwd, result, maxPoints, say);
+  return reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
 }
 
 /**
@@ -621,6 +747,7 @@ export async function reviewAndLand(
   first: WorkerResult,
   maxPoints: number,
   say: (message: string) => void,
+  ceiling: number = maxPoints,
 ): Promise<FixOutcome> {
   let result = first;
   let consumed = reviewCount(issue.labels);
@@ -646,7 +773,7 @@ export async function reviewAndLand(
     }
 
     // Merging happens there, one branch at a time, because the base branch is shared.
-    const outcome = await serializePullMaster(ctx, async () => land(ctx, issue, pr, touches, reviewed, cwd, say));
+    const outcome = await serializePullMaster(ctx, async () => land(ctx, issue, pr, touches, reviewed, cwd, say, ceiling));
     if (outcome === 'merged') return { outcome: 'merged', reason: `merged pull request #${pr}` };
 
     // The base reached this work while the review was running. That is upstream churn, not a defect
@@ -690,11 +817,12 @@ export async function reviewAndLand(
     result = await runWorker(ctx, issue, cwd, maxPoints, verdict);
     say(`verdict: ${result.verdict}; ${result.reason}`);
     if (result.verdict === 'failed') {
-      // an open pull request now needs a human
+      // an open pull request now needs a human; the attempt counts, and the park is at once
+      recordAttempt(ctx, issue.number, attemptCount(issue.labels));
       parkReason = result.reason;
       break;
     }
-    const settled = await settleTerminalVerdict(ctx, issue, result, pr);
+    const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
     if (settled) return settled;
   }
 
@@ -714,11 +842,30 @@ export async function reviewAndLand(
  * The lane is created here and removed here, whatever the outcome, so no exit leaks a worktree.
  * A crash never runs the cleanup, which is exactly when the resume path should get its chance.
  */
-export async function fixIssue(ctx: Context, issue: Issue, options: { maxPoints?: number } = {}): Promise<FixOutcome> {
+export async function fixIssue(
+  ctx: Context,
+  issue: Issue,
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat } = {},
+): Promise<FixOutcome> {
   // Lanes interleave, so every line an issue emits names the issue. Without this the console is a
   // shuffled deck of verdicts with no way to tell which belongs to which.
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title}`);
+  const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
+  const ceiling = options.ceiling ?? maxPoints;
+  if (options.confirmer) ctx.seats.confirmer = options.confirmer;
+  assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
+
+  // The live gate, then the claim, then the lane: nothing is created for an issue this run may not work.
+  const io = trackerIo(ctx);
+  const gate = liveGate(ctx, io, issue.number, ceiling);
+  if (!gate.ok) {
+    say(`left alone: ${gate.why}`);
+    return { outcome: gate.outcome, reason: gate.why };
+  }
+  const handle = claim(ctx, io, issue.number, 'working');
+  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
+  const stopRenewing = keepClaimed(handle);
 
   // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
   // learns to treat the main checkout as a valid agent working directory.
@@ -727,8 +874,14 @@ export async function fixIssue(ctx: Context, issue: Issue, options: { maxPoints?
     : worktreeFor(ctx, issue.number);
   inFlight.set(issue.number, { dir: cwd, busy: false });
   try {
-    return await workIssue(ctx, issue, cwd, options.maxPoints ?? DEFAULT_MAX_POINTS, say);
+    return await workIssue(ctx, issue, cwd, maxPoints, ceiling, say);
   } finally {
+    stopRenewing();
+    try {
+      handle.release();
+    } catch (error) {
+      say(`could not release the claim: ${(error as Error).message}`);
+    }
     inFlight.delete(issue.number);
 
     // Whatever the outcome, this lane is finished with the directory, so it goes here rather than

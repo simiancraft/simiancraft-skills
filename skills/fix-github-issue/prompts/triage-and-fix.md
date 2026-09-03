@@ -56,7 +56,19 @@ these turns out to be true, stop, write the matching verdict, and do not start w
 | `obsolete` | The code, route, or component it describes is gone or reshaped so the defect cannot occur |
 | `needs-decision` | It turns on a product or domain ruling nobody has made, and the thread does not contain one |
 | `needs-human` | It needs production data edits, account provisioning, third-party configuration, or asset creation |
-| `out-of-band` | The real work is materially larger than the appraisal said; give your own points |
+| `out-of-band` | The real work is materially larger than the appraisal said; give your own points, on the project's scale and above {{MAX_POINTS}} |
+| `answered` | The issue carries the `spike` label and you ran what it asks; put the answers, with evidence, in `answer` |
+
+**If the issue has a parent** (it is a sub-issue), read the parent's thread and its newest carving
+record (the comment starting `<!-- carve-record`), and every ancestor's, before starting. The record
+says which piece this is, what it may assume has already landed (a `layers` relation), what it must
+not touch (a `shards` relation), and whether it waits on a spike. Work within that; a leaf that
+re-does its sibling's work or reaches into its sibling's files is the wrong fix even when it passes.
+
+**If the issue carries the `spike` label**, it asks questions, not for a change. Run the experiments
+its body names, measure, and return `answered` with the answers and their evidence in `answer`
+(numbers with how they were measured, commands with their output, files and lines as the base
+holds them). Open no pull request for a spike.
 
 Three rules stand whatever the appraisal said:
 
@@ -152,10 +164,11 @@ reads, so write it even when you failed.
 ```json
 {
   "issue": {{ISSUE}},
-  "verdict": "already-fixed | obsolete | needs-decision | needs-human | out-of-band | fixed | failed",
+  "verdict": "already-fixed | obsolete | needs-decision | needs-human | out-of-band | fixed | answered | failed",
   "points": 2,
   "reason": "one or two sentences, and for needs-decision the exact question a human must answer",
   "closeComment": "only for already-fixed and obsolete: the full comment to post, receipt included",
+  "answer": "only for answered: the spike's answers with their evidence, Markdown",
   "pr": 1234,
   "branch": "fix/...",
   "touches": ["code"]

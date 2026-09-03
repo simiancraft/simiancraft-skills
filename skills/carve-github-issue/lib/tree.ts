@@ -72,6 +72,8 @@ export type Tree = {
   children: Node[];
   blockers: Node[];
   ancestors: Array<{ number: number; labels: string[]; record: Record | null }>;
+  /** Blockers an ancestor's record commands for this issue, read live, whether or not the tracker still carries the edge. */
+  recordBlockers: Array<{ via: number; node: Node }>;
   /** The root is 0. */
   depth: number;
   record: Record | null;
@@ -277,11 +279,25 @@ export function readTree(ctx: Context, number: number, io: TrackerIo = ghIo(ctx)
     ancestors.push({ number: node.number, labels: node.labels.map((l) => l.name), record: node.record });
     parent = node.parent?.number ?? null;
   }
+  const recordBlockers: Tree['recordBlockers'] = [];
+  for (const ancestor of ancestors) {
+    const rec = ancestor.record;
+    if (!rec || rec.state === 'released') continue;
+    const me = rec.children.find((c) => c.number === number);
+    if (!me) continue;
+    for (const dep of me.dependsOn) {
+      const target = rec.children.find((c) => c.piece === dep);
+      if (!target || target.number === null || target.number === number) continue;
+      if (recordBlockers.some((b) => b.node.number === target.number)) continue;
+      recordBlockers.push({ via: ancestor.number, node: io.view(target.number) ?? deletedNode(target.number) });
+    }
+  }
   const record = issue.record;
   return {
     issue,
     children,
     blockers,
+    recordBlockers,
     ancestors,
     depth: ancestors.length,
     record,

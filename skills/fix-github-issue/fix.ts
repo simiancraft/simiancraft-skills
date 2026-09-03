@@ -88,6 +88,7 @@ const SEATS = (() => {
     return {
       worker: parseSeat(opt('worker') ?? CONFIG.seats.worker, '--worker'),
       reviewer: parseSeat(opt('reviewer') ?? CONFIG.seats.reviewer, '--reviewer'),
+      confirmer: parseSeat(opt('confirmer') ?? CONFIG.seats.confirmer ?? CONFIG.seats.reviewer, '--confirmer'),
     };
   } catch (error) {
     // A mistyped engine deserves the composed message, not a raw stack trace.
@@ -103,24 +104,27 @@ const ctx = createContext({
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
+    pointScale: CONFIG.pointScale,
+    maxWorkerAttempts: CONFIG.maxWorkerAttempts,
   },
   seats: SEATS,
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
-  promptsDirs: [PROMPTS],
+  // The appraiser's prompts too: a worker's close is confirmed with the appraiser's confirmer prompt.
+  promptsDirs: [PROMPTS, join(HERE, '..', 'appraise-github-issues', 'prompts')],
   dryRun: DRY_RUN,
 });
 
 step(`${ctx.project.name} fix-github-issue`);
 log(`base ${ctx.project.baseBranch} | merge: ${ctx.knobs.autoMerge} | config ${CONFIG_FILE}`);
-log(`worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)}`);
+log(`worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)} | confirmer ${seatLabel(SEATS.confirmer)}`);
 if (SEATS.worker.engine === SEATS.reviewer.engine) {
   log("WARNING: worker and reviewer share an engine, so the merge gate shares the author's blind spots");
 }
 if (DRY_RUN) log('DRY RUN: no GitHub mutation and no agent will run');
 
 const issue: Issue = JSON.parse(
-  sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels']),
+  sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy']),
 );
 
 // The labels the pipeline writes have to exist before it writes one; creating them is idempotent.

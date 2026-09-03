@@ -182,7 +182,7 @@ function validateAppraisal(raw: unknown, issue: number): { ok: true; result: App
   };
 }
 
-function validateConfirmation(raw: unknown, issue: number): { ok: true; result: Confirmation } | { ok: false; why: string } {
+export function validateConfirmation(raw: unknown, issue: number): { ok: true; result: Confirmation } | { ok: false; why: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, why: 'not an object' };
   const r = raw as Record<string, unknown>;
   if (r.issue !== issue) return { ok: false, why: `names issue ${JSON.stringify(r.issue)}, not #${issue}` };
@@ -200,10 +200,10 @@ function validateConfirmation(raw: unknown, issue: number): { ok: true; result: 
  * the confirmer crashed, wrote nothing, or wrote something malformed; none of those is evidence.
  * The scratch directory is unique to this process so two drivers cannot read each other's answer.
  */
-async function confirmClose(
+export async function confirmClose(
   ctx: Context,
   issue: Issue,
-  appraisal: AppraisalResult,
+  appraisal: Pick<AppraisalResult, 'verdict' | 'reason' | 'closeComment'>,
   confirmer: Seat,
   say: (message: string) => void,
 ): Promise<Confirmation | null> {

@@ -8,9 +8,10 @@
 
 import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
-import { reviewCount } from './labels.ts';
+import { parkIssue, reviewCount } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
 import { type Issue, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
@@ -66,6 +67,7 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     })();
     if (dirty) {
       ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
+      parkForInspection(ctx, Number(issue), `An earlier run left uncommitted work in its lane (${judged}) and no pull request. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
       continue;
     }
 
@@ -118,6 +120,7 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
     const verdict = parseJsonFile<WorkerResult>(join(dir, VERDICT_FILE));
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
       ctx.log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
+      parkForInspection(ctx, issue.number, `An earlier run died with this issue's lane at ${dir} and left no usable verdict. A person inspects the lane and the pull request, if any.`);
       continue;
     }
     // The verdict is trusted only as far as it can be corroborated: it must name this issue, and
@@ -145,11 +148,24 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
  * A stranded pull request is finished work, and landing it first also moves the base before fresh
  * lanes cut their branches from it.
  */
+/** Parks an issue a dead run left for inspection, once: a parked issue is not commented on again. */
+function parkForInspection(ctx: Context, issue: number, reason: string): void {
+  if (ctx.dryRun) return;
+  try {
+    const labels = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'state,labels', '--jq', '[.state, (.labels[].name)] | join(" ")']);
+    if (!labels.startsWith('OPEN') || labels.includes('loop/parked')) return;
+    parkIssue(ctx, issue, reason);
+  } catch (error) {
+    ctx.log(`#${issue}  could not park it for inspection: ${(error as Error).message}`);
+  }
+}
+
 export async function resumeStranded(
   ctx: Context,
   stranded: Stranded[],
   concurrency: number,
   maxPoints: number,
+  ceiling: number = maxPoints,
 ): Promise<void> {
   if (stranded.length === 0) return;
   ctx.step(`Resuming ${stranded.length} stranded pull request(s) from an earlier run`);
@@ -161,10 +177,31 @@ export async function resumeStranded(
       const entry = stranded.find((s) => s.issue.number === issue.number);
       if (!entry) return;
       const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+      // A fresh claim, never the dead run's, and the live gate first: the issue may have been
+      // held, paused, carved, or claimed elsewhere since the run died.
+      const io = trackerIo(ctx);
+      const gate = liveGate(ctx, io, issue.number, ceiling);
+      if (!gate.ok) {
+        say(`not resuming: ${gate.why}`);
+        if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
+        return;
+      }
+      const handle = claim(ctx, io, issue.number, 'working');
+      if (handle === 'busy') {
+        say('not resuming: another run holds it');
+        return;
+      }
+      const stopRenewing = keepClaimed(handle);
       inFlight.set(issue.number, { dir: entry.cwd, busy: false });
       try {
-        await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say);
+        await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
       } finally {
+        stopRenewing();
+        try {
+          handle.release();
+        } catch (error) {
+          say(`could not release the claim: ${(error as Error).message}`);
+        }
         inFlight.delete(issue.number);
       }
     },

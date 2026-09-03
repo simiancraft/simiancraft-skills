@@ -71,7 +71,7 @@ export type Context = {
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
   onClosed?: (event: CloseEvent) => Promise<void>;
   /** When set, every mutation goes here instead of to gh: a fake tracker under test. */
-  io?: { write: (op: { description: string; argv: string[] }) => void };
+  io?: { write: (op: { description: string; argv: string[] }) => void; view?: (n: number) => unknown; search?: (q: string) => unknown };
 };
 
 /**
