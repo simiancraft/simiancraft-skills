@@ -2,7 +2,7 @@
 
 > Claude Code skills for the full arc of a change: farm to table, with receipts.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-15-4c1) ![Agents](https://img.shields.io/badge/agents-3-4c1)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-19-4c1) ![Agents](https://img.shields.io/badge/agents-4-4c1)
 
 Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Most skill collections are grab bags. This one has a spine: it carries a change through its whole life. Plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
 
@@ -31,6 +31,11 @@ Each stage of a change has a home here, and each stage ends in an observable gat
 | **Extract evidence** | artifacts a reviewer can consume: a contract-shaped bundle with a manifest, or a GIF embedded where the claim is made | [`ios-simulator-flow-evidence`](skills/ios-simulator-flow-evidence/SKILL.md), [`playwright-gif-capture`](skills/playwright-gif-capture/SKILL.md) |
 | **Shrink** | kept only if smaller AND still valid; never regress | [`asset-optimization`](skills/asset-optimization/SKILL.md) |
 | **Prove it** | evidence a reader can independently re-check, rendered inline on the PR | [`prove-work-on-github`](skills/prove-work-on-github/SKILL.md) |
+| **Run the whole arc unattended** | issues appraised, fixed, proven, judged by a second engine, and merged one branch at a time | [`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md) |
+| **Size the backlog and close what is done** | every issue judged still-real-or-not and sized on your scale, hand-offs labelled with the question, closes confirmed by a second engine before they land | [`appraise-github-issues`](skills/appraise-github-issues/SKILL.md) |
+| **Break an issue that is too big into ones that are not** | one oversized issue expressed as sub-issues along its highest natural seam, matched against the backlog so nothing is authored twice, confirmed by a second engine, and re-checked as its children close | [`carve-github-issue`](skills/carve-github-issue/SKILL.md) |
+| **Fix one known issue unattended** | a worker in its own worktree, a second-engine reviewer, and a merge gated on freshness and green checks | [`fix-github-issue`](skills/fix-github-issue/SKILL.md) |
+| **Keep an eye on the deployed result** | a list of what should now be true, walked on a cadence to the standard "would a user notice", with an incident filed and fixed when it is not | [`walk-the-floor`](skills/walk-the-floor/SKILL.md) |
 
 The seams are contracts with names, not habits. The evidence skill emits artifacts to a documented contract that the proof skill consumes; the GIF capture skill ends at embedding in a PR; the proof skill defers artifact shrinking back to `asset-optimization`. Farm to table.
 
@@ -81,10 +86,20 @@ The camera skills ship a person: a pre-framed human subject fixture fed to the e
 
 - **[`prove-work-on-github`](skills/prove-work-on-github/SKILL.md)**: proves that work claimed on a pull request or issue actually landed and is sound, with verifiable evidence a reader can independently re-check. Sizes the proof a change owes, names what must be proven, supplies the receipts, stores them durably in an evidence branch rendered inline on the PR, and judges whether they are enough to merge.
 
+### Burn down
+
+- **[`burn-down-github-issues`](skills/burn-down-github-issues/SKILL.md)**: runs the whole arc unattended over an issue backlog. Appraises and sizes recent issues, closes stale ones with re-checkable receipts, fixes small ones in parallel git worktrees, proves each fix per `prove-work-on-github` on a draft PR, has an isolated second-engine reviewer judge it against the proof skill's rubric, and merges one branch at a time with import-closure staleness checks. The loop ships with the skill; a repository carries only a config file, and the loop refuses to start without it.
+
+- **[`appraise-github-issues`](skills/appraise-github-issues/SKILL.md)**: sizes a backlog and closes what is done, without fixing anything. One read-only agent turn per issue decides whether it is still real and how big it is; the answer lands on the issue as a `size: N` label, a `needs-decision` or `needs-human` label with the question stated, or a close with a re-checkable receipt that a confirmer on a second engine has independently re-checked. Runs on one issue, a window, the whole backlog, or as a periodic heartbeat, and is the sizing stage of the burndown.
+- **[`fix-github-issue`](skills/fix-github-issue/SKILL.md)**: turns one known issue into a merged pull request. A worker fixes it in its own git worktree and opens a draft pull request carrying proof per `prove-work-on-github`; an isolated second-engine reviewer judges that proof; a serial pull master checks the approval against import-closure staleness and the pull request's own checks before it merges, and parks rather than guesses. Runs standalone from its `fix.ts`, or as the fix stage of another loop, which is what the burndown does with it.
+- **[`carve-github-issue`](skills/carve-github-issue/SKILL.md)**: the knife. Takes one issue sized over the burndown's ceiling and expresses it as sub-issues: a carver inventories every acceptance criterion, matches each piece against the backlog, cuts along the highest admissible seam (domain, tier, route, area, file, unit, material), and a confirmer on a second engine checks the cut covers the parent before anything is created. The parent becomes a trunk finished by closing its children; every child close re-checks it, a question pauses exactly the leaves it touches, and a trunk with nothing left goes back to the appraiser. Invoked by the burndown through the appraiser's size callback, or standalone on one issue.
+- **[`walk-the-floor`](skills/walk-the-floor/SKILL.md)**: a list checker and fixer for a running environment. Wakes once or on a cadence, probes the base URL, puts every merged pull request on its floor, walks each item with a browser or device driver to the standard "would a user notice", and records a rung and a verdict in an append-only ledger. Two conventional callbacks, `on-pass` and `on-fail`, let whatever started it react; the burndown uses `on-fail` to stop its own merge queue. When the environment is down or a change is absent, it files a `floor/incident` issue and hands it to `fix-github-issue`.
+
 ### Agents
 
 - **[`android-emulator-tester`](agents/android-emulator-tester.md)**: automated Android UI/integration testing specialist; drives a real app on a headless emulator and gates on what it observes. Owns the boot, install, drive, and assert loop.
 - **[`android-kotlin-expert`](agents/android-kotlin-expert.md)**: Android native specialist for Kotlin, Java, Gradle, the Jetpack libraries, OpenGL ES and camera pipelines, and React Native / Expo Modules native bridging. Two modes: implement or review.
+- **[`review-security-expert`](agents/review-security-expert.md)**: security review lens covering input handling, ReDoS, prototype pollution, supply chain, publish hygiene, and GitHub Actions workflow exploitation.
 - **[`review-software-architect`](agents/review-software-architect.md)**: senior architect review lens for any codebase. Judges a project against its own organizing principle first and the canon (SOLID, DDD, layering, paradigm coherence) second, and grades on request with calibrated letter grades.
 
 ## Every skill names its ceiling
