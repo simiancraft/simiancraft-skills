@@ -164,7 +164,7 @@ export function useResetDatabase() {
 }
 ```
 
-A feature or sub-feature file importing `useMutation`, `graphql()`, or `Toast.show()` is wrong-shaped. Those belong in `actions/`. Even when the user-facing UI is identical, moving the mutation and toast out of the calling file is worth it on its own: the calling file reads as a static outline of zones; the action becomes reusable and testable as a transactional unit. (GraphQL fragment and data-flow specifics: `graphql-fragments.md`.)
+A feature or sub-feature component importing `useMutation`, declaring mutations with `graphql()`, or calling `Toast.show()` is wrong-shaped. Those belong in `actions/`; query-owning chassis and colocated fragments may use `graphql()`. Even when the user-facing UI is identical, moving the mutation and toast out of the calling file is worth it on its own: the calling file reads as a static outline of zones; the action becomes reusable and testable as a transactional unit. (GraphQL fragment and data-flow specifics: `graphql-fragments.md`.)
 
 **`useEffect` is also a side-effect concern.** Most cases that "need" an effect are better expressed as user-action-triggered handler functions, derived computation during render, or `useSyncExternalStore`. Genuine lifecycle exceptions (canvas, WebRTC, external subscriptions, DOM measurement) are real but rare; reach for `useEffect` only with reason.
 
@@ -261,7 +261,7 @@ A feature **may also** add domain folders named after its own axiomatic concepts
     <category>.ts
   steps/                       # ← DOMAIN FOLDER ("step" is this feature's axiom)
     layout.tsx                 # StepLayout: pattern recurses; this folder has its own layout
-    <step-name>-step.tsx       # Each step is a mini-composer fulfilling StepLayout zones
+    <step-name>-step.tsx       # Step body for root composition, or a mini-composer filling StepLayout zones
     ...
   <wizard-name>.tsx            # Wizard hook + component (orchestration paired with surface)
   <wizard-name>.types.ts
@@ -358,7 +358,7 @@ function submitSelectTime() {
 ## Storybook implications
 
 - Stories mirror the chassis composition, not isolated zones.
-- Story names match chassis branches: `ErrorState`, `Loading`, `Hydrated` (always); plus `NoData` and `Submitting` only when those branches exist for this surface. Order matches the trunk early-return order. The Storybook sidebar reads like the chassis.
+- Story names match chassis branches: `ErrorState`, `Loading`, and `Hydrated` for data features; machine-state stories for reusable machines; plus `NoData` and `Submitting` only when those branches exist for this surface. Order matches the trunk early-return order. The Storybook sidebar reads like the chassis.
 - Don't render isolated leaves; render the full Layout with all zones populated.
 - Hooks inside `render` break rules-of-hooks; extract a named wrapper component instead.
 - Mock data lives in a single `mock-data.ts` at the feature root (`SCREAMING_CASE` exports), shared by all stories in the feature. Pure utils always have `.test.ts`.
@@ -371,3 +371,62 @@ The pattern aligns with React Compiler's memoization assumptions:
 - No `useEffect` for user-action-triggered side effects: use handler functions.
 - No manual `useMemo` / `useCallback` / `React.memo`: the compiler memoizes automatically.
 - Branching lives in flat chassis guards, not JSX templates.
+
+## Prior art: reusable machines and pluggable parts
+
+These examples are from Lifeguides and react-native-roster; all paths below are relative to the named repository's root. They explain the abstraction's source without treating every historical choice as a rule.
+
+| Source | What it establishes | Boundary to preserve or correct |
+|---|---|---|
+| Lifeguides `components/ui/combobox/index.tsx` and `components/ui/combobox/types.ts` | `Combobox` owns filtering and selection by `mode`, defaults `triggerComponent`, `listItemComponent`, and `selectionComponent`, and exposes `variant` and `size`. | A reusable machine has a composer interior and a primitive-flavored public surface; no application fetch is required. The shared file is currently named `types.ts`; new shared contracts use `.types.ts`. |
+| Lifeguides `components/ui/combobox/parts/list-items.tsx`, `parts/triggers.tsx`, and `parts/selection-models.tsx` | `DefaultListItem`, `DefaultTrigger`, and `DefaultSelectionModel` implement shared part contracts. | Retain component boundaries when customizing; mount component types instead of invoking render functions. |
+| Lifeguides `components/ui/combobox/layout.tsx` and `layout.web.tsx` | Native uses a bottom sheet and `BottomSheetFlatList`; web uses popover and command components. | Named compromise: `listItemNode` is threaded through `Layout` and `Content`; the web path also relays `selectionComponent`. Move list ownership to a part, and pass `listZone` and resolved selection nodes to layouts. |
+| React-native-roster `src/components/roster/index.tsx`, `layout.tsx`, and `roster.types.ts` | `RosterModel.status` is `empty` or `ready`; the chassis defaults every `Component` prop once and mounts it before supplying the outer layout's nodes. | `emptyZone` and `cornerZone` are nodes; `headerComponent`, `laneLabelColumnComponent`, `bodyComponent`, `headerCellComponent`, `laneLabelComponent`, `intervalComponent`, `gapComponent`, and `gridComponent` are component types. `RosterLayout` receives only nodes. |
+| React-native-roster `src/components/roster/lanes/lane.tsx` and `src/components/layers/layers.types.ts` | `LaneRow` resolves per-rect inputs; `IntervalInput` contains `rect`, `layer`, `lane`, and `highlighted`, while `GapInput` contains `rect`, `layer`, and `lane`. | `src/components/layers/parts/interval.tsx` and `parts/gap.tsx` provide `RosterInterval` and `RosterGap` defaults. `LaneRow` mounts `intervalComponent` and `gapComponent` as JSX with the resolved inputs; nothing in the row invokes a render function. |
+
+**Component-type binding recipe.** This is an illustrative replacement for the combobox relay, not a claim that its current layout already has these props. Imports for the surrounding machine and its part types are omitted.
+
+```tsx
+import type { ComponentType, ReactNode } from 'react';
+
+type ChoiceProps = {
+  item: ComboboxOption;
+  isSelected: boolean;
+  listItemComponent?: ComponentType<ListItemProps>;
+};
+
+export function Choice({
+  item,
+  isSelected,
+  listItemComponent: ListItemComponent = DefaultListItem,
+}: ChoiceProps) {
+  return (
+    <ChoiceLayout
+      contentZone={<ListItemComponent item={item} isSelected={isSelected} />}
+    />
+  );
+}
+
+function ChoiceLayout({ contentZone }: { contentZone: ReactNode }) {
+  return <View>{contentZone}</View>;
+}
+```
+
+The consumer passes `listItemComponent={CustomListItem}`. Defaulting and binding once means one component-type binding at the owner, not an invocation of that function and not a new component definition inside render. For repeated items, the collection tier mounts the bound type for each resolved item. A `Component` prop never reaches a layout; a `Zone` prop is always a node.
+
+## The collection tier: one list part, one row callback
+
+A list is a part in its own right. Choose its component type at the chassis or collection tier and plug the mounted list into `listZone`; changing list implementation at runtime then leaves the surrounding layout contract intact. Nonvirtual lists can use local `.map()` composition. The only render-prop exception is a virtualized list's row callback, owned by that list part and returning one item component. Event handlers, key extraction, and geometry functions are not render callbacks.
+
+React-native-roster separates this boundary:
+
+| File | Responsibility |
+|---|---|
+| `src/components/roster/parts/body.tsx` | `RosterBody` waits for a measured viewport and passes `<RosterLaneList {...props} />` as `listZone`. |
+| `src/components/roster/body-layout.tsx` | `RosterBodyLayout` arranges `gridZone` and `listZone` within scrolling chrome. |
+| `src/components/roster/parts/lane-list.tsx` | `RosterLaneList` owns LegendList, its virtualization settings, and `renderItem`; the callback constructs one `LaneRow`, optionally wrapped in a Profiler. |
+| `src/components/roster/lanes/lane.tsx` | `LaneRow` owns the item's interval and gap composition. The list callback does not expand that tree inline. |
+
+This is the RosterBody/LegendList example at its current file split. The runtime choice of list type is the recipe supported by `listZone`; the default `RosterBody` mounts `RosterLaneList`, and a consumer who needs a different list supplies `bodyComponent`. Do not generalize the virtualized row exception to per-frame renderers, step factories, layout functions, or consumer-supplied render functions.
+
+**Pressed styling is static composition.** Lifeguides `components/session/session-scheduler/steps/select-member-step.tsx` uses `Pressable`'s children callback solely to change a card border from `pressed`. Replace that shape with static children and an active class on the press target, or a group-active class for a descendant. Lifeguides `components/ui/combobox/layout.tsx` already uses `active:bg-accent` on its item Pressable. Styling does not justify another render callback.

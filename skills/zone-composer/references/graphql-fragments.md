@@ -4,7 +4,7 @@
 
 ## GraphQL data flow and fragments
 
-The chassis owns the query/mutation lifecycle (and is the only file that calls `useQuery`, `useMutation`, or `graphql()` for the feature's main operations). Leaves declare their data contracts as **colocated fragments**: a part needing data exports a `<Feature><Role>_<graphqlType>` fragment alongside its component, and the chassis query gathers fragments via spreads.
+The chassis and its orchestration hook own the query lifecycle; mutation hooks live in `actions/`. A named query-owning step is an explicit nested chassis exception to the `index.tsx` placement rule, not an ordinary leaf: Lifeguides `components/session/session-scheduler/steps/select-time-step.tsx` owns its query and flat-branches its states while the parent `components/session/session-scheduler/index.tsx` keeps submit and back controls. See `fsm-wizards.md` for the recipe. Leaves declare their data contracts as **colocated fragments**: a part needing data exports a `<Feature><Role>_<graphqlType>` fragment alongside its component, and the chassis query gathers fragments via spreads.
 
 Each feature has its own local query; no central `graphql.ts`. Queries are **local to their consumer**: if two features use the same underlying query, each gets its own copy. They may diverge over time. Shared queries couple unrelated consumers; consumer-driven fragments scale; parent-curated field lists rot.
 
