@@ -281,6 +281,44 @@ bun run <skill-dir>/lanes.ts                                   # write the lanes
 The exporter and the chart read the same data as the tests, so a chart that looks wrong is a
 machine that is wrong, and the fix is in `lib/machine.ts`.
 
+## The agent pool: seats are polymorphic, the lane picks the prompt
+
+An agent is not a role that owns a ticket. It is a seat that runs whatever the card's lane
+calls for, then lets go. Every lane whose entry action starts an agent names the prompt it
+runs (appraiser, confirmer, carver, carve confirmer, worker, worker in revision, reviewer,
+triage), so a pool of seats is lane-agnostic: a seat takes a card, reads its lane, runs that
+lane's prompt, writes the result, moves the card, releases. The issue's position in the matrix
+is the only input that changes what the seat does.
+
+The dispatcher this implies is a pull over the board, not a push over a selection list:
+
+1. Read every card whose lane has an agent entry action and whose claim is free, in board
+   order within each phase (A2, A3, C2, C3, C6, D1, D4, E2, F4, Q1 to Q5).
+2. Respect the WIP limit of the card's phase (the Kanban Guide's WIP control, a per-phase
+   concurrency in the config), and the line switch at the three seams.
+3. Take the claim. The claim is the lock: two seats never take the same card, on one machine
+   or across machines, and a second operator's board shows the card as Claimed elsewhere.
+4. Run the lane's prompt on an engine of the class the lane names (below), write the verdict,
+   raise the lane event, release the claim.
+
+Three rules carry over from the per-issue loop and must survive the change:
+
+- **Engine per seat still matters.** The prompt is polymorphic, but the reviewer and confirmer
+  lanes must run on a different engine than the worker and carver lanes, or the merge gate
+  inherits the author's blind spots. A pool slot has an engine; a lane names the engine class it
+  wants (author or judge); the dispatcher matches them.
+- **Claims are the lock.** The thirty-minute lease with five-minute renewal on the issue
+  thread, posted then re-read, tie broken by comment id. `claim-race.ts` proves it on the real
+  tracker: N contenders at one instant, one winner per round, every loser posting and
+  withdrawing. The claim outlives a lane step only when the next step is the same seat's.
+- **The pull master stays singular.** Merging (F5) is the one serial lane; every other lane runs
+  as wide as its phase's WIP limit allows.
+
+What changes: today's `loop.ts` selects issues and drives each through every step in one lane;
+the pool inverts that into per-lane steps with the board as the queue, and the pipeline's
+functions split at the seams the lane events already mark. Until that is built, the per-issue
+loop at concurrency N is the pool, and it exercises the same locks.
+
 ## What the loop does not yet do
 
 The machine is the specification; `loop.ts` and the fix pipeline still implement the older,

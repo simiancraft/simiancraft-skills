@@ -54,6 +54,7 @@ From inside the target repository (any directory of it, including a worktree):
 ```bash
 bun run <this-skill-dir>/board.ts                      # once per operator: find or create the run board, verify it, record the pointer
 bun run <this-skill-dir>/lanes.ts                      # write the 36 lanes and the Phase field onto that board; idempotent
+bun run <this-skill-dir>/claim-race.ts --issue <n> --contenders 3 --rounds 3   # prove the claim lock on a loop/skip issue
 bun run <this-skill-dir>/loop.ts --dry-run             # select and print; no agent, no GitHub or working-tree write (only runs/ logs)
 bun run <this-skill-dir>/loop.ts --limit 3             # work three issues
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
