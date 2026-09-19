@@ -52,6 +52,8 @@ into the prompts and checked by the reviewer.
 From inside the target repository (any directory of it, including a worktree):
 
 ```bash
+bun run <this-skill-dir>/board.ts                      # once per operator: find or create the run board, verify it, record the pointer
+bun run <this-skill-dir>/lanes.ts                      # write the 36 lanes and the Phase field onto that board; idempotent
 bun run <this-skill-dir>/loop.ts --dry-run             # select and print; no agent, no GitHub or working-tree write (only runs/ logs)
 bun run <this-skill-dir>/loop.ts --limit 3             # work three issues
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
@@ -76,6 +78,26 @@ or installed; it is a path, not a skill name. `--appraiser`, `--worker`, and `--
 same seats and every loop knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and
 the rest); a flag beats the config for the run it is given on.
 
+## The board
+
+Every burndown is resumed from a GitHub Projects board named `<project>_burndown_<operator>`
+(`ultrathin_burndown_the-simian`, say), owned by the repository's owner and linked to the
+repository. One board per operator per repository: the person who starts a burndown comes back to
+their own board and picks up where they left off, and two operators on one repository never share
+one. `board.ts` finds it or creates it, reads it back to verify, and writes the pointer to
+`<worktreeRoot>/runs/board.json`; the board is the state, the file is only where it is. Creating
+one needs the `project` token scope (`gh auth refresh -h github.com -s project`); reading needs
+only `read:project`, and the script names the missing scope instead of failing in GraphQL. See
+`references/adopting.md`, "The board".
+
+The lanes are the loop's state machine drawn as kanban: one lane per state a card can be in,
+thirty-six of them in ten phases, with one dead-letter lane per phase and three lanes only a
+person can move a card out of. The machine is data (`lib/machine.ts`, in XState's vocabulary),
+tested against the lane table, exportable to stately.ai/viz, and chartable with Graphviz; see
+`references/state-machine.md`. A `Phase` field on every card is the collapsed view, so a board
+grouped by Phase is the ten-column summary and a later dashboard of every operator's burndown is
+a query over these boards, not a second state store.
+
 ## Carving what is over the ceiling
 
 An issue the appraiser sizes over `maxPoints` is not skipped any more: the size callback the loop
@@ -96,6 +118,7 @@ released to the appraiser, which sizes the remainder. The config's `carve` block
 | Adopt the loop in a repository: the config template, the two fields that actually bite, preconditions, first-run order, stopping a run | `references/adopting.md` |
 | How and why the loop works: the shape, appraisal, selection, the pool, crash recovery, known gaps | `references/architecture.md` |
 | The fix pipeline itself: the verdict-file contract, the review budget, the merge boundary, staleness, resuming | [`../fix-github-issue/references/pipeline.md`](../fix-github-issue/references/pipeline.md) |
+| The state machine the lanes draw: phases, every lane's entry actions and exits, reconcile precedence, the per-phase dead letters, what the tests check, what the loop does not yet implement | `references/state-machine.md` |
 
 ## Hard dependencies
 

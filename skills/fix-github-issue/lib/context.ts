@@ -35,6 +35,13 @@ export type CloseEvent = {
   by: 'appraiser' | 'worker' | 'knife' | 'reconcile';
 };
 
+/**
+ * A card moving on the operator's board: the issue, the lane key it enters (`D1`, `F3`; the keys
+ * are the burndown's lane table), and a note for the card's reason field. The pipeline raises one
+ * at every seam a card visibly passes; a driver without a board leaves the hook unset.
+ */
+export type LaneEvent = { issue: number; title: string; lane: string; note?: string };
+
 export type Context = {
   /** Everything true of the repository being worked. */
   project: ProjectConfig;
@@ -70,6 +77,8 @@ export type Context = {
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
   onClosed?: (event: CloseEvent) => Promise<void>;
+  /** Told every time a card should move lanes. Never awaited; a throw is the driver's to catch. */
+  onLane?: (event: LaneEvent) => void;
   /** When set, every mutation goes here instead of to gh: a fake tracker under test. */
   io?: { write: (op: { description: string; argv: string[] }) => void; view?: (n: number) => unknown; search?: (q: string) => unknown };
 };
@@ -102,6 +111,7 @@ export function createContext(options: {
   mayMerge?: () => Promise<MergePermission>;
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
+  onLane?: (event: LaneEvent) => void;
   /** A test supplies its own; production reads it from gh. */
   botLogin?: string;
   io?: Context['io'];
@@ -128,6 +138,7 @@ export function createContext(options: {
     mayMerge: options.mayMerge,
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
+    onLane: options.onLane,
     io: options.io,
   };
 }

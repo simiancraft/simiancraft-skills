@@ -181,9 +181,9 @@ and the second-engine confirmer that must agree before a close are documented th
 only selection of the unsized window and the board lines.
 
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
-carried on issues by the `size: N` labels. An issue already sized above the band is left
-alone; an unsized issue is sized by the appraiser, which runs as its own cheap population ahead of
-the workers.
+carried on issues by the `size: N` labels. An issue sized above the band, whether by the appraiser
+or already on the tracker, is the knife's (see "Carving and revisits"); an unsized issue is sized
+by the appraiser, which runs as its own cheap population ahead of the workers.
 
 Where the issue prescribes a remedy that contradicts a written convention (the files
 `conventionDocs` names, or what the surrounding code plainly does), the convention wins and the work continues:

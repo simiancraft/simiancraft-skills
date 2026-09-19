@@ -41,6 +41,7 @@ import { appraiseIssue, assertConfirmCloses, ISSUE_LIST_FIELDS, looksLikeTrunk, 
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
+import { createBoardWriter, readBoardPointer } from './lib/board-writer.ts';
 import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
@@ -504,6 +505,12 @@ const SEATS = (() => {
  * Everything the fix pipeline reads, gathered once. The loop's own concerns (age, appraisal, the
  * appraiser seat) stay here; the pipeline never sees them.
  */
+/** The operator's board, when board.ts has run for this repository; every lane move lands on it. */
+const BOARD = (() => {
+  const pointer = readBoardPointer(REPO_ROOT, PROJECT.worktreeRoot);
+  return pointer ? createBoardWriter(pointer, PROJECT.repo, log) : undefined;
+})();
+
 const ctx = createContext({
   project: PROJECT,
   knobs: {
@@ -516,6 +523,7 @@ const ctx = createContext({
   },
   seats: { worker: SEATS.worker, reviewer: SEATS.reviewer, confirmer: SEATS.confirmer },
   onClosed: (event) => CARVING.onClosed(event),
+  onLane: BOARD && !DRY_RUN ? BOARD.onLane : undefined,
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
