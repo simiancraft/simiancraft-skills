@@ -186,9 +186,16 @@ Ctrl+C still stops the walker outright.
 before the merge, so a change that builds but does not boot parks instead of landing. See the
 `fix-github-issue` skill's `references/pipeline.md`.
 
+`project.followBase: true` keeps the main checkout on the merged base: after each merge the loop
+fast-forwards it, so the dev server you are watching there shows the fix without a pull. It only
+ever fast-forwards a clean checkout that has the base branch out; anything else is left alone and
+said so in the log.
+
 ## Preconditions
 
-- `gh` authenticated with push and merge rights on the repository.
+- `gh` authenticated with push and merge rights on the repository, and with the `project` scope
+  (`gh auth refresh -h github.com -s project`), which `board.ts` needs to create the run board.
+  `gh auth status` lists the scopes; `read:project` is not enough.
 - The agent CLIs you intend to seat, on `PATH`. Each role is an `engine:model` spec: defaults live
   in `CONFIG.seats`, and any run can override them with `--appraiser`, `--worker`, and `--reviewer`.
   The known engines are the `ENGINES` registry in `loop.ts`; a CLI the loop does not yet know is
@@ -214,18 +221,77 @@ before the merge, so a change that builds but does not boot parks instead of lan
 ## Order of work
 
 1. Write `burn-down-github-issues.config.ts` from the template above. Copy nothing else.
-2. From the repository root: `bun run <skill-dir>/loop.ts --dry-run --limit 2`. This mutates
+2. `bun run <skill-dir>/board.ts`. It finds or creates the operator's board, verifies it by a
+   second read, and prints its number and URL; `--dry-run` only reports. See "The board" below.
+3. From the repository root: `bun run <skill-dir>/loop.ts --dry-run --limit 2`. This mutates
    nothing and starts no agent. It prints what it would select and writes each rendered prompt to
    `<worktreeRoot>/runs/<issue>-<role>-<timestamp>.log`.
-3. **Read one rendered prompt.** `grep -oE "\{\{[A-Z_]+\}\}"` against it must return nothing; an
+4. **Read one rendered prompt.** `grep -oE "\{\{[A-Z_]+\}\}"` against it must return nothing; an
    unresolved placeholder means a field you did not set. Confirm the prose names your repository,
    your commands, and your branches.
-4. Verify the closure walk resolves:
+5. Verify the closure walk resolves:
    `bun run <skill-dir>/loop.ts --closure <file-with-an-aliased-import>` prints every module
    the walk reaches and exits without touching anything. A result of one module (only the entry
    itself) means the aliases resolve nothing, which is the silent failure described above.
-5. One real issue, alone: `--issue <n>`; it implies `--no-appraise`. Watch it end to end.
-6. Then a small batch. `--limit 3` before `--limit 5`.
+6. One real issue, alone: `--issue <n>`; it implies `--no-appraise`. Watch it end to end.
+7. Then a small batch. `--limit 3` before `--limit 5`.
+
+## The board
+
+The durable state of a burndown is a GitHub Projects (v2) board, one per operator per repository,
+titled `<project>_burndown_<operator>`: the config's `project.name` lower-cased, then the GitHub
+login `gh` is authenticated as (`--operator <login>` overrides it). It is owned by the owner in
+`project.repo`, an organization or a user, and linked to the repository so it shows on the
+repository's Projects tab. Scoping the board to the operator is deliberate: a person who stops a
+burndown and returns days later resumes from their own board, and two operators working the same
+repository do not share one.
+
+`board.ts` is idempotent. An open board with the title is reused, never duplicated; a closed board
+with the title is named in the output and left alone, since closing is how a board is retired. The
+board it finds or creates is read back by a second call before it is trusted, and the result is
+written to `<worktreeRoot>/runs/board.json` as `{ owner, number, id, title, url }`. That file is a
+pointer, not the state: delete it and the next `board.ts` finds the board again by title.
+
+```bash
+bun run <skill-dir>/board.ts             # find or create, verify, write the pointer
+bun run <skill-dir>/board.ts --dry-run   # find and report; creates nothing
+```
+
+### Getting the scope, and proving you have it
+
+Creating a board, and adding or renaming its lanes, needs the `project` OAuth scope on the `gh`
+token. The token `gh auth login` issues carries `read:project`, which lists boards but cannot
+create or change one; `board.ts` checks the scope first and prints the refresh command rather than
+failing inside GraphQL. The refresh is a device flow, and it went wrong twice on the first
+adoption, so here is the procedure that worked and the checks that tell the difference.
+
+1. Ask for the scope from the **same `gh` the loop will run under**:
+   `gh auth refresh -h github.com -s project`. It prints a one-time code and waits; enter the code
+   at https://github.com/login/device and continue to the success page. A machine with more than
+   one `gh` (Windows and WSL, two distros, a second `GH_CONFIG_DIR`) has one token file per
+   install, and a refresh completed in the wrong terminal succeeds against the wrong file. That
+   is what happened twice: the browser said connected, and this install's token never changed.
+2. The refresh needs an interactive terminal. Under a harness that runs shell commands without a
+   TTY, start it detached with stdin from `/dev/null` and its output to a file, read the code from
+   the file, and enter it by hand; the process polls GitHub until the code is used and then
+   rewrites the token. `board.ts` cannot do this for you, since the browser step is a person's.
+3. Prove the scope landed with two reads that must agree:
+   `gh auth status` lists the stored token's scopes, and `gh api -i user` returns the live
+   `X-Oauth-Scopes` header for the token actually sent. Both must name `project`. If `gh auth
+   status` still shows `read:project` after a success page, the modification time of
+   `~/.config/gh/hosts.yml` tells you whether anything wrote to this install at all.
+4. Then `bun run <skill-dir>/board.ts`, and run it a second time: the second run must print
+   `exists` and the same number, which is the idempotence check.
+5. Then `bun run <skill-dir>/lanes.ts`, which writes the lane set onto Status and creates the
+   Phase field, and reads both back; a second run prints `already in place` for each. The lanes
+   and what they mean are `state-machine.md`.
+
+Lanes are options on the board's `Status` single-select field, changed with the
+`updateProjectV2Field` GraphQL mutation. That mutation replaces the whole option set and assigns
+fresh option ids, even to options whose names did not change (observed on the first board: `Todo`
+went from one id to another when a fourth lane was appended). So a script that manages lanes
+always sends the complete set, matches by name, and never stores an option id anywhere that
+outlives the call.
 
 ## Let an agent operate it without approval stalls
 
