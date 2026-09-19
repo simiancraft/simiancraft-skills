@@ -751,7 +751,7 @@ function selectCandidates(): Issue[] {
  */
 function openPullRequestIssueRefs(): number[] {
   const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'body,title,headRefName']);
-  return issueRefs(JSON.parse(raw));
+  return issueRefs(JSON.parse(raw), 'owning');
 }
 
 /**
@@ -760,10 +760,19 @@ function openPullRequestIssueRefs(): number[] {
  * sentence (`closing`), which is what makes a merge a resolution rather than a mention. Lexical:
  * a sentence that starts with the keyword counts, one that starts with "not" or "does not" does not.
  */
-export function issueRefs(prs: Array<{ body: string; title: string; headRefName: string }>, mode: 'any' | 'closing' = 'any'): number[] {
+export function issueRefs(prs: Array<{ body: string; title: string; headRefName: string }>, mode: 'any' | 'closing' | 'owning' = 'any'): number[] {
   const refs: number[] = [];
   const CLOSING = /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d{2,6})\b/i;
+  const OWNING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+#(\d{2,6})\b/gi;
   for (const pr of prs) {
+    if (mode === 'owning') {
+      // A pull request owns an issue when its branch names it or its body references it with a
+      // keyword. A passing `#1234` in another change's body is a mention, not a claim: one such
+      // mention kept a sized issue out of selection for a whole run.
+      for (const match of `${pr.title}\n${pr.body}`.matchAll(OWNING)) refs.push(Number(match[1]));
+      for (const match of pr.headRefName.matchAll(/(?:^|[/_-])(\d{2,6})(?=$|[/_-])/g)) refs.push(Number(match[1]));
+      continue;
+    }
     if (mode === 'closing') {
       for (const sentence of `${pr.title}\n${pr.body}`.split(/\r?\n|[.!?]\s+/)) {
         const match = CLOSING.exec(sentence.trim());
@@ -819,6 +828,7 @@ async function sizeTheWindow(): Promise<void> {
       CONFIG.appraiserConcurrency,
       async (issue) => {
         mark(issue.number, issue.title, 'appraising');
+        BOARD?.onLane({ issue: issue.number, title: issue.title, lane: 'A2' });
         let outcome: Awaited<ReturnType<typeof appraiseIssue>>;
         try {
           outcome = await appraiseIssue(ctx, issue, {
@@ -852,6 +862,20 @@ async function sizeTheWindow(): Promise<void> {
               ? `${outcome.verdict}, close ${outcome.close}`
               : outcome.verdict;
         mark(issue.number, issue.title, stage, note);
+        // The card follows the appraisal: sized within the ceiling is Ready, over it is To carve,
+        // a confirmed close is Closed without code, a hand-off is its human lane, a retry is Inbox.
+        const lane = outcome.retry
+          ? 'A1'
+          : outcome.verdict === 'valid'
+            ? (outcome.points ?? 0) > MAX_POINTS
+              ? 'C1'
+              : 'B1'
+            : outcome.close === 'confirmed' || outcome.close === 'skipped'
+              ? 'T2'
+              : outcome.verdict === 'needs-decision'
+                ? 'H1'
+                : 'H2';
+        BOARD?.onLane({ issue: issue.number, title: issue.title, lane, note: note.slice(0, 120) });
       },
       (issue) => `#${issue.number}`,
     );
