@@ -55,7 +55,9 @@ create, edit, label, or comment on any issue; the driver does every tracker writ
    reason is still required.
 
 4. **Delivery order and edges.** `order` is a permutation of your pieces by the ordering ladder:
-   hard dependency, closeness to the source of truth, uncertainty and risk, size. `dependsOn`
+   hard dependency, closeness to the source of truth, uncertainty and risk, size. Each piece's
+   `orderRung` names the rung that placed it, as exactly one of the tokens `dependency`,
+   `source-of-truth`, `risk`, or `size`; no other spelling validates. `dependsOn`
    lists the pieces a piece cannot land before; emit an edge wherever that is true and nowhere
    else. `relation` says how the children relate: `shards` (disjoint slices of one job, any
    order), `layers` (each builds on the one before), `mixed` (edges per child), `waiting`

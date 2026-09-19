@@ -70,7 +70,7 @@ Write `{{CONFIRMATION_FILE}}` in your working directory:
   "agree": true,
   "finding": "cover | gap | overreach | partition-intact | partition-broken | still-good | not-still-good | exhausted | not-exhausted | hand-off-agree | hand-off-disagree",
   "seam": "agree | higher-available",
-  "seamCase": "only with higher-available: the higher seam and why it is admissible here",
+  "seamCase": "with higher-available, the higher seam and why it is admissible here; an empty string with agree",
   "reason": "one or two sentences a stranger could re-check"
 }
 ```

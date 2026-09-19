@@ -412,13 +412,14 @@ export function validateConfirmation(raw: unknown, mode: 'carve' | 'revisit'): {
   const finding = raw.finding as Finding;
   if (!FINDINGS_BY_MODE[mode].includes(finding)) faults.push(`finding ${JSON.stringify(raw.finding)} is not one of ${FINDINGS_BY_MODE[mode].join(', ')} in ${mode} mode`);
   if (raw.seam !== 'agree' && raw.seam !== 'higher-available') faults.push('seam must be agree or higher-available');
-  if (typeof raw.seamCase !== 'string') faults.push('seamCase must be a string');
+  // The prompt asks for seamCase only with a dispute, so an agreeing confirmer may leave it out or null.
+  if (raw.seamCase != null && typeof raw.seamCase !== 'string') faults.push('seamCase must be a string');
   if (raw.seam === 'higher-available' && !nonEmpty(raw.seamCase)) faults.push('a seam dispute needs its case in seamCase');
   if (!nonEmpty(raw.reason)) faults.push('no reason');
   if (raw.agree === true && (!AGREEING.includes(finding) || raw.seam !== 'agree')) faults.push(`agree is true but the finding is ${String(raw.finding)} with seam ${String(raw.seam)}`);
   if (raw.agree === false && AGREEING.includes(finding) && raw.seam === 'agree') faults.push(`agree is false but the finding ${finding} agrees`);
   if (faults.length > 0) return { ok: false, faults };
-  return { ok: true, confirmation: raw as unknown as Confirmation };
+  return { ok: true, confirmation: { ...raw, seamCase: typeof raw.seamCase === 'string' ? raw.seamCase : '' } as unknown as Confirmation };
 }
 
 // ---------------------------------------------------------------------------
