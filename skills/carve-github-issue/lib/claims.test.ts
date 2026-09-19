@@ -127,6 +127,24 @@ describe('claim', () => {
     // The other run's comment lands after ours, so ours is earlier and wins.
     expect(claim(ctxFor(io), io, 1, 'working')).not.toBe('busy');
   });
+  test('two claims posted before either re-reads: the earlier comment wins and the later backs off', () => {
+    // The tightest race the protocol admits: both runs pass the first read, both post. The second
+    // poster must see the first comment on its re-read and stand down, posting its own unclaim,
+    // and the first poster must keep its claim. Nothing here depends on wall-clock timing.
+    const io = new FakeTracker(BOT, [fakeIssue(1)]);
+    let injected = false;
+    io.beforeWrite = (op) => {
+      if (!injected && op.argv[2] === 'comment') {
+        injected = true;
+        io.comment(1, BOT, '<!-- carve-claim kind=working run=other-host-5-5 at=2026-09-03T12:00:00Z expires=2999-01-01T00:00:00Z -->');
+      }
+    };
+    expect(claim(ctxFor(io), io, 1, 'working')).toBe('busy');
+    const tree = readTree(ctxFor(io), 1, io);
+    const live = tree.claims.filter((c) => !c.released);
+    expect(live.map((c) => c.runId)).toEqual(['other-host-5-5']);
+    expect(io.writes.some((w) => w.argv[2] === 'comment' && String(w.argv[w.argv.length - 1]).includes('carve-unclaim kind=working run=host-1-1'))).toBe(true);
+  });
   test('liveGate answers busy under a foreign claim and left-alone for a refusal', () => {
     const io = new FakeTracker(BOT, [fakeIssue(1, { labels: [{ name: 'size: 1' }] })]);
     claim(ctxFor(io, 'other-host-9-1'), io, 1, 'carving');
