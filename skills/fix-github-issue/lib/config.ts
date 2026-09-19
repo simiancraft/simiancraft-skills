@@ -60,6 +60,14 @@ export type ProjectConfig = {
    * fail the moment the result starts. Optional.
    */
   smokeCommand?: string;
+  /**
+   * After every confirmed merge, fast-forward the main checkout (the one the driver was invoked
+   * from, or that its worktree belongs to) to the remote base branch, so a person watching a dev
+   * server there sees each fix as it lands. Only a fast-forward, and only when that checkout has
+   * the base branch checked out with a clean tracked tree; otherwise the merge is logged and the
+   * checkout left alone. Optional; off by default.
+   */
+  followBase?: boolean;
   /** Paths that mechanically classify a diff for the merge boundary. Same pattern rules. */
   touchPaths: Record<'migration' | 'ci', string[]>;
   /** Sibling directory outside the repository root where worktrees and run logs live. */
@@ -289,6 +297,9 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   }
   if (project.releaseArtifacts !== undefined && !Array.isArray(project.releaseArtifacts)) {
     faults.push('project.releaseArtifacts must be an array when present');
+  }
+  if (project.followBase !== undefined && typeof project.followBase !== 'boolean') {
+    faults.push('project.followBase must be a boolean when present');
   }
   if (
     !Array.isArray(project.pathAliases) ||

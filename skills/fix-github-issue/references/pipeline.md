@@ -34,7 +34,7 @@ commands rather than trusting a claim of green, and returns a verdict.
 |---|---|
 | `merged` | the reviewer approved, the proof was still fresh, the checks were green, and the branch landed |
 | `closed` | a verdict ended the issue without code: already fixed, or obsolete; the receipt is a comment |
-| `handed-off` | a person is needed: a product decision, access an agent lacks, or work outside the size band |
+| `handed-off` | a person is needed: a product decision, or access an agent lacks. Work the worker finds larger than its appraisal is `out-of-band`, which a driver hands to carving, not to a person |
 | `parked` | a pull request exists and a human owns the next call; the issue carries the reason |
 | `dlq` | the per-issue review budget is spent; the issue is retained with the objection that outlived it |
 | `failed` | the worker process failed, so its answer is not trusted and nothing durable was written |
@@ -195,6 +195,12 @@ let a driver shape the merge without the pipeline learning why:
   a review round. Absent means always allowed.
 - **`ctx.afterMerge`** is told once after every confirmed merge, with the issue, the pull request,
   the merged SHA, the time, and the paths that landed, while the lane still exists.
+- **`project.followBase`** fast-forwards the main checkout to the remote base after every confirmed
+  merge, so a dev server running there shows each fix as it lands. Only a fast-forward, and only
+  when that checkout has the base branch checked out with a clean tracked tree (untracked files
+  do not count); another branch, local edits, or a diverged history is logged and left alone. When
+  a landed path matches `alwaysInvalidates`, the log says the checkout needs its install or codegen
+  rerun. Off by default.
 
 Every park carries its reason to the issue as a comment and to the pull request as `loop/parked`,
 whichever gate produced it.

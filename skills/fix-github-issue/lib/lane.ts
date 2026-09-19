@@ -78,6 +78,27 @@ export function worktreeFor(ctx: Context, issue: number): string {
  * disk-cheap and the blast radius is one throwaway directory.
  */
 
+/**
+ * A lane checked out on an existing pull request's branch, for a redrive that continues the pull
+ * request rather than opening a second one. The branch is checked out by name (not detached) so
+ * the pushes that follow reach the same remote branch, and it is reset to the remote head so the
+ * lane holds exactly what the pull request holds.
+ */
+export function worktreeAtPullRequest(ctx: Context, issue: number, branch: string): string {
+  const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (existsSync(dir)) {
+    if (dirtyPaths(ctx, dir).length > 0) {
+      throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
+    }
+    removeWorktree(ctx, issue);
+  }
+  mkdirSync(dirname(dir), { recursive: true });
+  sh(ctx, ['git', 'fetch', ctx.project.remote, `${branch}:refs/remotes/${ctx.project.remote}/${branch}`]);
+  sh(ctx, ['git', 'worktree', 'add', '-B', branch, dir, `${ctx.project.remote}/${branch}`]);
+  sh(ctx, ['git', 'branch', `--set-upstream-to=${ctx.project.remote}/${branch}`, branch], dir);
+  return dir;
+}
+
 export function removeWorktree(ctx: Context, issue: number): void {
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (existsSync(dir)) {

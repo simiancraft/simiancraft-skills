@@ -42,6 +42,7 @@ From inside the target repository (any directory of it, including a worktree):
 ```bash
 bun run <this-skill-dir>/fix.ts --issue <n>
 bun run <this-skill-dir>/fix.ts --issue <n> --dry-run
+bun run <this-skill-dir>/fix.ts --issue <n> --max-points 8   # raise the size ceiling for this issue only
 bun run <this-skill-dir>/fix.ts --issue <n> --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
 ```
 
