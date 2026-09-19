@@ -539,6 +539,8 @@ async function land(
 
   // The driver's last word. A driver holding its line waits here rather than answering; one that
   // gives up answers with a reason, and the pull request parks without spending a review round.
+  // The card is in Merging for the whole wait: a paused line holds a card that is about to land.
+  move(ctx, issue, 'F5', `PR #${pr} at ${reviewedSha.slice(0, 10)}`);
   if (ctx.mayMerge) {
     const permission = await ctx.mayMerge();
     if (!permission.ok) {
@@ -559,7 +561,6 @@ async function land(
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
-  move(ctx, issue, 'F5', `PR #${pr} at ${reviewedSha.slice(0, 10)}`);
   mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
