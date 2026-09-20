@@ -106,6 +106,22 @@ describe('the carving driver makes only moves the chart allows', () => {
       expect(applied(held)).toBe(true);
     });
   }
+  test('the driver places no card when a carve lost its lease and then threw something else', async () => {
+    const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    let placedBeforeLoss = -1;
+    io.beforeWrite = (op) => {
+      if (op.argv[1] !== 'issue' || op.argv[2] !== 'create' || leaseLost(ctx, 10)) return;
+      const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+      placedBeforeLoss = lanes.length;
+      throw new Error('transient tracker failure');
+    };
+    await makeDriver(ctx, k, lanes).revisit(10, 'first carve');
+    expect(placedBeforeLoss).toBeGreaterThan(0);
+    expect(lanes.length).toBe(placedBeforeLoss);
+  });
+
   test('the driver places no card for a carve that lost its lease', async () => {
     const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
     const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
