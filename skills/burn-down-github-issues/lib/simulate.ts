@@ -3,7 +3,8 @@
  * specification itself rather than against someone's reading of it. It resolves an event the way
  * XState does (the deepest state's own transitions first, then each ancestor's, the first
  * transition in a list whose guard holds), follows a target into a compound state's initial child,
- * and settles a transient state through its `always` list. It runs no action; it returns the
+ * and settles a transient state through its `always` list. A transition whose target is the
+ * state itself does not re-enter it. It runs no action; it returns the
  * actions a transition names, in order, so a scenario can assert on them.
  *
  * A guard is a name, or names joined by `and` / `or` (`and` binds tighter). A scenario supplies
@@ -74,6 +75,10 @@ export function fire(state: string, event: string, facts: Facts): Settled | null
   for (const { list } of handlers(state, event)) {
     const taken = list.find((t) => holds(t.guard, facts));
     if (!taken) continue;
+    // A transition to the state the card is already in does not re-enter it (XState v5's
+    // default, `reenter: false`): its actions run, its exit and entry actions do not. That is how a
+    // lane records something and stays put without starting its own work over.
+    if (taken.target === state) return { state, actions: [...(taken.actions ?? [])], via: [state] };
     const exit = NODES.get(state)?.exit ?? [];
     return settle(taken.target, facts, [...exit, ...(taken.actions ?? [])]);
   }

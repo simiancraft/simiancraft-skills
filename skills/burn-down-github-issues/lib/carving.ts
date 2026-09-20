@@ -6,7 +6,7 @@
  * to call it and what to do with the answer.
  */
 
-import { appraiseIssue, type AppraiseKnobs, isHeld } from '../../appraise-github-issues/lib/appraise.ts';
+import { appraiseIssue, recordAppraisalThrow, type AppraiseKnobs, isHeld } from '../../appraise-github-issues/lib/appraise.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import type { CarveKnobs } from '../../carve-github-issue/lib/carve.ts';
 import { claim, keepClaimed, trackerIo } from '../../carve-github-issue/lib/claims.ts';
@@ -44,9 +44,10 @@ const SWEEP_LABELS = ['loop/carved', 'loop/released', 'loop/handed-off', 'loop/c
  */
 function laneOf(outcome: string, atRest: 'C1' | 'C5'): string {
   if (outcome === 'carve' || outcome === 'amend' || outcome === 'resumed' || outcome === 'still-good') return 'C5';
-  if (outcome === 'exhausted' || outcome === 'nothing-left' || outcome === 'small-enough') return 'C7';
+  if (outcome === 'exhausted') return 'C7';
   if (outcome === 'too-uncertain') return 'H1';
-  if (outcome === 'indivisible') return 'H2';
+  // The carver's opinions about the issue all take `needs-human`, so the card rests where the label does.
+  if (outcome === 'indivisible' || outcome === 'nothing-left' || outcome === 'small-enough') return 'H2';
   if (outcome === 'dlq') return 'Q2';
   return atRest;
 }
@@ -134,7 +135,16 @@ export class Carving {
         if (points === null) {
           // Rolling up hands the remainder to an appraiser, and the card says so while it runs.
           mark(number, issue.title, 'A2', 'release appraisal of the remainder');
-          const outcome = await appraiseIssue(ctx, issue, { ...appraisal, ageDays: null, release: true, ownClaim: ctx.runId, onVerdict: undefined });
+          let outcome: Awaited<ReturnType<typeof appraiseIssue>>;
+          try {
+            outcome = await appraiseIssue(ctx, issue, { ...appraisal, ageDays: null, release: true, ownClaim: ctx.runId, onVerdict: undefined });
+          } catch (error) {
+            // Settled like any appraisal that threw: counted, a dead letter at the cap, and the card
+            // says which. Below the cap the trunk is still rolling up and the next sweep tries again.
+            const counted = recordAppraisalThrow(ctx, issue, appraisal.maxAppraiseAttempts, error as Error, (m) => log(`#${number}  ${m}`));
+            mark(number, issue.title, counted.deadLetter ? 'Q1' : 'C7', `release appraisal: ${counted.reason}`.slice(0, 80));
+            throw error;
+          }
           mark(
             number,
             issue.title,

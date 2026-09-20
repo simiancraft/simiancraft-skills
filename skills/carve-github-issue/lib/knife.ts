@@ -470,7 +470,7 @@ function lane(k: Knife, title: string, key: string, note?: string): void {
   }
 }
 
-async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>, pauseAll: boolean, verdict: string, deadLetter = false): Promise<CarveOutcome> {
+async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>, pauseAll: boolean, verdict: string, deadLetter = false, announcedPauses?: number[]): Promise<CarveOutcome> {
   const hold = deadLetter ? dlqLabel('carve') : (HAND_OFFS[verdict] ?? 'needs-human');
   const ledger = carving.ledger;
   const previous = tree.record;
@@ -482,8 +482,12 @@ async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Ar
     children.push({ number: c.number, piece: children.length, kind: 'child', link: 'sub-issue', points: pointsOf(c.labels), order: children.length + 1, orderRung: 'size', dependsOn: [], status: c.state === 'CLOSED' ? (c.stateReason === 'NOT_PLANNED' ? 'closed-not-planned' : 'closed-completed') : 'open', paused: false, role: 'work', title: c.title });
   }
   const affected = carving.affected ?? [];
-  const paused = new Set<number>();
-  if (pauseAll) {
+  // A hand-off that was announced and then interrupted is finished with the pauses it announced:
+  // they are commands already on the thread, not something to work out again from a later tree.
+  const paused = new Set<number>(announcedPauses ?? []);
+  if (announcedPauses) {
+    // nothing to compute
+  } else if (pauseAll) {
     for (const c of tree.children) if (c.state === 'OPEN') paused.add(c.number);
   } else if (previous) {
     for (const n of pauseSet({ ...previous, ledger }, affected, (n) => descendants(n, k.io))) paused.add(n);
@@ -847,8 +851,10 @@ async function finishIntent(k: Knife, tree: Tree, pending: Intent): Promise<Carv
   const payload = pending.payload as { verdict: string; deadLetter?: boolean; reason: string; affected?: string[]; pauseSet?: number[]; opinions?: Array<{ carver: string; confirmer: string }> };
   const carving: Carving = { issue: k.trunk, mode: tree.record && tree.record.state === 'live' ? 'revisit' : 'carve', verdict: payload.verdict as Carving['verdict'], reason: payload.reason, criteria: [], ledger: tree.record?.ledger ?? [], affected: payload.affected ?? [] };
   // An interrupted dead letter is finished as a dead letter, not as the hold its verdict would take.
-  const out = await applyHandOff(k, tree, carving, payload.opinions ?? [], false, payload.verdict, payload.deadLetter === true);
-  return { ...out, outcome: 'resumed', reason: `finished the ${payload.verdict} hand-off` };
+  // The outcome is the hand-off's own, so the card rests where the hand-off put the trunk (a
+  // person's hold, or the carve queue) and not among the children in flight.
+  const out = await applyHandOff(k, tree, carving, payload.opinions ?? [], false, payload.verdict, payload.deadLetter === true, payload.pauseSet ?? []);
+  return { ...out, reason: `finished the interrupted ${payload.deadLetter ? 'carve dead letter' : `${payload.verdict} hand-off`}: ${payload.reason}` };
 }
 
 export type { Knife };

@@ -170,10 +170,14 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.carving.toCarve', guard: 'sizedOverCeiling', actions: ['labelSize', 'fireSizeCallback'] },
                   { target: 'ticket.ready.ready', guard: 'sizedWithinCeiling', actions: ['labelSize'] },
                   // Half a verdict (valid, with no size) or one the driver cannot read is a failed turn.
+                  // A released trunk's remainder goes back to Rolling up, which asks again on the next sweep.
+                  { target: 'ticket.carving.rollingUp', guard: 'appraisalsUnderCap and releasedLabel', actions: ['countAppraisal'] },
                   { target: 'ticket.appraisal.inbox', guard: 'appraisalsUnderCap', actions: ['countAppraisal'] },
                   { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] },
                 ],
                 AGENT_FAILED: [
+                  // A released trunk's remainder goes back to Rolling up, which asks again on the next sweep.
+                  { target: 'ticket.carving.rollingUp', guard: 'appraisalsUnderCap and releasedLabel', actions: ['countAppraisal'] },
                   { target: 'ticket.appraisal.inbox', guard: 'appraisalsUnderCap', actions: ['countAppraisal'] },
                   { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] },
                 ],
@@ -190,6 +194,8 @@ export const MACHINE: StateNode = {
                 AGENT_FAILED: [
                   { target: 'ticket.ready.ready', guard: 'closeByWorker and attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
                   { target: 'ticket.deadLetters.work', guard: 'closeByWorker', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
+                  // A released trunk's remainder goes back to Rolling up, which asks again on the next sweep.
+                  { target: 'ticket.carving.rollingUp', guard: 'appraisalsUnderCap and releasedLabel', actions: ['countAppraisal'] },
                   { target: 'ticket.appraisal.inbox', guard: 'appraisalsUnderCap', actions: ['countAppraisal'] },
                   { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] },
                 ],
@@ -229,7 +235,7 @@ export const MACHINE: StateNode = {
                 CUT_PROPOSED: { target: 'ticket.carving.confirmingCut' },
                 KNIFE_VERDICT: [
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord'] },
-                  { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible', actions: ['labelHold', 'commentBothOpinions', 'liveRecord'] },
+                  { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible or verdictSmallEnough or verdictNothingLeft', actions: ['labelHold', 'commentBothOpinions', 'liveRecord'] },
                   // A verdict the driver cannot read is a failed turn, not an opinion about the issue.
                   { target: 'ticket.carving.toCarve', guard: 'carvesUnderCap', actions: ['countCarve', 'releaseClaim'] },
                   { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
@@ -245,6 +251,11 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runCarveConfirmer'],
               on: {
                 CUT_CONFIRMED: { target: 'ticket.carving.spawningChildren' },
+                // The carver's opinion about the issue is confirmed here too, and then it is a person's.
+                OPINION_CONFIRMED: [
+                  { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord', 'releaseClaim'] },
+                  { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions', 'liveRecord', 'releaseClaim'] },
+                ],
                 CUT_DISPUTED: [
                   { target: 'ticket.carving.carving', guard: 'carveRoundsUnderCap', actions: ['countCarveRound'] },
                   { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentBothOpinions', 'releaseClaim'] },
@@ -536,6 +547,8 @@ export const MACHINE: StateNode = {
           // A queue is a resting place. A triage agent that fails is one more machine failure, so
           // the card stays in its queue with the failure recorded and triage stopped; it does not
           // become a person's hold. Only a triage that reaches a decision sends a card to a person.
+          // The failure's target is the queue itself, which does not re-enter it, so triage is not
+          // started again by its own failure.
           states: {
             appraisal: {
               lane: { key: 'Q1', name: 'Appraisal DLQ', description: 'Appraiser or confirmer failed past the cap' },
@@ -582,6 +595,9 @@ export const MACHINE: StateNode = {
                 REDRIVEN: REDRIVE,
                 TRIAGED: [
                   { target: 'ticket.review.readyForReview', guard: 'decisionRerunReviewer and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
+                  // A retry is a revision, and no revision begins on a stale lane: the rejection stands
+                  // through the catch-up, which hands the card to Sent back.
+                  { target: 'ticket.landing.catchingUp', guard: 'decisionRetry and redrivesUnderCap and behindBase', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'reclaim', 'prToDraft'] },
                   { target: 'ticket.work.sentBack', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'reclaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'decisionDesignObjection', actions: ['unlabelDlq', 'labelHold', 'commentQuestion', 'parkPr'] },
                   { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },

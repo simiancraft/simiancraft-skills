@@ -72,7 +72,7 @@ for (const key of ['attempts', 'appraisals', 'carves', 'carveRounds', 'reviewRou
 axis('pr', ['none', 'draft', 'ready', 'merged']);
 axis('verdict', ['none', 'merge', 'reject']);
 axis('decision', ['none', 'merge', 'retry', 'oversize', 'rerun-reviewer', 'resolve-conflict', 'design-objection']);
-axis('result', ['none', 'fixed', 'close', 'needs-decision', 'needs-human', 'out-of-band', 'too-uncertain', 'indivisible', 'still-good', 'amend', 'exhausted', 'question']);
+axis('result', ['none', 'fixed', 'close', 'needs-decision', 'needs-human', 'out-of-band', 'too-uncertain', 'indivisible', 'small-enough', 'nothing-left', 'still-good', 'amend', 'exhausted', 'question']);
 axis('hold', ['none', 'needs-decision', 'needs-human', 'parked']);
 axis('dlq', ['none', 'appraisal', 'carve', 'work', 'review', 'landing']);
 axis('claim', ['none', 'own', 'foreign', 'dead']);
@@ -121,7 +121,7 @@ eq('releasedLabel', 'released', true); eq('trustedVerdict', 'trusted', true);
 eq('blockerOpen', 'blocker', 'open'); eq('blockerCompleted', 'blocker', 'completed'); eq('hasOpenParent', 'parentOpen', true);
 for (const [name, key] of [['attemptsUnderCap', 'attempts'], ['appraisalsUnderCap', 'appraisals'], ['carvesUnderCap', 'carves'], ['carveRoundsUnderCap', 'carveRounds'], ['reviewRoundsUnderCap', 'reviewRounds'], ['redrivesUnderCap', 'redrives'], ['refreshesUnderCap', 'refreshes']] as const) pred(name, [key], m => m[key] < (key === 'refreshes' ? 2 : 3));
 for (const [name, value] of [['decisionMerge', 'merge'], ['decisionRetry', 'retry'], ['decisionOversize', 'oversize'], ['decisionRerunReviewer', 'rerun-reviewer'], ['decisionResolveConflict', 'resolve-conflict'], ['decisionDesignObjection', 'design-objection']]) eq(name, 'decision', value);
-for (const [name, value] of [['verdictFixed', 'fixed'], ['verdictIsClose', 'close'], ['verdictNeedsDecision', 'needs-decision'], ['verdictNeedsHuman', 'needs-human'], ['verdictTooUncertain', 'too-uncertain'], ['verdictIndivisible', 'indivisible'], ['verdictStillGood', 'still-good'], ['verdictAmend', 'amend'], ['verdictExhausted', 'exhausted'], ['verdictQuestion', 'question']]) eq(name, 'result', value);
+for (const [name, value] of [['verdictFixed', 'fixed'], ['verdictIsClose', 'close'], ['verdictNeedsDecision', 'needs-decision'], ['verdictNeedsHuman', 'needs-human'], ['verdictTooUncertain', 'too-uncertain'], ['verdictIndivisible', 'indivisible'], ['verdictSmallEnough', 'small-enough'], ['verdictNothingLeft', 'nothing-left'], ['verdictStillGood', 'still-good'], ['verdictAmend', 'amend'], ['verdictExhausted', 'exhausted'], ['verdictQuestion', 'question']]) eq(name, 'result', value);
 pred('verdictOutOfBandOverCeiling', ['result', 'points'], m => m.result === 'out-of-band' && m.points > 2);
 eq('standingVerdictMerge', 'verdict', 'merge'); eq('verdictMerge', 'verdict', 'merge');
 eq('standingVerdictRejection', 'verdict', 'reject'); eq('noVerdictYet', 'verdict', 'none');
