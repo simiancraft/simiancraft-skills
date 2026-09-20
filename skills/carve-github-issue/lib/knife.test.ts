@@ -6,6 +6,7 @@ import { type Context, createContext } from '../../fix-github-issue/lib/context.
 import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
+import { type ClaimHandle, keepClaimed, leaseLost } from './claims.ts';
 import { carveIssue } from './knife.ts';
 import { renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
@@ -250,6 +251,34 @@ const records = (io: FakeTracker, n: number) => io.view(n)!.comments.filter((c) 
 const labels = (io: FakeTracker, n: number) => io.view(n)!.labels.map((l) => l.name).sort();
 
 describe('carveIssue', () => {
+  test('a knife that loses its lease mid-carve stops writing, counts nothing, and resumes on the next visit', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    // The lease is lost the way it is in a run: a renewal fails with the expiry already past. The
+    // first child is being created when it happens, so that write lands and the next one must not.
+    const loseLease = () => {
+      const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+    };
+    io.beforeWrite = (op) => {
+      if (op.argv[1] === 'issue' && op.argv[2] === 'create' && !leaseLost(ctx, 10)) loseLease();
+    };
+    const out = await carveIssue(ctx, issue10, k, io);
+    expect(out).toMatchObject({ outcome: 'busy', reason: expect.stringMatching(/lost its lease/) });
+    const written = io.writes.length;
+    expect(io.view(10)!.subIssues).toHaveLength(1);
+    expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
+    expect(records(io, 10)).toEqual(['applying']);
+
+    // The announced generation is finished by the next visit, whose fresh claim clears the loss.
+    io.beforeWrite = null;
+    const again = await carveIssue(ctx, issue10, k, io);
+    expect(again.outcome).toBe('resumed');
+    expect(io.writes.length).toBeGreaterThan(written);
+    expect(io.view(10)!.subIssues).toHaveLength(2);
+    expect(records(io, 10)).toEqual(['applying', 'live']);
+  });
   test('a full carve: children in delivery order, an edge, no size labels, applying then live, labels, claim released', async () => {
     const io = trunk();
     const ctx = ctxFor(io);

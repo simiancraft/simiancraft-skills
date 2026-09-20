@@ -34,7 +34,7 @@ import {
   validateCarving,
   validateConfirmation,
 } from './carve.ts';
-import { claim, keepClaimed, trackerIo } from './claims.ts';
+import { claim, keepClaimed, leaseLost, trackerIo } from './claims.ts';
 import { buildLedger, carryIds, childMarker, type Ledger, pauseSet, type Record, type RecordChild, renderChildBody, renderRecord, sameBody } from './record.ts';
 import { descendants, type Fingerprint, fingerprint, type Intent, parseMarker, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
 
@@ -96,7 +96,19 @@ type Knife = {
   journal: JournalFile;
 };
 
+/** Thrown by a knife write once this run's lease on the trunk is lost. */
+export class LeaseLostError extends Error {}
+
+/**
+ * Every knife write passes here first. A lease that ran out may be another run's by now, so the
+ * knife stops writing; the journal stays open and the next visit finishes what was announced.
+ */
+function holdLease(k: Knife, description: string): void {
+  if (leaseLost(k.ctx, k.trunk)) throw new LeaseLostError(`the lease on #${k.trunk} was lost before: ${description}`);
+}
+
 function write(k: Knife, step: JournalStep, description: string, argv: string[], target?: number): void {
+  holdLease(k, description);
   if (k.ctx.dryRun) {
     k.ctx.dryRunLog.push(description);
     k.say(`DRY RUN  ${description}`);
@@ -108,6 +120,7 @@ function write(k: Knife, step: JournalStep, description: string, argv: string[],
 }
 
 function create(k: Knife, description: string, argv: string[], index: number): number {
+  holdLease(k, description);
   if (k.ctx.dryRun) {
     k.ctx.dryRunLog.push(description);
     k.say(`DRY RUN  ${description}`);
@@ -383,6 +396,7 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
       k.journal.done('supersede', s.old);
       continue;
     }
+    holdLease(k, `close #${s.old} as superseded`);
     await closeIssue(k.ctx, s.old, `Superseded by ${replacements.map((n) => `#${n}`).join(', ') || 'the new carving'}: ${s.reason}`, { kind: 'closed', reason: `superseded by #${replacements[0] ?? k.trunk}`, by: 'knife' });
     k.journal.done('supersede', s.old);
   }
@@ -400,7 +414,10 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
   }
   addLabel(k, 'carved-label', k.trunk, 'loop/carved', labels);
   removeLabel(k, 'carved-label', k.trunk, 'loop/handed-off', labels);
-  if (!k.ctx.dryRun && carveCount(tree.issue.labels) > 0) clearCarves(k.ctx, k.trunk);
+  if (!k.ctx.dryRun && carveCount(tree.issue.labels) > 0) {
+    holdLease(k, `clear the carve count on #${k.trunk}`);
+    clearCarves(k.ctx, k.trunk);
+  }
   k.journal.done('counters');
 
   tree = readTree(k.ctx, k.trunk, k.io);
@@ -546,7 +563,10 @@ async function applyRelease(k: Knife, tree: Tree, carving: Carving | null, relea
   labels = labelsOf(readTree(k.ctx, k.trunk, k.io).issue);
   removeLabel(k, 'release-labels', k.trunk, 'loop/carved', labels);
   for (const gen of labels.filter((l) => l.startsWith('loop/carve-gen:'))) removeLabel(k, 'release-labels', k.trunk, gen, labels);
-  if (!k.ctx.dryRun && carveCount(tree.issue.labels) > 0) clearCarves(k.ctx, k.trunk);
+  if (!k.ctx.dryRun && carveCount(tree.issue.labels) > 0) {
+    holdLease(k, `clear the carve count on #${k.trunk}`);
+    clearCarves(k.ctx, k.trunk);
+  }
   k.journal.done('release-counters');
   reconcilePauses(k, record);
   if (!k.journal.saw('callback')) await callback(k, tree, 'on-carve-pass', record, record.children);
@@ -687,6 +707,13 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     // letter: a knife that crashes on this trunk every time must not be handed it for ever. The
     // throw still propagates, since the caller's run has to know; an announced generation stays
     // announced and the next visit finishes it. A count that cannot be written is only logged.
+    // A lost lease is neither: the count is itself a write this run may no longer make, and the
+    // trunk is busy, not broken.
+    if (leaseLost(ctx, issue.number)) {
+      say(`stopped writing: ${(error as Error).message.split('\n')[0]}`);
+      if (error instanceof LeaseLostError) return { outcome: 'busy', reason: 'this run lost its lease on the issue' };
+      throw error;
+    }
     try {
       await countFailure(k, readTree(ctx, issue.number, io), `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
     } catch (second) {

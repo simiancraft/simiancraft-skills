@@ -10,7 +10,7 @@ import { placeByFacts } from './board-writer.ts';
 import { appraiseIssue, recordAppraisalThrow, type AppraiseKnobs, isHeld } from '../../appraise-github-issues/lib/appraise.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import type { CarveKnobs } from '../../carve-github-issue/lib/carve.ts';
-import { claim, keepClaimed, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { claim, keepClaimed, leaseLost, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { carveIssue } from '../../carve-github-issue/lib/knife.ts';
 import { descendants, liveClaim, needsRevisit, parseMarker, pointsOf, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts';
@@ -222,6 +222,10 @@ export class Carving {
           if (handle === 'busy') return;
           stop = keepClaimed(handle);
           continue;
+        }
+        if (leaseLost(ctx, number)) {
+          log(`#${number} release appraisal: this run lost its lease; leaving loop/released for the next sweep`);
+          return;
         }
         mutate(ctx, `unlabel #${number} loop/released`, ['gh', 'issue', 'edit', String(number), '--remove-label', 'loop/released']);
         mark(number, issue.title, points > knobs.ceiling ? 'C5' : 'B1', `released at ${points}`);
