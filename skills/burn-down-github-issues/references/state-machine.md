@@ -135,7 +135,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2 |
-| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to D4 (spend a round); else Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
+| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card to D4), else to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
 
 ### Landing (the pull master; serial)
 
@@ -143,8 +143,8 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 |---|---|---|
 | F1 Approved | enqueue, ask the merge boundary | `BOUNDARY_REFUSED` to H3 (the boundary is a fact about the change, asked once, before anything waits); `HEAD_MOVED` to E1 (the lane moved past the reviewed commit); `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
 | F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the proof is reacquired on the existing pull request and `PROOF_REACQUIRED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
-| F3 Checks pending | wait on checks | `CHECKS`: green and smoke configured to F4; green to F5; else Q5 |
-| F4 Smoke | run smoke | `SMOKE`: passed to F5; else Q5 (tail as the reason) |
+| F3 Checks pending | wait on checks | `CHECKS`: green but behind the base to F2 under the refresh cap, to Q5 past it; green and smoke configured to F4; green to F5; else Q5 |
+| F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap, to Q5 past it; passed to F5; else Q5 (tail as the reason) |
 | F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
 
 Only F5 holds the merge lock; F2, F3, and F4 run outside it so one stale branch does not stall
@@ -199,8 +199,10 @@ from the Inbox straight to Coding, skipping the sizing pass but not the worker's
 
 Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`). Its
 last act before the merge is one more look upstream: `BASE_MOVED_WHILE_WAITING` returns the card
-to F2 under the refresh cap, since checks, smoke, and a paused line each take long enough for
-something else to land, and to Q5 past it.
+to F2 under the refresh cap, and to Q5 past it, since a paused line can hold a card here long
+enough for something else to land. Checks and smoke take time too, so upstream is looked at as
+each one finishes and before the card enters the next lane: no card is ever in Smoke or Merging
+lacking the base.
 
 A redrive (`REDRIVEN`, from H3, Q3, Q4, or Q5) continues the pull request the work left: to F2
 when the lane is behind the base, else to D4 with the objection as the brief, else through
@@ -209,7 +211,7 @@ never back in Ready, so a hold a person lifts by removing the label lands where 
 
 ## Demotions the loop makes
 
-E2 to D4 (rejection, round spent); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
+E2 to D4 (rejection, round spent); E2 to F2 (rejection on a lane that fell behind; then F2 to D4); F3 or F4 to F2 (the base moved while a gate ran); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
 standing verdict was a rejection); D1 to B1 (failed attempt, attempts remain); C3 to C2 (cut
 disputed); C6 to C5 (still-good) and C6 to C4 (amend); C7 to A2 (release appraisal); every Q lane
 to its phase's entry on redrive; every H lane through reconcile on hold removal; every W lane

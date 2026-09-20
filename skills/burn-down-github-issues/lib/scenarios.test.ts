@@ -80,7 +80,8 @@ class Work extends Card {
     if (this.lane === 'E1' || this.lane === 'D2') this.verdict = was === 'reject' ? 'reject' : 'none';
     return this;
   }
-  review(decision: 'merge' | 'reject'): this {
+  /** A review; `meanwhile` lands something else while the reviewer reads. */
+  review(decision: 'merge' | 'reject', meanwhile?: () => void): this {
     this.send('REVIEWER_DISPATCHED', this.facts());
     // `lane` is a getter that `send` changes; read it through a call so the checker does not
     // narrow it to the loop's condition.
@@ -91,25 +92,60 @@ class Work extends Card {
       if (at() !== 'E1') return this;
       this.send('REVIEWER_DISPATCHED', this.facts());
     }
+    meanwhile?.();
     this.verdict = decision;
     if (decision === 'reject') this.rounds += 1;
-    return this.send('REVIEWED', this.facts(decision === 'merge' ? ['decisionMerge'] : []));
+    this.send('REVIEWED', this.facts(decision === 'merge' ? ['decisionMerge'] : []));
+    // A rejection on a lane that fell behind catches up first, and the rejection stands through it.
+    if (at() === 'F2') this.catchUp();
+    if (at() === 'D4') expect(this.holds, `${this.name} is revised holding the whole base`).toBe(this.world.base.length);
+    return this;
   }
-  /** The pull master's turn; `whileWaiting` lands something else during the checks. */
-  land(whileWaiting?: () => void): this {
+  /**
+   * The pull master's turn. `meanwhile` lands something else while this card waits: during its
+   * checks, during its smoke, or while the line holds it in Merging.
+   */
+  land(meanwhile?: (() => void) | { during: 'checks' | 'smoke' | 'line'; land: () => void }): this {
+    // `lane` is a getter that `send` changes; read it through a call so the checker does not narrow it.
+    const at = () => this.lane;
+    let pending = typeof meanwhile === 'function' ? { during: 'line' as const, land: meanwhile } : meanwhile;
+    const happens = (during: 'checks' | 'smoke' | 'line') => {
+      if (pending?.during !== during) return;
+      pending.land();
+      pending = undefined;
+    };
+    // The invariant, asked of every landing lane as the card enters it: it holds the whole base.
+    const entered = () => {
+      if (['F3', 'F4', 'F5'].includes(at())) expect(this.holds, `${this.name} enters ${at()} holding the whole base`).toBe(this.world.base.length);
+    };
+    const gate = (event: string, extra: string[]) => {
+      const behind = this.facts().has('behindBase');
+      this.send(event, this.facts(extra));
+      if (behind && at() === 'F2') this.refreshes += 1; // countRefresh
+      entered();
+    };
     this.send('FRONT_OF_QUEUE', this.facts());
+    entered();
     for (;;) {
-      if (this.lane === 'F2') this.catchUp();
-      if (this.lane !== 'F3') return this;
-      this.send('CHECKS', this.facts(['checksGreen', 'smokeConfigured']));
-      this.send('SMOKE', this.facts(['smokePassed']));
-      whileWaiting?.();
-      whileWaiting = undefined;
-      if (this.facts().has('behindBase')) {
-        this.send('BASE_MOVED_WHILE_WAITING', this.facts());
-        continue;
+      if (at() === 'F2') {
+        this.catchUp();
+        entered();
       }
-      // The invariant: nothing lands that lacks the base.
+      if (at() !== 'F3') return this;
+      happens('checks');
+      gate('CHECKS', ['checksGreen', 'smokeConfigured']);
+      if (at() === 'F2') continue;
+      if (at() !== 'F4') return this;
+      happens('smoke');
+      gate('SMOKE', ['smokePassed']);
+      if (at() === 'F2') continue;
+      if (at() !== 'F5') return this;
+      happens('line');
+      if (this.facts().has('behindBase')) {
+        gate('BASE_MOVED_WHILE_WAITING', []);
+        if (at() === 'F2') continue;
+        return this;
+      }
       expect(this.holds, `${this.name} merges holding the whole base`).toBe(this.world.base.length);
       this.send('MERGED');
       this.world.base.push(this.files);
@@ -221,6 +257,42 @@ describe('single file at the end', () => {
     b.land(() => a.land());
     expect(world.order).toEqual(['A', 'B']);
     expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F4 F5 F2 F3 F4 F5 T1');
+  });
+
+  it('a merge that lands during B\'s checks sends B back from Checks pending, never into Smoke or Merging', () => {
+    const world = new World();
+    const a = new Work('A', world, ['app/a.ts']).work().review('merge');
+    const b = new Work('B', world, ['app/b.ts']).work().review('merge');
+    b.land({ during: 'checks', land: () => a.land() });
+    expect(world.order).toEqual(['A', 'B']);
+    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F2 F3 F4 F5 T1');
+  });
+
+  it('a merge that lands during B\'s smoke sends B back from Smoke, never into Merging', () => {
+    const world = new World();
+    const a = new Work('A', world, ['app/a.ts']).work().review('merge');
+    const b = new Work('B', world, ['app/b.ts']).work().review('merge');
+    b.land({ during: 'smoke', land: () => a.land() });
+    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F4 F2 F3 F4 F5 T1');
+  });
+
+  it('a merge into B\'s closure during its checks revokes the approval from there: back to review, not to coding', () => {
+    const world = new World();
+    const a = new Work('A', world, ['app/shared.ts']).work().review('merge');
+    const b = new Work('B', world, ['app/b.ts'], ['app/shared.ts']).work().review('merge');
+    b.land({ during: 'checks', land: () => a.land() });
+    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F2 E1');
+    b.review('merge').land();
+    expect(world.order).toEqual(['A', 'B']);
+  });
+
+  it('a rejection on a lane that fell behind during the review catches up before the revision starts', () => {
+    const world = new World();
+    const a = new Work('A', world, ['app/a.ts']).work().review('merge');
+    const b = new Work('B', world, ['app/b.ts']).work();
+    b.review('reject', () => a.land());
+    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F2 D4');
+    expect(b.actions.indexOf('mergeBaseIntoBranch')).toBeLessThan(b.actions.lastIndexOf('runWorkerRevision'));
   });
 
   it('three cards land one after another, each holding everything before it', () => {

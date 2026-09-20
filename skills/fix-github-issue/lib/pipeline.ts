@@ -675,12 +675,28 @@ async function land(
     // checks too, but its answer ages: any catch-up since the verdict pushed a head whose CI run
     // started fresh, and this is the last moment anything looks. Waiting here blocks the serial
     // queue, which is honest; a merge may not outrun its own build.
+    // Every gate below takes time, and anything that lands meanwhile leaves this head behind. So
+    // upstream is looked at after each one, before the card enters the next lane: a card is never
+    // in Smoke or Merging lacking the base, and a stale one goes straight back to the catch-up.
+    const lookUpstream = (after: string): 'fresh' | 'again' | { dlq: string } => {
+      if (ctx.dryRun || behindBase(ctx, cwd).length === 0) return 'fresh';
+      if (pass >= MAX_BASE_REFRESHES) {
+        return { dlq: `the base moved ${pass + 1} times while this landing waited on its gates; it needs a quiet base or a person` };
+      }
+      say(`the base moved ${after}; catching up again before anything else`);
+      return 'again';
+    };
+
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
     const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, checksExpected });
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };
     }
+
+    const afterChecks = lookUpstream('while the checks ran');
+    if (afterChecks === 'again') continue;
+    if (afterChecks !== 'fresh') return afterChecks;
 
     // A green build is not a booted result. A change can compile, type-check, and pass every test
     // and still fail the moment the result starts, because nothing above ever started it. The smoke
@@ -703,6 +719,9 @@ async function land(
         return { dlq: reason };
       }
       say('smoke command passed');
+      const afterSmoke = lookUpstream('while the smoke command ran');
+      if (afterSmoke === 'again') continue;
+      if (afterSmoke !== 'fresh') return afterSmoke;
     }
 
     // The driver's last word. A driver holding its line waits here rather than answering; one that
@@ -728,12 +747,10 @@ async function land(
     }
 
     // The last look upstream. Pinning the head does not pin the base: if anything landed while
-    // the gates above waited, this head lacks it, and the pass runs again from the catch-up.
-    if (ctx.dryRun || behindBase(ctx, cwd).length === 0) break;
-    if (pass >= MAX_BASE_REFRESHES) {
-      return { dlq: `the base moved ${pass + 1} times while this landing waited on its gates; it needs a quiet base or a person` };
-    }
-    say('the base moved while this landing waited; checking upstream again before the merge');
+    // the line held this card, this head lacks it, and the pass runs again from the catch-up.
+    const atTheMerge = lookUpstream('while this landing waited for the line');
+    if (atTheMerge === 'fresh') break;
+    if (atTheMerge !== 'again') return atTheMerge;
   }
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and

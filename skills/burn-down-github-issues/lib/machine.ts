@@ -359,6 +359,9 @@ export const MACHINE: StateNode = {
               on: {
                 REVIEWED: [
                   { target: 'ticket.landing.approved', guard: 'decisionMerge', actions: ['pinReviewedHead'] },
+                  // A revision never begins on a stale lane: the rejection stands through the catch-up,
+                  // and Catching up hands the card to Sent back once the lane holds the base.
+                  { target: 'ticket.landing.catchingUp', guard: 'reviewRoundsUnderCap and behindBase', actions: ['spendRound', 'prToDraft'] },
                   { target: 'ticket.work.sentBack', guard: 'reviewRoundsUnderCap', actions: ['spendRound'] },
                   { target: 'ticket.deadLetters.review', actions: ['spendRound', 'labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },
                 ],
@@ -411,6 +414,10 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'waitOnChecks'],
               on: {
                 CHECKS: [
+                  // Checks take time. A card that fell behind while they ran goes back to catch up
+                  // from here; it never enters a later lane lacking the base.
+                  { target: 'ticket.landing.catchingUp', guard: 'checksGreen and behindBase and refreshesUnderCap', actions: ['countRefresh'] },
+                  { target: 'ticket.deadLetters.landing', guard: 'checksGreen and behindBase', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                   { target: 'ticket.landing.smoke', guard: 'checksGreen and smokeConfigured' },
                   { target: 'ticket.landing.merging', guard: 'checksGreen' },
                   { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
@@ -422,6 +429,8 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runSmoke'],
               on: {
                 SMOKE: [
+                  { target: 'ticket.landing.catchingUp', guard: 'smokePassed and behindBase and refreshesUnderCap', actions: ['countRefresh'] },
+                  { target: 'ticket.deadLetters.landing', guard: 'smokePassed and behindBase', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                   { target: 'ticket.landing.merging', guard: 'smokePassed' },
                   { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentTail', 'leaveQueue', 'releaseClaim'] },
                 ],
@@ -433,7 +442,7 @@ export const MACHINE: StateNode = {
               on: {
                 MERGED: { target: 'ticket.terminal.merged', actions: ['closeIssueWithPointer', 'putOnFloor', 'followBase', 'leaveQueue', 'releaseClaim', 'removeWorktree'] },
                 ISSUE_CHANGED_UNDER_REVIEW: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
-                // Checks, smoke, and a paused line take time; anything that landed meanwhile is caught up first.
+                // The line can hold a card here while it is paused; anything that landed meanwhile is caught up first.
                 BASE_MOVED_WHILE_WAITING: [
                   { target: 'ticket.landing.catchingUp', guard: 'refreshesUnderCap', actions: ['countRefresh'] },
                   { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
