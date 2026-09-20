@@ -25,7 +25,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
-import { appraisalCount, clearAppraisals, closeIssue, recordAppraisal } from '../../fix-github-issue/lib/labels.ts';
+import { appraisalCount, clearAppraisals, closeIssue, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { mutate, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
@@ -56,6 +56,8 @@ export type AppraisalOutcome = {
   retry?: boolean;
   /** What the size callback did, when a directory was given and a slot matched. */
   callback?: SizeCallbackResult;
+  /** True when the failure cap was reached and the issue went to the appraisal dead-letter queue. */
+  deadLetter?: boolean;
 };
 
 export type AppraiseKnobs = {
@@ -271,15 +273,17 @@ function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs
   mutate(ctx, `label #${issue} ${verdict}`, ['gh', 'issue', 'edit', String(issue), '--add-label', verdict]);
 }
 
-/** One more failed appraisal; at the cap the issue goes to a person with the log tail. */
+/** One more failed appraisal; at the cap the issue goes to the appraisal dead-letter queue with the log tail. */
 function countFailedAppraisal(ctx: Context, issue: Issue, cap: number, reason: string, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
   if (ctx.dryRun) return { verdict: 'failed', reason, retry: true };
   const attempts = recordAppraisal(ctx, issue.number, appraisalCount(issue.labels));
   say(`appraisal attempt ${attempts} of ${cap} failed: ${reason}`);
   if (attempts < cap) return { verdict: 'failed', reason, retry: true };
   const tail = logPath ? logTail(logPath) : 'no log';
-  handOff(ctx, issue.number, 'needs-human', `The appraiser failed ${attempts} times on this issue and stops trying. Last failure: ${reason}. Log tail: ${tail}`, { attempts, logTail: tail });
-  return { verdict: 'needs-human', reason: `handed off after ${attempts} failed appraisals: ${reason}` };
+  // A machine gave up, which is a dead letter and not a person's question: nothing about the
+  // issue needs deciding, the appraiser needs another seat, a changed thread, or a cooling period.
+  sendToDlq(ctx, issue.number, 'appraisal', `The appraiser or its confirmer failed ${attempts} times on this issue and stops trying. Last failure: ${reason}. Log tail: ${tail}`);
+  return { verdict: 'failed', reason: `appraisal dead letter after ${attempts} failures: ${reason}`, retry: false, deadLetter: true };
 }
 
 /**
@@ -395,11 +399,35 @@ export async function appraiseIssue(
       const confirmation = await confirmClose(ctx, issue, result, options.seats.confirmer, say);
       if (!confirmation) {
         say('no usable confirmation; the close is not made and the issue stays unsized');
+        // Counted like any failed appraisal, or a confirmer that always fails would retry forever.
+        const counted = countFailedAppraisal(ctx, issue, cap, 'the close confirmer produced no usable answer', null, say);
         outcome.close = 'unconfirmed';
-        outcome.retry = true;
+        outcome.retry = counted.retry;
+        outcome.deadLetter = counted.deadLetter;
+        if (counted.deadLetter) outcome.reason = counted.reason;
         break;
       }
       if (confirmation.agree) {
+        // The confirmer's turn took minutes. A hold, a claim, a child, or a close can have landed
+        // on the issue meanwhile, and a close is the one write here nobody can take back quietly.
+        const late = readTree(ctx, issue.number, io);
+        const lateClaim = liveClaim(late, new Date().toISOString(), options.ownClaim ?? ctx.runId);
+        const lateWhy =
+          late.issue.state !== 'OPEN'
+            ? 'it was closed'
+            : isHeld(late.issue.labels, options.skipLabels)
+              ? 'a hold label landed'
+              : isTrunk(late)
+                ? 'it became a trunk'
+                : lateClaim
+                  ? `${lateClaim.runId} claimed it`
+                  : null;
+        if (lateWhy) {
+          say(`${lateWhy} while the close was being confirmed; nothing applied`);
+          outcome.close = 'unconfirmed';
+          outcome.retry = true;
+          break;
+        }
         say(`confirmer agrees: ${confirmation.reason}`);
         await closeIssue(ctx, issue.number, `${closeComment}\n\nIndependently re-checked: ${confirmation.reason}`, { kind: 'closed', reason: result.verdict, by: 'appraiser' });
         outcome.close = 'confirmed';

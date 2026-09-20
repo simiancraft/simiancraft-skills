@@ -984,8 +984,10 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
               : outcome.verdict;
         // The card follows the appraisal: sized within the ceiling is Ready, over it is To carve,
         // a confirmed close is Closed without code, a hand-off is its human lane, a retry is Inbox.
-        const lane = outcome.retry
-          ? 'A1'
+        const lane = outcome.deadLetter
+          ? 'Q1'
+          : outcome.retry
+            ? 'A1'
           : outcome.verdict === 'valid'
             ? (outcome.points ?? 0) > MAX_POINTS
               ? 'C1'

@@ -155,6 +155,20 @@ describe('claim', () => {
     const held = liveGate(ctxFor(io), io, 1, 2);
     if (!held.ok) expect(held.outcome).toBe('left-alone');
   });
+  test('a run that claims, releases, and claims again holds a real lock the second time', () => {
+    const io = new FakeTracker(BOT, [fakeIssue(1, { labels: [{ name: 'size: 1' }] })]);
+    const first = claim(ctxFor(io), io, 1, 'working');
+    if (first === 'busy') throw new Error('the first claim should win');
+    first.release();
+    const second = claim(ctxFor(io), io, 1, 'working');
+    if (second === 'busy') throw new Error('the second claim should win');
+    // Renewable, which needs the claim's own comment, and visible to everyone else as a live claim.
+    expect(second.commentId).not.toBeNull();
+    expect(second.commentId).not.toBe(first.commentId);
+    expect(claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working')).toBe('busy');
+    second.release();
+    expect(claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working')).not.toBe('busy');
+  });
   test('a dry run takes no claim', () => {
     const io = new FakeTracker(BOT, [fakeIssue(1)]);
     const ctx = { ...ctxFor(io), dryRun: true } as Context;

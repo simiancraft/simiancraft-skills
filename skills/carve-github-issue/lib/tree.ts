@@ -341,8 +341,11 @@ export function descendants(number: number, io: TrackerIo): number[] {
 
 export function claimsOf(node: Node, botLogin: string): Claim[] {
   const claims: Claim[] = [];
-  const released = new Set<string>();
-  for (const c of node.comments) {
+  // Thread order is the order of events: an unclaim releases the claims its run had made of that
+  // kind up to that point, never one the same run posts afterwards. A run claims an issue more
+  // than once (a redrive, a revisit, a release appraisal), and a set keyed by run alone read every
+  // later claim as already released, so the second claim was no lock at all.
+  for (const c of [...node.comments].sort((a, b) => a.databaseId - b.databaseId)) {
     if (c.author !== botLogin) continue;
     const marker = parseMarker(c.body);
     if (!marker) continue;
@@ -356,11 +359,10 @@ export function claimsOf(node: Node, botLogin: string): Claim[] {
         released: false,
       });
     } else if (marker.name === 'carve-unclaim') {
-      released.add(`${marker.fields.kind}:${marker.fields.run}`);
+      for (const claim of claims) {
+        if (claim.kind === marker.fields.kind && claim.runId === marker.fields.run) claim.released = true;
+      }
     }
-  }
-  for (const claim of claims) {
-    if (released.has(`${claim.kind}:${claim.runId}`)) claim.released = true;
   }
   return claims;
 }

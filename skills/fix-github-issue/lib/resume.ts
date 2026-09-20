@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
-import { isHeldBy, parkIssue, reviewCount } from './labels.ts';
+import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
 import { type Issue, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
@@ -148,15 +148,18 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
  * A stranded pull request is finished work, and landing it first also moves the base before fresh
  * lanes cut their branches from it.
  */
-/** Parks an issue a dead run left for inspection, once: a parked issue is not commented on again. */
+/**
+ * What a dead run left behind is a machine's failure, so it is a work dead letter (the machine's
+ * "run died with undeclared work"), written once: an issue already held is not commented on again.
+ */
 function parkForInspection(ctx: Context, issue: number, reason: string): void {
   if (ctx.dryRun) return;
   try {
     const labels = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'state,labels', '--jq', '[.state, (.labels[].name)] | join(" ")']);
-    if (!labels.startsWith('OPEN') || labels.includes('loop/parked')) return;
-    parkIssue(ctx, issue, reason);
+    if (!labels.startsWith('OPEN') || labels.includes('loop/parked') || labels.includes('loop/dlq')) return;
+    sendToDlq(ctx, issue, 'work', reason);
   } catch (error) {
-    ctx.log(`#${issue}  could not park it for inspection: ${(error as Error).message}`);
+    ctx.log(`#${issue}  could not record the dead letter: ${(error as Error).message}`);
   }
 }
 

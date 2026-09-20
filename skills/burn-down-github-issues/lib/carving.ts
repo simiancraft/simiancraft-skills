@@ -133,7 +133,7 @@ export class Carving {
           mark(
             number,
             issue.title,
-            outcome.retry ? 'C7' : outcome.verdict === 'valid' ? ((outcome.points ?? 0) > knobs.ceiling ? 'C1' : 'B1') : outcome.verdict === 'needs-decision' ? 'H1' : outcome.verdict === 'needs-human' || outcome.close === 'disputed' || outcome.close === 'unconfirmed' ? 'H2' : 'T2',
+            outcome.deadLetter ? 'Q1' : outcome.retry ? 'C7' : outcome.verdict === 'valid' ? ((outcome.points ?? 0) > knobs.ceiling ? 'C1' : 'B1') : outcome.verdict === 'needs-decision' ? 'H1' : outcome.verdict === 'needs-human' || outcome.close === 'disputed' || outcome.close === 'unconfirmed' ? 'H2' : 'T2',
             `release appraisal: ${outcome.reason}`.slice(0, 80),
           );
           if (outcome.verdict !== 'valid') return;

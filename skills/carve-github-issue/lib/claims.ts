@@ -46,20 +46,29 @@ export function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['k
   mutate(ctx, `claim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', claimMarker(kind, ctx.runId, at.toISOString(), expires.toISOString())]);
   mutate(ctx, `label #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
 
-  const after = readTree(ctx, issue, io);
-  const mine = after.claims.find((c) => c.runId === ctx.runId && c.kind === kind && !c.released) ?? null;
+  // The re-read must show this run's own claim: a claim nobody can see, its owner included, is
+  // not a lock, and its lease could never be renewed. The thread can trail the write by a moment,
+  // so look again a few times before giving up, and give up closed.
+  let after = readTree(ctx, issue, io);
+  const own = () => after.claims.find((c) => c.runId === ctx.runId && c.kind === kind && !c.released) ?? null;
+  for (let tries = 0; own() === null && tries < 3; tries++) {
+    Bun.sleepSync(2_000);
+    after = readTree(ctx, issue, io);
+  }
+  const mine = own();
   const winner = liveClaim(after, new Date().toISOString(), ctx.runId);
-  if (winner && (mine === null || winner.commentId < mine.commentId)) {
-    mutate(ctx, `unclaim #${issue} (${kind}), ${winner.runId} was first`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`]);
+  if (mine === null || (winner && winner.commentId < mine.commentId)) {
+    const why = mine === null ? 'this run could not see its own claim on the thread' : `${winner?.runId} was first`;
+    mutate(ctx, `unclaim #${issue} (${kind}), ${why}`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`]);
+    if (mine === null && !winner) mutate(ctx, `unlabel #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
     return 'busy';
   }
-  const commentId = mine?.commentId ?? null;
+  const commentId = mine.commentId;
   return {
     kind,
     commentId,
     label,
     renew: () => {
-      if (commentId === null) return;
       const now = new Date();
       const body = claimMarker(kind, ctx.runId, now.toISOString(), new Date(now.getTime() + CLAIM_TTL_MS).toISOString());
       try {
