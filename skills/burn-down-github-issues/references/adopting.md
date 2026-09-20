@@ -55,8 +55,9 @@ export default {
     worktreeRoot: '../.your-app-loop',
   } satisfies ProjectConfig,
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
-  // checksTimeoutMinutes (how long the pull master waits on checks), checks ('auto', 'required',
-  // or 'none': what an empty list of checks means; set 'required' where CI gates merges),
+  // checksTimeoutMinutes (how long the pull master waits on checks), checks ('required', the default,
+  // or 'none' for a repository that runs no checks on a pull request; an empty list of checks is
+  // never green otherwise),
   // smokeTimeoutMinutes,
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and

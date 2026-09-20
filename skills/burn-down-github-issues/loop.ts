@@ -58,7 +58,7 @@ type LoopKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
-  checks: 'auto' | 'required' | 'none';
+  checks: 'required' | 'none';
   smokeTimeoutMinutes: number;
   pointScale: number[];
   maxWorkerAttempts: number;
@@ -124,7 +124,7 @@ const DEFAULTS: LoopKnobs = {
 
   /** See the fix pipeline's PIPELINE_DEFAULTS for both. */
   checksTimeoutMinutes: 45,
-  checks: 'auto',
+  checks: 'required',
   smokeTimeoutMinutes: 10,
 
   /** Merged pull requests this recent are checked against open sized issues on start. */

@@ -370,41 +370,25 @@ function isDraft(ctx: Context, pr: number): boolean {
  * Returns null when every check passed (or the repository runs none), otherwise a refusal reason.
  * Unknown states fail closed; a merge with a failing or unfinished build is never allowed.
  */
-/** Whether a commit had any check run or status: whether this repository reports checks at all. */
-function hadChecks(ctx: Context, sha: string): boolean {
-  try {
-    const runs = Number(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-runs`, '--jq', '.total_count']));
-    if (runs > 0) return true;
-    return Number(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/statuses`, '--jq', 'length'])) > 0;
-  } catch {
-    return true; // unknown reads as "checks are expected": waiting is the safe error
-  }
-}
-
-/** How long an empty rollup is watched before it may mean "this repository runs no checks". */
-const CHECK_REGISTRATION_GRACE_MS = 90_000;
+/** How long a green list of checks must stay the same before it is believed to be the whole list. */
+const CHECKS_SETTLE_MS = 30_000;
 
 /**
- * Whether the repository is known to run checks on a pull request: the config says so, or the
- * reviewed commit or the base tip has some. A `false` is only "none seen", never "none exist".
- */
-function checksAreExpected(ctx: Context, reviewedSha: string): boolean {
-  if (ctx.knobs.checks !== 'auto') return ctx.knobs.checks === 'required';
-  return hadChecks(ctx, reviewedSha) || hadChecks(ctx, ctx.project.baseBranch);
-}
-
-/**
- * Waits for the checks of `expect.sha`, the head that would land. After a catch-up push the rollup
- * is empty for a moment before the new head's checks register, and merging in that moment would
- * outrun the build. So an empty rollup is never green at first sight: where checks are expected it
- * is waited out to the timeout, and where none were seen it is watched for a grace period, since
- * "none seen" on one commit is an observation and not the repository's policy.
+ * Waits for the checks of `expect.sha`, the head that would land. Checks register one at a time
+ * after a push, so neither an empty list nor a short one proves anything by itself, and no amount
+ * of waiting turns "none seen" into "none exist". The rules, all of which fail closed:
+ *
+ * - An empty list is never green. Only `checks: 'none'` in the config says the repository runs no
+ *   checks; without it an empty list is waited out to the timeout and then refused by name.
+ * - A green list is believed only once every check suite GitHub has opened on the head is
+ *   complete, and the list has then stayed the same for a settling period, so one fast check
+ *   cannot stand in for a slower one that has not registered yet.
  */
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
   say: (message: string) => void,
-  expect?: { sha: string; checksExpected: boolean },
+  expect?: { sha: string },
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<string | null> {
@@ -420,29 +404,36 @@ export async function awaitGreenChecks(
   };
   const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
 
-  const started = io.now();
-  const deadline = started + ctx.knobs.checksTimeoutMinutes * 60_000;
+  const deadline = io.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
+  const wait = async (why: string, ms: number): Promise<string | null> => {
+    if (io.now() >= deadline) return `${why}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
+    say(`${why}; waiting`);
+    await io.sleep(Math.max(1_000, Math.min(ms, deadline - io.now())));
+    return null;
+  };
+  /** Suites GitHub has opened on the head that are not complete; unreadable counts as none, and the settling period covers it. */
+  const openSuites = (sha: string): number => {
+    try {
+      const n = Number(io.read(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-suites`, '--jq', '[.check_suites[] | select(.status != "completed" and .latest_check_runs_count > 0)] | length']));
+      return Number.isFinite(n) ? n : 0;
+    } catch {
+      return 0;
+    }
+  };
+  let settled = { names: '', since: io.now() };
   for (;;) {
     const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
     const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
     const rollup: CheckNode[] = view.statusCheckRollup ?? [];
-    const empty = rollup.length === 0;
-    const notYet = !expect
-      ? null
-      : view.headRefOid !== expect.sha
-        ? 'the pull request does not show the landing head yet'
-        : empty && expect.checksExpected
-          ? 'no check has registered for the landing head yet'
-          : null;
-    if (notYet) {
-      if (io.now() >= deadline) return `${notYet}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
-      say(`${notYet}; waiting`);
-      await io.sleep(15_000);
+    if (expect && view.headRefOid !== expect.sha) {
+      const gaveUp = await wait('the pull request does not show the landing head yet', 15_000);
+      if (gaveUp) return gaveUp;
       continue;
     }
-    if (expect && empty && ctx.knobs.checks === 'auto' && io.now() - started < CHECK_REGISTRATION_GRACE_MS) {
-      say('no checks seen on this repository yet; watching the landing head a little longer before calling that green');
-      await io.sleep(15_000);
+    if (rollup.length === 0) {
+      if (ctx.knobs.checks === 'none' || !expect) return null;
+      const gaveUp = await wait("no check has registered for the landing head (a repository that runs no checks says so with checks: 'none')", 15_000);
+      if (gaveUp) return gaveUp;
       continue;
     }
 
@@ -452,12 +443,21 @@ export async function awaitGreenChecks(
     }
 
     const pending = rollup.filter((c) => classify(c) === 'pending');
-    if (pending.length === 0) return null;
-    if (io.now() >= deadline) {
-      return `checks still unfinished after ${ctx.knobs.checksTimeoutMinutes} minutes: ${pending.map(nameOf).join(', ')}`;
+    if (pending.length > 0) {
+      settled = { names: '', since: io.now() };
+      const gaveUp = await wait(`${pending.length} unfinished check(s): ${pending.map(nameOf).join(', ')}`, 30_000);
+      if (gaveUp) return gaveUp.replace(/^\d+ unfinished check\(s\): /, 'checks still unfinished: ');
+      continue;
     }
-    say(`waiting on ${pending.length} unfinished check(s) before merging`);
-    await io.sleep(30_000);
+
+    // Every check in the list is green. Believe the list only when nothing else is still coming.
+    if (!expect) return null;
+    const open = openSuites(expect.sha);
+    const names = rollup.map(nameOf).sort().join('|');
+    if (open > 0 || settled.names !== names) settled = { names, since: io.now() };
+    if (open === 0 && io.now() - settled.since >= CHECKS_SETTLE_MS) return null;
+    const gaveUp = await wait(open > 0 ? `${open} check suite(s) on the landing head have not finished` : 'the checks are green; making sure no other check is still registering', CHECKS_SETTLE_MS);
+    if (gaveUp) return gaveUp;
   }
 }
 
@@ -676,7 +676,6 @@ async function land(
   let landingSha = reviewedSha;
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
-  const checksExpected = ctx.dryRun ? false : checksAreExpected(ctx, reviewedSha);
   for (let pass = 0; ; pass++) {
     const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge');
     if (caught === 'conflict') {
@@ -725,7 +724,7 @@ async function land(
     };
 
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
-    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, checksExpected });
+    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha });
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };

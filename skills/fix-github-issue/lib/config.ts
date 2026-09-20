@@ -81,11 +81,12 @@ export type PipelineKnobs = {
   /** How long the pull master waits for a pull request's checks before parking instead of merging. */
   checksTimeoutMinutes: number;
   /**
-   * Whether this repository runs checks on a pull request. `auto` reads it off the reviewed
-   * commit and the base, and still gives an empty rollup a grace period before calling it green;
-   * `required` never lands on an empty rollup; `none` says the repository runs no checks.
+   * `required`, the default: a pull request lands only on green checks, and an empty list of
+   * checks is refused. `none`: this repository runs no checks on a pull request, so an empty list
+   * is green. There is no guessing mode: checks register one at a time after a push, and no
+   * amount of waiting turns "none seen" into "none exist".
    */
-  checks: 'auto' | 'required' | 'none';
+  checks: 'required' | 'none';
   /** How long `project.smokeCommand` may run before the pull request parks. */
   smokeTimeoutMinutes: number;
   /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
@@ -123,7 +124,7 @@ export const PIPELINE_DEFAULTS: PipelineKnobs = {
    * time on a fresh head, and a merge that parks on a slow check is not a defect in the change.
    */
   checksTimeoutMinutes: 45,
-  checks: 'auto',
+  checks: 'required',
 
   /** A boot that has not answered in this long is a failed boot. */
   smokeTimeoutMinutes: 10,
@@ -300,8 +301,8 @@ export async function loadProjectConfig<K extends Knobs>(options: {
     faults.push(`autoMerge must be 'always', 'code-only', or 'never'`);
   }
   const checks = (merged as Knobs).checks;
-  if (checks !== undefined && !['auto', 'required', 'none'].includes(checks as string)) {
-    faults.push(`checks must be 'auto', 'required', or 'none'`);
+  if (checks !== undefined && !['required', 'none'].includes(checks as string)) {
+    faults.push(`checks must be 'required' or 'none'`);
   }
   for (const key of ['conventionDocs', 'sharedServices', 'sourceExtensions', 'alwaysInvalidates'] as const) {
     if (!Array.isArray(project[key])) faults.push(`project.${key} must be an array`);
