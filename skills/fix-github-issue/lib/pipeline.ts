@@ -19,7 +19,7 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
@@ -1126,6 +1126,8 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 
     case 'out-of-band': {
       if (result.points) {
+        // The worker's own size can be one the repository has never carried a label for.
+        ensureLabel(ctx, `size: ${result.points}`, 'c5def5', `Sized at ${result.points} by a worker that found the work larger than appraised`);
         mutate(ctx, `size #${issue.number} at ${result.points}`, [
           'gh',
           'issue',

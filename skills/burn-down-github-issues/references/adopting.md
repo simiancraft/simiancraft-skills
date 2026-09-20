@@ -228,7 +228,8 @@ said so in the log.
   typical guard is `types: [..., ready_for_review]` plus
   `if: github.event.pull_request.draft == false`. Verify it before a batch run: open one draft pull
   request by hand and confirm nothing queues.
-- An issue tracker where issues carry `size: N` labels, or an appraiser run to create them. The
+- An issue tracker where issues carry `size: N` labels, or an appraiser run to create them; a fresh
+  repository has none of them, and the appraiser creates each size label the first time it uses it. The
   driver creates every label it uses (`size: N`, `needs-decision`, `needs-human`, `loop/*`) on
   start and applies the appraiser's verdict itself; nothing needs pre-creating.
 
