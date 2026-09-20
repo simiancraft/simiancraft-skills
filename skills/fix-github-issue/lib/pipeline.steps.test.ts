@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
-import { fixIssue } from './pipeline.ts';
+import { fixIssue, unionTouches } from './pipeline.ts';
 import { newestStep } from './steps.ts';
 
 const BOT = 'loop-bot';
@@ -115,3 +115,22 @@ describe('what Prove is handed', () => {
     expect(newestStep(io.view(30)!.comments, BOT)).toMatchObject({ runId: 'other-host-9-9', gated: S, handoff: 'Exercise: bun test parser.' });
   });
 });
+
+describe("what the change touches, across the step boundary", () => {
+  it("keeps the coder's warning when the prover sees only code: a code-only merge policy must still stop", () => {
+    expect(unionTouches(['code'], ['code', 'data'])).toEqual(['code', 'data']);
+    expect(unionTouches(['code'], ['migration', 'stored-string'])).toEqual(['code', 'migration', 'stored-string']);
+    expect(unionTouches(['code', 'ci'], ['code'])).toEqual(['code', 'ci']);
+  });
+
+  it('adds nothing a driver does not know, and nothing at all when no marker was read', () => {
+    expect(unionTouches(['code'], ['nonsense'])).toEqual(['code']);
+    expect(unionTouches(['code'], ['nonsense', 'data'])).toEqual(['code', 'data']);
+    expect(unionTouches(['code'], undefined)).toEqual(['code']);
+  });
+
+  it('still fails closed when the prover named nothing: the coder cannot stand in for a missing classification', () => {
+    expect(unionTouches(undefined, ['code'])).toBeUndefined();
+  });
+});
+

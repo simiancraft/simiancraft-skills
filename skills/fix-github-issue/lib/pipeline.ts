@@ -219,6 +219,18 @@ async function runStep(
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /**
+ * The classification a proved change carries to the merge gate: everything the prover named and
+ * everything the coder named. A prover that named nothing still reads as no classification, which
+ * fails closed at the gate; the coder's word cannot stand in for a missing one, only add to one.
+ */
+export function unionTouches(prover: WorkerResult['touches'], coder: readonly string[] | undefined): WorkerResult['touches'] {
+  if (!prover) return prover;
+  // Kind by kind: one word the driver does not know must not cost the ones it does.
+  const known = (coder ?? []).filter((t): t is NonNullable<WorkerResult['touches']>[number] => (TOUCH_KINDS as readonly string[]).includes(t));
+  return [...new Set([...prover, ...known])];
+}
+
+/**
  * A marker is trusted only at the exact head it names, so a catch-up that moved the head is
  * announced too: the same finished code, the same gated head, on the head that now stands.
  */
@@ -302,7 +314,11 @@ async function runProve(ctx: Context, issue: Issue, cwd: string, maxPoints: numb
     GATED_SHA: coded?.gated ?? 'no recorded head, so run the gate',
     FEEDBACK: brief,
   });
-  return runStep(ctx, issue, cwd, maxPoints, { role: reproof ? 'worker-reprove' : 'prover', seatName: 'prover', prompt, known: ['fixed', 'unprovable', 'needs-human', 'failed'] });
+  const result = await runStep(ctx, issue, cwd, maxPoints, { role: reproof ? 'worker-reprove' : 'prover', seatName: 'prover', prompt, known: ['fixed', 'unprovable', 'needs-human', 'failed'] });
+  // What the change touches decides whether it may merge without a person, and the coder, who
+  // wrote it, said so in the marker. The prover's word is added to the coder's, never put in its place.
+  result.touches = unionTouches(result.touches, coded?.touches);
+  return result;
 }
 
 /**
