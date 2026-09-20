@@ -35,11 +35,29 @@ import { ISSUE_LIST_FIELDS } from '../appraise-github-issues/lib/appraise.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, JOURNAL_STEPS, type JournalStep } from './lib/carve.ts';
 import { carveIssue } from './lib/knife.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
+import { guardCli } from '../fix-github-issue/lib/cli.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
 
 const args = process.argv.slice(2);
+
+/** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
+export const CLI = { flags: ['dry-run'], options: ['issue', 'ceiling', 'carver', 'confirmer', 'fail-after'] } as const;
+export const USAGE = `carve-github-issue: carve one oversized issue into sub-issues, or revisit one already carved.
+Run it from inside the target repository.
+
+  bun run <skill-dir>/carve.ts --issue <n> [flags]
+
+  --issue <n>             the issue to carve or revisit (required)
+  --dry-run               with fixture seats: log every write, land nothing
+  --ceiling <n>           a one-off ceiling, in points (default: the config's)
+  --carver, --confirmer <seat>
+                          engine[:model] for that seat
+  --fail-after <step>     testing only: exit hard after that journal step
+  --help, -h              print this and exit`;
+// Before anything else: an argument this command does not know must never fall through to a real run.
+guardCli(args, CLI, USAGE);
 const flag = (name: string) => args.includes(`--${name}`);
 const opt = (name: string) => {
   const i = args.indexOf(`--${name}`);

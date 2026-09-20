@@ -47,6 +47,7 @@ import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks
 import { FILES as FLOOR_FILES, type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
+import { guardCli } from '../fix-github-issue/lib/cli.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -218,6 +219,31 @@ const CARVE_PROMPTS = join(HERE, '..', 'carve-github-issue', 'prompts');
  * be run from a worktree; `--git-common-dir` is the same `.git` for every worktree of a
  * repository, so this answers with the main checkout wherever it is invoked from.
  */
+/** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
+export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat'] } as const;
+export const USAGE = `burn-down-github-issues: appraise, carve, work, review, and land a repository's open issues, headless.
+Run it from inside the target repository. With no flags it starts a REAL run on the whole window.
+
+  bun run <skill-dir>/loop.ts [flags]
+
+  --dry-run               rehearse: no agent is run and nothing is written; say what would happen
+  --limit <n>             work at most n issues this run
+  --only <n,n,...>        restrict the run to these issues, in appraisal, selection, and the sweep
+  --max-points <n>        the largest size a worker may take on (default: the config's)
+  --no-appraise           skip the sizing pass
+  --appraise-limit <n>    appraise at most n unsized issues (default: the config's)
+  --pulse <minutes>       how often the whole operator board is printed
+  --silent                print no operator board
+  --closure <file>        print every module the import-closure walk reaches from that file, and exit
+  --worker, --reviewer, --confirmer, --appraiser, --carver, --carve-confirmer, --callback-seat <seat>
+                          engine[:model] for that seat, for example codex:gpt-5.6-sol
+  --issue <n>             not accepted here: one issue alone is fix.ts --issue <n>
+  --help, -h              print this and exit
+
+Ctrl+C stops the run: its agents are killed, nothing is settled from them, and its claims are released.`;
+// Before anything else: an argument this command does not know must never fall through to a real run.
+guardCli(process.argv.slice(2), CLI, USAGE);
+
 const REPO_ROOT = repoRootFrom(process.cwd());
 
 /**
@@ -470,6 +496,7 @@ function pendingOnTheFloor(): FloorItem[] {
 }
 
 const args = process.argv.slice(2);
+
 const flag = (name: string) => args.includes(`--${name}`);
 const opt = (name: string) => {
   const i = args.indexOf(`--${name}`);

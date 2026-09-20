@@ -37,6 +37,7 @@ import { parseSeat, seatLabel } from './lib/engines.ts';
 import { createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
+import { guardCli } from './lib/cli.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
 import { installStopHandler } from './lib/stop.ts';
 
@@ -69,10 +70,9 @@ export const USAGE = `fix-github-issue: fix one known issue end to end, headless
 
 Ctrl+C stops the run: its agent is killed, nothing is settled from it, and its claim is released.`;
 
-if (flag('help') || args.includes('-h')) {
-  console.log(USAGE);
-  process.exit(0);
-}
+/** Every flag this command reads, for the guard: an argument it does not know must never fall through to a real run. */
+export const CLI = { flags: ['dry-run', 'redrive'], options: ['issue', 'max-points', 'worker', 'reviewer', 'confirmer', 'resume-pr'] } as const;
+guardCli(args, CLI, USAGE);
 
 const DRY_RUN = flag('dry-run');
 
