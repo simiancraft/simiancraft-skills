@@ -26,7 +26,11 @@ describe('cleanup never runs under live work', () => {
     it(`${name} takes its claim before the try and creates its worktree inside it`, () => {
       const body = bodyOf(name);
       const tryAt = body.indexOf('\n  try {');
-      expect(body.indexOf('keepClaimed(handle)')).toBeLessThan(tryAt);
+      const claimAt = body.indexOf('keepClaimed(handle');
+      // A missing needle is -1, which would satisfy either comparison below on its own.
+      expect(tryAt).toBeGreaterThan(-1);
+      expect(claimAt).toBeGreaterThan(-1);
+      expect(claimAt).toBeLessThan(tryAt);
       expect(body.search(/worktreeFor\(|worktreeAtPullRequest\(/)).toBeGreaterThan(tryAt);
     });
   }
