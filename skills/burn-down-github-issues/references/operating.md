@@ -114,6 +114,11 @@ by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-sw
 
 ## What is not a bug
 
+- **`board: N card(s) placed by their facts` and a burst of `board:` lines at startup.** The run
+  start puts every card in the window where its facts say before any seat moves one; a card a
+  person dragged somewhere the facts do not support goes back, with the line saying where and
+  why. `backlog by lane: A1 12, B1 3, ...` right after it is the window collapsed to lanes, and it
+  is the answer to "why did nothing get selected": B1 is the workers' queue, A1 the appraisers'.
 - **`repair: #N is open but PR #M merged ... closing with a pointer` at startup.** An earlier run
   merged the pull request and died before recording the close. The repair closes the issue, puts
   the merge on the floor, and prevents the issue being fixed a second time.
@@ -121,6 +126,10 @@ by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-sw
   answer of a process that failed. The issue keeps no label and gets no pull request, so a later
   run picks it up normally. This is the fail-closed path working.
 - **An issue is parked.** Parking is a handoff, not an error. The work is on the pull request.
+- **An issue is a dead letter.** `to the landing DLQ: the checks are red` is the machine giving up
+  on a landing, not on the work; the card sits in that phase's queue with the reason on the
+  thread, and `fix.ts --issue N --redrive` continues the same pull request once the cause is
+  fixed.
 - **An appraiser closes an issue without a worker.** That is the highest-yield thing the loop does.
   The `closeComment` carries a re-checkable receipt; read it rather than reopening on instinct.
 - **A worker returns `already-fixed` in minutes.** It opened the file and found the fix

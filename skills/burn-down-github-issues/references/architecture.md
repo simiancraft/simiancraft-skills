@@ -1,32 +1,36 @@
 # Architecture
 
-How and why burn-down-github-issues works: it triages recent issues, fixes the small ones, proves
-the work on a pull request, and lets a second agent decide whether it can merge.
+How and why burn-down-github-issues works: a backlog is a board of cards, each card is in one lane
+of an explicit state machine, and polymorphic seats move the cards.
 
 ## Shape
 
-Four roles, three of them isolated agent seats, and several issues in flight at once.
+The state is the tracker, projected onto a board; the machine is `lib/machine.ts`; the seats are
+whatever engine a lane's prompt runs on. Ten phases, thirty-six lanes:
 
 ```
-appraise ──▶ already-fixed / obsolete ──▶ comment with receipt, close
-   │      ├▶ needs-decision / needs-human ──▶ label, skip
-   │      └▶ valid ──▶ size: N label
-   ▼
-select (sized, within the ceiling)
-   │
-   ▼
-worker ──▶ PR ──▶ review ──────────────────▶ pull master ──▶ merge
-                  (concurrent, no writes)    (one at a time)  ├▶ stale  ──▶ catch up, review again
-                                                              ├▶ revise ──▶ worker revises
-                                                              └▶ park   ──▶ leave for a human
+📏 Appraisal   A1 Inbox → A2 Appraising → A3 Confirming close
+🟢 Ready       B1 Ready
+🔪 Carving     C1 To carve → C2 Carving → C3 Confirming cut → C4 Spawning children → C5 Epic → C6 Revisiting → C7 Rolling up
+🔨 Work        D1 Coding → D2 Proving → D3 Drafted            (D4 Sent back, on a rejection)
+🔍 Review      E1 Ready for review → E2 Evidence under review
+🚀 Landing     F1 Approved → F2 Catching up → F3 Checks pending → F4 Smoke → F5 Merging
+⏳ Waits       W1 Blocked by sibling, W2 Paused by epic, W3 Claimed elsewhere
+☠️ Dead letters Q1 Appraisal, Q2 Carve, Q3 Work, Q4 Review, Q5 Landing   (one queue per machine)
+🙋 Human       H1 Needs decision, H2 Needs human, H3 Parked
+✅ Done        T1 Merged, T2 Closed without code, T3 Verified on the floor
 ```
 
-Everything from the worker rightward is the sibling
-[`fix-github-issue`](../../fix-github-issue/SKILL.md) skill, which this loop calls once per selected
-issue; its [`references/pipeline.md`](../../fix-github-issue/references/pipeline.md) is where the
-verdict-file contract, the review budget, the merge boundary, staleness, and the resume windows are
-written down. What is loop-shaped stays here: appraisal, selection, the pool, and the run's own
-durable state.
+A run starts by placing every card where its facts say (`references/state-machine.md`,
+"Reconcile"), and that placement is the queue: the appraisers take the Inbox, the workers take
+Ready, the knife takes To carve and the Epics whose tree moved, and the dead-letter and human
+lanes wait for a person. Everything from Coding rightward is the sibling
+[`fix-github-issue`](../../fix-github-issue/SKILL.md) skill, which this loop calls once per Ready
+card; its [`references/pipeline.md`](../../fix-github-issue/references/pipeline.md) is where the
+verdict-file contract, the review budget, the merge boundary, staleness, the resume windows, and
+the dead letters it writes are written down. Appraisal is the sibling `appraise-github-issues`
+skill and carving is `carve-github-issue`, both run in process. What is loop-shaped stays here:
+the board, the placement, the pool, and the run's own durable state.
 
 **One engine implements, another judges.** By default the worker runs on `codex exec` and the
 reviewer on `claude -p`; both are seats you can reassign. Splitting the engines is not a preference: a reviewer built from the same
@@ -196,15 +200,28 @@ That rule exists because an issue can prescribe a remedy the repository's own co
 out, and without it every stage executes the prescription faithfully: each judges the diff
 against the issue, and nothing judges the issue against the conventions.
 
-## Selection and reconciliation
+## Placement is the queue
 
-A candidate is an open leaf sized within the band. Selection drops, and logs with its rule, any
-issue that carries `loop/carved`, `loop/carve-gen: N`, `loop/released`, `loop/carving`,
-`loop/working`, or `loop/paused`; any issue with an open child; any leaf with `loop/paused` on an
-ancestor; and any leaf with a blocker, on the tracker or in an ancestor's carving record, that is
-not closed `COMPLETED`. An issue with a parent is exempt from the age window, since its trunk was
-selected when it was recent. `--only 12,34` restricts the run (appraisal, selection, and the sweep)
-to those numbers and lifts the age window for them; every other filter still applies.
+The run start computes, for every open issue in the window and every card already on the board,
+the lane its facts put it in, in the precedence `references/state-machine.md` gives: closed beats
+everything; a merged pull request that owns the issue is Merged; a hold label is its human lane
+and a `loop/dlq: <phase>` label its queue; `loop/paused` is a wait; a carved trunk or an issue
+with an open child is Epic; an open pull request that owns the issue is Drafted or Ready for
+review; a blocker not closed as completed is a wait; a size over the ceiling is To carve, within
+it Ready, and none is the Inbox. An issue carrying a live `loop/working` or `loop/carving` claim
+is left where it is. With a board, the cards whose lane differs are written; without one, the
+placement is still the queue, only unrecorded.
+
+The workers' candidates are the Ready lane, less any issue at its review cap and any the tree
+refuses (a pause on an ancestor, an edge in a carving record); a trunk's leaves are worked in the
+order its newest carving record gives, grouped where the trunk's newest leaf would have sat, and
+the rest of the backlog stays newest-first. The appraisers' candidates are the Inbox, filtered
+once more by the appraise skill's own selection so its command and the loop agree. An issue with
+a parent is exempt from the age window, since its trunk was selected when it was recent, and so
+is any issue already on the board, since the board is what a burndown resumes from. `--only 12,34`
+restricts the run (placement, appraisal, selection, and the sweep) to those numbers and lifts the
+age window for them; every other rule still applies, and the console says which lane kept each
+one out.
 
 A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
 position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
@@ -235,6 +252,16 @@ is oversized inside the window or has an open child at any age; third every leaf
 closed not planned or gone (its open parent is revisited, else it goes to a person) and every pause
 a closed trunk left behind. `--only` restricts all three passes.
 
+## The pool
+
+A seat is an engine running the prompt the card's lane names. The driver's seams are already
+polymorphic: the appraisal pool runs the appraiser and confirmer prompts on the Inbox, the knife
+runs the carver and cut-confirmer prompts on To carve and on Epics whose tree moved, and the work
+pool runs the worker, worker-in-revision, and reviewer prompts on Ready. Past the driver's seams
+a Ready card runs from Coding to Merged inside one pipeline call, so Review and Landing are not
+yet staffed separately from Work; `references/state-machine.md`, "The agent pool", says what the
+finished pool looks like and what remains.
+
 ## Known gaps
 
 Proof judgement lives in the sibling proof skill's
@@ -253,4 +280,6 @@ are bypassed; the worktree and read-only contracts are prompts, not sandboxes. T
 today is scope (small sized issues, code-only merges, a second-engine gate) and trust in the
 tracker's authors, not enforcement.
 
-DLQ ejection has not been exercised end to end. It is written; it is not proven.
+Of the five dead-letter queues only the review queue has been exercised end to end (a redrive
+that continued a parked pull request to a merge). The others are written; they are not proven.
+There is no triage seat yet; every queue waits for a person.

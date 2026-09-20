@@ -314,23 +314,33 @@ Three rules carry over from the per-issue loop and must survive the change:
 - **The pull master stays singular.** Merging (F5) is the one serial lane; every other lane runs
   as wide as its phase's WIP limit allows.
 
-What changes: today's `loop.ts` selects issues and drives each through every step in one lane;
-the pool inverts that into per-lane steps with the board as the queue, and the pipeline's
-functions split at the seams the lane events already mark. Until that is built, the per-issue
-loop at concurrency N is the pool, and it exercises the same locks.
+How far that is built: `loop.ts` dispatches from the placement by lane. The run start computes
+where every card's facts put it (the `reconcile` above, for the whole window at once), writes the
+cards whose lane differs, and takes the appraisers' queue from the Inbox and the workers' queue
+from Ready; nothing is selected by reading labels a second way. Each seat moves the card it
+holds: the driver at the appraisal verdicts, the knife at its outcomes, the worker itself at
+Proving and Drafted (through `card.ts`, rendered into its prompt), and the fix pipeline at every
+seam from Coding to Merged. What is not yet built is the split past the driver's seams: a Ready
+card still runs from Coding to Merged inside one process, so a dispatcher cannot hand Evidence
+under review to a different seat than the one that coded, and the per-phase WIP limit is the
+single `concurrency` knob. That split is the pipeline's functions cut at the lane events they
+already raise, and until it lands the per-issue pipeline at concurrency N is the pool, and it
+exercises the same locks.
 
 ## What the loop does not yet do
 
-The machine is the specification; `loop.ts` and the fix pipeline still implement the older,
-coarser shape. The gaps between them, each a change to code rather than to this file:
+The machine is the specification. The gaps between it and the code, each a change to code rather
+than to this file:
 
-- one `loop/dlq` label where the machine has five, and `needs-human` and `loop/parked` still
-  receive what the machine sends to Q1, Q2, Q3, and Q5;
-- no triage seat and no `loop/redrives` counter;
-- no card moves at all: `moveCard` and the Phase write are not called anywhere yet;
-- the worker does not move its card at step 3 (D2) and the driver does not move it when the
-  reviewer starts (E2);
-- a redrive from Parked opens a new pull request four times in five instead of continuing the
-  parked one;
+- no triage seat: every dead-letter lane waits for a person, and `redrivesUnderCap` is counted
+  (`loop/redrives: N`) but not enforced, since only a person redrives today;
+- the appraisal and carve queues (Q1, Q2) are labels the placement reads, but the appraiser and
+  the knife still hand their capped failures to `needs-human` rather than write them;
+- the pipeline runs Coding through Merged in one process, so the Review and Landing phases
+  cannot be staffed by a different seat than Work, and there is one WIP limit rather than one
+  per phase;
+- a hand move on the board is not read back: the next run's placement overrides it with the
+  facts, with a log line saying so, which is right for a forward move and loses a deliberate
+  backward one;
 - the fix pipeline's verdicts live in local lane files, so two resume windows stay unrecoverable
   by a run on another machine; the carve lifecycle's announced intents are the model to follow.
