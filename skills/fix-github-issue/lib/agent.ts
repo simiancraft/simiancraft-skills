@@ -321,6 +321,9 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     throw new RunStopping(`the run is stopping; ${role} on #${issue} was stopped, not answered`);
   }
   if (timedOut) {
+    // Every seat distrusts the exit code, but the resume path reads a verdict file from a lane a
+    // dead run left behind, so what a killed agent wrote does not stay on disk to be found later.
+    for (const left of clearsByRole[role] ?? []) rmSync(join(cwd, left), { force: true });
     ctx.log(`  #${issue}  ${role} timed out at ${agentTimeout.ms / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
   }

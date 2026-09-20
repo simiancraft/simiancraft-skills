@@ -52,8 +52,9 @@ describe('an agent killed at the cap', () => {
     const run = await runAgent(context(lines, false), 'worker', 7, cwd, { engine: 'fixture', model: join(scratch, 'verdict.json') }, 'prompt');
     expect(run.timedOut).toBe(true);
     expect(run.exitCode).toBe(TIMED_OUT_EXIT);
-    // The hazard itself: the answer was written before the kill, and the engine said 0.
-    expect(existsSync(join(cwd, VERDICT_FILE))).toBe(true);
+    // The hazard itself: the engine said 0, and the fixture's log line shows it wrote its answer
+    // before the kill. The answer is gone again, so the resume path cannot find it in the lane later.
+    expect(existsSync(join(cwd, VERDICT_FILE))).toBe(false);
     expect(lines.some((l) => /timed out at .* minutes and was killed/.test(l))).toBe(true);
     // One attempt only: a run that spent the cap is not asked again.
     expect(lines.filter((l) => /running worker/.test(l))).toHaveLength(1);
