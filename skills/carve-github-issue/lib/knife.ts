@@ -730,6 +730,9 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     } catch (second) {
       say(`could not count the failed carve: ${(second as Error).message.split('\n')[0]}`);
     }
+    // The count can await a callback, and the lease can run out under it; asked once more before
+    // the cleanup clears the mark, so the driver is not told to place a card it no longer holds.
+    if (leaseLost(ctx, issue.number)) return { outcome: 'lease-lost', reason: `this run lost its lease on the issue while settling a throw: ${(error as Error).message.split('\n')[0]}` };
     throw error;
   } finally {
     stopRenewing();
