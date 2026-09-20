@@ -19,7 +19,7 @@
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { isTrunk, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { isTrunk, leaseLost, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
@@ -297,6 +297,11 @@ export function refusedAsTrunk(tree: Tree, release: boolean | undefined): boolea
 /** One more failed appraisal; at the cap the issue goes to the appraisal dead-letter queue with the log tail. */
 function countFailedAppraisal(ctx: Context, issue: Issue, cap: number, reason: string, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
   if (ctx.dryRun) return { verdict: 'failed', reason, retry: true };
+  // A release appraisal runs under a lease. Once that is lost the count is another run's to keep.
+  if (leaseLost(ctx, issue.number)) {
+    say(`not counted, since this run lost its lease on the issue: ${reason}`);
+    return { verdict: 'failed', reason, retry: true, changed: true };
+  }
   const attempts = recordAppraisal(ctx, issue.number, appraisalCount(issue.labels));
   say(`appraisal attempt ${attempts} of ${cap} failed: ${reason}`);
   if (attempts < cap) return { verdict: 'failed', reason, retry: true };

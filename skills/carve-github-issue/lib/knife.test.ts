@@ -53,6 +53,23 @@ describe('the carving driver makes only moves the chart allows', () => {
       expect(illegal(lanes)).toEqual([]);
     });
   }
+  test('a release appraisal that fails after its lease was lost counts nothing', async () => {
+    const released = () => new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    const counted = (io: FakeTracker) => io.view(10)!.labels.some((l) => l.name.startsWith('loop/appraisals'));
+    const lost = released(); const ctx = ctxFor(lost);
+    ctx.log = (m) => {
+      if (!/running appraiser/.test(m) || leaseLost(ctx, 10)) return;
+      const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+    };
+    await makeDriver(ctx, k, ['C7'], fixture('bad-appraisal', {})).releaseAppraisal(10);
+    expect(counted(lost)).toBe(false);
+    // With the lease held, the same unusable appraisal is counted.
+    const held = released();
+    await makeDriver(ctxFor(held), k, ['C7'], fixture('bad-appraisal', {})).releaseAppraisal(10);
+    expect(counted(held)).toBe(true);
+  });
   test('a trunk with open children but no record enters its first carving along a chart edge', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(10, { subIssues: [11] }), fakeIssue(11, { parentNumber: 10 })]);
     const ctx = ctxFor(io); const lanes = ['C5'];
@@ -278,6 +295,24 @@ describe('carveIssue', () => {
     expect(io.writes.length).toBeGreaterThan(written);
     expect(io.view(10)!.subIssues).toHaveLength(2);
     expect(records(io, 10)).toEqual(['applying', 'live']);
+  });
+  test('a carver that fails after the lease was lost is not counted: the count is a write too', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', {}), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    // Lost while the carver runs, which then hands back an answer the knife cannot use.
+    ctx.log = (m) => {
+      if (!/running carver/.test(m) || leaseLost(ctx, 10)) return;
+      const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+    };
+    const out = await carveIssue(ctx, issue10, k, io);
+    expect(out.outcome).toBe('busy');
+    expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
+    // With the lease held, the same failed turn is counted.
+    ctx.log = () => {};
+    expect((await carveIssue(ctx, issue10, k, io)).outcome).toBe('failed');
+    expect(labels(io, 10)).toContain('loop/carves: 1');
   });
   test('a full carve: children in delivery order, an edge, no size labels, applying then live, labels, claim released', async () => {
     const io = trunk();

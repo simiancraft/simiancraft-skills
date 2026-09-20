@@ -658,6 +658,7 @@ function heldBy(tree: Tree): string | null {
 /** One more failed attempt on the trunk; at the cap it goes to the carve dead-letter queue with the log tail. */
 async function countFailure(k: Knife, tree: Tree, why: string, logPath: string | null): Promise<CarveOutcome> {
   if (k.ctx.dryRun) return { outcome: 'failed', reason: why };
+  holdLease(k, `count the failed carve on #${k.trunk}`);
   const attempts = recordCarve(k.ctx, k.trunk, carveCount(tree.issue.labels));
   k.say(`carve attempt ${attempts} of ${k.knobs.maxCarveAttempts} failed: ${why}`);
   if (attempts < k.knobs.maxCarveAttempts) return { outcome: 'failed', reason: why };

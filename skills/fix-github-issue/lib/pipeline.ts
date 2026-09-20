@@ -1063,7 +1063,7 @@ async function workIssue(
   // after opening one, or a verdict that closes the issue, names none, so the tracker is asked. A
   // list that cannot be read throws, and the throw keeps the lane: unknown is not "none".
   // A dry run stops at the first seat it does not run. Nothing was tried, so no failure is counted
-  // and the card stays where it is.
+  // and the card rests in the lane the rehearsal reached.
   if (result.verdict === 'not-run') return { outcome: 'not-run', reason: result.reason };
   const pr = result.verdict === 'fixed' ? result.pr : (result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
   if (result.verdict === 'failed') {
