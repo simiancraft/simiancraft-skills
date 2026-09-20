@@ -69,6 +69,25 @@ describe('an agent killed at the cap', () => {
     expect(lines.some((l) => /verdict: fixed/.test(l))).toBe(false);
   }, 20_000);
 
+  it('keeps the answer of an agent that exited in time, though something it started held its output past the cap', async () => {
+    const script = join(scratch, 'leaves-a-child.ts');
+    writeFileSync(script, "Bun.spawn(['sleep', '5'], { stdout: 'inherit', stderr: 'inherit' }).unref(); process.exit(0);");
+    const engines = (await import('./engines.ts')).ENGINES as Record<string, { command: (cwd: string, prompt: string, model?: string) => string[] }>;
+    const original = engines.fixture.command;
+    engines.fixture.command = () => ['bun', script];
+    try {
+      const cwd = join(scratch, 'wt', 'issue-8');
+      mkdirSync(cwd, { recursive: true });
+      const lines: string[] = [];
+      const run = await runAgent(context(lines, false), 'worker', 8, cwd, { engine: 'fixture', model: 'unused' }, 'prompt');
+      expect(run.exitCode).toBe(0);
+      expect(run.timedOut).toBeUndefined();
+      expect(lines.some((l) => /left a process holding its output/.test(l))).toBe(true);
+    } finally {
+      engines.fixture.command = original;
+    }
+  }, 20_000);
+
   it('keeps the shipped cap at forty-five minutes', () => {
     expect(AGENT_TIMEOUT_MS).toBe(45 * 60 * 1000);
   });

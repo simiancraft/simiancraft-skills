@@ -287,8 +287,14 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   // pipe in the meantime: it blocks waiting for stderr space while the parent waits for stdout EOF.
   let timedOut = false;
   const timeout = setTimeout(() => {
-    timedOut = true;
-    ctx.log(`  #${issue}  ${role} exceeded ${agentTimeout.ms / 60000} minutes; killing it`);
+    // An agent that already exited answered in time; only something it left running still holds
+    // its output open. That is taken down with the group, and the agent's own exit code stands.
+    if (proc.exitCode === null) {
+      timedOut = true;
+      ctx.log(`  #${issue}  ${role} exceeded ${agentTimeout.ms / 60000} minutes; killing it`);
+    } else {
+      ctx.log(`  #${issue}  ${role} exited ${proc.exitCode} but left a process holding its output past ${agentTimeout.ms / 60000} minutes; killing that`);
+    }
     killAgent(proc);
   }, agentTimeout.ms);
 
