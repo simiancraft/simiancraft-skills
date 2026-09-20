@@ -35,7 +35,9 @@ import {
   validateCarving,
   validateConfirmation,
 } from './carve.ts';
-import { claim, keepClaimed, leaseLost, trackerIo } from './claims.ts';
+import { claim, keepClaimed, LeaseLostError, leaseLost, trackerIo } from './claims.ts';
+
+export { LeaseLostError };
 import { buildLedger, carryIds, childMarker, type Ledger, pauseSet, type Record, type RecordChild, renderChildBody, renderRecord, sameBody } from './record.ts';
 import { descendants, type Fingerprint, fingerprint, type Intent, parseMarker, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
 
@@ -96,9 +98,6 @@ type Knife = {
   say: (m: string) => void;
   journal: JournalFile;
 };
-
-/** Thrown by a knife write once this run's lease on the trunk is lost. */
-export class LeaseLostError extends Error {}
 
 /**
  * Every knife write passes here first. A lease that ran out may be another run's by now, so the

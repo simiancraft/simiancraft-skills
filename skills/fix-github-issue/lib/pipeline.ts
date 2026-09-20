@@ -13,7 +13,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
-import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
@@ -105,6 +105,16 @@ export function phaseOfLane(lane: string | undefined): DlqPhase {
 }
 
 /**
+ * A lane settles nothing about an issue whose lease it has lost: another run may hold it, so a
+ * count, a dead letter, a park, or a return to draft would be written over that run's work. Asked
+ * after every seat returns, since a lost lease kills the seat's agent and the agent's exit is then
+ * no verdict, and again inside each settlement as the backstop.
+ */
+function holdLease(ctx: Context, issue: number, before: string): void {
+  if (leaseLost(ctx, issue)) throw new LeaseLostError(`this run lost its lease on #${issue} before: ${before}`);
+}
+
+/**
  * Moves the issue's card on the driver's board, when there is one. A board write must never fail
  * a lane: the lane's facts are on the tracker, and the card is a projection of them.
  */
@@ -172,6 +182,7 @@ async function runWorker(
     prompt,
     feedback ? undefined : () => resetLane(ctx, issue.number, cwd),
   );
+  holdLease(ctx, issue.number, 'settle the worker');
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the worker was not run' };
   if (exitCode !== 0) {
     return {
@@ -224,6 +235,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
   mkdirSync(cwd, { recursive: true });
   const prompt = renderPrompt(ctx, 'confirm-answer.md', { ISSUE: String(issue.number), TITLE: issue.title, WORKER_REASON: result.reason, ANSWER: result.answer ?? '' });
   const run = await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt);
+  holdLease(ctx, issue.number, 'settle the confirmer');
   if (run.exitCode !== 0) return null;
   const checked = validateConfirmation(readResult<unknown>(cwd, CONFIRMATION_FILE), issue.number);
   if (!checked.ok) {
@@ -236,6 +248,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
 
 /** Hands a leaf to a person with both opinions on the thread. */
 function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, confirmation: { reason: string }, say: (m: string) => void): FixOutcome {
+  holdLease(ctx, issue.number, 'hand the issue to a person');
   const body = `The worker judged this \`${result.verdict}\` (${result.reason}); the second engine disagreed: ${confirmation.reason}. A person decides.`;
   mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', body]);
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
@@ -258,6 +271,7 @@ async function runReviewer(
     MAX_ROUNDS: String(ctx.knobs.maxReviewRounds),
   });
   const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt);
+  holdLease(ctx, issue, 'settle the reviewer');
   // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
   // reviewer's parting words could approve a merge.
   if (exitCode !== 0) return null;
@@ -1071,6 +1085,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
  * count lives on the issue, like reviews.
  */
 function countFailure(ctx: Context, issue: Issue, reason: string, say: (message: string) => void, pr?: number): FixOutcome {
+  holdLease(ctx, issue.number, 'count the failed attempt');
   const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
   say(`attempt ${attempts} of ${ctx.knobs.maxWorkerAttempts} failed`);
   // With a pull request open there is no Ready to go back to: a Ready card is one a worker starts
@@ -1092,6 +1107,7 @@ const DLQ_LANE: Record<DlqPhase, string> = { appraisal: 'Q1', carve: 'Q2', work:
  * state the issue carries rather than an unlabelled draft nobody claimed.
  */
 function deadLetter(ctx: Context, issue: Issue, phase: DlqPhase, reason: string, say: (message: string) => void, pr?: number): FixOutcome {
+  holdLease(ctx, issue.number, 'send the issue to a dead-letter queue');
   sendToDlq(ctx, issue.number, phase, reason);
   if (pr) mutate(ctx, `label PR #${pr} loop/dlq: ${phase}`, ['gh', 'pr', 'edit', String(pr), '--add-label', `loop/dlq: ${phase}`]);
   say(`to the ${phase} DLQ: ${reason.split('\n')[0]}`);
@@ -1374,6 +1390,12 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   // A stop is the operator's, not a failure of the work: nothing is counted or queued, and the
   // lane is kept, since a worker stopped mid-change leaves its only record there.
+  // Nor is a lost lease a failure of the work: another run may hold the issue, so nothing is
+  // written on it, and the lane is kept for whoever reads what happened.
+  if (error instanceof LeaseLostError || leaseLost(ctx, issue.number)) {
+    say(`lost its lease; nothing is settled, and the lane is kept: ${error.message.split('\n')[0]}`);
+    return { outcome: { outcome: 'busy', reason: 'this run lost its lease on the issue' }, keepLane: true };
+  }
   if (error instanceof RunStopping || isStopping()) {
     say('stopped with the run; nothing is settled, and the lane is kept');
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };

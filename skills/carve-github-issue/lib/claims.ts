@@ -47,6 +47,8 @@ export async function awaitReleases(graceMs = 30_000, sleep: (ms: number) => Pro
 }
 const leaseKey = (ctx: Context, issue: number) => `${ctx.project?.repo ?? ''}#${issue}`;
 export const leaseLost = (ctx: Context, issue: number): boolean => lostLeases.has(leaseKey(ctx, issue));
+/** Thrown where a run would have written to, or settled, an issue whose lease it has lost. */
+export class LeaseLostError extends Error {}
 
 /**
  * Posts the claim comment, then the label, then re-reads: if an earlier unreleased, unexpired

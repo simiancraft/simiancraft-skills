@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type ClaimHandle, keepClaimed, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { runAgent, shutdownAgents } from './agent.ts';
 import type { ProjectConfig } from './config.ts';
@@ -128,3 +129,26 @@ describe('a stopping run', () => {
     expect(lanes).toEqual(['D1']);
   });
 });
+
+describe('a lane that lost its lease', () => {
+  it('settles nothing from the worker its lost lease killed: no attempt counted, no Ready card, outcome busy', async () => {
+    writeFileSync(join(scratch, 'verdict.json'), JSON.stringify({ issue: 8, verdict: 'failed', reason: 'killed mid-change' }));
+    const io = new FakeTracker('loop-bot', [fakeIssue(8, { labels: [{ name: 'size: 1' }] })]);
+    const lines: string[] = [];
+    const lanes: string[] = [];
+    const ctx = context(io, true, (m) => {
+      lines.push(m);
+      // Lost the way it is in a run: a renewal fails with the expiry already past, while the worker runs.
+      if (!/running worker/.test(m) || leaseLost(ctx, 8)) return;
+      const handle: ClaimHandle = { kind: 'working', commentId: 1, label: 'loop/working', issue: 8, key: 'o/stop#8', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+    });
+    ctx.onLane = (e) => lanes.push(e.lane);
+    const outcome = await fixIssue(ctx, { number: 8, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] }, { maxPoints: 2 });
+    expect(outcome).toEqual({ outcome: 'busy', reason: 'this run lost its lease on the issue' });
+    expect(lines.filter((l) => /attempt \d+ of \d+ failed|worker failed/.test(l))).toEqual([]);
+    expect(ctx.dryRunLog.filter((d) => /loop\/attempts/.test(d))).toEqual([]);
+    expect(lanes).toEqual(['D1']);
+  });
+});
+
