@@ -54,6 +54,8 @@ export type AppraisalOutcome = {
   close?: 'confirmed' | 'disputed' | 'unconfirmed' | 'skipped';
   /** True when the verdict changed nothing on the issue and the next run should try again. */
   retry?: boolean;
+  /** True when the appraisal stopped because the issue changed under it; the tracker, not this outcome, says where the card is. */
+  changed?: boolean;
   /** What the size callback did, when a directory was given and a slot matched. */
   callback?: SizeCallbackResult;
   /** True when the failure cap was reached and the issue went to the appraisal dead-letter queue. */
@@ -388,23 +390,23 @@ export async function appraiseIssue(
   if (live.state !== 'OPEN') {
     say(`closed while being appraised; nothing applied`);
     rmSync(cwd, { recursive: true, force: true });
-    return { ...outcome, verdict: 'failed', reason: 'issue closed while being appraised' };
+    return { ...outcome, verdict: 'failed', reason: 'issue closed while being appraised', changed: true };
   }
   if (isHeld(live.labels, options.skipLabels)) {
     say(`a hold label landed while it was being appraised; nothing applied`);
     rmSync(cwd, { recursive: true, force: true });
-    return { ...outcome, verdict: 'failed', reason: 'issue held while being appraised' };
+    return { ...outcome, verdict: 'failed', reason: 'issue held while being appraised', changed: true };
   }
   if (refusedAsTrunk(now, options.release)) {
     say('became a trunk while being appraised; nothing applied');
     rmSync(cwd, { recursive: true, force: true });
-    return { ...outcome, verdict: 'failed', reason: 'issue became a trunk while being appraised', retry: false };
+    return { ...outcome, verdict: 'failed', reason: 'issue became a trunk while being appraised', retry: false, changed: true };
   }
   const foreign = liveClaim(now, new Date().toISOString(), options.ownClaim ?? ctx.runId);
   if (foreign) {
     say(`claimed by ${foreign.runId} while being appraised; nothing applied`);
     rmSync(cwd, { recursive: true, force: true });
-    return { ...outcome, verdict: 'failed', reason: `issue claimed by ${foreign.runId} while being appraised`, retry: true };
+    return { ...outcome, verdict: 'failed', reason: `issue claimed by ${foreign.runId} while being appraised`, retry: true, changed: true };
   }
   const priorSizes = sizeLabels(live.labels);
   const priorPoints = pointsFromLabels(live.labels);
@@ -456,6 +458,7 @@ export async function appraiseIssue(
           say(`${lateWhy} while the close was being confirmed; nothing applied`);
           outcome.close = 'unconfirmed';
           outcome.retry = true;
+          outcome.changed = true;
           break;
         }
         say(`confirmer agrees: ${confirmation.reason}`);

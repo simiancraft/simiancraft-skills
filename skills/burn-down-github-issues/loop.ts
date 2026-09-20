@@ -570,18 +570,35 @@ function placeFromTracker(issue: number, title: string, note: string): void {
   if (DRY_RUN) return;
   try {
     const tree = readTree(ctx, issue, trackerIo(ctx));
+    // Every fact the placement reads, from the one tree: holds, another run's claim, a pause
+    // above, children, blockers, and the pull requests that name the issue.
+    const now = Date.now();
+    const foreign = tree.claims.find((c) => !c.released && Date.parse(c.expires) > now && c.runId !== ctx.runId);
     const placed = placeByFacts({
       state: tree.issue.state === 'OPEN' ? 'OPEN' : 'CLOSED',
       labels: tree.issue.labels.map((l) => l.name),
-      pulls: [],
+      pulls: pullsNaming(issue),
       points: pointsFromLabels(tree.issue.labels) ?? undefined,
       ceiling: MAX_POINTS,
       blocked: tree.blockers.some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
       openChildren: tree.children.some((c) => c.state === 'OPEN'),
+      claimedBy: foreign?.runId,
+      pausedAbove: tree.ancestors.some((a) => a.labels.includes('loop/paused')),
     });
     place(issue, title, placed.lane, `${note}; ${placed.why}`.slice(0, 120));
   } catch (error) {
     log(`  #${issue} could not be placed from the tracker: ${(error as Error).message.split('\n')[0]}`);
+  }
+}
+
+/** The open pull requests whose branch names the issue; none when the list cannot be read, which the log says. */
+function pullsNaming(issue: number): Array<{ number: number; isDraft: boolean; merged: boolean }> {
+  try {
+    const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,isDraft,headRefName']);
+    return (JSON.parse(raw) as Array<{ number: number; isDraft: boolean; headRefName: string }>).filter((pr) => pr.headRefName.endsWith(`-${issue}`)).map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: false }));
+  } catch (error) {
+    log(`  #${issue} pull requests could not be read: ${(error as Error).message.split('\n')[0]}`);
+    return [];
   }
 }
 
@@ -868,18 +885,17 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
 }
 
 /**
- * The newest reason the loop left on the thread for stopping, which is the brief a redriven worker
- * gets. Null when the loop never stopped this work: the pull request only lost its driver, and it
- * is resumed from Proving with no objection to answer. Null also when the thread cannot be read,
- * since inventing an objection would send sound work to a revision.
+ * The newest reason the loop itself left on the thread for stopping, which is the brief a redriven
+ * worker gets. Null when the loop never stopped this work: the pull request only lost its driver,
+ * and it is resumed from Proving with no objection to answer. A thread that cannot be read throws:
+ * "unknown" is neither an objection nor the absence of one, and the caller leaves the card alone.
  */
 function lastObjection(issue: number): string | null {
-  try {
-    const raw = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
-    return raw.trim() || null;
-  } catch {
-    return null;
-  }
+  const raw = sh(ctx, [
+    'gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq',
+    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""`,
+  ]);
+  return raw.trim() || null;
 }
 
 /**
@@ -1060,7 +1076,7 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
         }
         // An appraisal that stopped because the issue changed under it (held, closed, claimed,
         // became a trunk) has no lane of its own to report: the tracker says where the card is.
-        if (outcome.verdict === 'failed' && !outcome.retry && !outcome.deadLetter) {
+        if (outcome.changed || (outcome.verdict === 'failed' && !outcome.retry && !outcome.deadLetter)) {
           placeFromTracker(issue.number, issue.title, outcome.reason);
           return;
         }
@@ -1248,7 +1264,14 @@ async function main(): Promise<void> {
       CONFIG.concurrency,
       async ({ issue, pull }) => {
         await waitForGo(`#${issue.number}`);
-        const result = await redriveIssue(ctx, issue, pull, lastObjection(issue.number), { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+        let objection: string | null;
+        try {
+          objection = lastObjection(issue.number);
+        } catch (error) {
+          log(`#${issue.number}  PR #${pull.number} not resumed this run: its thread could not be read (${(error as Error).message.split('\n')[0]})`);
+          return;
+        }
+        const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
         if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
       },
       ({ issue }) => `#${issue.number}`,

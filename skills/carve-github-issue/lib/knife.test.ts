@@ -9,6 +9,8 @@ import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { carveIssue } from './knife.ts';
 import type { Record } from './record.ts';
 import { readTree } from './tree.ts';
+import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carving.ts';
+import { laneState, successors } from '../../burn-down-github-issues/lib/simulate.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -241,6 +243,33 @@ describe('carveIssue', () => {
     // A later visit while released: carve mode, but nothing over the ceiling and no open child.
     const later = await carveIssue(ctx, issue10, knobs(fixture('ex', revisit(10, 'exhausted', { ledger })), fixture('yes', confirmation(10, 'revisit', 'exhausted', true))), io);
     expect(later.outcome).toBe('left-alone');
+  });
+
+  test('lifting a carve DLQ at the revisit cap starts a fresh epoch', async () => {
+    const { io, ctx } = await carved();
+    const k = knobs(fixture('sg', revisit(10, 'still-good')), fixture('yes', confirmation(10, 'revisit', 'still-good', true)), { maxRevisitsPerGeneration: 0 });
+    const capped = await carveIssue(ctx, issue10, k, io);
+    expect(capped.outcome).toBe('dlq');
+    expect(readTree(ctx, 10, io).record!.seen.holds).toContain('loop/dlq: carve');
+    io.removeLabel(10, 'loop/dlq: carve');
+    const resumed = await carveIssue(ctx, issue10, k, io);
+    expect(resumed.outcome).toBe('still-good');
+    expect(readTree(ctx, 10, io).record!.epoch).toBe(2);
+    expect(readTree(ctx, 10, io).record!.revisits).toBe(0);
+  });
+
+  test('a confirmed indivisible opinion follows legal board edges', async () => {
+    const io = trunk(); const ctx = ctxFor(io); const lanes: string[] = [];
+    ctx.onLane = e => lanes.push(e.lane);
+    const k = knobs(fixture('indivisible', carving(10, { verdict: 'indivisible', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true)));
+    const d = new CarvingDriver({ ctx, knobs: k, appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (_n, _t, l) => lanes.push(l), log: () => {} });
+    await d.revisit(10, 'first carving');
+    expect(lanes.at(-1)).toBe('H2');
+    const illegal = lanes.slice(1).flatMap((to, index) => {
+      const from = lanes[index];
+      return from === to || successors(laneState(from), { ownEventsOnly: true }).has(laneState(to)) ? [] : [`${from}->${to}`];
+    });
+    expect(illegal).toEqual([]);
   });
 
   test('a dry run with fixture seats lands nothing and logs every write', async () => {

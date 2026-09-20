@@ -87,8 +87,13 @@ export type Issue = {
   blockedBy?: { nodes: Array<{ number: number; state: string; stateReason: string | null }> };
 };
 
-/** The lane each issue was last moved to in this process: where a throw happened, which names its queue. */
-const lastLane = new Map<number, string>();
+/**
+ * The lane each issue was last moved to in this process: where a throw happened, which names its
+ * queue. Keyed by repository and issue, since one process can drive more than one repository and
+ * issue numbers repeat across them.
+ */
+const lastLane = new Map<string, string>();
+const laneKeyOf = (ctx: Context, issue: number) => `${ctx.project?.repo ?? ''}#${issue}`;
 
 /** The dead-letter queue that owns a failure in `lane`: the queue of the lane's phase, Work's for a lane with none. */
 export function phaseOfLane(lane: string | undefined): DlqPhase {
@@ -101,7 +106,7 @@ export function phaseOfLane(lane: string | undefined): DlqPhase {
  * a lane: the lane's facts are on the tracker, and the card is a projection of them.
  */
 function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
-  lastLane.set(issue.number, lane);
+  lastLane.set(laneKeyOf(ctx, issue.number), lane);
   if (!ctx.onLane) return;
   try {
     ctx.onLane({ issue: issue.number, title: issue.title, lane, note });
@@ -1015,7 +1020,9 @@ async function workIssue(
 
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
-    return countFailure(ctx, issue, result.reason, say, result.pr);
+    // A worker that died after opening its pull request reports none, so the tracker is asked.
+    // A list that cannot be read throws, and the throw keeps the lane: unknown is not "none".
+    return countFailure(ctx, issue, result.reason, say, result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
   }
   const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say);
   if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, result.pr) : settled;
@@ -1256,7 +1263,7 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * read, the lane is kept: the worktree is then the only record of what happened.
  */
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
-  const lane = lastLane.get(issue.number);
+  const lane = lastLane.get(laneKeyOf(ctx, issue.number));
   // This pipeline visits Confirming close only for a worker's own close, so a throw there is
   // still the worker's failure; the appraisal and carve queues belong to their own drivers.
   const owner = phaseOfLane(lane);

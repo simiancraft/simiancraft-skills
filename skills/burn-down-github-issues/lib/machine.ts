@@ -403,6 +403,8 @@ export const MACHINE: StateNode = {
                 RESUMED: RESUME,
                 // The reviewer's seat finds the pull request in draft: it was never declared complete.
                 PR_TO_DRAFT: { target: 'ticket.work.drafted' },
+                // Or finds the lane dirty: work the author never committed, which no review can read.
+                UNDECLARED_WORK: { target: 'ticket.deadLetters.work', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
               },
             },
             evidenceUnderReview: {

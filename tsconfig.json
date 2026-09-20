@@ -13,6 +13,7 @@
     ]
   },
   "include": [
-    "skills/**/*.ts"
+    "skills/**/*.ts",
+    "test/**/*.ts"
   ]
 }

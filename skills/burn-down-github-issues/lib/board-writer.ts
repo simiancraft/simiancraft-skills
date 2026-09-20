@@ -179,6 +179,10 @@ export function placeByFacts(facts: {
   blocked?: boolean;
   /** True when the issue has an open sub-issue: a trunk whose children must move first. */
   openChildren?: boolean;
+  /** The run whose live claim stands on the issue, when it is not this run's. */
+  claimedBy?: string;
+  /** True when an ancestor is paused, which pauses everything beneath it. */
+  pausedAbove?: boolean;
 }): { lane: string; why: string } {
   const has = (label: string) => facts.labels.includes(label);
   const merged = facts.pulls.find((p) => p.merged);
@@ -192,7 +196,9 @@ export function placeByFacts(facts: {
   if (has('loop/parked')) return { lane: 'H3', why: 'loop/parked' };
   const dead = dlqPhase(facts.labels.map((name) => ({ name })));
   if (dead) return { lane: { appraisal: 'Q1', carve: 'Q2', work: 'Q3', review: 'Q4', landing: 'Q5' }[dead], why: `loop/dlq: ${dead}` };
-  if (has('loop/paused')) return { lane: 'W2', why: 'loop/paused' };
+  if (has('loop/paused') || facts.pausedAbove) return { lane: 'W2', why: has('loop/paused') ? 'loop/paused' : 'an ancestor is paused' };
+  // Another run's live claim: the card waits for it, whatever else is true of the issue.
+  if (facts.claimedBy) return { lane: 'W3', why: `claimed by ${facts.claimedBy}` };
   if (has('loop/released')) return { lane: 'C7', why: 'loop/released' };
   if (has('loop/carved') || facts.labels.some((l) => l.startsWith('loop/carve-gen:'))) return { lane: 'C5', why: 'a carved trunk' };
   if (facts.openChildren) return { lane: 'C5', why: 'it has an open child' };

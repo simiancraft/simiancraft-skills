@@ -122,7 +122,9 @@ export function recordCount(ctx: Context, kind: Counter, issue: number, previous
   const next = previous + 1;
   const label = `loop/${kind}: ${next}`;
   try {
-    sh(ctx, ['gh', 'label', 'create', label, '--color', COUNTER_LABEL[kind].color, '--description', COUNTER_LABEL[kind].description]);
+    // A mutation like any other: a dry run logs it and a fake tracker receives it. Through `sh` it
+    // reached the real tracker from both.
+    mutate(ctx, `create label ${label}`, ['gh', 'label', 'create', label, '--color', COUNTER_LABEL[kind].color, '--description', COUNTER_LABEL[kind].description]);
   } catch {
     // already exists
   }
