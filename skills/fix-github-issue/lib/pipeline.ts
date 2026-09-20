@@ -14,7 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { agentTimeout, children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
@@ -185,7 +185,7 @@ async function runWorker(
   move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', reproof ? 'reacquiring proof after the base moved' : feedback ? 'revision after a review' : undefined);
   // A revision is the exception: its lane holds the branch and the pull request under review, so a
   // reset would throw away work the reviewer already read. Only a first attempt may be reset.
-  const { logPath, exitCode, notRun } = await runAgent(
+  const { logPath, exitCode, notRun, timedOut } = await runAgent(
     ctx,
     reproof ? 'worker-reprove' : feedback ? 'worker-revise' : 'worker',
     issue.number,
@@ -200,7 +200,9 @@ async function runWorker(
     return {
       issue: issue.number,
       verdict: 'failed',
-      reason: `worker exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
+      reason: timedOut
+        ? `worker timed out at ${agentTimeout.ms / 60000} minutes and was killed, so nothing it left is trusted; log ends: ${logTail(logPath)}`
+        : `worker exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
     };
   }
 

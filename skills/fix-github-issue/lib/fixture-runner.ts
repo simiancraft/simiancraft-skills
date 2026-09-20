@@ -27,3 +27,11 @@ if (!cwd || !answer || !target) {
 }
 copyFileSync(answer, join(cwd, target));
 console.log(`fixture ${role}: ${answer} -> ${target}`);
+
+// A test of the driver's cap: write the answer, then hang, and exit 0 when killed, the way an engine
+// that traps SIGTERM does. The answer is on disk by then, which is what must not be trusted.
+const linger = Number(process.env.LOOP_FIXTURE_LINGER_MS ?? 0);
+if (linger > 0) {
+  process.on('SIGTERM', () => process.exit(0));
+  await Bun.sleep(linger);
+}

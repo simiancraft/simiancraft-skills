@@ -30,6 +30,10 @@ export function killAgentsOn(repo: string, issue: number): number {
 
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
+/** The cap in force, held in an object so a test can shorten it; nothing else changes it. */
+export const agentTimeout = { ms: AGENT_TIMEOUT_MS };
+/** The exit code a run killed at the cap is given, after the shell's `timeout`: never 0, whatever the engine said on its way down. */
+export const TIMED_OUT_EXIT = 124;
 
 /**
  * Extra attempts an agent gets when the upstream refused for a reason that is not about the work.
@@ -203,7 +207,8 @@ export async function runAgent(
 ): Promise<AgentRun> {
   for (let attempt = 0; ; attempt++) {
     const run = await runAgentOnce(ctx, role, issue, cwd, seat, prompt);
-    if (run.exitCode === 0 || attempt >= AGENT_RETRIES) return run;
+    // A run killed at the cap is not asked again: it spent the cap, and the lane has waited that long.
+    if (run.exitCode === 0 || run.timedOut || attempt >= AGENT_RETRIES) return run;
 
     const reason = retryableFailure(run.logPath);
     if (!reason) return run;
@@ -216,9 +221,11 @@ export async function runAgent(
 
 /**
  * What a seat's run came to. `notRun` marks a seat a dry run skipped: exit 0 there means nothing
- * ran, not that an agent succeeded, and no answer file exists to read.
+ * ran, not that an agent succeeded, and no answer file exists to read. `timedOut` marks a run the
+ * driver killed at the cap: an engine can exit 0 on its way down with an answer file half meant,
+ * so its exit code is never 0 here and no seat reads what it left.
  */
-export type AgentRun = { logPath: string; exitCode: number; notRun?: true };
+export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true };
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
@@ -278,15 +285,20 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   children.add(Object.assign(proc, { issue, repo: ctx.project.repo }));
   // Drain both pipes at once. Reading stdout to EOF first deadlocks a child that fills its stderr
   // pipe in the meantime: it blocks waiting for stderr space while the parent waits for stdout EOF.
+  let timedOut = false;
   const timeout = setTimeout(() => {
-    ctx.log(`  #${issue}  ${role} exceeded ${AGENT_TIMEOUT_MS / 60000} minutes; killing it`);
+    timedOut = true;
+    ctx.log(`  #${issue}  ${role} exceeded ${agentTimeout.ms / 60000} minutes; killing it`);
     killAgent(proc);
-  }, AGENT_TIMEOUT_MS);
+  }, agentTimeout.ms);
 
   writeFileSync(logPath, `${new Date().toISOString()} ${role} on #${issue} via ${seatLabel(seat)}\n`);
   const [output, errors] = await Promise.all([pump(proc.stdout, logPath), pump(proc.stderr, logPath, 'stderr: ')]);
-  const exitCode = await proc.exited;
+  const exited = await proc.exited;
   clearTimeout(timeout);
+  // The driver killed it, so whatever code the engine chose on its way down says nothing: every
+  // seat distrusts a non-zero exit, and that is the branch a killed run belongs in.
+  const exitCode = timedOut && exited === 0 ? TIMED_OUT_EXIT : exited;
 
   // `claude -p` prints its final message to stdout and writes no file, so without this the
   // fallback verdict channel would exist only for engines with an --output-last-message flag.
@@ -294,13 +306,17 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   if (!existsSync(lastMessagePath) && output.trim().length > 0) writeFileSync(lastMessagePath, output);
 
   children.delete(proc);
-  appendFileSync(logPath, `\nexit code: ${exitCode}\n`);
+  appendFileSync(logPath, timedOut ? `\nkilled by the driver after ${agentTimeout.ms / 60000} minutes (the engine exited ${exited}); exit code: ${exitCode}\n` : `\nexit code: ${exitCode}\n`);
   if (entry) entry.busy = false;
   // An agent that ended under a stop was stopped: that is no answer and no failure, so nothing
   // downstream may count it, queue it, or trust what it left behind.
   if (isStopping()) {
     ctx.log(`  #${issue}  ${role} was stopped with the run (exit ${exitCode}); nothing is settled from it`);
     throw new RunStopping(`the run is stopping; ${role} on #${issue} was stopped, not answered`);
+  }
+  if (timedOut) {
+    ctx.log(`  #${issue}  ${role} timed out at ${agentTimeout.ms / 60000} minutes and was killed; its answer is not trusted`);
+    return { logPath, exitCode, timedOut: true };
   }
   if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
 
