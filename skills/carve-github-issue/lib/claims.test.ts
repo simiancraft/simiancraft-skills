@@ -92,10 +92,10 @@ describe('refusal and isTrunk', () => {
 });
 
 describe('claim', () => {
-  test('posts the comment then the label, wins alone, releases with the label off', () => {
+  test('posts the comment then the label, wins alone, releases with the label off', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1)]);
     const ctx = ctxFor(io);
-    const handle = claim(ctx, io, 1, 'working');
+    const handle = await claim(ctx, io, 1, 'working');
     expect(handle).not.toBe('busy');
     if (handle === 'busy') return;
     expect(io.writes.map((w) => w.argv[2])).toEqual(['comment', 'edit']);
@@ -105,17 +105,17 @@ describe('claim', () => {
     expect(tree.claims[0].released).toBe(true);
     expect(io.view(1)?.labels).toEqual([]);
   });
-  test('the later claimant loses to an earlier live claim and posts its own unclaim; the label stays', () => {
+  test('the later claimant loses to an earlier live claim and posts its own unclaim; the label stays', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1)]);
-    const first = claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working');
+    const first = await claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working');
     expect(first).not.toBe('busy');
-    const second = claim(ctxFor(io, 'other-host-8-2'), io, 1, 'carving');
+    const second = await claim(ctxFor(io, 'other-host-8-2'), io, 1, 'carving');
     expect(second).toBe('busy');
     const tree = readTree(ctxFor(io), 1, io);
     expect(tree.claims.filter((c) => !c.released).map((c) => c.runId)).toEqual(['other-host-9-1']);
     expect(io.view(1)?.labels.map((l) => l.name)).toEqual(['loop/working']);
   });
-  test('a claim that raced in between the comment and the re-read is settled by comment order', () => {
+  test('a claim that raced in between the comment and the re-read is settled by comment order', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1)]);
     let injected = false;
     io.beforeWrite = (op) => {
@@ -125,9 +125,9 @@ describe('claim', () => {
       }
     };
     // The other run's comment lands after ours, so ours is earlier and wins.
-    expect(claim(ctxFor(io), io, 1, 'working')).not.toBe('busy');
+    expect(await claim(ctxFor(io), io, 1, 'working')).not.toBe('busy');
   });
-  test('two claims posted before either re-reads: the earlier comment wins and the later backs off', () => {
+  test('two claims posted before either re-reads: the earlier comment wins and the later backs off', async () => {
     // The tightest race the protocol admits: both runs pass the first read, both post. The second
     // poster must see the first comment on its re-read and stand down, posting its own unclaim,
     // and the first poster must keep its claim. Nothing here depends on wall-clock timing.
@@ -139,15 +139,15 @@ describe('claim', () => {
         io.comment(1, BOT, '<!-- carve-claim kind=working run=other-host-5-5 at=2026-09-03T12:00:00Z expires=2999-01-01T00:00:00Z -->');
       }
     };
-    expect(claim(ctxFor(io), io, 1, 'working')).toBe('busy');
+    expect(await claim(ctxFor(io), io, 1, 'working')).toBe('busy');
     const tree = readTree(ctxFor(io), 1, io);
     const live = tree.claims.filter((c) => !c.released);
     expect(live.map((c) => c.runId)).toEqual(['other-host-5-5']);
     expect(io.writes.some((w) => w.argv[2] === 'comment' && String(w.argv[w.argv.length - 1]).includes('carve-unclaim kind=working run=host-1-1'))).toBe(true);
   });
-  test('liveGate answers busy under a foreign claim and left-alone for a refusal', () => {
+  test('liveGate answers busy under a foreign claim and left-alone for a refusal', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1, { labels: [{ name: 'size: 1' }] })]);
-    claim(ctxFor(io, 'other-host-9-1'), io, 1, 'carving');
+    await claim(ctxFor(io, 'other-host-9-1'), io, 1, 'carving');
     const gate = liveGate(ctxFor(io), io, 1, 2);
     expect(gate.ok).toBe(false);
     if (!gate.ok) expect(gate.outcome).toBe('busy');
@@ -155,37 +155,37 @@ describe('claim', () => {
     const held = liveGate(ctxFor(io), io, 1, 2);
     if (!held.ok) expect(held.outcome).toBe('left-alone');
   });
-  test('a run that claims, releases, and claims again holds a real lock the second time', () => {
+  test('a run that claims, releases, and claims again holds a real lock the second time', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1, { labels: [{ name: 'size: 1' }] })]);
-    const first = claim(ctxFor(io), io, 1, 'working');
+    const first = await claim(ctxFor(io), io, 1, 'working');
     if (first === 'busy') throw new Error('the first claim should win');
     first.release();
-    const second = claim(ctxFor(io), io, 1, 'working');
+    const second = await claim(ctxFor(io), io, 1, 'working');
     if (second === 'busy') throw new Error('the second claim should win');
     // Renewable, which needs the claim's own comment, and visible to everyone else as a live claim.
     expect(second.commentId).not.toBeNull();
     expect(second.commentId).not.toBe(first.commentId);
-    expect(claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working')).toBe('busy');
+    expect(await claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working')).toBe('busy');
     second.release();
-    expect(claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working')).not.toBe('busy');
+    expect(await claim(ctxFor(io, 'other-host-9-1'), io, 1, 'working')).not.toBe('busy');
   });
-  test('a dry run takes no claim', () => {
+  test('a dry run takes no claim', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1)]);
     const ctx = { ...ctxFor(io), dryRun: true } as Context;
-    const handle = claim(ctx, io, 1, 'working');
+    const handle = await claim(ctx, io, 1, 'working');
     expect(handle).not.toBe('busy');
     expect(io.writes).toEqual([]);
   });
-  test('a read that trails the release cannot pass the first claim off as the second', () => {
+  test('a read that trails the release cannot pass the first claim off as the second', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(1)]);
     const ctx = ctxFor(io);
     CLAIM_READBACK.waitMs = 0;
-    const first = claim(ctx, io, 1, 'working');
+    const first = await claim(ctx, io, 1, 'working');
     if (first === 'busy') throw new Error('the first claim should succeed');
     const trailing = structuredClone(io.view(1));
     first.release();
     const view = io.view.bind(io);
     io.view = (n) => (n === 1 ? structuredClone(trailing) : view(n));
-    expect(claim(ctx, io, 1, 'working')).toBe('busy');
+    expect(await claim(ctx, io, 1, 'working')).toBe('busy');
   });
 });

@@ -189,7 +189,7 @@ export async function resumeStranded(
         if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
         return;
       }
-      const handle = claim(ctx, io, issue.number, 'working');
+      const handle = await claim(ctx, io, issue.number, 'working');
       if (handle === 'busy') {
         say('not resuming: another run holds it');
         return;

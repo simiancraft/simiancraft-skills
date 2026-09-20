@@ -82,7 +82,7 @@ if (CONTEND) {
   const io = trackerIo(ctx);
   let report: Report;
   try {
-    const handle = claim(ctx, io, ISSUE, 'working');
+    const handle = await claim(ctx, io, ISSUE, 'working');
     const claimedAt = Date.now();
     if (handle === 'busy') {
       report = { runId: ctx.runId, result: 'busy', commentId: null, claimedAt };

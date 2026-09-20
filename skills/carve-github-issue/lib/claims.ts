@@ -33,7 +33,7 @@ export type ClaimHandle = { kind: Claim['kind']; commentId: number | null; label
  *
  * A dry run takes no claim and returns a handle whose writes are no-ops.
  */
-export function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['kind']): ClaimHandle | 'busy' {
+export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['kind']): Promise<ClaimHandle | 'busy'> {
   const label = kind === 'carving' ? 'loop/carving' : 'loop/working';
   if (ctx.dryRun) return { kind, commentId: null, label, renew: () => {}, release: () => {} };
 
@@ -57,7 +57,8 @@ export function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['k
   let after = readTree(ctx, issue, io);
   const own = () => after.claims.find((c) => c.runId === ctx.runId && c.kind === kind && !c.released && c.token === token) ?? null;
   for (let tries = 0; own() === null && tries < CLAIM_READBACK.tries; tries++) {
-    if (CLAIM_READBACK.waitMs > 0) Bun.sleepSync(CLAIM_READBACK.waitMs);
+    // Awaited, not slept through: a claim that blocks the process would stall every other lane's renewals.
+    if (CLAIM_READBACK.waitMs > 0) await Bun.sleep(CLAIM_READBACK.waitMs);
     after = readTree(ctx, issue, io);
   }
   const mine = own();

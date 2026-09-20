@@ -329,13 +329,13 @@ function mergeAllowed(ctx: Context, touches: WorkerResult['touches'] | null): bo
  * moment it runs. Without this, a number pointing at an unrelated pull request, or a push landing
  * after the review, merges something no reviewer ever read.
  */
-function pullRequestMatchesReview(
+async function pullRequestMatchesReview(
   ctx: Context,
   pr: number,
   issue: number,
   cwd: string,
   reviewedSha: string,
-): string | null {
+): Promise<string | null> {
   type View = { headRefOid: string; baseRefName: string; headRefName: string; state: string };
   const read = (): View => JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']));
   const localHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
@@ -343,8 +343,9 @@ function pullRequestMatchesReview(
   // A catch-up has just pushed this head, and the pull request's head can trail the push by a few
   // seconds. When the worktree already holds the expected commit, wait for GitHub to agree before
   // calling it a mismatch; a wrong head stays wrong after the wait.
+  // Awaited, not slept through: other lanes' output, timeouts, and lease renewals run meanwhile.
   for (let tries = 0; view.headRefOid !== reviewedSha && localHead === reviewedSha && tries < 6; tries++) {
-    Bun.sleepSync(5_000);
+    await Bun.sleep(5_000);
     view = read();
   }
 
@@ -676,7 +677,7 @@ async function land(
       landingSha = caught.after;
     }
 
-    const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, landingSha);
+    const mismatch = await pullRequestMatchesReview(ctx, pr, issue.number, cwd, landingSha);
     if (mismatch) {
       say(`refusing to merge PR #${pr}: ${mismatch}`);
       return { dlq: mismatch };
@@ -775,7 +776,7 @@ async function land(
   const readMerged = () => sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
   let merged = readMerged();
   for (let tries = 0; (!merged || merged === 'null') && tries < 6; tries++) {
-    Bun.sleepSync(5_000);
+    await Bun.sleep(5_000);
     merged = readMerged();
   }
   if (!merged || merged === 'null') {
@@ -1160,7 +1161,7 @@ export async function fixIssue(
     say(`left alone: ${gate.why}`);
     return { outcome: gate.outcome, reason: gate.why };
   }
-  const handle = claim(ctx, io, issue.number, 'working');
+  const handle = await claim(ctx, io, issue.number, 'working');
   if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
   const stopRenewing = keepClaimed(handle);
 
@@ -1270,7 +1271,7 @@ export async function redriveIssue(
     say(`left alone: ${gate.why}`);
     return { outcome: gate.outcome, reason: gate.why };
   }
-  const handle = claim(ctx, io, issue.number, 'working');
+  const handle = await claim(ctx, io, issue.number, 'working');
   if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
   const stopRenewing = keepClaimed(handle);
 

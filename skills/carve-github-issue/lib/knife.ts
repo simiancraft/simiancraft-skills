@@ -670,7 +670,7 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
   const journalPath = ctx.dryRun || ctx.io ? null : join(ctx.runDir, `carve-${issue.number}-gen${tree.generation}.json`);
   const k: Knife = { ctx, io, knobs, trunk: issue.number, say, journal: new JournalFile(ctx, knobs, issue.number, tree.generation, journalPath) };
 
-  const handle = claim(ctx, io, issue.number, 'carving');
+  const handle = await claim(ctx, io, issue.number, 'carving');
   if (handle === 'busy') {
     unlock();
     return { outcome: 'busy', reason: 'another run holds this issue' };

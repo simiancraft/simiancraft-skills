@@ -117,7 +117,7 @@ export class Carving {
       return;
     }
     const io = trackerIo(ctx);
-    let handle = claim(ctx, io, number, 'carving');
+    let handle = await claim(ctx, io, number, 'carving');
     if (handle === 'busy') {
       log(`#${number} release appraisal: another run holds it`);
       return;
@@ -152,7 +152,7 @@ export class Carving {
           const outcome = await carveIssue(ctx, issue, knobs, io);
           mark(number, issue.title, laneOf(outcome.outcome, 'C1'), outcome.reason.slice(0, 80));
           if (outcome.outcome !== 'carve' && outcome.outcome !== 'resumed') return;
-          handle = claim(ctx, io, number, 'carving');
+          handle = await claim(ctx, io, number, 'carving');
           if (handle === 'busy') return;
           stop = keepClaimed(handle);
           continue;
