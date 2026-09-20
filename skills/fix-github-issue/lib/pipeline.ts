@@ -617,6 +617,9 @@ function netChangeId(cwd: string, baseSha: string, head: string): string {
 }
 
 function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string): CaughtUp | 'conflict' | null {
+  // A catch-up merges the base in and pushes the lane's branch; every wait in a landing can
+  // outlast the lease, so every catch-up asks for it first.
+  holdLease(ctx, issue.number, `catch up ${why}`);
   if (ctx.dryRun) return null;
   // One fetch, one commit: the behind check, the overlap, the contribution comparison, and the
   // merge all use this base. A base that moves again meanwhile is the next catch-up's business.
@@ -833,6 +836,7 @@ async function land(
 
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
     const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: expectedChecks, required: requiredByBase });
+    holdLease(ctx, issue.number, 'act on the checks of the landing head');
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };
