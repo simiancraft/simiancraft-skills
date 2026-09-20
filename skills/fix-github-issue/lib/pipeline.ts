@@ -340,6 +340,21 @@ async function runWorker(
   let revision = Boolean(feedback);
   let hasPull = Boolean(feedback);
 
+  // Whatever brought the card here (a redrive, a resumed draft, a review's words), a proof that was
+  // refused and never answered by a new Code announcement is not tried again: the newest marker
+  // on the issue says so, and its hand-off is the brief the coder never got.
+  if (!ctx.dryRun && proveOnly) {
+    const newest = newestStep(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin);
+    if (newest?.step === 'refused') {
+      say(`a proof of ${newest.sha.slice(0, 10)} was refused and no Code step has answered it; Code runs first, with that refusal as its brief`);
+      proveOnly = false;
+      reproof = false;
+      revision = true;
+      codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${newest.handoff}`;
+      proveBrief = 'The code was changed after a proof of it was refused. Prove the new head on the same pull request, and mark it ready.';
+    }
+  }
+
   // A first dispatch starts from the facts, not from nothing: an earlier run may have coded this
   // issue and died, and what it reached is on the remote and announced on the issue. A pushed
   // branch nobody announced is continued by Code, never proved: a push is not a statement of

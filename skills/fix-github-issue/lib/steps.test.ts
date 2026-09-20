@@ -93,6 +93,9 @@ describe('reading where the work stands, from the remote and the tracker alone',
     const facts = readWorkFacts(reads({ marker: () => refused, remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
     expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'refusal' });
     expect(facts.marker?.handoff).toContain('returns 500');
+    // And it stands across a catch-up that moved the head: nothing was repaired by merging the base.
+    const moved = readWorkFacts(reads({ marker: () => refused, remoteBranches: () => [{ branch: 'fix/x-7', sha: T }] }));
+    expect(placeInWork(moved)).toEqual({ lane: 'D1', dispatch: 'code', from: 'refusal' });
   });
 
   it('continues Code when a run died before the announcement: a pushed branch, no marker', () => {

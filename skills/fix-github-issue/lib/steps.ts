@@ -100,8 +100,9 @@ export type WorkPlacement =
 export function placeInWork(facts: WorkFacts): WorkPlacement {
   if (facts.readyPr) return { lane: 'E1', dispatch: 'review' };
   const announced = facts.marker !== null && facts.remoteCarriesMarker;
-  // A refusal stands until a newer Code announcement supersedes it: the head it names is not proved again.
-  if (announced && facts.marker?.step === 'refused') return { lane: 'D1', dispatch: 'code', from: 'refusal' };
+  // A refusal stands until a newer Code announcement supersedes it, whatever the head has done
+  // since: a catch-up moves the head and repairs nothing, so the refused code is not proved again.
+  if (facts.marker?.step === 'refused' && facts.remoteHead) return { lane: 'D1', dispatch: 'code', from: 'refusal' };
   if (facts.draftHead && announced && facts.marker?.step === 'proved' && facts.marker.sha === facts.draftHead) return { lane: 'D3', dispatch: 'mark-ready' };
   if (announced) return { lane: 'D2', dispatch: 'prove' };
   return { lane: 'D1', dispatch: 'code', from: facts.remoteHead ? 'branch' : 'nothing' };
