@@ -413,6 +413,12 @@ export async function appraiseIssue(
     rmSync(cwd, { recursive: true, force: true });
     return { ...outcome, verdict: 'failed', reason: `issue claimed by ${foreign.runId} while being appraised`, retry: true, changed: true };
   }
+  // A lost lease may be another run's by now, whether or not its claim is visible yet.
+  if (leaseLost(ctx, issue.number)) {
+    say('this run lost its lease while it was being appraised; nothing applied');
+    rmSync(cwd, { recursive: true, force: true });
+    return { ...outcome, verdict: 'failed', reason: 'this run lost its lease on the issue while it was being appraised', retry: true, changed: true };
+  }
   const priorSizes = sizeLabels(live.labels);
   const priorPoints = pointsFromLabels(live.labels);
   // A verdict that lands clears the failure count; the next failure starts a fresh budget.
@@ -442,6 +448,14 @@ export async function appraiseIssue(
         outcome.retry = counted.retry;
         outcome.deadLetter = counted.deadLetter;
         if (counted.deadLetter) outcome.reason = counted.reason;
+        break;
+      }
+      // The confirmer's turn took minutes, and the lease can have run out under it.
+      if (leaseLost(ctx, issue.number)) {
+        say('this run lost its lease while the close was being confirmed; nothing applied');
+        outcome.close = 'unconfirmed';
+        outcome.retry = true;
+        outcome.changed = true;
         break;
       }
       if (confirmation.agree) {

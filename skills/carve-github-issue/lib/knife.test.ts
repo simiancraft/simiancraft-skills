@@ -70,6 +70,30 @@ describe('the carving driver makes only moves the chart allows', () => {
     await makeDriver(ctxFor(held), k, ['C7'], fixture('bad-appraisal', {})).releaseAppraisal(10);
     expect(counted(held)).toBe(true);
   });
+  for (const verdict of ['valid', 'obsolete'] as const) {
+    test(`a release appraisal that lands ${verdict} after its lease was lost applies nothing`, async () => {
+      const released = () => new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
+      const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+      const appraiser = () => fixture('appraisal', { issue: 10, verdict, points: verdict === 'valid' ? 1 : undefined, reason: 'r', closeComment: 'gone' });
+      const confirmer = () => fixture('close', { issue: 10, agree: true, reason: 'checked' });
+      // A sizing is applied straight after the appraiser; a close only after the confirmer.
+      const during = verdict === 'valid' ? /running appraiser/ : /running confirmer/;
+      const applied = (io: FakeTracker) => (verdict === 'valid' ? io.view(10)!.labels.some((l) => l.name === 'size: 1') : io.view(10)!.state === 'CLOSED');
+      const lost = released(); const ctx = ctxFor(lost);
+      ctx.log = (m) => {
+        if (!during.test(m) || leaseLost(ctx, 10)) return;
+        const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+        keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+      };
+      await makeDriver(ctx, k, ['C7'], appraiser(), confirmer()).releaseAppraisal(10);
+      expect(leaseLost(ctx, 10)).toBe(true);
+      expect(applied(lost)).toBe(false);
+      // With the lease held, the same verdict is applied.
+      const held = released();
+      await makeDriver(ctxFor(held), k, ['C7'], appraiser(), confirmer()).releaseAppraisal(10);
+      expect(applied(held)).toBe(true);
+    });
+  }
   test('a trunk with open children but no record enters its first carving along a chart edge', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(10, { subIssues: [11] }), fakeIssue(11, { parentNumber: 10 })]);
     const ctx = ctxFor(io); const lanes = ['C5'];
