@@ -294,3 +294,16 @@ today is scope (small sized issues, code-only merges, a second-engine gate) and 
 tracker's authors, not enforcement.
 
 Dead-letter-queue ejection has not been exercised end to end. It is written; it is not proven.
+
+## What a killed agent leaves behind
+
+The driver kills an agent in three cases, and what it does with the answer files differs on purpose.
+An agent killed at its cap (`agentTimeoutMinutes`, 45 by default) is never trusted: an engine can exit
+0 on its way down, so the run is given exit 124, no seat reads what it left, its answer files are
+deleted, and the failure says it timed out and at how many minutes. An agent that ends under an
+operator's stop is `stopped`: nothing is settled from it, but its files and its lane are kept, because
+the next run start may resume a `fixed` verdict whose pull request is open at the same head. An agent
+killed because the run lost its lease is settled as `lease-lost`, and nothing is written. The
+asymmetry between the first two is deliberate: a stop interrupts a worker that may have finished,
+while a cap kills one that, by definition, had not.
+

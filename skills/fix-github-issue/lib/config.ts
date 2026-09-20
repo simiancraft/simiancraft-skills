@@ -74,12 +74,32 @@ export type ProjectConfig = {
   worktreeRoot: string;
 };
 
+/** The seats an agent cap can be set for, and `default` for the rest. A worker's revision and reproof turns are the worker's. */
+export const AGENT_SEATS = ['default', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'diagnose'];
+
+/** What is wrong with an `agentTimeoutMinutes`, or null: a positive integer, or a map of them by seat. */
+export function agentCapFault(cap: unknown): string | null {
+  const positive = (value: unknown) => Number.isInteger(value) && (value as number) > 0;
+  if (cap === undefined || positive(cap)) return null;
+  const mapped = typeof cap === 'object' && cap !== null && !Array.isArray(cap);
+  if (mapped && Object.entries(cap).every(([seat, minutes]) => AGENT_SEATS.includes(seat) && positive(minutes))) return null;
+  return `agentTimeoutMinutes must be a positive integer, or a map of positive integers keyed by ${AGENT_SEATS.join(', ')}`;
+}
+
 /** The knobs the fix pipeline itself enforces. A driver may carry more; the pipeline reads these. */
 export type PipelineKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
   /** How long the pull master waits for a pull request's checks before parking instead of merging. */
   checksTimeoutMinutes: number;
+  /**
+   * How long an agent may run before the driver kills it: one number for every seat, or a map by
+   * seat (`worker`, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `diagnose`) with an
+   * optional `default`. Unset is 45 minutes. Size the worker's to the repository: its turn holds
+   * the install, the repository's own gate (twice, when the base moves under it), and the proof,
+   * and a wall clock runs on however loaded the machine is.
+   */
+  agentTimeoutMinutes?: number | Partial<Record<string, number>>;
   /**
    * `required`, the default: a pull request lands only on green checks, and an empty list of
    * checks is refused. `none`: this repository runs no checks on a pull request, so an empty list
@@ -316,6 +336,8 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   if (requiredChecks !== undefined && !(Array.isArray(requiredChecks) && requiredChecks.every((name) => typeof name === 'string' && name.length > 0))) {
     faults.push('requiredChecks must be an array of check names');
   }
+  const capFault = agentCapFault((merged as Knobs).agentTimeoutMinutes);
+  if (capFault) faults.push(capFault);
   const idleCheckSuiteApps = (merged as Knobs).idleCheckSuiteApps;
   if (idleCheckSuiteApps !== undefined && !(Array.isArray(idleCheckSuiteApps) && idleCheckSuiteApps.every((slug) => typeof slug === 'string' && slug.length > 0))) {
     faults.push('idleCheckSuiteApps must be an array of GitHub App slugs');

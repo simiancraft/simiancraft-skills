@@ -59,6 +59,7 @@ type LoopKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
+  agentTimeoutMinutes?: number | Partial<Record<string, number>>;
   checks: 'required' | 'none';
   requiredChecks?: string[];
   idleCheckSuiteApps?: string[];
@@ -608,6 +609,7 @@ const ctx = createContext({
     autoMerge: CONFIG.autoMerge,
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    agentTimeoutMinutes: CONFIG.agentTimeoutMinutes,
     checks: CONFIG.checks,
     requiredChecks: CONFIG.requiredChecks,
     idleCheckSuiteApps: CONFIG.idleCheckSuiteApps,

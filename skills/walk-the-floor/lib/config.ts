@@ -63,6 +63,8 @@ export type WalkKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
+  /** The cap on the walker's own agent (`diagnose`); the same shape as the pipeline's knob. */
+  agentTimeoutMinutes?: number | Partial<Record<string, number>>;
   smokeTimeoutMinutes: number;
   /** The size ceiling an incident's fix may attempt. */
   maxPoints: number;

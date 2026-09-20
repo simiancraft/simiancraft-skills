@@ -127,6 +127,7 @@ const ctx = createContext({
     autoMerge: 'never',
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    agentTimeoutMinutes: CONFIG.agentTimeoutMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
     pointScale: CONFIG.pointScale,
     maxWorkerAttempts: CONFIG.maxWorkerAttempts,

@@ -14,7 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { agentTimeout, children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { agentCapMs, children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
@@ -201,7 +201,7 @@ async function runWorker(
       issue: issue.number,
       verdict: 'failed',
       reason: timedOut
-        ? `worker timed out at ${agentTimeout.ms / 60000} minutes and was killed, so nothing it left is trusted; log ends: ${logTail(logPath)}`
+        ? `worker timed out at ${agentCapMs(ctx, 'worker') / 60000} minutes and was killed, so nothing it left is trusted; log ends: ${logTail(logPath)}`
         : `worker exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
     };
   }

@@ -30,8 +30,17 @@ export function killAgentsOn(repo: string, issue: number): number {
 
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
-/** The cap in force, held in an object so a test can shorten it; nothing else changes it. */
+/** The cap where the config sets none, held in an object so a test can shorten it; nothing else changes it. */
 export const agentTimeout = { ms: AGENT_TIMEOUT_MS };
+
+/** The cap for one agent run, in milliseconds: the config's for that seat, else its default, else the shipped one. */
+export function agentCapMs(ctx: Context, role: string): number {
+  const knob = ctx.knobs?.agentTimeoutMinutes;
+  if (typeof knob === 'number') return knob * 60_000;
+  const seat = role.startsWith('worker') ? 'worker' : role;
+  const minutes = knob?.[seat] ?? knob?.default;
+  return minutes === undefined ? agentTimeout.ms : minutes * 60_000;
+}
 /** The exit code a run killed at the cap is given, after the shell's `timeout`: never 0, whatever the engine said on its way down. */
 export const TIMED_OUT_EXIT = 124;
 
@@ -285,18 +294,19 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   children.add(Object.assign(proc, { issue, repo: ctx.project.repo }));
   // Drain both pipes at once. Reading stdout to EOF first deadlocks a child that fills its stderr
   // pipe in the meantime: it blocks waiting for stderr space while the parent waits for stdout EOF.
+  const capMs = agentCapMs(ctx, role);
   let timedOut = false;
   const timeout = setTimeout(() => {
     // An agent that already exited answered in time; only something it left running still holds
     // its output open. That is taken down with the group, and the agent's own exit code stands.
     if (proc.exitCode === null) {
       timedOut = true;
-      ctx.log(`  #${issue}  ${role} exceeded ${agentTimeout.ms / 60000} minutes; killing it`);
+      ctx.log(`  #${issue}  ${role} exceeded ${capMs / 60000} minutes; killing it`);
     } else {
-      ctx.log(`  #${issue}  ${role} exited ${proc.exitCode} but left a process holding its output past ${agentTimeout.ms / 60000} minutes; killing that`);
+      ctx.log(`  #${issue}  ${role} exited ${proc.exitCode} but left a process holding its output past ${capMs / 60000} minutes; killing that`);
     }
     killAgent(proc);
-  }, agentTimeout.ms);
+  }, capMs);
 
   writeFileSync(logPath, `${new Date().toISOString()} ${role} on #${issue} via ${seatLabel(seat)}\n`);
   const [output, errors] = await Promise.all([pump(proc.stdout, logPath), pump(proc.stderr, logPath, 'stderr: ')]);
@@ -312,7 +322,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   if (!existsSync(lastMessagePath) && output.trim().length > 0) writeFileSync(lastMessagePath, output);
 
   children.delete(proc);
-  appendFileSync(logPath, timedOut ? `\nkilled by the driver after ${agentTimeout.ms / 60000} minutes (the engine exited ${exited}); exit code: ${exitCode}\n` : `\nexit code: ${exitCode}\n`);
+  appendFileSync(logPath, timedOut ? `\nkilled by the driver after ${capMs / 60000} minutes (the engine exited ${exited}); exit code: ${exitCode}\n` : `\nexit code: ${exitCode}\n`);
   if (entry) entry.busy = false;
   // An agent that ended under a stop was stopped: that is no answer and no failure, so nothing
   // downstream may count it, queue it, or trust what it left behind.
@@ -324,7 +334,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     // Every seat distrusts the exit code, but the resume path reads a verdict file from a lane a
     // dead run left behind, so what a killed agent wrote does not stay on disk to be found later.
     for (const left of answers) rmSync(join(cwd, left), { force: true });
-    ctx.log(`  #${issue}  ${role} timed out at ${agentTimeout.ms / 60000} minutes and was killed; its answer is not trusted`);
+    ctx.log(`  #${issue}  ${role} timed out at ${capMs / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
   }
   if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);

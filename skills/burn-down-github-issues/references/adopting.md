@@ -60,7 +60,10 @@ export default {
   // names a landing must show green; needed unless the base branch's protection requires status
   // checks, because a landing with no written list of checks is refused), idleCheckSuiteApps (the
   // slugs of installed GitHub Apps that open a check suite on every push and may run nothing in it;
-  // without it such a suite holds every landing until checksTimeoutMinutes),
+  // without it such a suite holds every landing until checksTimeoutMinutes), agentTimeoutMinutes
+  // (how long an agent may run before the driver kills it: a number for every seat, or a map such
+  // as { worker: 120, default: 45 }; size the worker's to install + your gate twice + the proof, on
+  // this machine under load, since a wall clock does not know why a gate was slow),
   // smokeTimeoutMinutes,
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and

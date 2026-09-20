@@ -125,7 +125,7 @@ const SEATS = (() => {
 
 const ctx = createContext({
   project: CONFIG.project,
-  knobs: { autoMerge: 'never', maxReviewRounds: 1, checksTimeoutMinutes: CONFIG.checksTimeoutMinutes, smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes, pointScale: CONFIG.pointScale },
+  knobs: { autoMerge: 'never', maxReviewRounds: 1, checksTimeoutMinutes: CONFIG.checksTimeoutMinutes, agentTimeoutMinutes: CONFIG.agentTimeoutMinutes, smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes, pointScale: CONFIG.pointScale },
   seats: {
     worker: parseSeat(CONFIG.seats.worker, 'seats.worker'),
     reviewer: parseSeat(CONFIG.seats.reviewer, 'seats.reviewer'),

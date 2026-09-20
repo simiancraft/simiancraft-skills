@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
-import { AGENT_TIMEOUT_MS, agentTimeout, runAgent, TIMED_OUT_EXIT } from './agent.ts';
-import type { ProjectConfig } from './config.ts';
+import { AGENT_TIMEOUT_MS, agentCapMs, agentTimeout, runAgent, TIMED_OUT_EXIT } from './agent.ts';
+import { agentCapFault, type ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
 import { VERDICT_FILE } from './control-files.ts';
 import { fixIssue } from './pipeline.ts';
@@ -102,3 +102,47 @@ describe('an agent killed at the cap', () => {
     expect(AGENT_TIMEOUT_MS).toBe(45 * 60 * 1000);
   });
 });
+
+describe('the cap a config sets', () => {
+  const capFor = (knob: unknown, role: string) => agentCapMs({ knobs: { agentTimeoutMinutes: knob } } as never, role) / 60_000;
+
+  it('is one number for every seat, or a map by seat with a default, else the shipped cap', () => {
+    const shipped = agentTimeout.ms / 60_000;
+    expect(capFor(undefined, 'worker')).toBe(shipped);
+    expect(capFor(90, 'worker')).toBe(90);
+    expect(capFor(90, 'reviewer')).toBe(90);
+    expect(capFor({ worker: 120, default: 30 }, 'worker')).toBe(120);
+    expect(capFor({ worker: 120, default: 30 }, 'reviewer')).toBe(30);
+    expect(capFor({ worker: 120 }, 'carver')).toBe(shipped);
+  });
+
+  it("gives a revision and a reproof the worker's cap: they are the worker's turns", () => {
+    expect(capFor({ worker: 120 }, 'worker-revise')).toBe(120);
+    expect(capFor({ worker: 120 }, 'worker-reprove')).toBe(120);
+  });
+
+  it('is refused unless it is a positive integer or a map of them by a seat the driver knows', () => {
+    for (const good of [undefined, 1, 90, { worker: 120 }, { default: 30, reviewer: 20 }]) expect(agentCapFault(good)).toBeNull();
+    for (const bad of [0, -5, 1.5, '90', null, [90], { worker: 0 }, { worker: '90' }, { wroker: 90 }]) expect(agentCapFault(bad)).toContain('agentTimeoutMinutes must be');
+  });
+
+  it('is the cap the run is killed at, and the one its failure names', async () => {
+    // A fraction of a minute is not a value a config may hold (see the case above); it is set on
+    // the context directly, only so the test does not wait a minute for the kill.
+    const before = agentTimeout.ms;
+    agentTimeout.ms = 10 * 60_000;
+    try {
+      const cwd = join(scratch, 'wt', 'issue-10');
+      mkdirSync(cwd, { recursive: true });
+      const lines: string[] = [];
+      const ctx = context(lines, false);
+      (ctx.knobs as { agentTimeoutMinutes?: unknown }).agentTimeoutMinutes = { worker: 0.005, default: 10 };
+      const run = await runAgent(ctx, 'worker', 10, cwd, { engine: 'fixture', model: join(scratch, 'verdict.json') }, 'prompt');
+      expect(run.timedOut).toBe(true);
+      expect(lines.some((l) => l.includes('timed out at 0.005 minutes'))).toBe(true);
+    } finally {
+      agentTimeout.ms = before;
+    }
+  }, 20_000);
+});
+

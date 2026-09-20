@@ -107,6 +107,7 @@ const ctx = createContext({
     autoMerge: CONFIG.autoMerge,
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    agentTimeoutMinutes: CONFIG.agentTimeoutMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
   },
   seats: { worker: parseSeat(CONFIG.seats.worker, 'seats.worker'), reviewer: parseSeat(CONFIG.seats.reviewer, 'seats.reviewer') },
