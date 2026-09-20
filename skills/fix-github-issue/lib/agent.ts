@@ -196,7 +196,7 @@ export async function runAgent(
   seat: Seat,
   prompt: string,
   onRetry?: () => void,
-): Promise<{ logPath: string; exitCode: number }> {
+): Promise<AgentRun> {
   for (let attempt = 0; ; attempt++) {
     const run = await runAgentOnce(ctx, role, issue, cwd, seat, prompt);
     if (run.exitCode === 0 || attempt >= AGENT_RETRIES) return run;
@@ -210,8 +210,14 @@ export async function runAgent(
   }
 }
 
+/**
+ * What a seat's run came to. `notRun` marks a seat a dry run skipped: exit 0 there means nothing
+ * ran, not that an agent succeeded, and no answer file exists to read.
+ */
+export type AgentRun = { logPath: string; exitCode: number; notRun?: true };
+
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
-export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string) {
+export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
   mkdirSync(ctx.runDir, { recursive: true });
   const logPath = join(ctx.runDir, `${issue}-${role}-${Date.now()}.log`);
 
@@ -220,7 +226,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   if (ctx.dryRun && !isFixture(seat)) {
     writeFileSync(logPath, prompt);
     ctx.log(`  DRY RUN  would run ${role} (${seatLabel(seat)}) on #${issue} (prompt written to ${logPath})`);
-    return { logPath, exitCode: 0 };
+    return { logPath, exitCode: 0, notRun: true };
   }
   mkdirSync(cwd, { recursive: true });
 

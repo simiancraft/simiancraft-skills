@@ -34,7 +34,8 @@ import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBas
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 export type FixOutcome = {
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy';
+  /** `not-run` is a dry run that reached a seat it does not run: nothing was tried, so nothing failed. */
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run';
   reason: string;
 };
 
@@ -49,7 +50,9 @@ export type Verdict =
   | 'out-of-band'
   | 'fixed'
   | 'answered'
-  | 'failed';
+  | 'failed'
+  /** Never the worker's own word: the driver's, for a worker a dry run did not run. */
+  | 'not-run';
 
 export type WorkerResult = {
   issue: number;
@@ -160,7 +163,7 @@ async function runWorker(
   move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', reproof ? 'reacquiring proof after the base moved' : feedback ? 'revision after a review' : undefined);
   // A revision is the exception: its lane holds the branch and the pull request under review, so a
   // reset would throw away work the reviewer already read. Only a first attempt may be reset.
-  const { logPath, exitCode } = await runAgent(
+  const { logPath, exitCode, notRun } = await runAgent(
     ctx,
     reproof ? 'worker-reprove' : feedback ? 'worker-revise' : 'worker',
     issue.number,
@@ -169,6 +172,7 @@ async function runWorker(
     prompt,
     feedback ? undefined : () => resetLane(ctx, issue.number, cwd),
   );
+  if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the worker was not run' };
   if (exitCode !== 0) {
     return {
       issue: issue.number,
@@ -1058,6 +1062,9 @@ async function workIssue(
   // The pull request this work has, resolved once for every settlement below. A worker that died
   // after opening one, or a verdict that closes the issue, names none, so the tracker is asked. A
   // list that cannot be read throws, and the throw keeps the lane: unknown is not "none".
+  // A dry run stops at the first seat it does not run. Nothing was tried, so no failure is counted
+  // and the card stays where it is.
+  if (result.verdict === 'not-run') return { outcome: 'not-run', reason: result.reason };
   const pr = result.verdict === 'fixed' ? result.pr : (result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
@@ -1388,7 +1395,7 @@ export async function redriveIssue(
     inFlight.set(issue.number, { dir: cwd, busy: false });
     if (ctx.dryRun) {
       say(`DRY RUN  would ${objection === null ? 'reacquire the proof of' : 'revise'} PR #${pull.number} on ${pull.branch}, then review and land`);
-      return { outcome: 'failed', reason: 'dry run' };
+      return { outcome: 'not-run', reason: 'dry run: the redrive was not run' };
     }
     // The pull request goes back to draft first, so the catch-up and the revision's pushes spend
     // no CI run. Then the base: a redriven pull request has usually sat, and no revision begins on
