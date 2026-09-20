@@ -65,9 +65,10 @@ export default {
   // skipped or cancelled is waited on, so never list a job that is skipped on pull requests by
   // design; a cancelled check is waited on under any name, until a run passes or a person reruns
   // it), agentTimeoutMinutes
-  // (how long an agent may run before the driver kills it: a number for every seat, or a map such
-  // as { worker: 120, default: 45 }; size the worker's to install + your gate twice + the proof, on
-  // this machine under load, since a wall clock does not know why a gate was slow),
+  // (how long an agent may run before the driver kills it: a number for every seat, or a map by
+  // seat; 45 by default. Hitting the cap means the turn is doing too much, and the answer is a
+  // smaller turn, not a longer cap; raise this only where one run of your own gate honestly
+  // exceeds the default),
   // smokeTimeoutMinutes,
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and

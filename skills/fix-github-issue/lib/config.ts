@@ -97,9 +97,9 @@ export type PipelineKnobs = {
   /**
    * How long an agent may run before the driver kills it: one number for every seat, or a map by
    * seat (`worker`, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `walker`, `diagnose`) with an
-   * optional `default`. Unset is 45 minutes. Size the worker's to the repository: its turn holds
-   * the install, the repository's own gate (twice, when the base moves under it), and the proof,
-   * and a wall clock runs on however loaded the machine is.
+   * optional `default`. Unset is 45 minutes. An agent that hits the cap is a sign its turn is doing
+   * too much, and the answer to that is a smaller turn, not a longer cap. This knob is for the
+   * repository whose single run of its own gate honestly exceeds the default, and for nothing else.
    */
   agentTimeoutMinutes?: number | Partial<Record<string, number>>;
   /**
