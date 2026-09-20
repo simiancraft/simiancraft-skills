@@ -15,7 +15,7 @@ function world(checks: 'required' | 'none', schedule: (clock: number) => Check[]
     sleep: async (ms: number) => {
       clock += ms;
     },
-    read: (argv: string[]) => (argv[1] === 'api' ? ((raw) => (typeof raw === 'string' ? raw : raw.map((suite) => JSON.stringify(suite)).join('\n')))(options.openSuites?.(clock) ?? []) : JSON.stringify({ headRefOid: 'landing', statusCheckRollup: schedule(clock) })),
+    read: (argv: string[]) => (argv[1] === 'api' ? ((raw) => (typeof raw === 'string' ? raw : [{ total: raw.length, seen: raw.length }, ...raw].map((row) => JSON.stringify(row)).join('\n')))(options.openSuites?.(clock) ?? []) : JSON.stringify({ headRefOid: 'landing', statusCheckRollup: schedule(clock) })),
   };
   return { ctx, io, waited: () => clock };
 }
@@ -107,7 +107,15 @@ describe('the build gate', () => {
     expect(suites).toContain('--paginate');
   });
 
-  for (const [what, raw] of [['not JSON', 'NaN'], ['a suite with no run count', '{"app":"x"}'], ['a suite with no app', '{"runs":0}']] as const) {
+  const PAGE = '{"total":1,"seen":1}';
+  for (const [what, raw] of [
+    ['not JSON', 'NaN'],
+    ['nothing at all', ''],
+    ['a suite with no run count', `${PAGE}\n{"app":"x"}`],
+    ['a suite with no app', `${PAGE}\n{"runs":0}`],
+    ['fewer suites than GitHub counted', '{"total":40,"seen":30}'],
+    ['pages that disagree on the total', '{"total":2,"seen":1}\n{"total":3,"seen":1}'],
+  ] as const) {
     it(`waits on suite data it cannot read (${what}), and never assumes it complete`, async () => {
       const w = world('required', () => [GREEN], { openSuites: () => raw, idleApps: ['x'] });
       expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('cannot be read');

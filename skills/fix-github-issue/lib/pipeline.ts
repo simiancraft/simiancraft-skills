@@ -444,11 +444,16 @@ export async function awaitGreenChecks(
   /** Suites GitHub has opened on the head that are not complete; null when they cannot be read. */
   const openSuites = (sha: string): Suite[] | null => {
     try {
-      // Every page, one suite to a line: a head can carry more suites than one page holds.
-      const jq = '.check_suites[] | select(.status != "completed") | {app: (.app.slug // "unknown app"), runs: .latest_check_runs_count}';
+      // Every page, one object to a line: first the page's own tally, then its open suites. A head
+      // can carry more suites than one page holds, and a read that stops short must not look like
+      // a head with nothing open, so the suites seen have to add up to the total GitHub reports.
+      const jq = '{total: .total_count, seen: (.check_suites | length)}, (.check_suites[] | select(.status != "completed") | {app: (.app.slug // "unknown app"), runs: .latest_check_runs_count})';
       const lines = io.read(['gh', 'api', '--paginate', `repos/${ctx.project.repo}/commits/${sha}/check-suites?per_page=100`, '--jq', jq]).split('\n').filter((line) => line.trim() !== '');
-      const suites = lines.map((line) => JSON.parse(line) as Suite);
-      return suites.every((s) => typeof s?.app === 'string' && Number.isFinite(s?.runs)) ? suites : null;
+      const rows = lines.map((line) => JSON.parse(line) as Partial<Suite> & { total?: number; seen?: number });
+      const pages = rows.filter((row) => row.total !== undefined || row.seen !== undefined);
+      const suites = rows.filter((row) => !pages.includes(row));
+      const whole = pages.length > 0 && pages.every((page) => Number.isFinite(page.total) && Number.isFinite(page.seen) && page.total === pages[0].total) && pages.reduce((sum, page) => sum + (page.seen ?? 0), 0) === pages[0].total;
+      return whole && suites.every((s) => typeof s.app === 'string' && Number.isFinite(s.runs)) ? (suites as Suite[]) : null;
     } catch {
       return null;
     }
