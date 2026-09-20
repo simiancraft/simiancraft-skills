@@ -22,7 +22,7 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
-import { announceStep, newestStep, placeInWork, readWorkFacts, type WorkReads } from './steps.ts';
+import { announceStep, newestStep, parseStepMarker, placeInWork, readWorkFacts, type WorkReads } from './steps.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -217,6 +217,17 @@ async function runStep(
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/** What the coder said the change touches, from the newest coded marker on the issue; none when there is no such marker. */
+export function codedTouches(ctx: Context, issue: number): string[] | undefined {
+  const comments = trackerIo(ctx).view(issue)?.comments ?? [];
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (comments[i].author !== ctx.botLogin) continue;
+    const marker = parseStepMarker(comments[i].body);
+    if (marker?.step === 'coded') return marker.touches;
+  }
+  return undefined;
+}
 
 /**
  * The classification a proved change carries to the merge gate: everything the prover named and
@@ -1498,7 +1509,10 @@ export async function reviewAndLand(
   while (consumed < ctx.knobs.maxReviewRounds) {
     if (!result.pr) return deadLetter(ctx, issue, 'work', 'The worker reported a fix but named no pull request.', say);
     const pr = result.pr;
-    const touches = result.touches;
+    // The shared entry to review and landing, which a resumed verdict file reaches without Prove
+    // having run in this process: the coder's classification is read from the issue here, so a
+    // verdict saved with the prover's word alone cannot carry less to the merge gate than was said.
+    const touches = ctx.dryRun && !ctx.io ? result.touches : unionTouches(result.touches, codedTouches(ctx, issue.number));
 
     if (ctx.dryRun) break;
 

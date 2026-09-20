@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
-import { fixIssue, unionTouches } from './pipeline.ts';
+import { codedTouches, fixIssue, unionTouches } from './pipeline.ts';
 import { newestStep } from './steps.ts';
 
 const BOT = 'loop-bot';
@@ -132,5 +132,18 @@ describe("what the change touches, across the step boundary", () => {
   it('still fails closed when the prover named nothing: the coder cannot stand in for a missing classification', () => {
     expect(unionTouches(undefined, ['code'])).toBeUndefined();
   });
-});
 
+  it('is read from the issue at the entry to review and landing, which a resumed verdict file reaches without Prove', () => {
+    const io = new FakeTracker(BOT, [fakeIssue(40)]);
+    const ctx = { botLogin: BOT, project: { repo: 'o/steps' }, io, dryRun: false, log: () => {} } as never;
+    expect(codedTouches(ctx, 40)).toBeUndefined();
+    io.comment(40, 'a-person', `<!-- loop-step step=coded run=r sha=${S} gated=${S} touches=code -->\nnot the loop's word`);
+    expect(codedTouches(ctx, 40)).toBeUndefined();
+    io.comment(40, BOT, `<!-- loop-step step=coded run=r sha=${S} gated=${S} touches=code,data -->\nhand-off`);
+    // A later refusal or proof does not hide what the coder said.
+    io.comment(40, BOT, `<!-- loop-step step=refused run=r sha=${S} gated=${S} touches=none -->\nreason`);
+    expect(codedTouches(ctx, 40)).toEqual(['code', 'data']);
+    // The saved verdict carried the prover's word alone; the gate is handed both.
+    expect(unionTouches(['code'], codedTouches(ctx, 40))).toEqual(['code', 'data']);
+  });
+});
