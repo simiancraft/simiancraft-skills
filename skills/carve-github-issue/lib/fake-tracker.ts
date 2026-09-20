@@ -46,7 +46,11 @@ export class FakeTracker implements TrackerIo {
     issues: FakeIssue[] = [],
     public now = '2026-09-03T12:00:00Z',
   ) {
-    for (const issue of issues) this.issues.set(issue.number, issue);
+    for (const issue of issues) {
+      this.issues.set(issue.number, issue);
+      // A label an issue carries is one the repository has.
+      for (const { name } of issue.labels) this.repoLabels.add(name);
+    }
     this.nextNumber = Math.max(0, ...issues.map((i) => i.number)) + 1;
   }
 
