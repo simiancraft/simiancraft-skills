@@ -114,6 +114,18 @@ export function beginStop(): void {
   stopping = true;
 }
 export const isStopping = (): boolean => stopping;
+/**
+ * A wait a stop can end. Slept a second at a time, so a lane that is only waiting unwinds, and
+ * releases its claim, well inside the time the signal handler gives it.
+ */
+export async function stoppableSleep(ms: number, sleep: (ms: number) => Promise<void> = (span) => Bun.sleep(span)): Promise<void> {
+  for (let slept = 0; slept < ms; slept += 1000) {
+    if (stopping) throw new RunStopping('the run is stopping; no longer waiting');
+    await sleep(Math.min(1000, ms - slept));
+  }
+  if (stopping) throw new RunStopping('the run is stopping; no longer waiting');
+}
+
 /** For tests only: a stop ends with the process, never before. */
 export function resetStop(): void {
   stopping = false;

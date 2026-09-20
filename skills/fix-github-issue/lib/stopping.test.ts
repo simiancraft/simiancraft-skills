@@ -8,7 +8,7 @@ import type { ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { fixIssue } from './pipeline.ts';
 import { pool } from './pool.ts';
-import { beginStop, isStopping, mutate, resetStop, RunStopping } from './shell.ts';
+import { beginStop, isStopping, mutate, resetStop, RunStopping, stoppableSleep } from './shell.ts';
 
 const HERE = import.meta.dir;
 let scratch: string;
@@ -62,6 +62,20 @@ describe('a stopping run', () => {
     beginStop();
     expect(() => mutate(ctx, 'anything', ['gh', 'issue', 'edit', '1'])).toThrow(RunStopping);
     expect(ctx.dryRunLog).toEqual([]);
+  });
+
+  it('ends a wait within a second, however long the wait was to be', async () => {
+    let slept = 0;
+    const sleep = async (ms: number) => {
+      slept += ms;
+      if (slept >= 3000) beginStop();
+    };
+    await expect(stoppableSleep(60_000, sleep)).rejects.toThrow(RunStopping);
+    expect(slept).toBe(3000);
+    resetStop();
+    slept = 0;
+    await stoppableSleep(2500, sleep);
+    expect(slept).toBe(2500);
   });
 
   it('dispatches nothing new from the pool once the stop has begun', async () => {

@@ -9,7 +9,7 @@ import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
-import { beginStop, isStopping, RunStopping } from './shell.ts';
+import { beginStop, isStopping, RunStopping, stoppableSleep } from './shell.ts';
 
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
@@ -209,7 +209,7 @@ export async function runAgent(
 
     ctx.log(`  #${issue}  ${role} hit an upstream refusal ("${reason}"); retrying once in ${RETRY_BACKOFF_MS / 1000}s`);
     onRetry?.();
-    await Bun.sleep(RETRY_BACKOFF_MS);
+    await stoppableSleep(RETRY_BACKOFF_MS);
   }
 }
 

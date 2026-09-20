@@ -346,6 +346,17 @@ describe('carveIssue', () => {
     expect(await awaitReleases(0)).toEqual([]);
   });
 
+  test('a release that could not be written leaves the claim held, so a stop still names it', async () => {
+    const io = trunk();
+    const handle = await claim(ctxFor(io), io, 10, 'carving');
+    if (handle === 'busy') throw new Error('expected a claim');
+    io.throwOn = /^unclaim #10/;
+    expect(() => handle.release()).toThrow(/injected failure/);
+    expect(await awaitReleases(0)).toEqual(['o/r#10']);
+    handle.release();
+    expect(await awaitReleases(0)).toEqual([]);
+  });
+
   test('a claim nobody released is named when the wait for releases runs out', async () => {
     const io = trunk();
     const handle = await claim(ctxFor(io), io, 10, 'carving');

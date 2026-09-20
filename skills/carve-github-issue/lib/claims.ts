@@ -135,9 +135,11 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
       confirmedExpiry = until;
     },
     release: (options = {}) => {
-      heldClaims.delete(leaseKey(ctx, issue));
       // Releasing is the one write a stopping run still makes, or its claims would outlive it.
       mutate(ctx, `unclaim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`], { whileStopping: true });
+      // Held until the unclaim is written: a release that throws leaves a live claim, and the stop
+      // must still name it.
+      heldClaims.delete(leaseKey(ctx, issue));
       if (options.keepLabel) return;
       // The label comes off only when no other unreleased claim comment of this kind stands.
       const now = readTree(ctx, issue, io);

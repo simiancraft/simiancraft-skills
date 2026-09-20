@@ -14,14 +14,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { killAgentsOn, logTail, readResult, renderPrompt, runAgent } from './agent.ts';
+import { children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { isStopping, mutate, RunStopping, sh } from './shell.ts';
+import { isStopping, mutate, RunStopping, sh, stoppableSleep } from './shell.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -440,11 +440,7 @@ export async function awaitGreenChecks(
     say(`${why}; waiting`);
     // Slept a second at a time: a stop must unwind this lane, and release its claim, well inside
     // the time the signal handler waits, not at the end of a thirty second nap or a checks timeout.
-    for (let slept = 0, span = Math.min(ms, left); slept < span; slept += 1000) {
-      if (isStopping()) throw new RunStopping(`the run is stopping; no longer waiting: ${why}`);
-      await io.sleep(Math.min(1000, span - slept));
-    }
-    if (isStopping()) throw new RunStopping(`the run is stopping; no longer waiting: ${why}`);
+    await stoppableSleep(Math.min(ms, left), io.sleep);
     return null;
   };
   type Suite = { app: string; runs: number };
@@ -837,15 +833,20 @@ async function land(
     if (ctx.project.smokeCommand) {
       say(`running the smoke command: ${ctx.project.smokeCommand}`);
       move(ctx, issue, 'F4');
-      const smoke = Bun.spawnSync(['sh', '-c', ctx.project.smokeCommand], {
-        cwd,
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: ctx.knobs.smokeTimeoutMinutes * 60_000,
-        killSignal: 'SIGKILL',
-      });
+      // Awaited, never spawnSync: a synchronous wait of minutes holds the event loop, so a signal
+      // could not even begin the stop until the command ended. Registered with the agents, under
+      // its own process group, so a stop takes it down with them.
+      const running = Bun.spawn([...(SETSID ? [SETSID] : []), 'sh', '-c', ctx.project.smokeCommand], { cwd, stdout: 'pipe', stderr: 'pipe' });
+      const registered = Object.assign(running, { issue: issue.number, repo: ctx.project.repo });
+      children.add(registered);
+      const overdue = setTimeout(() => killAgent(running), ctx.knobs.smokeTimeoutMinutes * 60_000);
+      const [stdout, stderr, exitCode] = await Promise.all([new Response(running.stdout).text(), new Response(running.stderr).text(), running.exited]);
+      clearTimeout(overdue);
+      children.delete(registered);
+      if (isStopping()) throw new RunStopping(`the run is stopping; the smoke command on PR #${pr} was stopped`);
+      const smoke = { exitCode: running.signalCode ? null : exitCode, stdout, stderr };
       if (smoke.exitCode !== 0) {
-        const tail = `${smoke.stdout.toString()}\n${smoke.stderr.toString()}`.trim().split('\n').slice(-6).join(' | ');
+        const tail = `${smoke.stdout}\n${smoke.stderr}`.trim().split('\n').slice(-6).join(' | ');
         const reason = `the smoke command exited ${smoke.exitCode ?? 'by timeout'}: ${tail || 'no output'}`;
         say(`refusing to merge PR #${pr}: ${reason}`);
         return { dlq: reason };

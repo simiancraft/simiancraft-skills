@@ -35,7 +35,7 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
-import { log, RunStopping, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
+import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { awaitReleases, refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
@@ -301,6 +301,8 @@ function readSwitch(): { state: 'go' | 'pause'; reason: string } {
 async function waitForGo(where: string): Promise<void> {
   let announced = false;
   for (;;) {
+    // A paused line holds a card for as long as it takes; a stop ends the hold, and the lane with it.
+    if (isStopping()) throw new RunStopping(`the run is stopping; no longer holding ${where}`);
     const sw = readSwitch();
     if (sw.state === 'go') {
       setLine('active');
@@ -314,7 +316,7 @@ async function waitForGo(where: string): Promise<void> {
     } else if (!SILENT) {
       console.log(`⏸️ paused ${elapsed(lineState().since)}  holding ${where}  ⏱ ${stamp()}`);
     }
-    await Bun.sleep(SWITCH_POLL_MS);
+    await stoppableSleep(SWITCH_POLL_MS);
   }
 }
 
