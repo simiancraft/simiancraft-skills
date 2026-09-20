@@ -14,7 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { logTail, readResult, renderPrompt, runAgent } from './agent.ts';
+import { killAgentsOn, logTail, readResult, renderPrompt, runAgent } from './agent.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
@@ -400,11 +400,20 @@ function checkNamesOn(ctx: Context, sha: string): string[] {
   return [...new Set([...runs, ...statuses])];
 }
 
+/** The status checks the base branch's protection requires; none when the branch has no such rule. */
+function requiredStatusChecks(ctx: Context): string[] {
+  try {
+    return JSON.parse(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/branches/${ctx.project.baseBranch}/protection/required_status_checks`, '--jq', '[.contexts[]?, .checks[]?.context] | unique'], ctx.repoRoot, 1)) as string[];
+  } catch {
+    return []; // no protection, or no right to read it: either way nothing here names a check
+  }
+}
+
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
   say: (message: string) => void,
-  expect?: { sha: string; names?: string[] },
+  expect?: { sha: string; names?: string[]; required?: string[] },
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<string | null> {
@@ -437,10 +446,14 @@ export async function awaitGreenChecks(
       return null;
     }
   };
-  const expected = [...new Set([...(ctx.knobs.requiredChecks ?? []), ...(expect?.names ?? [])])];
-  if (expect && ctx.knobs.checks !== 'none' && expected.length === 0) {
-    return "nothing names the checks this landing must pass: the reviewed head carried none and the config lists no requiredChecks (a repository that runs no checks says so with checks: 'none')";
+  // The authority on what complete looks like is a list somebody wrote down: the config's, or the
+  // base branch's required status checks. What the reviewed head happened to carry is added to it
+  // but cannot stand in for it, since a fast review sees a partly registered list too.
+  const authoritative = [...new Set([...(ctx.knobs.requiredChecks ?? []), ...(expect?.required ?? [])])];
+  if (expect && ctx.knobs.checks !== 'none' && authoritative.length === 0) {
+    return `nothing names the checks this landing must pass: the config lists no requiredChecks and ${ctx.project.baseBranch} requires no status checks (a repository that runs no checks says so with checks: 'none')`;
   }
+  const expected = [...new Set([...authoritative, ...(expect?.names ?? [])])];
   for (;;) {
     const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
     const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
@@ -701,6 +714,7 @@ async function land(
   let landingSha = reviewedSha;
   // What complete looks like, read before anything moves the head: the checks the reviewed head carried.
   const expectedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : checkNamesOn(ctx, reviewedSha);
+  const requiredByBase = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : requiredStatusChecks(ctx);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
   for (let pass = 0; ; pass++) {
@@ -752,7 +766,7 @@ async function land(
     };
 
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
-    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: expectedChecks });
+    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: expectedChecks, required: requiredByBase });
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };
@@ -1235,7 +1249,11 @@ export async function fixIssue(
   }
   const handle = await claim(ctx, io, issue.number, 'working');
   if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
-  const stopRenewing = keepClaimed(handle);
+  const stopRenewing = keepClaimed(handle, () => {
+    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
+    const killed = killAgentsOn(ctx.project.repo, issue.number);
+    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
+  });
 
   // Everything after the claim is inside the try: a worktree that cannot be created must not
   // leave a claim behind that keeps renewing itself with nobody working under it.
@@ -1278,9 +1296,12 @@ export async function fixIssue(
 
 /** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */
 function openPullFor(ctx: Context, issue: number): number | undefined {
-  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName']);
-  const pulls = JSON.parse(raw) as Array<{ number: number; headRefName: string }>;
-  return pulls.find((pr) => pr.headRefName.endsWith(`-${issue}`))?.number;
+  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName,author,body']);
+  const pulls = JSON.parse(raw) as Array<{ number: number; headRefName: string; author?: { login?: string }; body?: string }>;
+  // What is found here can be parked or closed, so a branch that merely ends in the number is not
+  // enough: the pull request must be the loop's own (its login opened it) and must name the issue.
+  const names = new RegExp(`#${issue}\\b`);
+  return pulls.find((pr) => pr.headRefName.endsWith(`-${issue}`) && pr.author?.login === ctx.botLogin && names.test(pr.body ?? ''))?.number;
 }
 
 /**
@@ -1353,7 +1374,11 @@ export async function redriveIssue(
   }
   const handle = await claim(ctx, io, issue.number, 'working');
   if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
-  const stopRenewing = keepClaimed(handle);
+  const stopRenewing = keepClaimed(handle, () => {
+    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
+    const killed = killAgentsOn(ctx.project.repo, issue.number);
+    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
+  });
 
   let keepLane = false;
   try {

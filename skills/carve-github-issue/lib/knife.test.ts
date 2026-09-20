@@ -131,6 +131,20 @@ describe('the carving driver makes only moves the chart allows', () => {
     const result = await runAgent(ctx, 'worker-reprove', 10, join(scratch, 'reproof'), { engine: 'fixture', model: fixture('fixed', { issue: 10, verdict: 'fixed', pr: 7, reason: 'proved' }) }, 'reprove');
     expect(result.exitCode).toBe(0);
   });
+  test('an applying record cannot hide a human hold and foreign claim on the board', async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    io.beforeWrite = op => { if (op.argv[1] === 'issue' && op.argv[2] === 'create') throw new Error('interrupted'); };
+    await expect(carveIssue(ctx, issue10, k, io)).rejects.toThrow();
+    io.beforeWrite = null;
+    io.addLabel(10, 'needs-human');
+    io.comment(10, BOT, '<!-- carve-claim kind=carving run=other-host-2-2 at=2026-01-01T00:00:00Z expires=2999-01-01T00:00:00Z -->');
+    const lanes: string[] = [];
+    await makeDriver(ctx, k, lanes).revisit(10, 'busy held trunk');
+    expect(labels(io, 10)).toContain('needs-human');
+    expect(labels(io, 10)).toContain('loop/carving');
+    expect(lanes.at(-1)).toBe('H2');
+  });
 });
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });

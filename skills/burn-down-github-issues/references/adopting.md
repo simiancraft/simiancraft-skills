@@ -57,7 +57,8 @@ export default {
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
   // checksTimeoutMinutes (how long the pull master waits on checks), checks ('required', the default,
   // or 'none' for a repository that runs no checks on a pull request), requiredChecks (the
-  // names a landing must show green; without it, the checks the reviewed head carried),
+  // names a landing must show green; needed unless the base branch's protection requires status
+  // checks, because a landing with no written list of checks is refused),
   // smokeTimeoutMinutes,
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and

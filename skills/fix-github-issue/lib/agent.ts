@@ -13,7 +13,18 @@ import { assertNotMainCheckout, inFlight } from './lane.ts';
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
 /** Live agent processes, so a signal can take them down rather than orphaning them. */
-export const children = new Set<{ pid: number; kill: () => void; exitCode: number | null }>();
+export const children = new Set<{ pid: number; kill: () => void; exitCode: number | null; issue?: number; repo?: string }>();
+
+/** Stops every agent this process is running on one issue: its lease is gone, so its work must stop with it. */
+export function killAgentsOn(repo: string, issue: number): number {
+  let killed = 0;
+  for (const proc of children) {
+    if (proc.issue !== issue || proc.repo !== repo) continue;
+    killAgent(proc);
+    killed += 1;
+  }
+  return killed;
+}
 
 /** How long an unattended agent may run before it is killed. A hung agent must not hold a lane. */
 export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
@@ -250,7 +261,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  children.add(proc);
+  children.add(Object.assign(proc, { issue, repo: ctx.project.repo }));
   // Drain both pipes at once. Reading stdout to EOF first deadlocks a child that fills its stderr
   // pipe in the meantime: it blocks waiting for stderr space while the parent waits for stdout EOF.
   const timeout = setTimeout(() => {

@@ -414,11 +414,81 @@ describe('runtime moves and settlement', () => {
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
     const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
-      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, fetchBase: () => checkedBase, checkNamesOn: () => ['ci'],
+      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, fetchBase: () => checkedBase, checkNamesOn: () => ['ci'], requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
       mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
     });
     expect(await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop)).toBe('merged');
     expect(reported).toBe(landedOn);
+  });
+});
+
+describe('safety pressure', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  it('an objection thread read failure still propagates after the PR creation time was read', () => {
+    let reads = 0;
+    const api = loadFunctions('../loop.ts', ['lastObjection'], {
+      ctx: { botLogin: bot }, sh: () => { if (++reads === 1) return '2026-09-20T00:00:00Z'; throw new Error('thread unreadable'); },
+    });
+    expect(() => api.lastObjection(1, 7)).toThrow('thread unreadable'); expect(reads).toBe(2);
+  });
+  it('a fast review cannot turn its partially registered check list into the complete expected set', async () => {
+    let clock = 0;
+    const ctx = context(new FakeTracker(bot));
+    const { checkNamesOn } = loadFunctions(pipeline, ['checkNamesOn'], {
+      sh: (_ctx: unknown, argv: string[]) => argv.some(a => a.endsWith('/check-runs')) ? '["lint"]' : '[]',
+    });
+    // Review finished at t=0. A second workflow registers at t=60s on this same head.
+    const names = checkNamesOn(ctx, 'h');
+    const result = await awaitGreenChecks(ctx, 7, noop, { sha: 'h', names }, {
+      now: () => clock, sleep: async ms => { clock += ms; },
+      read: argv => argv[1] === 'api' ? '0' : JSON.stringify({ headRefOid: 'h', statusCheckRollup: [
+        { name: 'lint', conclusion: 'SUCCESS' },
+        ...(clock >= 60_000 ? [{ name: 'integration', conclusion: 'FAILURE' }] : []),
+      ] }),
+    });
+    
+    expect(result).not.toBeNull();
+  });
+  for (const suites of ['unreadable', 'zero-runs'] as const) {
+    it(`actually waits on ${suites} suite data with a nonempty expected set`, async () => {
+      let clock = 0; let reads = 0; const ctx = context(new FakeTracker(bot));
+      const result = await awaitGreenChecks(ctx, 7, noop, { sha: 'h', required: ['lint'] }, {
+        now: () => clock, sleep: async ms => { clock += ms; },
+        read: argv => {
+          reads++;
+          if (argv[1] === 'api') {
+            if (suites === 'unreadable') throw new Error('unavailable');
+            return argv.at(-1)!.includes('latest_check_runs_count > 0') ? '0' : '1';
+          }
+          return JSON.stringify({ headRefOid: 'h', statusCheckRollup: [{ name: 'lint', conclusion: 'SUCCESS' }] });
+        },
+      });
+      expect(reads).toBeGreaterThan(1); expect(clock).toBe(600_000); expect(result).not.toBeNull();
+    });
+  }
+  it('terminal first-worker settlement cannot close a foreign PR selected only by numeric suffix', async () => {
+    const closed: number[] = [];
+    const api = loadFunctions(pipeline, ['openPullFor', 'workIssue', 'settleTerminalVerdict'], {
+      runWorker: async () => ({ verdict: 'needs-human', reason: 'access unavailable' }),
+      sh: () => JSON.stringify([{ number: 88, headRefName: 'person/release-1', author: { login: 'someone-else' }, body: 'Refs #999' }]),
+      mutate: (_ctx: unknown, _why: unknown, argv: string[]) => { if (argv[1] === 'pr' && argv[2] === 'close') closed.push(Number(argv[3])); },
+      move: noop, removeWorktree: noop,
+    });
+    await api.workIssue(context(new FakeTracker(bot)), { number: 1, title: 'unrelated issue', labels: [] }, '/fake', 2, 2, noop);
+    expect(closed).toEqual([]);
+  });
+  it('failed renewals cannot leave an active worker running after another run acquires its expired claim', async () => {
+    const io = new FakeTracker(bot, [fakeIssue(1)]); const a = context(io); const b = context(io); b.runId = 'other-host-2-2';
+    const first = await claim(a, io, 1, 'working'); if (first === 'busy') throw new Error('first claim failed');
+    io.throwOn = /renew claim/;
+    // The driver is still awaiting its worker. A renewal fails; it neither throws nor reports loss.
+    let lossReported = false; try { first.renew(); } catch { lossReported = true; }
+    // Advance the durable lease into the past without replacing the global clock used by other tests.
+    const posted = io.issues.get(1)!.comments.find(c => c.databaseId === first.commentId)!;
+    posted.body = posted.body.replace(/expires=\S+/, 'expires=2000-01-01T00:00:00Z');
+    const second = await claim(b, io, 1, 'working');
+    try { expect(second === 'busy' || lossReported).toBe(true); }
+    finally { if (second !== 'busy') second.release(); first.release(); }
   });
 });

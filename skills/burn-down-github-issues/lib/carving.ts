@@ -60,10 +60,9 @@ function laneOf(outcome: string): string | null {
 
 /** Where a trunk's card rests by the tracker's own facts, its carving record included. */
 function restingLane(tree: Tree, ceiling: number, runId: string): { lane: string; why: string } {
-  if (tree.record?.state === 'applying' && tree.issue.state === 'OPEN') return { lane: 'C4', why: `generation ${tree.record.generation} is still being applied` };
   const now = Date.now();
   const foreign = tree.claims.find((c) => !c.released && Date.parse(c.expires) > now && c.runId !== runId);
-  return placeByFacts({
+  const placed = placeByFacts({
     state: tree.issue.state === 'OPEN' ? 'OPEN' : 'CLOSED',
     labels: tree.issue.labels.map((l) => l.name),
     pulls: [],
@@ -74,6 +73,10 @@ function restingLane(tree: Tree, ceiling: number, runId: string): { lane: string
     claimedBy: foreign?.runId,
     pausedAbove: tree.ancestors.some((a) => a.labels.includes('loop/paused')),
   });
+  // A close, a person's hold, a dead letter, and another run's claim all outrank an announced
+  // generation: the card says who has the trunk before it says what is unfinished on it.
+  if (/^[THQW]/.test(placed.lane) || tree.record?.state !== 'applying') return placed;
+  return { lane: 'C4', why: `generation ${tree.record.generation} is still being applied` };
 }
 
 function issueOf(tree: Tree): Issue {

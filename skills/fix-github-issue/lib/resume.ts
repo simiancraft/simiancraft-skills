@@ -9,7 +9,7 @@
 import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { parseJsonFile, VERDICT_FILE } from './agent.ts';
+import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
@@ -194,7 +194,11 @@ export async function resumeStranded(
         say('not resuming: another run holds it');
         return;
       }
-      const stopRenewing = keepClaimed(handle);
+      const stopRenewing = keepClaimed(handle, () => {
+    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
+    const killed = killAgentsOn(ctx.project.repo, issue.number);
+    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
+  });
       inFlight.set(issue.number, { dir: entry.cwd, busy: false });
       // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
       // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.

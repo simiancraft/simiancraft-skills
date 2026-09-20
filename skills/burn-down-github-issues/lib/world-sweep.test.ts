@@ -345,6 +345,6 @@ describe('owner invariants', () => {
     let clock = 0;
     const ctx = { project: { repo: 'o/r' }, knobs: { checksTimeoutMinutes: 10, checks: 'auto' } } as unknown as Context;
     const io = { now: () => clock, sleep: async (ms: number) => { clock += ms; }, read: () => JSON.stringify({ headRefOid: 'landing', statusCheckRollup: clock >= 30_000 ? [{ name: 'build', conclusion: 'FAILURE' }] : [] }) };
-    expect(await awaitGreenChecks(ctx, 1, () => {}, { sha: 'landing', names: ['build'] }, io)).toContain('checks failed');
+    expect(await awaitGreenChecks(ctx, 1, () => {}, { sha: 'landing', required: ['build'] }, io)).toContain('checks failed');
   });
 });

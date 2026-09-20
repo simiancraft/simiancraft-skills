@@ -19,7 +19,7 @@ function world(checks: 'required' | 'none', schedule: (clock: number) => Check[]
 }
 const GREEN = { name: 'build', conclusion: 'SUCCESS' };
 
-const EXPECT = { sha: 'landing', names: ['build'] };
+const EXPECT = { sha: 'landing', required: ['build'] };
 
 describe('the build gate', () => {
   it('never calls an empty list green, however long it stays empty', async () => {
@@ -41,7 +41,12 @@ describe('the build gate', () => {
 
   it('waits for every expected check, so one fast green check cannot stand in for a slower one', async () => {
     const w = world('required', (clock) => (clock >= 60_000 ? [GREEN, { name: 'integration', conclusion: 'FAILURE' }] : [GREEN]));
-    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'landing', names: ['build', 'integration'] }, w.io)).toContain('checks failed: integration');
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'landing', required: ['build'], names: ['build', 'integration'] }, w.io)).toContain('checks failed: integration');
+  });
+
+  it('refuses a list that only the reviewed head names: a fast review sees a partial list too', async () => {
+    const w = world('required', () => [GREEN]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'landing', names: ['build'] }, w.io)).toContain('nothing names the checks');
   });
 
   it('takes the expected checks from the config as well', async () => {
@@ -81,6 +86,6 @@ describe('the build gate', () => {
 
   it('waits for the pull request to show the landing head', async () => {
     const w = world('required', () => [GREEN]);
-    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'another', names: ['build'] }, w.io)).toContain('does not show the landing head');
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'another', required: ['build'] }, w.io)).toContain('does not show the landing head');
   });
 });

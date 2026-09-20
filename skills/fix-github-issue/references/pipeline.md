@@ -116,6 +116,11 @@ comes back as `needs-decision` with the question stated, however small the diff 
 That category is common in most trackers and it is the one place a plausible-looking diff can do
 real harm.
 
+A lease that cannot be renewed is a lease running out. A renewal that fails is tried again every
+minute; when the last confirmed expiry is about to pass, the run marks the lease lost, stops the
+agents it has on that issue, and its live gate refuses every merge and close from then on, since
+another run may hold the issue by then.
+
 A failing or unfinished build never merges. The pull master waits on the pull request's checks at
 the last moment before merging and parks instead when they fail or never finish; a green local gate
 is not a substitute. The merge pins the head it read and confirms afterwards that the pull request
@@ -131,13 +136,14 @@ last saw, and when they differ it says so on the pull request and tells the driv
 
 An observation of the checks is never proof of the whole list: they register one at a time after
 a push, so neither an empty list, nor a short green one, nor one that has stopped changing says
-that nothing else is coming. What complete looks like is therefore named: by `requiredChecks` in
-the config, or else by the checks the reviewed head carried, which had the length of a review to
-register. A landing waits until every expected check is present and green on the landing head,
-every other check shown is green, and no check suite GitHub has opened on the head is incomplete;
-suite data that cannot be read is waited on, never assumed. With nothing to name the expected
-checks the landing is a dead letter that says so. Only `checks: 'none'` says the repository runs no
-checks on a pull request, and every wait ends at `checksTimeoutMinutes`.
+that nothing else is coming. What complete looks like is therefore written down: `requiredChecks`
+in the config, or the status checks the base branch's protection requires. The checks the reviewed
+head carried are added to that list but cannot replace it, since a fast review sees a partly
+registered list too. A landing waits until every expected check is present and green on the landing
+head, every other check shown is green, and no check suite GitHub has opened on the head is
+incomplete; suite data that cannot be read is waited on, never assumed. With no written list the
+landing is a dead letter that says so. Only `checks: 'none'` says the repository runs no checks on
+a pull request, and every wait ends at `checksTimeoutMinutes`.
 
 ## Staying current, and when proof goes stale
 

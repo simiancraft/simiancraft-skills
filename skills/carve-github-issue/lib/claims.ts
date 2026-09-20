@@ -24,7 +24,16 @@ export function claimMarker(kind: Claim['kind'], runId: string, at: string, expi
   return `<!-- carve-claim kind=${kind} run=${runId} at=${at} expires=${expires} token=${token} -->`;
 }
 
-export type ClaimHandle = { kind: Claim['kind']; commentId: number | null; label: string; renew: () => void; release: (options?: { keepLabel?: boolean }) => void };
+/**
+ * `renew` throws when the lease could not be extended; `expires` is the last expiry the tracker
+ * is known to hold, which is the moment another run may take the issue.
+ */
+export type ClaimHandle = { kind: Claim['kind']; commentId: number | null; label: string; issue: number; key: string; expires: () => number; renew: () => void; release: (options?: { keepLabel?: boolean }) => void };
+
+/** Issues whose lease this process could not keep, by repository and issue. The live gate refuses them. */
+const lostLeases = new Set<string>();
+const leaseKey = (ctx: Context, issue: number) => `${ctx.project?.repo ?? ''}#${issue}`;
+export const leaseLost = (ctx: Context, issue: number): boolean => lostLeases.has(leaseKey(ctx, issue));
 
 /**
  * Posts the claim comment, then the label, then re-reads: if an earlier unreleased, unexpired
@@ -35,7 +44,7 @@ export type ClaimHandle = { kind: Claim['kind']; commentId: number | null; label
  */
 export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['kind']): Promise<ClaimHandle | 'busy'> {
   const label = kind === 'carving' ? 'loop/carving' : 'loop/working';
-  if (ctx.dryRun) return { kind, commentId: null, label, renew: () => {}, release: () => {} };
+  if (ctx.dryRun) return { kind, commentId: null, label, issue, key: leaseKey(ctx, issue), expires: () => Number.POSITIVE_INFINITY, renew: () => {}, release: () => {} };
 
   const before = readTree(ctx, issue, io);
   const standing = liveClaim(before, new Date().toISOString(), ctx.runId);
@@ -70,18 +79,28 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
     return 'busy';
   }
   const commentId = mine.commentId;
+  lostLeases.delete(leaseKey(ctx, issue));
+  let confirmedExpiry = expires.getTime();
   return {
     kind,
     commentId,
     label,
+    issue,
+    key: leaseKey(ctx, issue),
+    expires: () => confirmedExpiry,
+    // Throws when the write fails: a lease nobody extended is running out, and whoever holds the
+    // handle has to know rather than find a line in the log.
     renew: () => {
       const now = new Date();
-      const body = claimMarker(kind, ctx.runId, now.toISOString(), new Date(now.getTime() + CLAIM_TTL_MS).toISOString(), token);
+      const until = now.getTime() + CLAIM_TTL_MS;
+      const body = claimMarker(kind, ctx.runId, now.toISOString(), new Date(until).toISOString(), token);
       try {
         mutate(ctx, `renew claim on #${issue}`, ['gh', 'api', '-X', 'PATCH', `repos/${ctx.project.repo}/issues/comments/${commentId}`, '-f', `body=${body}`]);
       } catch (error) {
         ctx.log(`  #${issue}  could not renew the claim: ${(error as Error).message}`);
+        throw error;
       }
+      confirmedExpiry = until;
     },
     release: (options = {}) => {
       mutate(ctx, `unclaim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`]);
@@ -94,11 +113,43 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
   };
 }
 
-/** The renewal timer for the life of a run; unref'd so it never keeps a process alive. */
-export function keepClaimed(handle: ClaimHandle): () => void {
-  const timer = setInterval(() => handle.renew(), CLAIM_RENEW_MS);
+/** How soon a failed renewal is tried again, and how close to expiry the lease is given up as lost. */
+export const CLAIM_RETRY_MS = 60 * 1000;
+export const CLAIM_LOSS_MARGIN_MS = 2 * 60 * 1000;
+
+/**
+ * The renewal timer for the life of a run; unref'd so it never keeps a process alive. A renewal
+ * that fails is tried again every minute. When the last confirmed expiry is about to pass with no
+ * renewal confirmed, the lease is lost: another run may now take the issue, so this one is marked,
+ * the live gate refuses it from then on (no merge, no close, no claim-dependent write), and
+ * `onLost` lets the owner stop whatever it still has running.
+ */
+export function keepClaimed(handle: ClaimHandle, onLost?: () => void, clock: () => number = () => Date.now()): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  const tick = () => {
+    if (stopped) return;
+    let next = CLAIM_RENEW_MS;
+    try {
+      handle.renew();
+    } catch {
+      if (clock() >= handle.expires() - CLAIM_LOSS_MARGIN_MS) {
+        lostLeases.add(handle.key);
+        stopped = true;
+        onLost?.();
+        return;
+      }
+      next = CLAIM_RETRY_MS;
+    }
+    timer = setTimeout(tick, next);
+    timer.unref();
+  };
+  timer = setTimeout(tick, CLAIM_RENEW_MS);
   timer.unref();
-  return () => clearInterval(timer);
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +197,8 @@ export function refusal(tree: Tree, ceiling: number): string | null {
  * anything the state table says a worker must not touch. `busy` when another run's claim stands.
  */
 export function liveGate(ctx: Context, io: TrackerIo, issue: number, ceiling: number): Gate {
+  // A lease this process could not keep is no lease: another run may hold the issue by now.
+  if (leaseLost(ctx, issue)) return { ok: false, why: 'this run lost its lease on the issue: its renewals failed until the claim ran out', outcome: 'busy', tree: null };
   const tree = readTree(ctx, issue, io);
   const why = refusal(tree, ceiling);
   if (why) return { ok: false, why, outcome: 'left-alone', tree };
