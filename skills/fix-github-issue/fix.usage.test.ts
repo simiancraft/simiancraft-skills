@@ -19,3 +19,20 @@ describe('fix.ts --help', () => {
     expect(run.stdout.toString()).toContain('--redrive');
   });
 });
+
+describe('fix.ts on an issue nobody has sized', () => {
+  it('appraises before it dispatches any work, and only when the issue carries no size', () => {
+    const gate = source.indexOf('if (!RESUME_PR && pointsFromLabels(issue.labels) === null) {');
+    const appraise = source.indexOf('await appraiseIssue(ctx, issue, {');
+    const dispatch = source.indexOf('await fixIssue(ctx, issue,');
+    // A missing needle is -1, which would satisfy a bare comparison on its own.
+    for (const at of [gate, appraise, dispatch]) expect(at).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(appraise);
+    expect(appraise).toBeLessThan(dispatch);
+  });
+
+  it('works nothing the appraisal did not call valid and within the ceiling', () => {
+    expect(source).toContain("if (appraisal.verdict !== 'valid' || appraisal.points === undefined || appraisal.points > MAX_POINTS) {");
+  });
+});
+

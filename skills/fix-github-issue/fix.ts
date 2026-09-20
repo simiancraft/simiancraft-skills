@@ -39,6 +39,7 @@ import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCo
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
 import { installStopHandler } from './lib/stop.ts';
+import { APPRAISE_DEFAULTS, appraiseIssue, pointsFromLabels } from '../appraise-github-issues/lib/appraise.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -60,6 +61,8 @@ export const USAGE = `fix-github-issue: fix one known issue end to end, headless
   --max-points <n>   the largest size the worker may take on (default: the config's)
   --worker <seat>    engine[:model] for the worker seat, for example codex:gpt-5.6-sol
   --reviewer <seat>  engine[:model] for the reviewer seat; a different engine from the worker
+  --appraiser <seat> engine[:model] for the seat that sizes an issue nobody has sized yet (default: the
+                     worker's); an issue that already carries a size is not appraised again
   --confirmer <seat> engine[:model] for the seat that re-checks a close the worker proposes; without it the
                      config's confirmer, else the config's reviewer (--reviewer does not change this),
                      and it must be a different engine from the worker
@@ -120,6 +123,9 @@ const SEATS = (() => {
       worker: parseSeat(opt('worker') ?? CONFIG.seats.worker, '--worker'),
       reviewer: parseSeat(opt('reviewer') ?? CONFIG.seats.reviewer, '--reviewer'),
       confirmer: parseSeat(opt('confirmer') ?? CONFIG.seats.confirmer ?? CONFIG.seats.reviewer, '--confirmer'),
+      // An unsized issue is appraised before it is worked; by default on the worker's seat, with the
+      // confirmer re-checking a close, which keeps the two on different engines.
+      appraiser: parseSeat(opt('appraiser') ?? CONFIG.seats.worker, '--appraiser'),
     };
   } catch (error) {
     // A mistyped engine deserves the composed message, not a raw stack trace.
@@ -264,6 +270,27 @@ const OBJECTION = (() => {
   const raw = sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
   return raw.trim() || 'The pull request was stopped before it could land; finish it and re-prove it.';
 })();
+
+// Appraise is a step of its own, never repeated inside a code seat: an issue nobody has sized is
+// sized first, so a card that reaches Work always has a size and every lane it can fall back to
+// is one the facts support. An issue that carries a size is not appraised again.
+if (!RESUME_PR && pointsFromLabels(issue.labels) === null) {
+  step(`#${issue.number} is unsized; appraising first`);
+  const appraisal = await appraiseIssue(ctx, issue, {
+    ageDays: null,
+    seats: { appraiser: SEATS.appraiser, confirmer: SEATS.confirmer },
+    confirmCloses: APPRAISE_DEFAULTS.confirmCloses,
+    skipLabels: APPRAISE_DEFAULTS.skipLabels,
+    maxAppraiseAttempts: APPRAISE_DEFAULTS.maxAppraiseAttempts,
+  });
+  if (appraisal.verdict !== 'valid' || appraisal.points === undefined || appraisal.points > MAX_POINTS) {
+    step(`not worked: appraised ${appraisal.verdict}${appraisal.points ? ` at ${appraisal.points} points` : ''}`);
+    log(appraisal.reason);
+    if (appraisal.verdict === 'failed') process.exitCode = 1;
+    process.exit();
+  }
+  issue.labels = [...issue.labels.filter((l) => !/^size:/.test(l.name)), { name: `size: ${appraisal.points}` }];
+}
 
 const result = RESUME_PR
   ? await redriveIssue(ctx, issue, { number: RESUME_PR.number, branch: RESUME_PR.headRefName }, OBJECTION, { maxPoints: MAX_POINTS })
