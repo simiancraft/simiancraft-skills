@@ -93,6 +93,11 @@ export type PipelineKnobs = {
    * name here is waited for and a check nobody named can only be seen if it is already there.
    */
   requiredChecks?: string[];
+  /**
+   * Installed GitHub Apps, by slug, that open a check suite on every push and may run nothing in
+   * it. Such a suite stays queued for ever; a landing passes over it only while it has no run.
+   */
+  idleCheckSuiteApps?: string[];
   /** How long `project.smokeCommand` may run before the pull request parks. */
   smokeTimeoutMinutes: number;
   /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
@@ -309,6 +314,10 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   const requiredChecks = (merged as Knobs).requiredChecks;
   if (requiredChecks !== undefined && !(Array.isArray(requiredChecks) && requiredChecks.every((name) => typeof name === 'string' && name.length > 0))) {
     faults.push('requiredChecks must be an array of check names');
+  }
+  const idleCheckSuiteApps = (merged as Knobs).idleCheckSuiteApps;
+  if (idleCheckSuiteApps !== undefined && !(Array.isArray(idleCheckSuiteApps) && idleCheckSuiteApps.every((slug) => typeof slug === 'string' && slug.length > 0))) {
+    faults.push('idleCheckSuiteApps must be an array of GitHub App slugs');
   }
   const checks = (merged as Knobs).checks;
   if (checks !== undefined && !['required', 'none'].includes(checks as string)) {

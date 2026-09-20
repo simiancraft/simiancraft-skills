@@ -58,7 +58,9 @@ export default {
   // checksTimeoutMinutes (how long the pull master waits on checks), checks ('required', the default,
   // or 'none' for a repository that runs no checks on a pull request), requiredChecks (the
   // names a landing must show green; needed unless the base branch's protection requires status
-  // checks, because a landing with no written list of checks is refused),
+  // checks, because a landing with no written list of checks is refused), idleCheckSuiteApps (the
+  // slugs of installed GitHub Apps that open a check suite on every push and may run nothing in it;
+  // without it such a suite holds every landing until checksTimeoutMinutes),
   // smokeTimeoutMinutes,
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and

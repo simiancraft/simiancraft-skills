@@ -412,9 +412,6 @@ function requiredStatusChecks(ctx: Context): string[] {
   }
 }
 
-/** How long a check suite with no run in it is given to register its first one. */
-export const SUITE_SETTLE_MS = 5 * 60_000;
-
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
@@ -443,22 +440,25 @@ export async function awaitGreenChecks(
     await io.sleep(Math.min(ms, left));
     return null;
   };
-  type Suite = { app: string; runs: number; created: string };
+  type Suite = { app: string; runs: number };
   /** Suites GitHub has opened on the head that are not complete; null when they cannot be read. */
   const openSuites = (sha: string): Suite[] | null => {
     try {
-      const jq = '[.check_suites[] | select(.status != "completed") | {app: (.app.slug // "unknown app"), runs: .latest_check_runs_count, created: .created_at}]';
-      const suites = JSON.parse(io.read(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-suites`, '--jq', jq])) as Suite[];
-      const readable = Array.isArray(suites) && suites.every((s) => Number.isFinite(s?.runs) && Number.isFinite(Date.parse(s?.created)));
-      return readable ? suites : null;
+      // Every page, one suite to a line: a head can carry more suites than one page holds.
+      const jq = '.check_suites[] | select(.status != "completed") | {app: (.app.slug // "unknown app"), runs: .latest_check_runs_count}';
+      const lines = io.read(['gh', 'api', '--paginate', `repos/${ctx.project.repo}/commits/${sha}/check-suites?per_page=100`, '--jq', jq]).split('\n').filter((line) => line.trim() !== '');
+      const suites = lines.map((line) => JSON.parse(line) as Suite);
+      return suites.every((s) => typeof s?.app === 'string' && Number.isFinite(s?.runs)) ? suites : null;
     } catch {
       return null;
     }
   };
   // GitHub opens a suite for every installed app on every push, and an app that runs nothing here
-  // leaves its suite queued with no run in it for ever. A suite holds the landing while it has a
-  // run, or while it is young enough that its first run may still be on its way.
-  const holds = (suite: Suite) => suite.runs > 0 || io.now() - Date.parse(suite.created) < SUITE_SETTLE_MS;
+  // leaves its suite queued with no run in it for ever. Which apps those are is written down, like
+  // the checks: no age says a first run is not still on its way. A listed app's suite holds the
+  // landing all the same once it has a run in it.
+  const idleApps = new Set(ctx.knobs.idleCheckSuiteApps ?? []);
+  const holds = (suite: Suite) => suite.runs > 0 || !idleApps.has(suite.app);
   const passedOver = new Set<string>();
   // The authority on what complete looks like is a list somebody wrote down: the config's, or the
   // base branch's required status checks. What the reviewed head happened to carry is added to it
@@ -506,10 +506,10 @@ export async function awaitGreenChecks(
     for (const suite of open ?? []) {
       if (holds(suite) || passedOver.has(suite.app)) continue;
       passedOver.add(suite.app);
-      say(`the ${suite.app} check suite has been open for over ${SUITE_SETTLE_MS / 60_000} minutes with no run in it; not waiting on it`);
+      say(`the ${suite.app} check suite is open with no run in it, and the config lists ${suite.app} in idleCheckSuiteApps; not waiting on it`);
     }
     if (open !== null && holding.length === 0) return null;
-    const gaveUp = await wait(open === null ? 'the check suites of the landing head cannot be read' : `check suite(s) on the landing head have not finished: ${holding.map((suite) => suite.app).join(', ')}`, 15_000);
+    const gaveUp = await wait(open === null ? 'the check suites of the landing head cannot be read' : `check suite(s) on the landing head have not finished: ${holding.map((suite) => (suite.runs > 0 ? suite.app : `${suite.app} (no run in it; an app that runs nothing here belongs in idleCheckSuiteApps)`)).join(', ')}`, 15_000);
     if (gaveUp) return gaveUp;
   }
 }

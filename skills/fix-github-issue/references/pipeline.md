@@ -141,7 +141,10 @@ in the config, or the status checks the base branch's protection requires. The c
 head carried are added to that list but cannot replace it, since a fast review sees a partly
 registered list too. A landing waits until every expected check is present and green on the landing
 head, every other check shown is green, and no check suite GitHub has opened on the head is
-incomplete; suite data that cannot be read is waited on, never assumed. With no written list the
+incomplete; suite data that cannot be read is waited on, never assumed. An installed app that opens a
+suite on every push and runs nothing in it leaves that suite queued for ever, so such apps are
+written down too, by slug, in `idleCheckSuiteApps`: a listed app's suite is passed over while it has
+no run in it, and holds the landing like any other once it has one. With no written list the
 landing is a dead letter that says so. Only `checks: 'none'` says the repository runs no checks on
 a pull request, and every wait ends at `checksTimeoutMinutes`.
 
