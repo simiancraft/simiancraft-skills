@@ -206,10 +206,12 @@ export function claimLock(ctx: Context, name: string): () => void {
  * Pulls the base branch into a worktree's branch and pushes the result. Returns false on conflict,
  * leaving the tree clean, since a conflicted catch-up is a human's problem and not the loop's.
  */
-export function updateFromBase(ctx: Context, cwd: string): boolean {
-  sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch], cwd);
+export function updateFromBase(ctx: Context, cwd: string, baseSha?: string): boolean {
+  // A caller that judged freshness against a pinned commit merges exactly that commit; fetching
+  // again here could bring in a newer tip than the one the overlap was computed for.
+  if (!baseSha) sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch], cwd);
   try {
-    sh(ctx, ['git', 'merge', '--no-edit', `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd);
+    sh(ctx, ['git', 'merge', '--no-edit', baseSha ?? `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd);
   } catch {
     try {
       sh(ctx, ['git', 'merge', '--abort'], cwd);

@@ -22,7 +22,7 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { mutate, sh } from './shell.ts';
-import { behindBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -313,9 +313,17 @@ function pullRequestMatchesReview(
   cwd: string,
   reviewedSha: string,
 ): string | null {
-  const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']);
-  const view: { headRefOid: string; baseRefName: string; headRefName: string; state: string } = JSON.parse(raw);
+  type View = { headRefOid: string; baseRefName: string; headRefName: string; state: string };
+  const read = (): View => JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']));
   const localHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+  let view = read();
+  // A catch-up has just pushed this head, and the pull request's head can trail the push by a few
+  // seconds. When the worktree already holds the expected commit, wait for GitHub to agree before
+  // calling it a mismatch; a wrong head stays wrong after the wait.
+  for (let tries = 0; view.headRefOid !== reviewedSha && localHead === reviewedSha && tries < 6; tries++) {
+    Bun.sleepSync(5_000);
+    view = read();
+  }
 
   if (view.state !== 'OPEN') return `pull request is ${view.state}`;
   if (view.baseRefName !== ctx.project.baseBranch) return `targets ${view.baseRefName}, not ${ctx.project.baseBranch}`;
@@ -338,7 +346,23 @@ function isDraft(ctx: Context, pr: number): boolean {
  * Returns null when every check passed (or the repository runs none), otherwise a refusal reason.
  * Unknown states fail closed; a merge with a failing or unfinished build is never allowed.
  */
-async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string) => void): Promise<string | null> {
+/** Whether a commit had any check run or status: whether this repository reports checks at all. */
+function hadChecks(ctx: Context, sha: string): boolean {
+  try {
+    const runs = Number(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-runs`, '--jq', '.total_count']));
+    if (runs > 0) return true;
+    return Number(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/statuses`, '--jq', 'length'])) > 0;
+  } catch {
+    return true; // unknown reads as "checks are expected": waiting is the safe error
+  }
+}
+
+/**
+ * Waits for the checks of `expect.sha`, the head that would land. An empty rollup is green only
+ * when the repository reports no checks at all: after a catch-up push the rollup is empty for a
+ * moment before the new head's checks register, and merging in that moment would outrun the build.
+ */
+async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string) => void, expect?: { sha: string; checksExpected: boolean }): Promise<string | null> {
   type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
   const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
   const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
@@ -353,8 +377,16 @@ async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string)
 
   const deadline = Date.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
   for (;;) {
-    const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup']);
-    const rollup: CheckNode[] = raw ? JSON.parse(raw) : [];
+    const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
+    const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
+    const rollup: CheckNode[] = view.statusCheckRollup ?? [];
+    const notYet = expect && (view.headRefOid !== expect.sha ? 'the pull request does not show the landing head yet' : rollup.length === 0 && expect.checksExpected ? 'no check has registered for the landing head yet' : null);
+    if (notYet) {
+      if (Date.now() >= deadline) return `${notYet}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
+      say(`${notYet}; waiting`);
+      await Bun.sleep(15_000);
+      continue;
+    }
 
     const failed = rollup.filter((c) => classify(c) === 'failed');
     if (failed.length > 0) {
@@ -400,28 +432,33 @@ function serializePullMaster<T>(ctx: Context, action: () => Promise<T>): Promise
  */
 type CaughtUp = { before: string; after: string; overlap: string[]; netChangeIntact: boolean };
 
-function netChangeId(ctx: Context, cwd: string, head: string): string {
+function netChangeId(cwd: string, baseSha: string, head: string): string {
   // The branch's own change against the base it contains, as a patch id: stable across a merge
-  // that brought in only files this work does not touch.
-  const target = `${ctx.project.remote}/${ctx.project.baseBranch}`;
-  const run = Bun.spawnSync(['sh', '-c', `git diff ${target}...${head} | git patch-id --stable`], { cwd, stdout: 'pipe', stderr: 'pipe' });
-  return run.stdout.toString().trim().split(/\s+/)[0] ?? '';
+  // that brought in only files this work does not touch. Two argument-array processes, no shell:
+  // a configured ref is data and must never be read as syntax.
+  const diff = Bun.spawnSync(['git', 'diff', `${baseSha}...${head}`], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  if (diff.exitCode !== 0) return '';
+  const id = Bun.spawnSync(['git', 'patch-id', '--stable'], { cwd, stdin: diff.stdout, stdout: 'pipe', stderr: 'pipe' });
+  return id.stdout.toString().trim().split(/\s+/)[0] ?? '';
 }
 
 function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string): CaughtUp | 'conflict' | null {
   if (ctx.dryRun) return null;
-  const behind = behindBase(ctx, cwd);
+  // One fetch, one commit: the behind check, the overlap, the contribution comparison, and the
+  // merge all use this base. A base that moves again meanwhile is the next catch-up's business.
+  const baseSha = fetchBase(ctx, cwd);
+  const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return null;
   // Both judged before the merge: afterwards the merge base is the base's own tip and every
   // comparison against it is vacuously empty.
-  const overlap = staleAgainstBase(ctx, cwd, since);
+  const overlap = staleAgainstBase(ctx, cwd, since, baseSha);
   const before = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-  const idBefore = netChangeId(ctx, cwd, before);
+  const idBefore = netChangeId(cwd, baseSha, before);
   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
   move(ctx, issue, 'F2', `catching up ${why}`);
-  if (!updateFromBase(ctx, cwd)) return 'conflict';
+  if (!updateFromBase(ctx, cwd, baseSha)) return 'conflict';
   const after = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-  const idAfter = netChangeId(ctx, cwd, after);
+  const idAfter = netChangeId(cwd, baseSha, after);
   return { before, after, overlap, netChangeIntact: idBefore !== '' && idBefore === idAfter };
 }
 
@@ -537,25 +574,7 @@ async function land(
   // land, and the head is judged again. Movement outside it leaves the approval standing, provided
   // the branch's own change is byte-identical across the merge; the landing head is then the
   // caught-up one, and the checks below are waited on for that head, not the reviewed one.
-  let landingSha = reviewedSha;
-  const caught = catchUp(ctx, issue, cwd, reviewedSha, say, 'before the merge');
-  if (caught === 'conflict') {
-    say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-    return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
-  }
-  if (caught) {
-    if (caught.overlap.length > 0) {
-      say(`base moved into this work (${caught.overlap.join(', ')}); the approval no longer describes what would land`);
-      return 'stale';
-    }
-    if (!caught.netChangeIntact) {
-      say('the catch-up changed what this branch contributes; the approval no longer describes what would land');
-      return 'stale';
-    }
-    say(`base moved outside this work; the approval stands and the landing head is ${caught.after.slice(0, 10)}`);
-    landingSha = caught.after;
-  }
-
+  // The boundary is a fact about the change itself, so it is asked once, before anything waits.
   const effective = effectiveTouches(ctx, touches, verdict.touches, cwd);
   if (!mergeAllowed(ctx, effective)) {
     mutate(ctx, `park PR #${pr} (autoMerge: ${ctx.knobs.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
@@ -569,66 +588,106 @@ async function land(
     return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}` };
   }
 
-  const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, landingSha);
-  if (mismatch) {
-    say(`refusing to merge PR #${pr}: ${mismatch}`);
-    return { dlq: mismatch };
+  // The approval is pinned to the commit the reviewer read. Anything pushed to the lane since then
+  // was never judged, and a catch-up that started from it would carry it in under the approval.
+  if (!ctx.dryRun && sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd) !== reviewedSha) {
+    say('the lane moved past the reviewed commit; the approval no longer describes what would land');
+    return 'stale';
   }
 
-  // A failing or unfinished build never merges, whatever the review said. The reviewer watched
-  // checks too, but its answer ages: any catch-up since the verdict pushed a head whose CI run
-  // started fresh, and this is the last moment anything looks. Waiting here blocks the serial
-  // queue, which is honest; a merge may not outrun its own build.
-  move(ctx, issue, 'F3', `PR #${pr}`);
-  const notGreen = await awaitGreenChecks(ctx, pr, say);
-  if (notGreen) {
-    say(`refusing to merge PR #${pr}: ${notGreen}`);
-    return { dlq: notGreen };
-  }
-
-  // A green build is not a booted result. A change can compile, type-check, and pass every test
-  // and still fail the moment the result starts, because nothing above ever started it. The smoke
-  // command is the repository's own "boot it and hit it once", run in the lane against the exact
-  // head that would land. Optional; a repository with nothing to boot leaves it unset.
-  if (ctx.project.smokeCommand) {
-    say(`running the smoke command: ${ctx.project.smokeCommand}`);
-    move(ctx, issue, 'F4');
-    const smoke = Bun.spawnSync(['sh', '-c', ctx.project.smokeCommand], {
-      cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: ctx.knobs.smokeTimeoutMinutes * 60_000,
-      killSignal: 'SIGKILL',
-    });
-    if (smoke.exitCode !== 0) {
-      const tail = `${smoke.stdout.toString()}\n${smoke.stderr.toString()}`.trim().split('\n').slice(-6).join(' | ');
-      const reason = `the smoke command exited ${smoke.exitCode ?? 'by timeout'}: ${tail || 'no output'}`;
-      say(`refusing to merge PR #${pr}: ${reason}`);
-      return { dlq: reason };
+  // Single file, and upstream is checked each time. Every pass catches up, runs the gates on the
+  // head that would land, and then looks upstream once more: checks, smoke, and a paused line can
+  // each take long enough for another merge to land, and a head that lacks it must not merge.
+  let landingSha = reviewedSha;
+  const checksExpected = ctx.dryRun ? false : hadChecks(ctx, reviewedSha);
+  for (let pass = 0; ; pass++) {
+    const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge');
+    if (caught === 'conflict') {
+      say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
+      return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
     }
-    say('smoke command passed');
-  }
-
-  // The driver's last word. A driver holding its line waits here rather than answering; one that
-  // gives up answers with a reason, and the landing is a dead letter without a review round spent.
-  // The card is in Merging for the whole wait: a paused line holds a card that is about to land.
-  move(ctx, issue, 'F5', `PR #${pr} at ${landingSha.slice(0, 10)}`);
-  if (ctx.mayMerge) {
-    const permission = await ctx.mayMerge();
-    if (!permission.ok) {
-      say(`refusing to merge PR #${pr}: ${permission.reason}`);
-      return { dlq: permission.reason };
+    if (caught) {
+      if (caught.overlap.length > 0) {
+        say(`base moved into this work (${caught.overlap.join(', ')}); the approval no longer describes what would land`);
+        return 'stale';
+      }
+      if (!caught.netChangeIntact) {
+        say('the catch-up changed what this branch contributes; the approval no longer describes what would land');
+        return 'stale';
+      }
+      say(`base moved outside this work; the approval stands and the landing head is ${caught.after.slice(0, 10)}`);
+      landingSha = caught.after;
     }
-  }
 
-  // The last read before the merge: a hold, a pause, a child, or another run's claim that landed
-  // during the review makes the merge someone else's call.
-  if (!ctx.dryRun) {
-    const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
-    if (!gate.ok) {
-      say(`refusing to merge PR #${pr}: ${gate.why}`);
-      return { park: `the issue changed under the review: ${gate.why}` };
+    const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, landingSha);
+    if (mismatch) {
+      say(`refusing to merge PR #${pr}: ${mismatch}`);
+      return { dlq: mismatch };
     }
+
+    // A failing or unfinished build never merges, whatever the review said. The reviewer watched
+    // checks too, but its answer ages: any catch-up since the verdict pushed a head whose CI run
+    // started fresh, and this is the last moment anything looks. Waiting here blocks the serial
+    // queue, which is honest; a merge may not outrun its own build.
+    move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
+    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, checksExpected });
+    if (notGreen) {
+      say(`refusing to merge PR #${pr}: ${notGreen}`);
+      return { dlq: notGreen };
+    }
+
+    // A green build is not a booted result. A change can compile, type-check, and pass every test
+    // and still fail the moment the result starts, because nothing above ever started it. The smoke
+    // command is the repository's own "boot it and hit it once", run in the lane against the exact
+    // head that would land. Optional; a repository with nothing to boot leaves it unset.
+    if (ctx.project.smokeCommand) {
+      say(`running the smoke command: ${ctx.project.smokeCommand}`);
+      move(ctx, issue, 'F4');
+      const smoke = Bun.spawnSync(['sh', '-c', ctx.project.smokeCommand], {
+        cwd,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: ctx.knobs.smokeTimeoutMinutes * 60_000,
+        killSignal: 'SIGKILL',
+      });
+      if (smoke.exitCode !== 0) {
+        const tail = `${smoke.stdout.toString()}\n${smoke.stderr.toString()}`.trim().split('\n').slice(-6).join(' | ');
+        const reason = `the smoke command exited ${smoke.exitCode ?? 'by timeout'}: ${tail || 'no output'}`;
+        say(`refusing to merge PR #${pr}: ${reason}`);
+        return { dlq: reason };
+      }
+      say('smoke command passed');
+    }
+
+    // The driver's last word. A driver holding its line waits here rather than answering; one that
+    // gives up answers with a reason, and the landing is a dead letter without a review round spent.
+    // The card is in Merging for the whole wait: a paused line holds a card that is about to land.
+    move(ctx, issue, 'F5', `PR #${pr} at ${landingSha.slice(0, 10)}`);
+    if (ctx.mayMerge) {
+      const permission = await ctx.mayMerge();
+      if (!permission.ok) {
+        say(`refusing to merge PR #${pr}: ${permission.reason}`);
+        return { dlq: permission.reason };
+      }
+    }
+
+    // The last read before the merge: a hold, a pause, a child, or another run's claim that landed
+    // during the review makes the merge someone else's call.
+    if (!ctx.dryRun) {
+      const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+      if (!gate.ok) {
+        say(`refusing to merge PR #${pr}: ${gate.why}`);
+        return { park: `the issue changed under the review: ${gate.why}` };
+      }
+    }
+
+    // The last look upstream. Pinning the head does not pin the base: if anything landed while
+    // the gates above waited, this head lacks it, and the pass runs again from the catch-up.
+    if (ctx.dryRun || behindBase(ctx, cwd).length === 0) break;
+    if (pass >= MAX_BASE_REFRESHES) {
+      return { dlq: `the base moved ${pass + 1} times while this landing waited on its gates; it needs a quiet base or a person` };
+    }
+    say('the base moved while this landing waited; checking upstream again before the merge');
   }
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
@@ -638,7 +697,13 @@ async function land(
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
   // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
   // later while this driver has already parked it, so cancel whatever was scheduled first.
-  const merged = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
+  // The merge report can trail the merge by a few seconds; wait for it before calling it missing.
+  const readMerged = () => sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
+  let merged = readMerged();
+  for (let tries = 0; (!merged || merged === 'null') && tries < 6; tries++) {
+    Bun.sleepSync(5_000);
+    merged = readMerged();
+  }
   if (!merged || merged === 'null') {
     try {
       sh(ctx, ['gh', 'pr', 'merge', String(pr), '--disable-auto']);

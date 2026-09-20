@@ -86,10 +86,10 @@ export function importClosure(ctx: Context, cwd: string, entries: string[]): Set
  * Release automation that bumps the version on every landing produces noise that must not read as
  * a dependency change, which genuinely invalidates any proof in flight.
  */
-export function isVersionOnlyPackageJsonBump(ctx: Context, cwd: string, sinceSha: string): boolean {
+export function isVersionOnlyPackageJsonBump(ctx: Context, cwd: string, sinceSha: string, baseSha?: string): boolean {
   const diff = sh(
     ctx,
-    ['git', 'diff', '--unified=0', `${sinceSha}...${ctx.project.remote}/${ctx.project.baseBranch}`, '--', 'package.json'],
+    ['git', 'diff', '--unified=0', `${sinceSha}...${baseSha ?? `${ctx.project.remote}/${ctx.project.baseBranch}`}`, '--', 'package.json'],
     cwd,
   );
   const changed = diff.split('\n').filter((line) => /^[+-](?![+-])/.test(line));
@@ -102,14 +102,23 @@ export function isVersionOnlyPackageJsonBump(ctx: Context, cwd: string, sinceSha
  * decides whether a lane catches up; `staleAgainstBase` is the narrower question of whether that
  * movement reached what a proof or an approval covers, which decides what the catch-up costs.
  */
-export function behindBase(ctx: Context, cwd: string): string[] {
-  const target = `${ctx.project.remote}/${ctx.project.baseBranch}`;
+/**
+ * Fetches the base once and answers with the commit it is at. A catch-up judges, compares, and
+ * merges against this one commit: a base that moves again between those steps must not let the
+ * overlap be computed against one tip and the merge bring in another.
+ */
+export function fetchBase(ctx: Context, cwd: string): string {
   sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch], cwd);
+  return sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd);
+}
+
+export function behindBase(ctx: Context, cwd: string, baseSha?: string): string[] {
+  const target = baseSha ?? fetchBase(ctx, cwd);
   if (sh(ctx, ['git', 'rev-list', '--count', `HEAD..${target}`], cwd) === '0') return [];
   const files = sh(ctx, ['git', 'diff', '--name-only', `HEAD...${target}`], cwd).split('\n').filter(Boolean);
   // A base that moved by commits which change no file against this lane (a revert pair, say) is
-  // still movement the lane lacks; name the ref so the caller's list is never empty when behind.
-  return files.length > 0 ? files : [target];
+  // still movement the lane lacks; name the commit so the caller's list is never empty when behind.
+  return files.length > 0 ? files : [target.slice(0, 10)];
 }
 
 /**
@@ -121,13 +130,12 @@ export function behindBase(ctx: Context, cwd: string): string[] {
  * type, or a lockfile invalidates a receipt while touching nothing the diff touched, and comparing
  * filenames alone would call that fresh and merge it.
  */
-export function staleAgainstBase(ctx: Context, cwd: string, sinceSha: string): string[] {
-  const remote = ctx.project.remote;
-  const base = ctx.project.baseBranch;
+export function staleAgainstBase(ctx: Context, cwd: string, sinceSha: string, baseSha?: string): string[] {
+  // The pinned commit when the caller fetched already; otherwise fetch here and pin for this call.
+  const target = baseSha ?? fetchBase(ctx, cwd);
   const alwaysInvalidates: readonly string[] = ctx.project.alwaysInvalidates;
   const releaseArtifacts: readonly string[] = ctx.project.releaseArtifacts ?? [];
 
-  sh(ctx, ['git', 'fetch', remote, base], cwd);
   const lines = (out: string) => out.split('\n').filter(Boolean);
 
   // Release machinery rewrites its artifacts on every landing; a queue where each merge
@@ -137,9 +145,9 @@ export function staleAgainstBase(ctx: Context, cwd: string, sinceSha: string): s
   // touch one, the merge conflicts and fails closed rather than landing anything unreviewed.
   const machineNoise = (file: string) =>
     releaseArtifacts.some((pattern) => matchesPath(file, pattern)) ||
-    (file === 'package.json' && isVersionOnlyPackageJsonBump(ctx, cwd, sinceSha));
+    (file === 'package.json' && isVersionOnlyPackageJsonBump(ctx, cwd, sinceSha, target));
 
-  const incoming = lines(sh(ctx, ['git', 'diff', '--name-only', `${sinceSha}...${remote}/${base}`], cwd)).filter(
+  const incoming = lines(sh(ctx, ['git', 'diff', '--name-only', `${sinceSha}...${target}`], cwd)).filter(
     (file) => !machineNoise(file),
   );
   if (incoming.length === 0) return [];
@@ -147,7 +155,7 @@ export function staleAgainstBase(ctx: Context, cwd: string, sinceSha: string): s
   const global = incoming.filter((file) => alwaysInvalidates.some((pattern) => matchesPath(file, pattern)));
   if (global.length > 0) return global;
 
-  const mine = lines(sh(ctx, ['git', 'diff', '--name-only', `${remote}/${base}...HEAD`], cwd));
+  const mine = lines(sh(ctx, ['git', 'diff', '--name-only', `${target}...HEAD`], cwd));
   const closure = importClosure(ctx, cwd, mine);
   if (closure.size > CLOSURE_CAP) return incoming;
 
