@@ -1,4 +1,4 @@
-import './review-no-gh.test.ts';
+import '../../../test/no-real-gh.preload.ts';
 import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
