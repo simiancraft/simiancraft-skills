@@ -231,16 +231,6 @@ export function workReads(ctx: Context, issue: number, cwd: string): WorkReads {
           const [sha, ref] = line.split(/\s+/);
           return { branch: ref.replace('refs/heads/', ''), sha };
         }),
-    carries: (ancestor, head) => {
-      if (ancestor === head) return true;
-      try {
-        sh(ctx, ['git', 'fetch', ctx.project.remote, head], cwd, 1);
-        sh(ctx, ['git', 'merge-base', '--is-ancestor', ancestor, head], cwd, 1);
-        return true;
-      } catch {
-        return false; // not an ancestor, or an object the remote no longer has: either way, not carried
-      }
-    },
     pull: (branch) => {
       const found = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,isDraft,headRefOid'])) as Array<{ number: number; isDraft: boolean; headRefOid: string }>;
       return found[0] ?? null;
@@ -342,8 +332,23 @@ async function runWorker(
     const placed = placeInWork(facts);
     if (facts.branch && placed.lane !== 'E1') {
       sh(ctx, ['git', 'fetch', ctx.project.remote, facts.branch], cwd);
-      sh(ctx, ['git', 'switch', '-C', facts.branch, `${ctx.project.remote}/${facts.branch}`], cwd);
-      if (placed.dispatch === 'prove' || placed.dispatch === 'mark-ready') {
+      // A lane that survived an earlier run can hold commits that run never pushed. Those are the
+      // only copy of that work, so the lane is never reset over them: Code continues from them.
+      const unpushed = Number(sh(ctx, ['git', 'rev-list', '--count', `${ctx.project.remote}/${facts.branch}..HEAD`], cwd)) > 0;
+      if (unpushed) {
+        say(`this lane holds commits that are not on ${ctx.project.remote}/${facts.branch}; continuing Code from them`);
+        revision = true;
+        codeBrief = 'This worktree holds commits an earlier run made and never pushed. Read what is there, continue from it, push, and finish the step.';
+      } else {
+        sh(ctx, ['git', 'switch', '-C', facts.branch, `${ctx.project.remote}/${facts.branch}`], cwd);
+      }
+      if (unpushed) {
+        // Nothing more to decide: the coder has the lane as it stands.
+      } else if (placed.dispatch === 'code' && placed.from === 'refusal') {
+        say(`a proof of ${facts.marker?.sha.slice(0, 10)} was refused by an earlier run; Code continues with that refusal as its brief`);
+        revision = true;
+        codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${facts.marker?.handoff}`;
+      } else if (placed.dispatch === 'prove' || placed.dispatch === 'mark-ready') {
         say(`an earlier run coded this on ${facts.branch} and announced it at ${facts.marker?.sha.slice(0, 10)}; resuming at Prove`);
         proveOnly = true;
         proveBrief = 'An earlier run coded this change and did not get to prove it, or did not finish. Prove the head of this branch.';
@@ -367,8 +372,14 @@ async function runWorker(
       say(`coded at ${coded.sha?.slice(0, 10)} on ${coded.branch}; announced`);
       // The seam: staying current happens here, between steps, and never inside one.
       holdLease(ctx, issue.number, 'start the proof');
-      if (!ctx.dryRun && catchUp(ctx, issue, cwd, coded.sha as string, say, 'before the proof') === 'conflict') {
-        return { issue: issue.number, verdict: 'failed', reason: `the coded branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+      if (!ctx.dryRun) {
+        if (catchUp(ctx, issue, cwd, coded.sha as string, say, 'before the proof') === 'conflict') {
+          return { issue: issue.number, verdict: 'failed', reason: `the coded branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+        }
+        // A marker is trusted only at the exact head it names, so a catch-up that moved the head is
+        // announced too: the same finished code, the same gated head, on the head that now stands.
+        const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+        if (head !== coded.sha) announceStep(ctx, issue.number, { step: 'coded', runId: ctx.runId, sha: head, gated: coded.gated as string, touches: coded.touches ?? [], handoff: coded.handoff as string });
       }
     }
     // The closest lane that can correct the card: stale proof and missing evidence go to Proving.
@@ -376,7 +387,11 @@ async function runWorker(
     const proved = await runProve(ctx, issue, cwd, maxPoints, proveBrief, reproof);
     if (proved.verdict !== 'unprovable') return proved;
 
-    // The proof was refused: back a step, with the prover's reason as the brief.
+    // The proof was refused: back a step, with the prover's reason as the brief. The refusal is
+    // announced before anything else, so a run that dies here leaves the next one a fact to start
+    // from: it continues Code with this brief, and does not prove the refused head again.
+    const refusedHead = ctx.dryRun ? (proved.sha ?? '0'.repeat(40)) : sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+    announceStep(ctx, issue.number, { step: 'refused', runId: ctx.runId, sha: refusedHead, gated: refusedHead, touches: [], handoff: proved.reason });
     spent = recordAttempt(ctx, issue.number, spent);
     say(`the proof was refused (attempt ${spent} of ${ctx.knobs.maxWorkerAttempts}): ${proved.reason}`);
     if (spent >= ctx.knobs.maxWorkerAttempts) {
@@ -1605,7 +1620,7 @@ export async function fixIssue(
 }
 
 /** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */
-function openPullFor(ctx: Context, issue: number): number | undefined {
+export function openPullFor(ctx: Context, issue: number): number | undefined {
   const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName,author,body']);
   const pulls = JSON.parse(raw) as Array<{ number: number; headRefName: string; author?: { login?: string }; body?: string }>;
   // What is found here can be parked or closed, so a branch that merely ends in the number is not

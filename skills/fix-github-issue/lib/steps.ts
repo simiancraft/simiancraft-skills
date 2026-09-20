@@ -12,8 +12,12 @@ import { parseMarker } from '../../carve-github-issue/lib/tree.ts';
 import type { Context } from './context.ts';
 import { mutate } from './shell.ts';
 
-/** `coded`: the change is on the remote and passed the repository's own gate at `gated`. `proved`: a draft carries proof of `sha`. */
-export type Step = 'coded' | 'proved';
+/**
+ * `coded`: the change is on the remote and passed the repository's own gate at `gated`. `proved`: a
+ * draft carries proof of `sha`. `refused`: a prover could not prove `sha`, and the hand-off is its
+ * reason, which is the next coder's brief.
+ */
+export type Step = 'coded' | 'proved' | 'refused';
 
 export type StepMarker = {
   step: Step;
@@ -27,7 +31,7 @@ export type StepMarker = {
   handoff: string;
 };
 
-const STEPS: Step[] = ['coded', 'proved'];
+const STEPS: Step[] = ['coded', 'proved', 'refused'];
 const SHA = /^[0-9a-f]{7,40}$/;
 
 /** The comment that announces a step: a marker line a driver parses, then the hand-off a person or an agent reads. */
@@ -73,7 +77,11 @@ export type WorkFacts = {
   /** The issue's branch on the remote, or null when there is none. */
   remoteHead: string | null;
   marker: StepMarker | null;
-  /** Whether `remoteHead` is the marker's sha or a descendant of it (the driver's own catch-up merges onto it). */
+  /**
+   * Whether the remote branch is at exactly the head the marker names. A descendant is not enough:
+   * an unfinished later commit descends from a finished one too. The driver announces again after
+   * its own catch-up moves the head, so an exact match is always available to finished work.
+   */
   remoteCarriesMarker: boolean;
 };
 
@@ -82,16 +90,18 @@ export type WorkPlacement =
   | { lane: 'E1'; dispatch: 'review' }
   | { lane: 'D3'; dispatch: 'mark-ready' }
   | { lane: 'D2'; dispatch: 'prove' }
-  | { lane: 'D1'; dispatch: 'code'; from: 'branch' | 'nothing' };
+  | { lane: 'D1'; dispatch: 'code'; from: 'branch' | 'nothing' | 'refusal' };
 
 /**
- * Places a card in Work from facts, in order. A pushed branch with no `coded` marker dispatches
+ * Places a card in Work from facts, in order. A pushed branch whose head no marker names dispatches
  * Code, never Prove: a push says work happened, and only the announcement says the coder called
  * it finished and gated.
  */
 export function placeInWork(facts: WorkFacts): WorkPlacement {
   if (facts.readyPr) return { lane: 'E1', dispatch: 'review' };
   const announced = facts.marker !== null && facts.remoteCarriesMarker;
+  // A refusal stands until a newer Code announcement supersedes it: the head it names is not proved again.
+  if (announced && facts.marker?.step === 'refused') return { lane: 'D1', dispatch: 'code', from: 'refusal' };
   if (facts.draftHead && announced && facts.marker?.step === 'proved' && facts.marker.sha === facts.draftHead) return { lane: 'D3', dispatch: 'mark-ready' };
   if (announced) return { lane: 'D2', dispatch: 'prove' };
   return { lane: 'D1', dispatch: 'code', from: facts.remoteHead ? 'branch' : 'nothing' };
@@ -103,8 +113,6 @@ export type WorkReads = {
   marker: () => StepMarker | null;
   /** The remote branches whose names end in `-<issue>`, with their heads: the coder's naming rule. */
   remoteBranches: () => Array<{ branch: string; sha: string }>;
-  /** Whether `ancestor` is `head` or one of its ancestors, asked of the remote's objects. */
-  carries: (ancestor: string, head: string) => boolean;
   /** The open pull request for a branch, if any. */
   pull: (branch: string) => { number: number; isDraft: boolean; headRefOid: string } | null;
 };
@@ -118,7 +126,7 @@ export function readWorkFacts(reads: WorkReads): WorkFacts & { branch: string | 
   const branches = reads.remoteBranches();
   // The branch the marker speaks of is the one that carries its head; with no marker, the one
   // branch named for the issue, and with several and no marker there is no telling which.
-  const carrying = marker ? branches.find((b) => reads.carries(marker.sha, b.sha)) : undefined;
+  const carrying = marker ? branches.find((b) => b.sha === marker.sha) : undefined;
   const chosen = carrying ?? (branches.length === 1 ? branches[0] : undefined);
   const pull = chosen ? reads.pull(chosen.branch) : null;
   return {

@@ -14,7 +14,7 @@ import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
 import { newestStep } from './steps.ts';
-import { type Issue, recordThrow, reviewAndLand, type WorkerResult } from './pipeline.ts';
+import { type Issue, openPullFor, recordThrow, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
 import { sh } from './shell.ts';
 
@@ -126,7 +126,9 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       // Only a lane that holds nothing the remote lacks is let go: no uncommitted change, and a
       // head some remote branch contains. Anything else is still a person's to look at.
       const onRemote = () => sh(ctx, ['git', 'branch', '-r', '--contains', 'HEAD'], dir).trim() !== '';
-      if (step && dirtyPaths(ctx, dir).length === 0 && onRemote()) {
+      // With a pull request open the card is not in the worker's queue, so no dispatch would come
+      // for it: that lane stays a person's, as before.
+      if (step && step.step !== 'proved' && openPullFor(ctx, issue.number) === undefined && dirtyPaths(ctx, dir).length === 0 && onRemote()) {
         ctx.log(`#${num}  stranded lane, but ${step.step} at ${step.sha.slice(0, 10)} is announced on the issue; its next dispatch resumes from the remote`);
         removeWorktree(ctx, issue.number);
         continue;

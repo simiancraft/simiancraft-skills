@@ -53,9 +53,8 @@ describe('placing a card in Work from facts', () => {
     expect(placeInWork({ ...nothing, remoteHead: S })).toEqual({ lane: 'D1', dispatch: 'code', from: 'branch' });
   });
 
-  it('dispatches Prove from a coded marker the remote still carries, at its head or under a catch-up', () => {
+  it('dispatches Prove from a coded marker whose head the remote branch is at', () => {
     expect(placeInWork({ ...nothing, remoteHead: S, marker: coded, remoteCarriesMarker: true })).toEqual({ lane: 'D2', dispatch: 'prove' });
-    expect(placeInWork({ ...nothing, remoteHead: T, marker: coded, remoteCarriesMarker: true })).toEqual({ lane: 'D2', dispatch: 'prove' });
   });
 
   it('does not trust a marker the remote branch no longer carries', () => {
@@ -75,7 +74,7 @@ describe('placing a card in Work from facts', () => {
 });
 
 describe('reading where the work stands, from the remote and the tracker alone', () => {
-  const reads = (over: Partial<WorkReads>): WorkReads => ({ marker: () => null, remoteBranches: () => [], carries: (a, h) => a === h, pull: () => null, ...over });
+  const reads = (over: Partial<WorkReads>): WorkReads => ({ marker: () => null, remoteBranches: () => [], pull: () => null, ...over });
 
   it('resumes at Prove when a run died after Code announced: the marker and the branch are enough', () => {
     const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
@@ -83,9 +82,17 @@ describe('reading where the work stands, from the remote and the tracker alone',
     expect(placeInWork(facts)).toEqual({ lane: 'D2', dispatch: 'prove' });
   });
 
-  it('still resumes at Prove when the driver caught the branch up after the announcement', () => {
-    const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: T }], carries: (a, h) => a === S && h === T }));
-    expect(placeInWork(facts)).toEqual({ lane: 'D2', dispatch: 'prove' });
+  it('does not prove a head that merely descends from the announced one: unfinished work descends from finished work too', () => {
+    const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: T }] }));
+    expect(facts.remoteCarriesMarker).toBe(false);
+    expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'branch' });
+  });
+
+  it('continues Code, with the refusal as its brief, when a run died after a proof was refused', () => {
+    const refused: StepMarker = { ...coded, step: 'refused', handoff: 'the endpoint still returns 500 for an empty list' };
+    const facts = readWorkFacts(reads({ marker: () => refused, remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
+    expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'refusal' });
+    expect(facts.marker?.handoff).toContain('returns 500');
   });
 
   it('continues Code when a run died before the announcement: a pushed branch, no marker', () => {

@@ -48,11 +48,4 @@ describe('the work reads, against a real remote', () => {
     expect(workReads(ctx(), 17, clone).remoteBranches()).toEqual([{ branch: 'fix/other-17', sha: second }]);
   });
 
-  it('says a caught-up head carries the announced one, and an unrelated sha does not', () => {
-    const reads = workReads(ctx(), 7, clone);
-    expect(reads.carries(first, second)).toBe(true);
-    expect(reads.carries(second, second)).toBe(true);
-    expect(reads.carries(second, first)).toBe(false);
-    expect(reads.carries('d'.repeat(40), second)).toBe(false);
-  });
 });

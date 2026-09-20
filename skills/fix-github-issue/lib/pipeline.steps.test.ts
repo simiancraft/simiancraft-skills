@@ -92,6 +92,12 @@ describe('the work turn, as steps', () => {
     expect(r.roles.slice(0, 4)).toEqual(['worker', 'prover', 'worker', 'prover']);
     expect(r.rehearsed.filter((d) => /loop\/attempts: \d/.test(d) && d.startsWith('mark')).length).toBeGreaterThanOrEqual(2);
     expect(r.lines.some((l) => /the proof was refused \(attempt 1 of \d+\)/.test(l))).toBe(true);
+    // The refusal is a fact on the issue before the attempt is spent, so a run that dies there leaves
+    // the next one a brief and not a head to prove again.
+    const refusedAt = r.rehearsed.findIndex((d) => d.startsWith('announce refused'));
+    const countedAt = r.rehearsed.findIndex((d) => /^mark #25 at loop\/attempts: 1$/.test(d));
+    expect(refusedAt).toBeGreaterThan(-1);
+    expect(countedAt).toBeGreaterThan(refusedAt);
     expect(r.outcome.outcome).toBe('dlq');
     expect(r.outcome.reason).toContain('the endpoint still returns 500 for an empty list');
   });
