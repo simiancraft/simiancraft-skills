@@ -416,7 +416,7 @@ describe('runtime moves and settlement', () => {
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
     const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
-      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, fetchBase: () => checkedBase, checkNamesOn: () => ['ci'], requiredStatusChecks: () => ['ci'],
+      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
       mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
     });
@@ -437,11 +437,11 @@ describe('safety pressure', () => {
   it('a fast review cannot turn its partially registered check list into the complete expected set', async () => {
     let clock = 0;
     const ctx = context(new FakeTracker(bot));
-    const { checkNamesOn } = loadFunctions(pipeline, ['checkNamesOn'], {
-      sh: (_ctx: unknown, argv: string[]) => argv.some(a => a.endsWith('/check-runs')) ? '["lint"]' : '[]',
+    const { checksOn } = loadFunctions(pipeline, ['checksOn'], {
+      sh: (_ctx: unknown, argv: string[]) => argv.some(a => a.includes('/check-runs')) ? '{"name":"lint","verdict":"success"}' : '',
     });
     // Review finished at t=0. A second workflow registers at t=60s on this same head.
-    const names = checkNamesOn(ctx, 'h');
+    const { names } = checksOn(ctx, 'h');
     const result = await awaitGreenChecks(ctx, 7, noop, { sha: 'h', names }, {
       now: () => clock, sleep: async ms => { clock += ms; },
       read: argv => argv[1] === 'api' ? '0' : JSON.stringify({ headRefOid: 'h', statusCheckRollup: [

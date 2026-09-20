@@ -427,10 +427,21 @@ function isDraft(ctx: Context, pr: number): boolean {
  * The names of the checks and statuses a commit carries. For the reviewed head this is the
  * expected set of a landing: it had the length of a review to register all of them.
  */
-function checkNamesOn(ctx: Context, sha: string): string[] {
-  const runs = JSON.parse(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-runs`, '--paginate', '--jq', '[.check_runs[].name]'])) as string[];
-  const statuses = JSON.parse(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/statuses`, '--jq', '[.[].context]'])) as string[];
-  return [...new Set([...runs, ...statuses])];
+function checksOn(ctx: Context, sha: string): { names: string[]; passed: string[] } {
+  // One object to a line, since a head can carry more check runs than one page holds and a page
+  // apiece of JSON arrays is not one JSON document.
+  const lines = (argv: string[]) =>
+    sh(ctx, argv)
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line) as { name: string; verdict: string | null });
+  const runs = lines(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-runs?per_page=100`, '--paginate', '--jq', '.check_runs[] | {name, verdict: .conclusion}']);
+  const statuses = lines(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/statuses?per_page=100`, '--paginate', '--jq', '.[] | {name: .context, verdict: .state}']);
+  const all = [...runs, ...statuses];
+  // Which of them had passed there is kept too: a check that passed for the reviewer and is only
+  // skipped on the head that would land has stopped running, which a job skipped by design never did.
+  const passed = all.filter((c) => c.verdict === 'success' || c.verdict === 'neutral').map((c) => c.name);
+  return { names: [...new Set(all.map((c) => c.name))], passed: [...new Set(passed)] };
 }
 
 /** The status checks the base branch's protection requires; none when the branch has no such rule. */
@@ -446,7 +457,7 @@ export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
   say: (message: string) => void,
-  expect?: { sha: string; names?: string[]; required?: string[] },
+  expect?: { sha: string; names?: string[]; passedAtReview?: string[]; required?: string[] },
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<string | null> {
@@ -540,14 +551,17 @@ export async function awaitGreenChecks(
     // jobs of a run made while the pull request was a draft, and the run that counts. Judged by
     // name, then: a name passes on a node that passed. A name somebody expects is not satisfied by
     // being skipped, or a landing could merge with no check having run; a cancelled node with no
-    // passing sibling has no verdict either. "Expects" is the written list here, the config's and the
-    // base branch's, and not the names the reviewed head happened to carry: a repository can have
-    // jobs that are skipped on every pull request by design (a release, a deploy), those are on the
-    // reviewed head too, and waiting for them to pass would hold every landing to the timeout.
+    // passing sibling has no verdict either. Which names must have run: the written list, the
+    // config's and the base branch's, and every check that had passed on the head the reviewer read.
+    // Not every name that head carried: a repository can have jobs skipped on every pull request by
+    // design (a release, a deploy on push), those were skipped at review too, and waiting for them
+    // to pass would hold every landing to the timeout. A check that passed at review and is only
+    // skipped now is the other case: it stopped running, and the approval counted on it.
+    const mustRun = new Set([...authoritative, ...(expect?.passedAtReview ?? [])]);
     const byName = new Map<string, Array<ReturnType<typeof classify>>>();
     for (const c of rollup) byName.set(nameOf(c), [...(byName.get(nameOf(c)) ?? []), classify(c)]);
     const unjudged = [...byName.entries()]
-      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || authoritative.includes(name)))
+      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || mustRun.has(name)))
       .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
     if (unjudged.length > 0) {
       const gaveUp = await wait(`no check has reached a verdict under: ${unjudged.join(', ')}`, 30_000);
@@ -823,7 +837,7 @@ async function land(
   // each take long enough for another merge to land, and a head that lacks it must not merge.
   let landingSha = reviewedSha;
   // What complete looks like, read before anything moves the head: the checks the reviewed head carried.
-  const expectedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : checkNamesOn(ctx, reviewedSha);
+  const reviewedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? { names: [], passed: [] } : checksOn(ctx, reviewedSha);
   const requiredByBase = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : requiredStatusChecks(ctx);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
@@ -876,7 +890,7 @@ async function land(
     };
 
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
-    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: expectedChecks, required: requiredByBase });
+    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: reviewedChecks.names, passedAtReview: reviewedChecks.passed, required: requiredByBase });
     holdLease(ctx, issue.number, 'act on the checks of the landing head');
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);

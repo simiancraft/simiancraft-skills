@@ -172,8 +172,17 @@ describe('the build gate', () => {
     // A release or a deploy job: `if: push to main`. It is on the reviewed head, skipped there too,
     // so it arrives in `names`; only the written list says which checks must have passed.
     const w = world('required', () => [GREEN, node('Release', 'SKIPPED'), node('Deploy to GitHub Pages', 'SKIPPED')]);
-    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'landing', required: ['build'], names: ['build', 'Release', 'Deploy to GitHub Pages'] }, w.io)).toBeNull();
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'landing', required: ['build'], names: ['build', 'Release', 'Deploy to GitHub Pages'], passedAtReview: ['build'] }, w.io)).toBeNull();
     expect(w.waited()).toBe(0);
+  });
+
+  it('waits on a check that passed for the reviewer and is only skipped on the head that would land', async () => {
+    // Nobody wrote `integration` down, but the approval counted on it: it ran and passed at review.
+    // Skipped now, it has stopped running, which a job skipped by design never did.
+    const w = world('required', () => [GREEN, node('integration', 'SKIPPED'), node('Release', 'SKIPPED')]);
+    const refusal = await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'landing', required: ['build'], names: ['build', 'integration', 'Release'], passedAtReview: ['build', 'integration'] }, w.io);
+    expect(refusal).toContain('no check has reached a verdict under: integration (skipped)');
+    expect(refusal).not.toContain('Release');
   });
 
   it('still waits on a skipped check the config names, even beside one skipped by design', async () => {
