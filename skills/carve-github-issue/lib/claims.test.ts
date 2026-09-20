@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { CLAIM_READBACK, claim, isTrunk, liveGate, refusal } from './claims.ts';
+import { CLAIM_LOSS_MARGIN_MS, CLAIM_READBACK, CLAIM_RENEW_MS, CLAIM_RETRY_MS, type ClaimHandle, type Schedule, claim, isTrunk, keepClaimed, leaseLost, liveGate, refusal } from './claims.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { type Record, renderRecord } from './record.ts';
 import { readTree } from './tree.ts';
@@ -187,5 +187,95 @@ describe('claim', () => {
     const view = io.view.bind(io);
     io.view = (n) => (n === 1 ? structuredClone(trailing) : view(n));
     expect(await claim(ctx, io, 1, 'working')).toBe('busy');
+  });
+});
+
+describe('keepClaimed', () => {
+  // Lost leases are module state keyed by repo and issue, so every case takes its own issue number.
+  function rig(issue: number, renew: () => void, expiresAt = 30 * 60 * 1000) {
+    const io = new FakeTracker(BOT, [fakeIssue(issue, { labels: [{ name: 'size: 1' }] })]);
+    const ctx = ctxFor(io);
+    const pending: { fn: () => void; ms: number; cancelled: boolean }[] = [];
+    const schedule: Schedule = (fn, ms) => {
+      const entry = { fn, ms, cancelled: false };
+      pending.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    };
+    const handle: ClaimHandle = { kind: 'working', commentId: 1, label: 'loop/claimed', issue, key: `o/r#${issue}`, expires: () => expiresAt, renew, release: () => {} };
+    const state = { now: 0, lost: 0 };
+    const stop = keepClaimed(handle, () => state.lost++, () => state.now, schedule);
+    /** Fires the newest scheduled tick the way the timer would: a cancelled one never runs. */
+    const fire = () => {
+      const entry = pending[pending.length - 1];
+      if (!entry.cancelled) entry.fn();
+    };
+    return { io, ctx, pending, state, stop, fire };
+  }
+
+  test('a renewal that succeeds keeps the lease and schedules the next one a full interval out', () => {
+    let renewals = 0;
+    const r = rig(9001, () => renewals++);
+    expect(r.pending.map((p) => p.ms)).toEqual([CLAIM_RENEW_MS]);
+    expect(renewals).toBe(0);
+    r.fire();
+    expect(renewals).toBe(1);
+    expect(leaseLost(r.ctx, 9001)).toBe(false);
+    expect(r.pending.map((p) => p.ms)).toEqual([CLAIM_RENEW_MS, CLAIM_RENEW_MS]);
+  });
+
+  test('a renewal that fails far from expiry is retried in a minute, and the lease stands', () => {
+    const r = rig(9002, () => {
+      throw new Error('tracker down');
+    });
+    r.state.now = 30 * 60 * 1000 - CLAIM_LOSS_MARGIN_MS - 1;
+    r.fire();
+    expect(leaseLost(r.ctx, 9002)).toBe(false);
+    expect(r.state.lost).toBe(0);
+    expect(r.pending.map((p) => p.ms)).toEqual([CLAIM_RENEW_MS, CLAIM_RETRY_MS]);
+  });
+
+  test('a renewal that fails inside the loss margin loses the lease once and schedules nothing more', () => {
+    const r = rig(9003, () => {
+      throw new Error('tracker down');
+    });
+    r.state.now = 30 * 60 * 1000 - CLAIM_LOSS_MARGIN_MS;
+    r.fire();
+    expect(leaseLost(r.ctx, 9003)).toBe(true);
+    expect(r.state.lost).toBe(1);
+    expect(r.pending).toHaveLength(1);
+    // A stray late tick changes nothing.
+    r.pending[0].fn();
+    expect(r.state.lost).toBe(1);
+    expect(r.pending).toHaveLength(1);
+  });
+
+  test('stop cancels the pending tick, even mid-retry, and a tick that slips through does nothing', () => {
+    let renewals = 0;
+    const r = rig(9004, () => {
+      renewals++;
+      throw new Error('tracker down');
+    });
+    r.fire();
+    expect(r.pending.map((p) => p.ms)).toEqual([CLAIM_RENEW_MS, CLAIM_RETRY_MS]);
+    r.stop();
+    expect(r.pending[1].cancelled).toBe(true);
+    r.pending[1].fn();
+    expect(renewals).toBe(1);
+    expect(r.pending).toHaveLength(2);
+    expect(leaseLost(r.ctx, 9004)).toBe(false);
+  });
+
+  test('the live gate refuses an issue whose lease was lost, without reading the tracker', () => {
+    const r = rig(9005, () => {
+      throw new Error('tracker down');
+    });
+    expect(liveGate(r.ctx, r.io, 9005, 2).ok).toBe(true);
+    r.state.now = 30 * 60 * 1000;
+    r.fire();
+    const gate = liveGate(r.ctx, r.io, 9005, 2);
+    expect(gate).toMatchObject({ ok: false, outcome: 'busy', tree: null });
+    expect(gate.ok === false && gate.why).toMatch(/lost its lease/);
   });
 });

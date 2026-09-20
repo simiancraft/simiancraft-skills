@@ -117,15 +117,23 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
 export const CLAIM_RETRY_MS = 60 * 1000;
 export const CLAIM_LOSS_MARGIN_MS = 2 * 60 * 1000;
 
+/** Runs `fn` after `ms` and returns its cancel. The default is an unref'd timeout, so it never keeps a process alive. */
+export type Schedule = (fn: () => void, ms: number) => () => void;
+const timeoutSchedule: Schedule = (fn, ms) => {
+  const timer = setTimeout(fn, ms);
+  timer.unref();
+  return () => clearTimeout(timer);
+};
+
 /**
- * The renewal timer for the life of a run; unref'd so it never keeps a process alive. A renewal
- * that fails is tried again every minute. When the last confirmed expiry is about to pass with no
- * renewal confirmed, the lease is lost: another run may now take the issue, so this one is marked,
- * the live gate refuses it from then on (no merge, no close, no claim-dependent write), and
- * `onLost` lets the owner stop whatever it still has running.
+ * The renewal timer for the life of a run. A renewal that fails is tried again every minute. When
+ * the last confirmed expiry is about to pass with no renewal confirmed, the lease is lost: another
+ * run may now take the issue, so this one is marked, the live gate refuses it from then on (no
+ * merge, no close, no claim-dependent write), and `onLost` lets the owner stop whatever it still
+ * has running. `clock` and `schedule` are injected so a test can drive the ticks by hand.
  */
-export function keepClaimed(handle: ClaimHandle, onLost?: () => void, clock: () => number = () => Date.now()): () => void {
-  let timer: ReturnType<typeof setTimeout> | null = null;
+export function keepClaimed(handle: ClaimHandle, onLost?: () => void, clock: () => number = () => Date.now(), schedule: Schedule = timeoutSchedule): () => void {
+  let cancel: (() => void) | null = null;
   let stopped = false;
   const tick = () => {
     if (stopped) return;
@@ -141,14 +149,12 @@ export function keepClaimed(handle: ClaimHandle, onLost?: () => void, clock: () 
       }
       next = CLAIM_RETRY_MS;
     }
-    timer = setTimeout(tick, next);
-    timer.unref();
+    cancel = schedule(tick, next);
   };
-  timer = setTimeout(tick, CLAIM_RENEW_MS);
-  timer.unref();
+  cancel = schedule(tick, CLAIM_RENEW_MS);
   return () => {
     stopped = true;
-    if (timer) clearTimeout(timer);
+    cancel?.();
   };
 }
 
