@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { type ClaimHandle, keepClaimed, LeaseLostError } from '../../carve-github-issue/lib/claims.ts';
 import type { Context } from './context.ts';
 import { move, serializePullMaster } from './pipeline.ts';
+import { beginStop, resetStop, RunStopping } from './shell.ts';
 
 const issue = (number: number) => ({ number, title: `issue ${number}`, createdAt: '2026-09-01T00:00:00Z', labels: [] });
 
@@ -12,6 +13,24 @@ function line() {
 }
 
 describe('the landing line', () => {
+  afterEach(resetStop);
+
+  it('lands nothing for a lane whose turn comes after the stop began', async () => {
+    const { ctx } = line();
+    let release = () => {};
+    const first = serializePullMaster(ctx, issue(50), () => {}, () => new Promise<void>((resolve) => (release = resolve)));
+    let landed = false;
+    const second = serializePullMaster(ctx, issue(51), () => {}, async () => {
+      landed = true;
+    });
+    await Bun.sleep(0);
+    beginStop();
+    release();
+    await first;
+    await expect(second).rejects.toThrow(RunStopping);
+    expect(landed).toBe(false);
+  });
+
   it('lets a lane behind a landing say whom it waits behind, once, on the console and on its card', async () => {
     const { ctx, cards } = line();
     const said: string[] = [];

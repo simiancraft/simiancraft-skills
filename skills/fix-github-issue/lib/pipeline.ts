@@ -21,7 +21,7 @@ import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { finishDespiteStop, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
+import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -111,6 +111,10 @@ export function phaseOfLane(lane: string | undefined): DlqPhase {
  * no verdict, and again inside each settlement as the backstop.
  */
 function holdLease(ctx: Context, issue: number, before: string): void {
+  // The same question has a second half: a stopping run acts on nothing either, save the record of
+  // a merge already confirmed. Git's merges and pushes do not pass through mutate, so this is
+  // where they are refused.
+  if (isStopping() && !isFinishing()) throw new RunStopping(`the run is stopping; not begun: ${before}`);
   if (leaseLost(ctx, issue)) throw new LeaseLostError(`this run lost its lease on #${issue} before: ${before}`);
 }
 
@@ -938,6 +942,12 @@ async function land(
 
   // The merge is confirmed, so its record is finished even if the run is stopping meanwhile.
   return finishDespiteStop(async (): Promise<Landing> => {
+    // The confirmation can outlast the lease. The merge stands either way, but its record is then
+    // written on an issue another run may hold, so it is left to the next run start's reconcile.
+    if (leaseLost(ctx, issue.number)) {
+      say(`merged PR #${pr}, but this run lost its lease on the issue meanwhile; its record is left to the next run start`);
+      return 'merged';
+    }
     // The paths that landed, read while the worktree still exists.
     const paths = sh(ctx, ['git', 'diff', '--name-only', `${ctx.project.remote}/${ctx.project.baseBranch}...HEAD`], cwd)
       .split('\n')
