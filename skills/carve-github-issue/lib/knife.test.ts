@@ -80,13 +80,17 @@ describe('the carving driver makes only moves the chart allows', () => {
       const during = verdict === 'valid' ? /running appraiser/ : /running confirmer/;
       const applied = (io: FakeTracker) => (verdict === 'valid' ? io.view(10)!.labels.some((l) => l.name === 'size: 1') : io.view(10)!.state === 'CLOSED');
       const lost = released(); const ctx = ctxFor(lost);
+      let lostDuringTurn = false;
       ctx.log = (m) => {
         if (!during.test(m) || leaseLost(ctx, 10)) return;
+        lostDuringTurn = true;
         const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
         keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
       };
       await makeDriver(ctx, k, ['C7'], appraiser(), confirmer()).releaseAppraisal(10);
-      expect(leaseLost(ctx, 10)).toBe(true);
+      // The mark is gone again once the appraisal's own lease stopped; the turn is what lost it.
+      expect(lostDuringTurn).toBe(true);
+      expect(leaseLost(ctx, 10)).toBe(false);
       expect(applied(lost)).toBe(false);
       // With the lease held, the same verdict is applied.
       const held = released();

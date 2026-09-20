@@ -130,7 +130,8 @@ const timeoutSchedule: Schedule = (fn, ms) => {
  * the last confirmed expiry is about to pass with no renewal confirmed, the lease is lost: another
  * run may now take the issue, so this one is marked, the live gate refuses it from then on (no
  * merge, no close, no claim-dependent write), and `onLost` lets the owner stop whatever it still
- * has running. `clock` and `schedule` are injected so a test can drive the ticks by hand.
+ * has running. The mark lasts until the returned stop is called. `clock` and `schedule` are injected so a
+ * test can drive the ticks by hand.
  */
 export function keepClaimed(handle: ClaimHandle, onLost?: () => void, clock: () => number = () => Date.now(), schedule: Schedule = timeoutSchedule): () => void {
   let cancel: (() => void) | null = null;
@@ -155,6 +156,9 @@ export function keepClaimed(handle: ClaimHandle, onLost?: () => void, clock: () 
   return () => {
     stopped = true;
     cancel?.();
+    // Lost is a fact about this lease, not about the issue: once its holder has stopped, a later
+    // visit by this process may gate, claim, and appraise the issue like any other.
+    lostLeases.delete(handle.key);
   };
 }
 

@@ -277,5 +277,9 @@ describe('keepClaimed', () => {
     const gate = liveGate(r.ctx, r.io, 9005, 2);
     expect(gate).toMatchObject({ ok: false, outcome: 'busy', tree: null });
     expect(gate.ok === false && gate.why).toMatch(/lost its lease/);
+    // The mark belongs to the lease: once its holder stops, the issue can be gated and claimed again.
+    r.stop();
+    expect(leaseLost(r.ctx, 9005)).toBe(false);
+    expect(liveGate(r.ctx, r.io, 9005, 2).ok).toBe(true);
   });
 });
