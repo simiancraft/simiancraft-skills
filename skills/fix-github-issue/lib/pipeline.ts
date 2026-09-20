@@ -22,6 +22,7 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
+import { announceStep, newestStep } from './steps.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -56,12 +57,22 @@ export type Verdict =
   | 'out-of-band'
   | 'fixed'
   | 'answered'
+  /** The Code step's exit: the change is pushed and gated, and a separate step proves it. */
+  | 'coded'
+  /** The Prove step's refusal: the code does not yet do it, or it cannot be shown. */
+  | 'unprovable'
   | 'failed';
 
 export type WorkerResult = {
   issue: number;
   /** `not-run` is never the worker's own word: it is the driver's, for a worker a dry run did not run. */
   verdict: Verdict | 'not-run';
+  /** For coded: the head on the remote, the head the repository's gate last passed on, and what the prover needs. */
+  sha?: string;
+  gated?: string;
+  handoff?: string;
+  /** The driver's, never an agent's: this failure's attempt is already counted on the issue. */
+  counted?: boolean;
   points?: number;
   reason: string;
   /** For already-fixed and obsolete: the comment to post before closing, receipt included. */
@@ -154,71 +165,39 @@ function cardCommand(ctx: Context, issue: number, lane: string): string {
   return `bun run ${q(card)} --board ${q(pointer)} --repo ${q(ctx.project.repo)} --issue ${issue} --lane ${lane}`;
 }
 
-async function runWorker(
+/** A step's agent turn: run the seat, distrust a bad exit, and read a verdict the driver knows. */
+async function runStep(
   ctx: Context,
   issue: Issue,
   cwd: string,
   maxPoints: number,
-  feedback?: ReviewResult,
-  /** True when nothing was rejected: the base moved beneath the proof and only the proof is owed. */
-  reproof = false,
+  step: { role: string; seatName: string; prompt: string; known: Array<WorkerResult['verdict']>; onRetry?: () => void },
 ): Promise<WorkerResult> {
-  const prompt = renderPrompt(ctx, 'triage-and-fix.md', {
-    ISSUE: String(issue.number),
-    TITLE: issue.title,
-    MAX_POINTS: String(maxPoints),
-    CARD_PROVING: cardCommand(ctx, issue.number, 'D2'),
-    CARD_DRAFTED: cardCommand(ctx, issue.number, 'D3'),
-    FEEDBACK: reproof && feedback
-      ? `Nobody rejected your work. The base branch moved beneath your proof after you captured it, and the ` +
-        `branch has been caught up for you. Start at Step 3: confirm the fix still holds on the current head, ` +
-        `reacquire the receipts the movement reached, update the proof on the same pull request, and mark it ` +
-        `ready. Change code only if the base's movement requires it.\n\n${JSON.stringify(feedback, null, 2)}`
-      : feedback
-        ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
-          `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`
-        : 'This is the first attempt at this issue.',
-  });
-
-  // The closest lane that can correct the card: stale proof goes back to Proving, a rejection to
-  // Sent back, and only a first attempt starts at Coding.
-  move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', reproof ? 'reacquiring proof after the base moved' : feedback ? 'revision after a review' : undefined);
-  // A revision is the exception: its lane holds the branch and the pull request under review, so a
-  // reset would throw away work the reviewer already read. Only a first attempt may be reset.
-  const { logPath, exitCode, notRun, timedOut } = await runAgent(
-    ctx,
-    reproof ? 'worker-reprove' : feedback ? 'worker-revise' : 'worker',
-    issue.number,
-    cwd,
-    ctx.seats.worker,
-    prompt,
-    feedback ? undefined : () => resetLane(ctx, issue.number, cwd),
-  );
-  holdLease(ctx, issue.number, 'settle the worker');
-  if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the worker was not run' };
+  const { logPath, exitCode, notRun, timedOut } = await runAgent(ctx, step.role, issue.number, cwd, ctx.seats.worker, step.prompt, step.onRetry);
+  holdLease(ctx, issue.number, `settle the ${step.seatName}`);
+  if (notRun) return { issue: issue.number, verdict: 'not-run', reason: `dry run: the ${step.seatName} was not run` };
   if (exitCode !== 0) {
     return {
       issue: issue.number,
       verdict: 'failed',
       reason: timedOut
-        ? `worker timed out at ${agentCapMs(ctx, 'worker') / 60000} minutes and was killed, so nothing it left is trusted; log ends: ${logTail(logPath)}`
-        : `worker exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
+        ? `${step.seatName} timed out at ${agentCapMs(ctx, step.role) / 60000} minutes and was killed, so nothing it left is trusted; log ends: ${logTail(logPath)}`
+        : `${step.seatName} exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
     };
   }
 
   const result = readResult<WorkerResult>(cwd, 'loop-verdict.json');
-  const KNOWN: WorkerResult['verdict'][] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'answered', 'failed'];
-  if (!result || !KNOWN.includes(result.verdict)) {
+  if (!result || !step.known.includes(result.verdict)) {
     return {
       issue: issue.number,
       verdict: 'failed',
       reason: result
-        ? `worker verdict '${result.verdict}' is not one the driver knows; log ends: ${logTail(logPath)}`
-        : `no verdict from the worker; log ends: ${logTail(logPath)}`,
+        ? `${step.seatName} verdict '${result.verdict}' is not one the driver knows for this step; log ends: ${logTail(logPath)}`
+        : `no verdict from the ${step.seatName}; log ends: ${logTail(logPath)}`,
     };
   }
   if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
-    return { issue: issue.number, verdict: 'failed', reason: `worker verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}` };
+    return { issue: issue.number, verdict: 'failed', reason: `${step.seatName} verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}` };
   }
   // A malformed classification must read as no classification, which fails closed at the merge
   // boundary; a bare string would otherwise spread into characters that match no risky kind.
@@ -235,6 +214,124 @@ async function runWorker(
     return { issue: issue.number, verdict: 'failed', reason: `answered without an answer; log ends: ${logTail(logPath)}` };
   }
   return result;
+}
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * The Code step: the change, on the remote, announced. It ends at a durable fact, so whatever
+ * happens to this run afterwards the next one dispatches Prove and not Code again.
+ */
+async function runCode(ctx: Context, issue: Issue, cwd: string, maxPoints: number, brief: string, revision: boolean): Promise<WorkerResult> {
+  const prompt = renderPrompt(ctx, 'code.md', { ISSUE: String(issue.number), TITLE: issue.title, MAX_POINTS: String(maxPoints), FEEDBACK: brief });
+  // A revision is the exception: its lane holds the branch and the pull request under review, so a
+  // reset would throw away work the reviewer already read. Only a first attempt may be reset.
+  const result = await runStep(ctx, issue, cwd, maxPoints, {
+    role: revision ? 'worker-revise' : 'worker',
+    seatName: 'coder',
+    prompt,
+    known: ['coded', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'answered', 'failed'],
+    onRetry: revision ? undefined : () => resetLane(ctx, issue.number, cwd),
+  });
+  if (result.verdict !== 'coded') return result;
+  if (!result.branch || !FULL_SHA.test(result.sha ?? '') || !FULL_SHA.test(result.gated ?? '') || typeof result.handoff !== 'string' || result.handoff.trim() === '') {
+    return { issue: issue.number, verdict: 'failed', reason: 'coded without a branch, a full sha, a gated sha, and a hand-off, so the next step has nothing to start from' };
+  }
+  // The announcement is the driver's, made only once the remote is seen to hold what the coder
+  // says it pushed: a marker is a fact about the remote, not the coder's word for it.
+  if (!ctx.dryRun) {
+    const remote = sh(ctx, ['git', 'ls-remote', ctx.project.remote, `refs/heads/${result.branch}`], cwd).split(/\s+/)[0];
+    if (remote !== result.sha) {
+      return { issue: issue.number, verdict: 'failed', reason: `coded at ${result.sha?.slice(0, 10)}, but ${ctx.project.remote}/${result.branch} is at ${remote ? remote.slice(0, 10) : 'nothing'}: the work is not on the remote` };
+    }
+  }
+  announceStep(ctx, issue.number, { step: 'coded', runId: ctx.runId, sha: result.sha as string, gated: result.gated as string, touches: result.touches ?? [], handoff: result.handoff });
+  return result;
+}
+
+/**
+ * The Prove step, on a fresh agent that reads the branch, the issue, and the coder's hand-off. It
+ * runs the repository's gate only when its head is not the one the gate last passed on.
+ */
+async function runProve(ctx: Context, issue: Issue, cwd: string, maxPoints: number, brief: string, reproof: boolean): Promise<WorkerResult> {
+  // What Code left is read from the issue, never from this process: the coder may have been
+  // another run, on another day.
+  const thread = ctx.dryRun && !ctx.io ? [] : (trackerIo(ctx).view(issue.number)?.comments ?? []);
+  const coded = newestStep(thread, ctx.botLogin);
+  const prompt = renderPrompt(ctx, 'prove.md', {
+    ISSUE: String(issue.number),
+    TITLE: issue.title,
+    MAX_POINTS: String(maxPoints),
+    CARD_PROVING: cardCommand(ctx, issue.number, 'D2'),
+    CARD_DRAFTED: cardCommand(ctx, issue.number, 'D3'),
+    HANDOFF: coded?.handoff || 'No hand-off was recorded for this branch. Read the diff against the base, and the pull request body if there is one.',
+    GATED_SHA: coded?.gated ?? 'no recorded head, so run the gate',
+    FEEDBACK: brief,
+  });
+  return runStep(ctx, issue, cwd, maxPoints, { role: reproof ? 'worker-reprove' : 'prover', seatName: 'prover', prompt, known: ['fixed', 'unprovable', 'needs-human', 'failed'] });
+}
+
+/**
+ * The work turn, as steps: Code, then Prove, each ending at a durable fact, with the base caught
+ * up between them and never inside one. A reproof, and a review that wants more evidence, run
+ * Prove alone on the code already there. A proof that cannot be done goes back a step: the refusal
+ * is an attempt spent, the prover's reason is the next coder's brief, and past the cap it is the
+ * caller's dead letter (`counted` says the attempt is already on the issue).
+ */
+async function runWorker(
+  ctx: Context,
+  issue: Issue,
+  cwd: string,
+  maxPoints: number,
+  say: (message: string) => void,
+  feedback?: ReviewResult,
+  /** True when nothing was rejected: the base moved beneath the proof and only the proof is owed. */
+  reproof = false,
+): Promise<WorkerResult> {
+  const words = feedback ? `\n\n${JSON.stringify(feedback, null, 2)}` : '';
+  let proveOnly = reproof || feedback?.decision === 'gather-more';
+  let codeBrief = feedback
+    ? `A reviewer has already seen the pull request for this branch and objected to the code. Address every blocking item on the same branch.${words}`
+    : 'This is the first attempt at this issue.';
+  let proveBrief = reproof
+    ? `Nobody rejected this work. The base branch moved beneath its proof after it was captured, and the branch has been caught up. Confirm the change still holds on the current head, reacquire the receipts the movement reached, update the proof on the same pull request, and mark it ready.${words}`
+    : feedback?.decision === 'gather-more'
+      ? `A reviewer read the code and wants more evidence, not different code. Supply what is asked for on the same pull request, and mark it ready.${words}`
+      : feedback
+        ? 'The code was revised after a review. Prove the revised head on the same pull request, and mark it ready.'
+        : 'This is the first proof of this change.';
+  let spent = attemptCount(issue.labels);
+  let revision = Boolean(feedback);
+
+  for (;;) {
+    if (!proveOnly) {
+      move(ctx, issue, revision ? 'D4' : 'D1', revision ? 'revision after a review' : undefined);
+      const coded = await runCode(ctx, issue, cwd, maxPoints, codeBrief, revision);
+      if (coded.verdict !== 'coded') return coded;
+      say(`coded at ${coded.sha?.slice(0, 10)} on ${coded.branch}; announced`);
+      // The seam: staying current happens here, between steps, and never inside one.
+      holdLease(ctx, issue.number, 'start the proof');
+      if (!ctx.dryRun && catchUp(ctx, issue, cwd, coded.sha as string, say, 'before the proof') === 'conflict') {
+        return { issue: issue.number, verdict: 'failed', reason: `the coded branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+      }
+    }
+    // The closest lane that can correct the card: stale proof and missing evidence go to Proving.
+    move(ctx, issue, 'D2', reproof ? 'reacquiring proof after the base moved' : proveOnly ? 'more evidence after a review' : 'proving the coded head');
+    const proved = await runProve(ctx, issue, cwd, maxPoints, proveBrief, reproof);
+    if (proved.verdict !== 'unprovable') return proved;
+
+    // The proof was refused: back a step, with the prover's reason as the brief.
+    spent = recordAttempt(ctx, issue.number, spent);
+    say(`the proof was refused (attempt ${spent} of ${ctx.knobs.maxWorkerAttempts}): ${proved.reason}`);
+    if (spent >= ctx.knobs.maxWorkerAttempts) {
+      return { issue: issue.number, verdict: 'failed', counted: true, pr: proved.pr, reason: `the proof was refused ${spent} time(s), and the attempts are spent. Last refusal: ${proved.reason}` };
+    }
+    revision = revision || proved.pr !== undefined || (!ctx.dryRun && openPullFor(ctx, issue.number) !== undefined);
+    codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${proved.reason}`;
+    proveBrief = 'The code was changed after a proof of it was refused. Prove the new head.';
+    proveOnly = false;
+    reproof = false;
+  }
 }
 
 /** The second engine on a worker's close: the appraiser's confirmer for a close, its own prompt for a spike's answer. */
@@ -1203,7 +1300,7 @@ async function workIssue(
   ceiling: number,
   say: (message: string) => void,
 ): Promise<FixOutcome> {
-  const result = await runWorker(ctx, issue, cwd, maxPoints);
+  const result = await runWorker(ctx, issue, cwd, maxPoints, say);
   say(`verdict: ${result.verdict}; ${result.reason}`);
 
   // The pull request this work has, resolved once for every settlement below. A worker that died
@@ -1215,6 +1312,8 @@ async function workIssue(
   const pr = result.verdict === 'fixed' ? result.pr : (result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
+    // A refused proof already spent its attempt on the issue; past the cap there is only the queue.
+    if (result.counted) return deadLetter(ctx, issue, 'work', result.reason, say, pr);
     return countFailure(ctx, issue, result.reason, say, pr);
   }
   const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
@@ -1281,7 +1380,7 @@ export async function reviewAndLand(
       }
       say(`base moved into what the proof covers (${current.overlap.join(', ') || 'the branch\'s own change'}); the proof is stale and goes back to be reacquired`);
       mutate(ctx, `return PR #${pr} to draft for the reproof`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-      result = await runWorker(ctx, issue, cwd, maxPoints, {
+      result = await runWorker(ctx, issue, cwd, maxPoints, say, {
         pr,
         decision: 'gather-more',
         adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
@@ -1355,7 +1454,7 @@ export async function reviewAndLand(
 
     // Revision is programming, so it happens outside the queue; the branch rejoins it afterwards.
     // The pull request is already back in draft: land() flips it before any catch-up push.
-    result = await runWorker(ctx, issue, cwd, maxPoints, verdict);
+    result = await runWorker(ctx, issue, cwd, maxPoints, say, verdict);
     say(`verdict: ${result.verdict}; ${result.reason}`);
     // The attempt counts, and a failed revision on an open pull request is the work queue's.
     if (result.verdict === 'failed') return countFailure(ctx, issue, `on a revision: ${result.reason}`, say, pr);
@@ -1583,7 +1682,7 @@ export async function redriveIssue(
             confidence: 'redrive',
             blocking: [objection],
           };
-    let result = await runWorker(ctx, issue, cwd, maxPoints, feedback, objection === null);
+    let result = await runWorker(ctx, issue, cwd, maxPoints, say, feedback, objection === null);
     say(`verdict: ${result.verdict}; ${result.reason}`);
     if (result.verdict === 'failed') return countFailure(ctx, issue, `on a ${objection === null ? 'resume' : 'redrive'}: ${result.reason}`, say, pull.number);
     if (result.verdict === 'fixed' && !result.pr) result = { ...result, pr: pull.number, branch: pull.branch };

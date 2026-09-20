@@ -266,6 +266,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     confirmer: [CONFIRMATION_FILE, LAST_MESSAGE_FILE],
     worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
     'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
+    prover: [VERDICT_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
     carver: [CARVING_FILE, LAST_MESSAGE_FILE],
     callback: ['loop-callback.json', LAST_MESSAGE_FILE],

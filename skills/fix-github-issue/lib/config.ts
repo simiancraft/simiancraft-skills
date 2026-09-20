@@ -75,7 +75,7 @@ export type ProjectConfig = {
 };
 
 /** The seats an agent cap can be set for, and `default` for the rest. A worker's revision and reproof turns are the worker's. */
-export const AGENT_SEATS = ['default', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'walker', 'diagnose'];
+export const AGENT_SEATS = ['default', 'worker', 'prover', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'walker', 'diagnose'];
 /** The longest cap a timer can hold: past this the runtime clamps the delay to a millisecond, and a generous cap would kill at once. */
 export const MAX_AGENT_TIMEOUT_MINUTES = Math.floor(2_147_483_647 / 60_000);
 
