@@ -1028,14 +1028,23 @@ export async function fixIssue(
   if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
   const stopRenewing = keepClaimed(handle);
 
-  // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
-  // learns to treat the main checkout as a valid agent working directory.
-  const cwd = ctx.dryRun
-    ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
-    : worktreeFor(ctx, issue.number);
-  inFlight.set(issue.number, { dir: cwd, busy: false });
+  // Everything after the claim is inside the try: a worktree that cannot be created must not
+  // leave a claim behind that keeps renewing itself with nobody working under it.
+  let keepLane = false;
   try {
+    // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
+    // learns to treat the main checkout as a valid agent working directory.
+    const cwd = ctx.dryRun
+      ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
+      : worktreeFor(ctx, issue.number);
+    inFlight.set(issue.number, { dir: cwd, busy: false });
+    // Awaited, not returned: a returned promise would run the cleanup below while the work it
+    // guards is still going.
     return await workIssue(ctx, issue, cwd, maxPoints, ceiling, say);
+  } catch (error) {
+    const recorded = recordThrow(ctx, issue, error as Error, say);
+    keepLane = recorded.keepLane;
+    return recorded.outcome;
   } finally {
     stopRenewing();
     try {
@@ -1052,8 +1061,39 @@ export async function fixIssue(
     // exhausted, terminal verdict, merged) is one it already refuses. Removing the worktree also
     // sweeps the `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else
     // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
-    // so reconcile still owns that case on the next start.
-    if (!ctx.dryRun) removeWorktree(ctx, issue.number);
+    // so reconcile still owns that case on the next start. A throw that could not be recorded on
+    // the issue keeps its lane too: the worktree is then the only record of what happened.
+    if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
+  }
+}
+
+/** The open pull request whose branch names this issue, when there is one. */
+function openPullFor(ctx: Context, issue: number): number | undefined {
+  try {
+    const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName']);
+    const pulls = JSON.parse(raw) as Array<{ number: number; headRefName: string }>;
+    return pulls.find((pr) => pr.headRefName.endsWith(`-${issue}`))?.number;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A step that threw (a push the retries could not save, a fetch that failed, a checkout that
+ * would not apply) is a machine failure, and it is recorded like one rather than only logged:
+ * with a pull request open it is a work dead letter carrying the error, and without one it is a
+ * counted attempt, back to Ready until the cap. When even the recording fails, the lane is kept.
+ */
+function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void): { outcome: FixOutcome; keepLane: boolean } {
+  const reason = `The pipeline threw: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
+  say(reason);
+  if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
+  try {
+    const pr = openPullFor(ctx, issue.number);
+    return { outcome: pr ? deadLetter(ctx, issue, 'work', reason, say, pr) : countFailure(ctx, issue, reason, say), keepLane: false };
+  } catch (second) {
+    say(`could not record the failure on the issue (${(second as Error).message.split('\n')[0]}); keeping the lane for inspection`);
+    return { outcome: { outcome: 'failed', reason }, keepLane: true };
   }
 }
 
@@ -1088,11 +1128,12 @@ export async function redriveIssue(
   if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
   const stopRenewing = keepClaimed(handle);
 
-  const cwd = ctx.dryRun
-    ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
-    : worktreeAtPullRequest(ctx, issue.number, pull.branch);
-  inFlight.set(issue.number, { dir: cwd, busy: false });
+  let keepLane = false;
   try {
+    const cwd = ctx.dryRun
+      ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
+      : worktreeAtPullRequest(ctx, issue.number, pull.branch);
+    inFlight.set(issue.number, { dir: cwd, busy: false });
     if (ctx.dryRun) {
       say(`DRY RUN  would revise PR #${pull.number} on ${pull.branch} with the objection as the brief, then review and land`);
       return { outcome: 'failed', reason: 'dry run' };
@@ -1119,7 +1160,13 @@ export async function redriveIssue(
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pull.number);
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say) : settled;
     if (result.pr) move(ctx, issue, 'E1', `PR #${result.pr} ready for review again`);
-    return reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
+    // Awaited, not returned: returning the promise ran this cleanup the moment the reviewer
+    // started, so two live redrives reviewed and merged with no claim and no lease.
+    return await reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
+  } catch (error) {
+    const recorded = recordThrow(ctx, issue, error as Error, say);
+    keepLane = recorded.keepLane;
+    return recorded.outcome;
   } finally {
     stopRenewing();
     try {
@@ -1128,6 +1175,6 @@ export async function redriveIssue(
       say(`could not release the claim: ${(error as Error).message}`);
     }
     inFlight.delete(issue.number);
-    if (!ctx.dryRun) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
   }
 }
