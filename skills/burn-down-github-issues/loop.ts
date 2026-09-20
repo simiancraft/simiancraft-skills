@@ -32,7 +32,7 @@ import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
 import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
-import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
+import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
@@ -716,7 +716,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
 }
 
 /** Where the facts put every issue in the window: the queue the run dispatches from. */
-type Placement = Map<number, { lane: string; why: string; issue: Issue }>;
+type Placement = Map<number, { lane: string; why: string; issue: Issue; pull?: { number: number; branch: string } }>;
 
 /**
  * The machine's `reconcile` for every card at once: the run start puts each issue in the window,
@@ -766,16 +766,17 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
       kept += 1;
       continue;
     }
+    const mine = owning(openPulls, issue.number) as Pull[];
     const placed = placeByFacts({
       state: 'OPEN',
       labels,
-      pulls: owning(openPulls, issue.number).map((pr) => ({ number: pr.number, isDraft: (pr as Pull).isDraft, merged: false })),
+      pulls: mine.map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: false })),
       points: pointsFromLabels(issue.labels) ?? undefined,
       ceiling: MAX_POINTS,
       blocked: (issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
       openChildren: looksLikeTrunk(issue),
     });
-    placement.set(issue.number, { ...placed, issue });
+    placement.set(issue.number, { ...placed, issue, pull: mine[0] ? { number: mine[0].number, branch: mine[0].headRefName } : undefined });
     if (BOARD) settle(issue.number, issue.title, placed.lane, placed.why);
   }
   const byLane = new Map<string, number>();
@@ -801,6 +802,44 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
   }
   log(`board: ${moved} card(s) ${DRY_RUN ? 'would be ' : ''}placed by their facts, ${kept} already where the facts put them`);
   return placement;
+}
+
+/**
+ * Work that already has a pull request and nobody driving it: a card the facts put in Drafted or
+ * Ready for review whose lane is gone (a park or a dead letter a person lifted, a run on another
+ * machine that died). The stranded path resumes only what still has a local worktree; without
+ * this the card would sit in Review forever, since the workers take only Ready. Limited to pull
+ * requests the loop itself worked, which its claim markers on the thread show: a person's own
+ * branch that happens to name the issue is theirs.
+ */
+function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { number: number; branch: string } }> {
+  const io = trackerIo(ctx);
+  const out: Array<{ issue: Issue; pull: { number: number; branch: string } }> = [];
+  for (const { lane, issue, pull } of placement.values()) {
+    if ((lane !== 'E1' && lane !== 'D3') || !pull) continue;
+    const tree = readTree(ctx, issue.number, io);
+    if (!tree.claims.some((c) => c.kind === 'working')) {
+      log(`  #${issue.number} has PR #${pull.number} but the loop never worked it; left to its author`);
+      continue;
+    }
+    const why = refusal(tree, MAX_POINTS);
+    if (why) {
+      log(`  #${issue.number} PR #${pull.number} not resumed: ${why}`);
+      continue;
+    }
+    out.push({ issue, pull });
+  }
+  return out;
+}
+
+/** The newest reason the loop left on the thread for stopping, which is the brief a resumed worker gets. */
+function lastObjection(issue: number): string {
+  try {
+    const raw = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
+    return raw.trim() || 'The pull request was stopped before it could land; finish it and re-prove it.';
+  } catch {
+    return 'The pull request was stopped before it could land; finish it and re-prove it.';
+  }
 }
 
 /**
@@ -1145,9 +1184,30 @@ async function main(): Promise<void> {
   // Placed again rather than reused: the appraisal above has just changed the labels the
   // placement depends on, and a worker must see them.
   if (!SKIP_APPRAISAL && !SKIP_APPRAISAL_THIS_RUN) placement = await placeBacklog(allIssues());
-  const candidates = selectCandidates(placement).slice(0, LIMIT);
-  if (candidates.length === 0) {
+  // Finished work first: a pull request waiting for a driver lands before anything new starts,
+  // which also moves the base before fresh lanes are cut from it.
+  const resumable = DRY_RUN ? [] : selectResumable(placement).slice(0, LIMIT);
+  const candidates = selectCandidates(placement).slice(0, Math.max(0, LIMIT - resumable.length));
+  if (resumable.length > 0) {
+    step(`Resuming ${resumable.length} pull request(s) with no driver`);
+    log(resumable.map((r) => `#${r.issue.number} (PR #${r.pull.number})`).join(', '));
+    await pool(
+      resumable,
+      CONFIG.concurrency,
+      async ({ issue, pull }) => {
+        await waitForGo(`#${issue.number}`);
+        const result = await redriveIssue(ctx, issue, pull, lastObjection(issue.number), { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+        if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+      },
+      ({ issue }) => `#${issue.number}`,
+    );
+  }
+  if (candidates.length === 0 && resumable.length === 0) {
     log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
+    await finish();
+    return;
+  }
+  if (candidates.length === 0) {
     await finish();
     return;
   }
