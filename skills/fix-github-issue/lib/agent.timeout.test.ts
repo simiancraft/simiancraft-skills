@@ -60,6 +60,15 @@ describe('an agent killed at the cap', () => {
     expect(lines.filter((l) => /running worker/.test(l))).toHaveLength(1);
   }, 20_000);
 
+  it('removes what a timed-out reproof worker left too, a role the clearing table does not name', async () => {
+    writeFileSync(join(scratch, 'verdict.json'), JSON.stringify({ issue: 7, verdict: 'fixed', reason: 'done', pr: 1, branch: 'fix/x' }));
+    const cwd = join(scratch, 'wt', 'issue-9');
+    mkdirSync(cwd, { recursive: true });
+    const run = await runAgent(context([], false), 'worker-reprove', 9, cwd, { engine: 'fixture', model: join(scratch, 'verdict.json') }, 'prompt');
+    expect(run.timedOut).toBe(true);
+    expect(existsSync(join(cwd, VERDICT_FILE))).toBe(false);
+  }, 20_000);
+
   it('settles as a failed attempt that says it timed out, not as the fixed verdict it left behind', async () => {
     writeFileSync(join(scratch, 'verdict.json'), JSON.stringify({ issue: 7, verdict: 'fixed', reason: 'done', pr: 1, branch: 'fix/x' }));
     const lines: string[] = [];

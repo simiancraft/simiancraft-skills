@@ -261,9 +261,9 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     carver: [CARVING_FILE, LAST_MESSAGE_FILE],
     callback: ['loop-callback.json', LAST_MESSAGE_FILE],
   };
-  for (const stale of clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, CARVING_FILE, LAST_MESSAGE_FILE]) {
-    rmSync(join(cwd, stale), { force: true });
-  }
+  // A role the table does not name (a reproof, a diagnosis) clears every answer file there is.
+  const answers = clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, CARVING_FILE, LAST_MESSAGE_FILE];
+  for (const stale of answers) rmSync(join(cwd, stale), { force: true });
 
   // The worktree belongs to the agent until it exits. Nothing else may touch it in the meantime.
   const entry = inFlight.get(issue);
@@ -323,7 +323,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   if (timedOut) {
     // Every seat distrusts the exit code, but the resume path reads a verdict file from a lane a
     // dead run left behind, so what a killed agent wrote does not stay on disk to be found later.
-    for (const left of clearsByRole[role] ?? []) rmSync(join(cwd, left), { force: true });
+    for (const left of answers) rmSync(join(cwd, left), { force: true });
     ctx.log(`  #${issue}  ${role} timed out at ${agentTimeout.ms / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
   }
