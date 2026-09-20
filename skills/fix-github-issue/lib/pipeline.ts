@@ -50,13 +50,12 @@ export type Verdict =
   | 'out-of-band'
   | 'fixed'
   | 'answered'
-  | 'failed'
-  /** Never the worker's own word: the driver's, for a worker a dry run did not run. */
-  | 'not-run';
+  | 'failed';
 
 export type WorkerResult = {
   issue: number;
-  verdict: Verdict;
+  /** `not-run` is never the worker's own word: it is the driver's, for a worker a dry run did not run. */
+  verdict: Verdict | 'not-run';
   points?: number;
   reason: string;
   /** For already-fixed and obsolete: the comment to post before closing, receipt included. */
@@ -182,7 +181,7 @@ async function runWorker(
   }
 
   const result = readResult<WorkerResult>(cwd, 'loop-verdict.json');
-  const KNOWN: Verdict[] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'answered', 'failed'];
+  const KNOWN: WorkerResult['verdict'][] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'answered', 'failed'];
   if (!result || !KNOWN.includes(result.verdict)) {
     return {
       issue: issue.number,

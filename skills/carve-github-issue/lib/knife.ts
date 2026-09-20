@@ -435,6 +435,7 @@ function workStarted(node: { labels: Array<{ name: string }>; comments: Array<{ 
 }
 
 async function callback(k: Knife, tree: Tree, name: 'on-carve-pass' | 'on-carve-fail', record: Record, children: RecordChild[]): Promise<void> {
+  holdLease(k, `run the ${name} callback for #${k.trunk}`);
   const cut = record.cut;
   const payload = {
     key: { issue: k.trunk, generation: record.generation, epoch: record.epoch, revisits: record.revisits, verdict: record.verdict },
