@@ -239,7 +239,10 @@ said so in the log.
    `bun run <skill-dir>/loop.ts --closure <file-with-an-aliased-import>` prints every module
    the walk reaches and exits without touching anything. A result of one module (only the entry
    itself) means the aliases resolve nothing, which is the silent failure described above.
-6. One real issue, alone: `--issue <n>`; it implies `--no-appraise`. Watch it end to end.
+6. One real issue, alone, with the single-issue command, since the loop takes no `--issue`:
+   `bun run <fix-github-issue-dir>/fix.ts --issue <n> --dry-run` first, then the same without
+   `--dry-run`. Watch it end to end; `fix.ts --help` lists its flags, and Ctrl+C stops it cleanly
+   (see Stopping a run).
 7. Then a small batch. `--limit 3` before `--limit 5`.
 
 ## The board

@@ -50,6 +50,28 @@ const opt = (name: string) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
+/** Every flag this command reads is named here; fix.usage.test.ts holds the two lists together. */
+export const USAGE = `fix-github-issue: fix one known issue end to end, headless. Run it from inside the target repository.
+
+  bun run <skill-dir>/fix.ts --issue <n> [flags]
+
+  --issue <n>        the issue to fix (required)
+  --dry-run          rehearse: no agent is run and nothing is written; say what would happen
+  --max-points <n>   the largest size the worker may take on (default: the config's)
+  --worker <seat>    engine[:model] for the worker seat, for example codex:gpt-5.6-sol
+  --reviewer <seat>  engine[:model] for the reviewer seat; a different engine from the worker
+  --confirmer <seat> engine[:model] for the seat that re-checks a close the worker proposes (default: the reviewer)
+  --redrive          lift a park or a dead letter and continue the issue's pull request
+  --resume-pr <pr>   continue that pull request rather than open another
+  --help, -h         print this and exit
+
+Ctrl+C stops the run: its agent is killed, nothing is settled from it, and its claim is released.`;
+
+if (flag('help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
 const DRY_RUN = flag('dry-run');
 
 const ISSUE_NUMBER = (() => {
