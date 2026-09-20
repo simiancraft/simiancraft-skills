@@ -386,18 +386,29 @@ async function runWorker(
   // Whatever brought the card here (a redrive, a resumed draft, a review's words), a proof that was
   // refused and never answered by a new Code announcement is not tried again: the newest marker
   // on the issue says so, and its hand-off is the brief the coder never got.
-  if (!ctx.dryRun && proveOnly) {
+  // Read once, before anything is decided about branches or lanes, so the attempt a refusal spent
+  // is on the issue, and the cap is asked, whatever else is true of the work.
+  if (!ctx.dryRun) {
     const newest = newestStep(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin);
     if (newest?.step === 'refused') {
-      say(`a proof of ${newest.sha.slice(0, 10)} was refused and no Code step has answered it; Code runs first, with that refusal as its brief`);
       spent = repairRefusedAttempt(ctx, issue, newest, spent, say);
       standingRefusal = newest.handoff;
+    }
+    if (newest?.step === 'refused' && proveOnly) {
+      say(`a proof of ${newest.sha.slice(0, 10)} was refused and no Code step has answered it; Code runs first, with that refusal as its brief`);
       proveOnly = false;
       reproof = false;
       revision = true;
       codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${newest.handoff}`;
       proveBrief = 'The code was changed after a proof of it was refused. Prove the new head on the same pull request, and mark it ready.';
     }
+  }
+
+  // A refusal read from the issue can be the one that spent the last attempt: a run that died on
+  // it must not buy the issue another turn. Counted already, so the caller queues it and counts
+  // nothing more.
+  if (standingRefusal !== null && spent >= ctx.knobs.maxWorkerAttempts) {
+    return { issue: issue.number, verdict: 'failed', counted: true, reason: `the proof was refused ${spent} time(s), and the attempts are spent. Last refusal: ${standingRefusal}` };
   }
 
   // A first dispatch starts from the facts, not from nothing: an earlier run may have coded this
@@ -425,10 +436,6 @@ async function runWorker(
         // Nothing more to decide: the coder has the lane as it stands.
       } else if (placed.dispatch === 'code' && placed.from === 'refusal') {
         say(`a proof of ${facts.marker?.sha.slice(0, 10)} was refused by an earlier run; Code continues with that refusal as its brief`);
-        if (facts.marker) {
-          spent = repairRefusedAttempt(ctx, issue, facts.marker, spent, say);
-          standingRefusal = facts.marker.handoff;
-        }
         revision = true;
         codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${facts.marker?.handoff}`;
       } else if (placed.dispatch === 'prove') {
@@ -446,13 +453,6 @@ async function runWorker(
         codeBrief = `A branch for this issue already exists with commits, pushed by an earlier run that did not finish: you are on it. Read what is there, continue from it, and finish the step.`;
       }
     }
-  }
-
-  // A refusal read from the issue can be the one that spent the last attempt: a run that died on
-  // it must not buy the issue another turn. Counted already, so the caller queues it and counts
-  // nothing more.
-  if (standingRefusal !== null && spent >= ctx.knobs.maxWorkerAttempts) {
-    return { issue: issue.number, verdict: 'failed', counted: true, reason: `the proof was refused ${spent} time(s), and the attempts are spent. Last refusal: ${standingRefusal}` };
   }
 
   for (;;) {
