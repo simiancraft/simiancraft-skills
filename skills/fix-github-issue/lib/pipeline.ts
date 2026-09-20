@@ -549,8 +549,12 @@ function landedOnUnseenBase(ctx: Context, pr: number, seen: string, say: (messag
 export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message: string) => void, action: () => Promise<T>): Promise<T> {
   // A landing can wait on checks for as long as the timeout, and the lanes behind it are silent
   // meanwhile; each says once whom it is waiting behind, on the console and on its card.
-  const holder = ctx.landingHolder ?? null;
-  if (holder !== null && holder !== issue.number) {
+  // A place in the line is taken at once, not when the turn comes, so two lanes that join in the
+  // same tick still see each other.
+  const line = (ctx.landingLine ??= []);
+  const holder = line[0];
+  line.push(issue.number);
+  if (holder !== undefined) {
     say(`waiting for the landing line behind #${holder}`);
     // The note goes on the card where it already is: a rejected review queues here too, and it
     // is not Approved. A card this pipeline never placed is left to the driver.
@@ -558,11 +562,10 @@ export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message
     if (lane) move(ctx, issue, lane, `waiting for the landing line behind #${holder}`);
   }
   const held = async () => {
-    ctx.landingHolder = issue.number;
     try {
       return await action();
     } finally {
-      if (ctx.landingHolder === issue.number) ctx.landingHolder = null;
+      line.splice(line.indexOf(issue.number), 1);
     }
   };
   const next = ctx.integrationQueue.then(held, held);
