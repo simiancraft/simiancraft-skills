@@ -107,7 +107,7 @@ export function phaseOfLane(lane: string | undefined): DlqPhase {
  * Moves the issue's card on the driver's board, when there is one. A board write must never fail
  * a lane: the lane's facts are on the tracker, and the card is a projection of them.
  */
-function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
+export function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
   lastLane.set(laneKeyOf(ctx, issue.number), lane);
   if (!ctx.onLane) return;
   try {
@@ -552,7 +552,10 @@ export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message
   const holder = ctx.landingHolder ?? null;
   if (holder !== null && holder !== issue.number) {
     say(`waiting for the landing line behind #${holder}`);
-    move(ctx, issue, 'F1', `waiting for the landing line behind #${holder}`);
+    // The note goes on the card where it already is: a rejected review queues here too, and it
+    // is not Approved. A card this pipeline never placed is left to the driver.
+    const lane = lastLane.get(laneKeyOf(ctx, issue.number));
+    if (lane) move(ctx, issue, lane, `waiting for the landing line behind #${holder}`);
   }
   const held = async () => {
     ctx.landingHolder = issue.number;
