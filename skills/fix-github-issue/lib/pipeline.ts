@@ -412,6 +412,9 @@ function requiredStatusChecks(ctx: Context): string[] {
   }
 }
 
+/** How long a check suite with no run in it is given to register its first one. */
+export const SUITE_SETTLE_MS = 5 * 60_000;
+
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
@@ -440,15 +443,23 @@ export async function awaitGreenChecks(
     await io.sleep(Math.min(ms, left));
     return null;
   };
-  /** Suites GitHub has opened on the head that are not complete, whether or not a run has registered in them yet; null when it cannot be read. */
-  const openSuites = (sha: string): number | null => {
+  type Suite = { app: string; runs: number; created: string };
+  /** Suites GitHub has opened on the head that are not complete; null when they cannot be read. */
+  const openSuites = (sha: string): Suite[] | null => {
     try {
-      const n = Number(io.read(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-suites`, '--jq', '[.check_suites[] | select(.status != "completed")] | length']));
-      return Number.isFinite(n) ? n : null;
+      const jq = '[.check_suites[] | select(.status != "completed") | {app: (.app.slug // "unknown app"), runs: .latest_check_runs_count, created: .created_at}]';
+      const suites = JSON.parse(io.read(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-suites`, '--jq', jq])) as Suite[];
+      const readable = Array.isArray(suites) && suites.every((s) => Number.isFinite(s?.runs) && Number.isFinite(Date.parse(s?.created)));
+      return readable ? suites : null;
     } catch {
       return null;
     }
   };
+  // GitHub opens a suite for every installed app on every push, and an app that runs nothing here
+  // leaves its suite queued with no run in it for ever. A suite holds the landing while it has a
+  // run, or while it is young enough that its first run may still be on its way.
+  const holds = (suite: Suite) => suite.runs > 0 || io.now() - Date.parse(suite.created) < SUITE_SETTLE_MS;
+  const passedOver = new Set<string>();
   // The authority on what complete looks like is a list somebody wrote down: the config's, or the
   // base branch's required status checks. What the reviewed head happened to carry is added to it
   // but cannot stand in for it, since a fast review sees a partly registered list too.
@@ -491,8 +502,14 @@ export async function awaitGreenChecks(
       continue;
     }
     const open = openSuites(expect.sha);
-    if (open === 0) return null;
-    const gaveUp = await wait(open === null ? 'the check suites of the landing head cannot be read' : `${open} check suite(s) on the landing head have not finished`, 15_000);
+    const holding = open?.filter(holds) ?? [];
+    for (const suite of open ?? []) {
+      if (holds(suite) || passedOver.has(suite.app)) continue;
+      passedOver.add(suite.app);
+      say(`the ${suite.app} check suite has been open for over ${SUITE_SETTLE_MS / 60_000} minutes with no run in it; not waiting on it`);
+    }
+    if (open !== null && holding.length === 0) return null;
+    const gaveUp = await wait(open === null ? 'the check suites of the landing head cannot be read' : `check suite(s) on the landing head have not finished: ${holding.map((suite) => suite.app).join(', ')}`, 15_000);
     if (gaveUp) return gaveUp;
   }
 }

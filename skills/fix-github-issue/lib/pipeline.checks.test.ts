@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import type { Context } from './context.ts';
-import { awaitGreenChecks } from './pipeline.ts';
+import { awaitGreenChecks, SUITE_SETTLE_MS } from './pipeline.ts';
 
 type Check = { name: string; conclusion: string };
 
-/** A pull request whose checks appear on a schedule, on a clock the test owns. `openSuites` answers the check-suite read. */
-function world(checks: 'required' | 'none', schedule: (clock: number) => Check[], options: { timeoutMinutes?: number; openSuites?: (clock: number) => number } = {}) {
+type Suite = { app: string; runs: number; created: string };
+
+/** A pull request whose checks appear on a schedule, on a clock the test owns. `openSuites` answers the check-suite read with the suites still open. */
+function world(checks: 'required' | 'none', schedule: (clock: number) => Check[], options: { timeoutMinutes?: number; openSuites?: (clock: number) => Suite[] | string } = {}) {
   let clock = 0;
   const ctx = { project: { repo: 'o/r' }, knobs: { checksTimeoutMinutes: options.timeoutMinutes ?? 10, checks } } as unknown as Context;
   const io = {
@@ -13,11 +15,13 @@ function world(checks: 'required' | 'none', schedule: (clock: number) => Check[]
     sleep: async (ms: number) => {
       clock += ms;
     },
-    read: (argv: string[]) => (argv[1] === 'api' ? String(options.openSuites?.(clock) ?? 0) : JSON.stringify({ headRefOid: 'landing', statusCheckRollup: schedule(clock) })),
+    read: (argv: string[]) => (argv[1] === 'api' ? ((raw) => (typeof raw === 'string' ? raw : JSON.stringify(raw)))(options.openSuites?.(clock) ?? []) : JSON.stringify({ headRefOid: 'landing', statusCheckRollup: schedule(clock) })),
   };
   return { ctx, io, waited: () => clock };
 }
 const GREEN = { name: 'build', conclusion: 'SUCCESS' };
+/** The test clock starts at the epoch, so a suite created then is as old as the clock reads. */
+const suite = (app: string, runs: number): Suite => ({ app, runs, created: new Date(0).toISOString() });
 
 const EXPECT = { sha: 'landing', required: ['build'] };
 
@@ -55,16 +59,38 @@ describe('the build gate', () => {
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: integration');
   });
 
-  it('waits for every check suite GitHub has opened on the head', async () => {
-    const w = world('required', () => [GREEN], { openSuites: (clock) => (clock < 300_000 ? 1 : 0) });
-    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
-    expect(w.waited()).toBeGreaterThanOrEqual(300_000);
+  it('waits for a check suite that has a run in it, however old the suite is', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [GREEN], { openSuites: (clock) => (clock < 3 * SUITE_SETTLE_MS ? [suite('github-actions', 1)] : []), timeoutMinutes: 20 });
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBeGreaterThanOrEqual(3 * SUITE_SETTLE_MS);
+    expect(said[0]).toContain('have not finished: github-actions');
   });
 
-  it('waits on suite data it cannot read, and never assumes it complete', async () => {
-    const w = world('required', () => [GREEN], { openSuites: () => Number.NaN });
-    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('cannot be read');
+  it('gives a suite with no run in it the settle window to register one', async () => {
+    const w = world('required', () => [GREEN], { openSuites: (clock) => [suite('late-app', clock < 120_000 ? 0 : 1)], timeoutMinutes: 20 });
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('have not finished: late-app, after 20 minutes');
   });
+
+  it('stops waiting on a suite that stays open with no run in it, and says which app once', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [GREEN], { openSuites: () => [suite('netlify', 0), suite('codecov', 0)] });
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBe(SUITE_SETTLE_MS);
+    expect(said.filter((m) => /no run in it/.test(m)).map((m) => /the (\S+) check suite/.exec(m)?.[1])).toEqual(['netlify', 'codecov']);
+  });
+
+  it('still waits on a suite with a run while passing over an idle one beside it', async () => {
+    const w = world('required', () => [GREEN], { openSuites: () => [suite('netlify', 0), suite('github-actions', 2)] });
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('have not finished: github-actions, after 10 minutes');
+  });
+
+  for (const [what, raw] of [['not JSON', 'NaN'], ['a suite with no run count', '[{"app":"x","created":"1970-01-01T00:00:00Z"}]'], ['a suite with no creation time', '[{"app":"x","runs":0}]']] as const) {
+    it(`waits on suite data it cannot read (${what}), and never assumes it complete`, async () => {
+      const w = world('required', () => [GREEN], { openSuites: () => raw });
+      expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('cannot be read');
+    });
+  }
 
   it('lands a complete green list at once', async () => {
     const w = world('required', () => [GREEN]);
