@@ -87,11 +87,21 @@ export type Issue = {
   blockedBy?: { nodes: Array<{ number: number; state: string; stateReason: string | null }> };
 };
 
+/** The lane each issue was last moved to in this process: where a throw happened, which names its queue. */
+const lastLane = new Map<number, string>();
+
+/** The dead-letter queue that owns a failure in `lane`: the queue of the lane's phase, Work's for a lane with none. */
+export function phaseOfLane(lane: string | undefined): DlqPhase {
+  const phases: Record<string, DlqPhase> = { A: 'appraisal', C: 'carve', E: 'review', F: 'landing' };
+  return phases[lane?.[0] ?? ''] ?? 'work';
+}
+
 /**
  * Moves the issue's card on the driver's board, when there is one. A board write must never fail
  * a lane: the lane's facts are on the tracker, and the card is a projection of them.
  */
 function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
+  lastLane.set(issue.number, lane);
   if (!ctx.onLane) return;
   try {
     ctx.onLane({ issue: issue.number, title: issue.title, lane, note });
@@ -926,9 +936,12 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
  * dead-letter queue with the log tail, so a leaf nobody can work stops costing attempts. The
  * count lives on the issue, like reviews.
  */
-function countFailure(ctx: Context, issue: Issue, reason: string, say: (message: string) => void): FixOutcome {
+function countFailure(ctx: Context, issue: Issue, reason: string, say: (message: string) => void, pr?: number): FixOutcome {
   const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
   say(`attempt ${attempts} of ${ctx.knobs.maxWorkerAttempts} failed`);
+  // With a pull request open there is no Ready to go back to: a Ready card is one a worker starts
+  // from nothing, and this work exists. It waits in the work queue for a redrive, at once.
+  if (pr) return deadLetter(ctx, issue, 'work', `The worker or its confirmer failed on pull request #${pr} (attempt ${attempts}): ${reason}`, say, pr);
   if (attempts >= ctx.knobs.maxWorkerAttempts) {
     return deadLetter(ctx, issue, 'work', `The worker failed ${attempts} times on this issue and the loop stops trying. Last failure: ${reason}`, say);
   }
@@ -965,10 +978,10 @@ async function workIssue(
 
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
-    return countFailure(ctx, issue, result.reason, say);
+    return countFailure(ctx, issue, result.reason, say, result.pr);
   }
   const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say);
-  if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say) : settled;
+  if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, result.pr) : settled;
 
   if (result.pr) move(ctx, issue, 'E1', `PR #${result.pr} ready for review`);
   return reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
@@ -1036,12 +1049,9 @@ export async function reviewAndLand(
         ],
       }, true);
       say(`verdict: ${result.verdict}; ${result.reason}`);
-      if (result.verdict === 'failed') {
-        const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
-        return deadLetter(ctx, issue, 'work', `The worker failed while reacquiring stale proof (attempt ${attempts}): ${result.reason}`, say, pr);
-      }
+      if (result.verdict === 'failed') return countFailure(ctx, issue, `while reacquiring stale proof: ${result.reason}`, say, pr);
       const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
-      if (resettled) return resettled;
+      if (resettled) return resettled.outcome === 'failed' ? countFailure(ctx, issue, resettled.reason, say, pr) : resettled;
       continue;
     }
 
@@ -1105,13 +1115,10 @@ export async function reviewAndLand(
     // The pull request is already back in draft: land() flips it before any catch-up push.
     result = await runWorker(ctx, issue, cwd, maxPoints, verdict);
     say(`verdict: ${result.verdict}; ${result.reason}`);
-    if (result.verdict === 'failed') {
-      // The attempt counts, and a failed revision on an open pull request is the work queue's.
-      const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
-      return deadLetter(ctx, issue, 'work', `The worker failed on a revision (attempt ${attempts}): ${result.reason}`, say, pr);
-    }
+    // The attempt counts, and a failed revision on an open pull request is the work queue's.
+    if (result.verdict === 'failed') return countFailure(ctx, issue, `on a revision: ${result.reason}`, say, pr);
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
-    if (settled) return settled;
+    if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pr) : settled;
   }
 
   parkIssue(ctx, issue.number, parkReason);
@@ -1195,30 +1202,32 @@ export async function fixIssue(
   }
 }
 
-/** The open pull request whose branch names this issue, when there is one. */
+/** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */
 function openPullFor(ctx: Context, issue: number): number | undefined {
-  try {
-    const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName']);
-    const pulls = JSON.parse(raw) as Array<{ number: number; headRefName: string }>;
-    return pulls.find((pr) => pr.headRefName.endsWith(`-${issue}`))?.number;
-  } catch {
-    return undefined;
-  }
+  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,headRefName']);
+  const pulls = JSON.parse(raw) as Array<{ number: number; headRefName: string }>;
+  return pulls.find((pr) => pr.headRefName.endsWith(`-${issue}`))?.number;
 }
 
 /**
- * A step that threw (a push the retries could not save, a fetch that failed, a checkout that
- * would not apply) is a machine failure, and it is recorded like one rather than only logged:
- * with a pull request open it is a work dead letter carrying the error, and without one it is a
- * counted attempt, back to Ready until the cap. When even the recording fails, the lane is kept.
+ * A step that threw (a push the retries could not save, a fetch that failed, a checks read that
+ * errored) is a machine failure, and it is recorded like one rather than only logged. The queue is
+ * the one that owns the lane the card was in: a throw while reviewing is a review dead letter, a
+ * throw while landing a landing one. In the work phase a pull request decides it: with one open
+ * the failure is a work dead letter carrying the error, and without one it is a counted attempt,
+ * back to Ready until the cap. When the recording itself fails, or the pull request list cannot be
+ * read, the lane is kept: the worktree is then the only record of what happened.
  */
-function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void): { outcome: FixOutcome; keepLane: boolean } {
-  const reason = `The pipeline threw: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
+export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
+  const lane = lastLane.get(issue.number);
+  const phase = phaseOfLane(lane);
+  const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
   try {
-    const pr = openPullFor(ctx, issue.number);
-    return { outcome: pr ? deadLetter(ctx, issue, 'work', reason, say, pr) : countFailure(ctx, issue, reason, say), keepLane: false };
+    const pr = knownPr ?? openPullFor(ctx, issue.number);
+    const outcome = pr || phase !== 'work' ? deadLetter(ctx, issue, phase, reason, say, pr) : countFailure(ctx, issue, reason, say);
+    return { outcome, keepLane: false };
   } catch (second) {
     say(`could not record the failure on the issue (${(second as Error).message.split('\n')[0]}); keeping the lane for inspection`);
     return { outcome: { outcome: 'failed', reason }, keepLane: true };
@@ -1283,16 +1292,16 @@ export async function redriveIssue(
     };
     let result = await runWorker(ctx, issue, cwd, maxPoints, feedback);
     say(`verdict: ${result.verdict}; ${result.reason}`);
-    if (result.verdict === 'failed') return countFailure(ctx, issue, result.reason, say);
+    if (result.verdict === 'failed') return countFailure(ctx, issue, `on a redrive: ${result.reason}`, say, pull.number);
     if (result.verdict === 'fixed' && !result.pr) result = { ...result, pr: pull.number, branch: pull.branch };
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pull.number);
-    if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say) : settled;
+    if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pull.number) : settled;
     if (result.pr) move(ctx, issue, 'E1', `PR #${result.pr} ready for review again`);
     // Awaited, not returned: returning the promise ran this cleanup the moment the reviewer
     // started, so two live redrives reviewed and merged with no claim and no lease.
     return await reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
   } catch (error) {
-    const recorded = recordThrow(ctx, issue, error as Error, say);
+    const recorded = recordThrow(ctx, issue, error as Error, say, pull.number);
     keepLane = recorded.keepLane;
     return recorded.outcome;
   } finally {

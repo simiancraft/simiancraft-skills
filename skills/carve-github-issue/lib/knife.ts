@@ -17,7 +17,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import { CARVING_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { carveCount, clearCarves, closeIssue, HOLD_LABELS, recordCarve } from '../../fix-github-issue/lib/labels.ts';
+import { carveCount, clearCarves, closeIssue, dlqLabel, HOLD_LABELS, recordCarve } from '../../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { runCarveCallback } from './callbacks.ts';
@@ -450,8 +450,15 @@ async function callback(k: Knife, tree: Tree, name: 'on-carve-pass' | 'on-carve-
 // Hand-offs, still-good, release
 // ---------------------------------------------------------------------------
 
-async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>, pauseAll: boolean, verdict: string): Promise<CarveOutcome> {
-  const hold = HAND_OFFS[verdict] ?? 'needs-human';
+/**
+ * Stops the carving and says why on the trunk. A carver's own opinion about the issue (it is
+ * indivisible, too uncertain, small enough) is a person's to weigh and takes the verdict's hold.
+ * The machine giving up (failed turns, a cap, a cut that would not apply, two engines that never
+ * agreed) is a dead letter: `deadLetter` puts the trunk in the carve queue instead, where a person
+ * redrives it by lifting the label, and the record and the pauses are written the same way.
+ */
+async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>, pauseAll: boolean, verdict: string, deadLetter = false): Promise<CarveOutcome> {
+  const hold = deadLetter ? dlqLabel('carve') : (HAND_OFFS[verdict] ?? 'needs-human');
   const ledger = carving.ledger;
   const previous = tree.record;
   const children: RecordChild[] = (previous?.children ?? []).map((c) => ({ ...c, paused: false }));
@@ -471,10 +478,10 @@ async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Ar
   for (const c of children) if (c.number !== null && paused.has(c.number)) c.paused = true;
 
   const marker = `<!-- carve-handoff verdict=${verdict} gen=${tree.generation} -->`;
-  const payload = { verdict, reason: carving.reason, affected, pauseSet: [...paused], opinions, logTail: null as string | null };
+  const payload = { verdict, deadLetter, reason: carving.reason, affected, pauseSet: [...paused], opinions, logTail: null as string | null };
   const alreadyAnnounced = tree.issue.comments.some((c) => c.author === k.ctx.botLogin && c.body.startsWith(marker) && !tree.intents.find((i) => i.commentId === c.databaseId)?.finished);
   if (!alreadyAnnounced) {
-    const body = [marker, '```json', JSON.stringify(payload), '```', `**${verdict}**: ${carving.reason}`, affected.length ? `Affected criteria: ${affected.join(', ')}.` : '', ...opinions.map((o, i) => `\nRound ${i + 1}. Carver: ${o.carver}\nConfirmer: ${o.confirmer}`)].filter(Boolean).join('\n');
+    const body = [marker, '```json', JSON.stringify(payload), '```', `**${deadLetter ? 'carve dead letter' : verdict}**: ${carving.reason}`, affected.length ? `Affected criteria: ${affected.join(', ')}.` : '', ...opinions.map((o, i) => `\nRound ${i + 1}. Carver: ${o.carver}\nConfirmer: ${o.confirmer}`)].filter(Boolean).join('\n');
     comment(k, 'handoff-comment', k.trunk, body, `hand off #${k.trunk} as ${verdict}`);
   }
   const labels = labelsOf(tree.issue);
@@ -486,7 +493,7 @@ async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Ar
   const after = readTree(k.ctx, k.trunk, k.io);
   postRecord(k, { ...record, seen: fingerprint(after, k.ctx.botLogin), at: new Date().toISOString() });
   k.journal.finish();
-  return { outcome: verdict as CarveOutcome['outcome'], reason: carving.reason, generation: tree.generation };
+  return { outcome: deadLetter ? 'dlq' : (verdict as CarveOutcome['outcome']), reason: carving.reason, generation: tree.generation };
 }
 
 async function applyStillGood(k: Knife, tree: Tree, carving: Carving, redrive: boolean): Promise<CarveOutcome> {
@@ -611,7 +618,7 @@ function heldBy(tree: Tree): string | null {
   return labelsOf(tree.issue).find((l) => HOLD_LABELS.includes(l) && l !== 'loop/paused') ?? null;
 }
 
-/** One more failed attempt on the trunk; at the cap it goes to a person with the log tail. */
+/** One more failed attempt on the trunk; at the cap it goes to the carve dead-letter queue with the log tail. */
 async function countFailure(k: Knife, tree: Tree, why: string, logPath: string | null): Promise<CarveOutcome> {
   if (k.ctx.dryRun) return { outcome: 'failed', reason: why };
   const attempts = recordCarve(k.ctx, k.trunk, carveCount(tree.issue.labels));
@@ -620,7 +627,7 @@ async function countFailure(k: Knife, tree: Tree, why: string, logPath: string |
   const tail = logPath ? logTail(logPath) : 'no log';
   const fresh = readTree(k.ctx, k.trunk, k.io);
   const carving: Carving = { issue: k.trunk, mode: fresh.record && fresh.record.state === 'live' ? 'revisit' : 'carve', verdict: 'indivisible', reason: `The knife failed ${attempts} times on this issue and stops trying. Last failure: ${why}. Log tail: ${tail}`, criteria: [], ledger: fresh.record?.ledger ?? [], affected: [] };
-  const out = await applyHandOff(k, fresh, carving, [], false, 'indivisible');
+  const out = await applyHandOff(k, fresh, carving, [], false, 'indivisible', true);
   return { ...out, reason: carving.reason };
 }
 
@@ -706,12 +713,12 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
   // 4. Guards that need no agent.
   if (mode === 'carve' && tree.depth >= k.knobs.maxDepth) {
     const carving: Carving = { issue: k.trunk, mode, verdict: 'indivisible', reason: `at depth ${tree.depth}, the cap; cannot be carved further`, criteria: [], ledger: [], affected: [] };
-    return applyHandOff(k, tree, carving, [], false, 'indivisible');
+    return applyHandOff(k, tree, carving, [], false, 'indivisible', true);
   }
   if (record && record.state === 'live' && !redrive) {
     if (record.revisits >= k.knobs.maxRevisitsPerGeneration) {
       const carving: Carving = { issue: k.trunk, mode, verdict: 'indivisible', reason: `revisited ${record.revisits} times in generation ${record.generation}, epoch ${record.epoch}; a person decides whether the carving stands`, criteria: [], ledger: record.ledger, affected: [] };
-      return applyHandOff(k, tree, carving, [], false, 'indivisible');
+      return applyHandOff(k, tree, carving, [], false, 'indivisible', true);
     }
   }
 
@@ -729,7 +736,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
 
     if (carving.verdict === 'amend' && record && record.generation >= k.knobs.maxGenerations && !redrive) {
       const handOff: Carving = { ...carving, verdict: 'indivisible', reason: `generation ${record.generation} is the cap for epoch ${record.epoch}; the carver wanted to amend again. ${carving.reason}`, affected: [] };
-      return applyHandOff(k, tree, handOff, opinions, false, 'indivisible');
+      return applyHandOff(k, tree, handOff, opinions, false, 'indivisible', true);
     }
 
     let plan: PiecePlan[] = [];
@@ -790,7 +797,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     const applied = await applyRecord(k, applying);
     if (!applied.ok) {
       const handOff: Carving = { ...carving, verdict: 'indivisible', reason: applied.why, affected: [] };
-      return applyHandOff(k, readTree(k.ctx, k.trunk, k.io), handOff, opinions, false, 'indivisible');
+      return applyHandOff(k, readTree(k.ctx, k.trunk, k.io), handOff, opinions, false, 'indivisible', true);
     }
     return { outcome: carving.verdict, reason: carving.reason, generation, children: applied.live.children.map((c) => c.number).filter((n): n is number => n !== null), journal: k.journal.journal };
   }
@@ -798,7 +805,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
   // The round cap: a dispute about the whole carving pauses every open leaf.
   const last = opinions[opinions.length - 1];
   const carving: Carving = { issue: k.trunk, mode, verdict: 'indivisible', reason: `carver and confirmer disagreed ${k.knobs.maxCarveRounds} times; last: ${last?.confirmer ?? 'no confirmer answer'}`, criteria: [], ledger: record?.ledger ?? [], affected: [] };
-  const out = await applyHandOff(k, tree, carving, opinions, true, 'indivisible');
+  const out = await applyHandOff(k, tree, carving, opinions, true, 'indivisible', true);
   return { ...out, reason: carving.reason };
 }
 
@@ -811,7 +818,7 @@ async function finishIntent(k: Knife, tree: Tree, pending: Intent): Promise<Carv
     const applied = await applyRecord(k, record);
     if (!applied.ok) {
       const carving: Carving = { issue: k.trunk, mode: 'carve', verdict: 'indivisible', reason: applied.why, criteria: [], ledger: record.ledger, affected: [] };
-      return applyHandOff(k, readTree(k.ctx, k.trunk, k.io), carving, [], false, 'indivisible');
+      return applyHandOff(k, readTree(k.ctx, k.trunk, k.io), carving, [], false, 'indivisible', true);
     }
     return { outcome: 'resumed', reason: `finished generation ${record.generation} from its applying record`, generation: record.generation, children: applied.live.children.map((c) => c.number).filter((n): n is number => n !== null), journal: k.journal.journal };
   }
@@ -820,9 +827,10 @@ async function finishIntent(k: Knife, tree: Tree, pending: Intent): Promise<Carv
     const out = await applyRelease(k, tree, null, record);
     return { ...out, outcome: 'resumed', reason: `finished the release announced by generation ${record.generation}` };
   }
-  const payload = pending.payload as { verdict: string; reason: string; affected?: string[]; pauseSet?: number[]; opinions?: Array<{ carver: string; confirmer: string }> };
+  const payload = pending.payload as { verdict: string; deadLetter?: boolean; reason: string; affected?: string[]; pauseSet?: number[]; opinions?: Array<{ carver: string; confirmer: string }> };
   const carving: Carving = { issue: k.trunk, mode: tree.record && tree.record.state === 'live' ? 'revisit' : 'carve', verdict: payload.verdict as Carving['verdict'], reason: payload.reason, criteria: [], ledger: tree.record?.ledger ?? [], affected: payload.affected ?? [] };
-  const out = await applyHandOff(k, tree, carving, payload.opinions ?? [], false, payload.verdict);
+  // An interrupted dead letter is finished as a dead letter, not as the hold its verdict would take.
+  const out = await applyHandOff(k, tree, carving, payload.opinions ?? [], false, payload.verdict, payload.deadLetter === true);
   return { ...out, outcome: 'resumed', reason: `finished the ${payload.verdict} hand-off` };
 }
 

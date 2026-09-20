@@ -132,6 +132,9 @@ export const MACHINE: StateNode = {
 
         appraisal: {
           initial: 'inbox',
+          // Every phase answers a machine failure in every one of its lanes, into its own queue:
+          // a throw between two agent turns is a failure too, and no lane may drop it.
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] } },
           states: {
             inbox: {
               lane: { key: 'A1', name: 'Inbox', description: 'On the board, unsized, not yet looked at' },
@@ -153,6 +156,9 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason'] },
                   { target: 'ticket.carving.toCarve', guard: 'sizedOverCeiling', actions: ['labelSize', 'fireSizeCallback'] },
                   { target: 'ticket.ready.ready', guard: 'sizedWithinCeiling', actions: ['labelSize'] },
+                  // Half a verdict (valid, with no size) or one the driver cannot read is a failed turn.
+                  { target: 'ticket.appraisal.inbox', guard: 'appraisalsUnderCap', actions: ['countAppraisal'] },
+                  { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] },
                 ],
                 AGENT_FAILED: [
                   { target: 'ticket.appraisal.inbox', guard: 'appraisalsUnderCap', actions: ['countAppraisal'] },
@@ -189,6 +195,7 @@ export const MACHINE: StateNode = {
 
         carving: {
           initial: 'toCarve',
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] } },
           states: {
             toCarve: {
               lane: { key: 'C1', name: 'To carve', description: 'Sized over the ceiling; waiting for the knife' },
@@ -203,6 +210,9 @@ export const MACHINE: StateNode = {
                 KNIFE_VERDICT: [
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible', actions: ['labelHold', 'commentBothOpinions', 'liveRecord'] },
+                  // A verdict the driver cannot read is a failed turn, not an opinion about the issue.
+                  { target: 'ticket.carving.toCarve', guard: 'carvesUnderCap', actions: ['countCarve', 'releaseClaim'] },
+                  { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
                 AGENT_FAILED: [
                   { target: 'ticket.carving.toCarve', guard: 'carvesUnderCap', actions: ['countCarve', 'releaseClaim'] },
@@ -283,6 +293,14 @@ export const MACHINE: StateNode = {
               { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
+              // A verdict the driver cannot read is a failed turn, settled like one.
+              { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
+              { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
+            ],
+            // With a pull request open there is no Ready to return to: that work waits in the queue.
+            AGENT_FAILED: [
+              { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
+              { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
             ],
           },
           states: {
@@ -311,10 +329,6 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'releaseClaim'] },
                 ],
-                AGENT_FAILED: [
-                  { target: 'ticket.ready.ready', guard: 'attemptsUnderCap', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
-                  { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
-                ],
               },
             },
             proving: {
@@ -341,6 +355,7 @@ export const MACHINE: StateNode = {
 
         review: {
           initial: 'readyForReview',
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] } },
           states: {
             readyForReview: {
               lane: { key: 'E1', name: 'Ready for review', description: 'PR ready; CI running; no reviewer has started' },
@@ -374,6 +389,7 @@ export const MACHINE: StateNode = {
 
         landing: {
           initial: 'approved',
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] } },
           states: {
             approved: {
               lane: { key: 'F1', name: 'Approved', description: 'Merge verdict pinned to a head; waiting for the front of the queue' },
@@ -488,6 +504,9 @@ export const MACHINE: StateNode = {
 
         deadLetters: {
           initial: 'work',
+          // A queue is a resting place. A triage agent that fails is one more machine failure, so
+          // the card stays in its queue with the failure recorded and triage stopped; it does not
+          // become a person's hold. Only a triage that reaches a decision sends a card to a person.
           states: {
             appraisal: {
               lane: { key: 'Q1', name: 'Appraisal DLQ', description: 'Appraiser or confirmer failed past the cap' },
@@ -497,7 +516,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.appraisal.appraising', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy'] },
                   { target: 'ticket.human.needsHuman', actions: ['unlabelDlq', 'labelHold', 'commentHistory'] },
                 ],
-                AGENT_FAILED: { target: 'ticket.human.needsHuman', actions: ['unlabelDlq', 'labelHold', 'commentReason'] },
+                AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['countTriage', 'commentReason', 'stopTriage'] },
               },
             },
             carve: {
@@ -509,7 +528,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.carving.carving', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy'] },
                   { target: 'ticket.human.needsHuman', actions: ['unlabelDlq', 'labelHold', 'commentBothOpinions'] },
                 ],
-                AGENT_FAILED: { target: 'ticket.human.needsHuman', actions: ['unlabelDlq', 'labelHold', 'commentReason'] },
+                AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['countTriage', 'commentReason', 'stopTriage'] },
               },
             },
             work: {
@@ -524,10 +543,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.human.parked', guard: 'prExists', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },
                   { target: 'ticket.human.needsHuman', actions: ['unlabelDlq', 'labelHold', 'commentHistory'] },
                 ],
-                AGENT_FAILED: [
-                  { target: 'ticket.human.parked', guard: 'prExists', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentReason'] },
-                  { target: 'ticket.human.needsHuman', actions: ['unlabelDlq', 'labelHold', 'commentReason'] },
-                ],
+                AGENT_FAILED: { target: 'ticket.deadLetters.work', actions: ['countTriage', 'commentReason', 'stopTriage'] },
               },
             },
             review: {
@@ -541,7 +557,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.human.needsDecision', guard: 'decisionDesignObjection', actions: ['unlabelDlq', 'labelHold', 'commentQuestion', 'parkPr'] },
                   { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },
                 ],
-                AGENT_FAILED: { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentReason'] },
+                AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['countTriage', 'commentReason', 'stopTriage'] },
               },
             },
             landing: {
@@ -554,7 +570,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.landing.approved', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
                   { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },
                 ],
-                AGENT_FAILED: { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentReason'] },
+                AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['countTriage', 'commentReason', 'stopTriage'] },
               },
             },
           },

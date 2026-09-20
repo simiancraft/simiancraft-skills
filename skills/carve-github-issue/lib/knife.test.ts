@@ -138,13 +138,15 @@ describe('carveIssue', () => {
     expect(t.record?.children.map((c) => c.number)).toEqual(t.children.map((c) => c.number));
   });
 
-  test('a dispute to the round cap hands off with every open leaf paused and no child created', async () => {
+  test('a dispute to the round cap is a carve dead letter, with every open leaf paused and no child created', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(10, { title: '[t] big', labels: [{ name: 'size: 8' }], subIssues: [11] }), fakeIssue(11, { parentNumber: 10, title: 'leaf' })]);
     const ctx = ctxFor(io);
     const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('gap', confirmation(10, 'carve', 'gap', false))), io);
-    expect(out.outcome).toBe('indivisible');
+    // Two engines that never agreed is the machine giving up, not an opinion about the issue.
+    expect(out.outcome).toBe('dlq');
     expect(out.reason).toMatch(/disagreed 5 times/);
-    expect(labels(io, 10)).toContain('needs-human');
+    expect(labels(io, 10)).toContain('loop/dlq: carve');
+    expect(labels(io, 10)).not.toContain('needs-human');
     expect(io.view(10)!.subIssues).toEqual([11]);
     expect(labels(io, 11)).toContain('loop/paused');
     expect(io.view(11)!.comments.some((c) => c.body.includes('carve-pause by=10'))).toBe(true);

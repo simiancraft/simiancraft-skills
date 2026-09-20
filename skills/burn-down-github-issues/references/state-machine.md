@@ -147,6 +147,15 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 | F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap, to Q5 past it; passed to F5; else Q5 (tail as the reason) |
 | F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
 
+Every phase that runs a machine answers `AGENT_FAILED` in every one of its lanes, into its own
+queue, because a throw between two turns is a failure too: appraisal to Q1, carving to Q2, review
+to Q4, landing to Q5. Work sends it back to B1 only while attempts remain and no pull request is
+open; with one open there is no Ready to return to, and the card goes to Q3. A report nobody
+anticipated (a verdict the driver cannot read, a valid appraisal with no size) takes the same path
+as a failure: every list that answers a machine's report ends in a branch with no guard. A triage
+agent that fails leaves the card resting in its queue with the failure recorded; no machine
+failure anywhere becomes a person's hold.
+
 Only F5 holds the merge lock; F2, F3, and F4 run outside it so one stale branch does not stall
 the queue, and F5 re-checks freshness on re-entry.
 

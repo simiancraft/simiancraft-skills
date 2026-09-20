@@ -13,7 +13,7 @@ import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
-import { type Issue, reviewAndLand, type WorkerResult } from './pipeline.ts';
+import { type Issue, recordThrow, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
 import { sh } from './shell.ts';
 
@@ -196,8 +196,13 @@ export async function resumeStranded(
       }
       const stopRenewing = keepClaimed(handle);
       inFlight.set(issue.number, { dir: entry.cwd, busy: false });
+      // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
+      // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.
+      let keepLane = false;
       try {
         await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
+      } catch (error) {
+        keepLane = recordThrow(ctx, issue, error as Error, say, entry.result.pr).keepLane;
       } finally {
         stopRenewing();
         try {
@@ -206,6 +211,7 @@ export async function resumeStranded(
           say(`could not release the claim: ${(error as Error).message}`);
         }
         inFlight.delete(issue.number);
+        if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
       }
     },
     (issue) => `#${issue.number}`,

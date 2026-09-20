@@ -138,15 +138,21 @@ describe('the machine and the lane table agree', () => {
     }
   });
 
-  it('every state whose entry starts an agent handles the agent failing', () => {
-    // Step Functions: every Task can fail; machinery's gate that every invoke has a timeout.
-    const startsAgent = (entry: string[] = []) => entry.some((a) => /^run(Appraiser|Confirmer|Carver|CarveConfirmer|Worker|WorkerRevision|Reviewer|Triage|Smoke)$/.test(a));
-    for (const [path, node] of states) {
-      if (!startsAgent(node.entry)) continue;
-      const events = Object.keys(node.on ?? {});
-      const handles = events.includes('AGENT_FAILED') || (path === 'ticket.landing.smoke' && events.includes('SMOKE'));
-      expect(handles, `${path} starts an agent and has no failure transition`).toBe(true);
-    }
+  it('every lane of every phase that runs a machine answers a machine failing, itself or through its phase', () => {
+    // Step Functions: every Task can fail. A throw between two turns is a failure too, so this
+    // asks it of every lane in the phase and not only of the states whose entry starts an agent.
+    const answers = (path: string): boolean => {
+      const parts = path.split('.');
+      return parts.some((_, depth) => depth >= 1 && Object.keys(states.get(parts.slice(0, depth + 1).join('.'))?.on ?? {}).includes('AGENT_FAILED'));
+    };
+    const machinePhases = ['ticket.appraisal.', 'ticket.carving.', 'ticket.work.', 'ticket.review.', 'ticket.landing.', 'ticket.deadLetters.'];
+    const silent = LANES.map((l) => l.state).filter((path) => machinePhases.some((phase) => path.startsWith(phase)) && !answers(path));
+    expect(silent).toEqual([]);
+  });
+
+  it('no agent failure anywhere sends a card to a human lane', () => {
+    const parked = transitions().filter(({ event, transition }) => event === 'AGENT_FAILED' && transition.target.startsWith('ticket.human.'));
+    expect(parked.map(({ from }) => from)).toEqual([]);
   });
 
   it('dead-letter lanes exit only to their own phase, a human lane, or carving on re-classification', () => {
@@ -156,6 +162,8 @@ describe('the machine and the lane table agree', () => {
       if (!from.startsWith('ticket.deadLetters.')) continue;
       const phase = from.split('.')[2];
       const ok =
+        // A failed triage agent leaves the card where it rests: a machine failure is never a hold.
+        (event === 'AGENT_FAILED' && transition.target === from) ||
         transition.target.startsWith(own[phase]) ||
         transition.target.startsWith('ticket.human.') ||
         // A person's redrive continues the pull request: catch up first, then the revision, or

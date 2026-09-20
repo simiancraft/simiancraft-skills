@@ -47,6 +47,7 @@ function laneOf(outcome: string, atRest: 'C1' | 'C5'): string {
   if (outcome === 'exhausted' || outcome === 'nothing-left' || outcome === 'small-enough') return 'C7';
   if (outcome === 'too-uncertain') return 'H1';
   if (outcome === 'indivisible') return 'H2';
+  if (outcome === 'dlq') return 'Q2';
   return atRest;
 }
 

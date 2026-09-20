@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { LANES } from './lanes.ts';
-import { transitions } from './machine.ts';
+import { MACHINE, transitions, walk } from './machine.ts';
 import { atoms, fire, laneKey, laneState, Leak, settle, successors } from './simulate.ts';
 
 /** Lane sequences the real driver wrote to its logs, per issue, from the runs on Ultrathin. */
@@ -45,6 +45,65 @@ describe('the machine leaks no card', () => {
     for (const lane of LANES) for (const next of successors(lane.state).keys()) reached.add(next);
     const orphans = LANES.filter((l) => !reached.has(l.state)).map((l) => l.key);
     expect(orphans).toEqual([]);
+  });
+});
+
+describe('every event, in every lane, under every combination of facts', () => {
+  const NODES = new Map(walk(MACHINE));
+  // Facts a transient state reads while a target settles; tried all false and all true.
+  const settling = [...NODES.values()].flatMap((node) => (node.always ?? []).flatMap((t) => atoms(t.guard)));
+  /** The events a lane answers, itself or through an ancestor, with every fact their guards read. */
+  const eventsOf = (state: string) => {
+    const events = new Map<string, Set<string>>();
+    const parts = state.split('.');
+    for (let depth = parts.length; depth >= 1; depth--) {
+      for (const [event, raw] of Object.entries(NODES.get(parts.slice(0, depth).join('.'))?.on ?? {})) {
+        const names = events.get(event) ?? new Set<string>();
+        for (const t of Array.isArray(raw) ? raw : [raw]) for (const name of atoms(t.guard)) names.add(name);
+        events.set(event, names);
+      }
+    }
+    return events;
+  };
+  const valuations = (names: string[]) => Array.from({ length: 1 << names.length }, (_, mask) => names.filter((_, i) => mask & (1 << i)));
+
+  it('never leaks a card', () => {
+    const leaks: string[] = [];
+    let fired = 0;
+    for (const lane of LANES) {
+      for (const [event, names] of eventsOf(lane.state)) {
+        for (const facts of valuations([...names])) {
+          for (const extra of [[], settling]) {
+            fired += 1;
+            try {
+              fire(lane.state, event, new Set([...facts, ...extra]));
+            } catch (error) {
+              if (!(error instanceof Leak)) throw error;
+              leaks.push(`${lane.key} on ${event} [${facts.join(', ')}]: ${error.message}`);
+            }
+          }
+        }
+      }
+    }
+    expect(leaks).toEqual([]);
+    expect(fired).toBeGreaterThan(2000);
+  });
+
+  it('never drops what a machine reports: a result or a failure always moves the card or rests it on purpose', () => {
+    // A dispatch may be refused (the line is paused) and the card waits where it is. A report
+    // may not: an agent's verdict, a gate's result, and a failure each have a last branch with no
+    // guard, so an answer nobody anticipated is settled as a failure instead of stranding the card.
+    const REPORTS = ['APPRAISED', 'CONFIRMED', 'KNIFE_VERDICT', 'CUT_DISPUTED', 'REVISITED', 'WORKER_VERDICT', 'REVIEWED', 'CAUGHT_UP', 'CHECKS', 'SMOKE', 'BASE_MOVED_WHILE_WAITING', 'TRIAGED', 'AGENT_FAILED'];
+    const dropped: string[] = [];
+    for (const lane of LANES) {
+      for (const [event, names] of eventsOf(lane.state)) {
+        if (!REPORTS.includes(event)) continue;
+        for (const facts of valuations([...names])) {
+          if (fire(lane.state, event, new Set(facts)) === null) dropped.push(`${lane.key} drops ${event} under [${facts.join(', ')}]`);
+        }
+      }
+    }
+    expect(dropped).toEqual([]);
   });
 });
 
