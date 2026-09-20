@@ -58,6 +58,7 @@ type LoopKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
+  checks: 'auto' | 'required' | 'none';
   smokeTimeoutMinutes: number;
   pointScale: number[];
   maxWorkerAttempts: number;
@@ -123,6 +124,7 @@ const DEFAULTS: LoopKnobs = {
 
   /** See the fix pipeline's PIPELINE_DEFAULTS for both. */
   checksTimeoutMinutes: 45,
+  checks: 'auto',
   smokeTimeoutMinutes: 10,
 
   /** Merged pull requests this recent are checked against open sized issues on start. */
@@ -564,6 +566,7 @@ const ctx = createContext({
     autoMerge: CONFIG.autoMerge,
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
+    checks: CONFIG.checks,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
     pointScale: CONFIG.pointScale,
     maxWorkerAttempts: CONFIG.maxWorkerAttempts,

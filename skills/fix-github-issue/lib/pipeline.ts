@@ -369,12 +369,33 @@ function hadChecks(ctx: Context, sha: string): boolean {
   }
 }
 
+/** How long an empty rollup is watched before it may mean "this repository runs no checks". */
+const CHECK_REGISTRATION_GRACE_MS = 90_000;
+
 /**
- * Waits for the checks of `expect.sha`, the head that would land. An empty rollup is green only
- * when the repository reports no checks at all: after a catch-up push the rollup is empty for a
- * moment before the new head's checks register, and merging in that moment would outrun the build.
+ * Whether the repository is known to run checks on a pull request: the config says so, or the
+ * reviewed commit or the base tip has some. A `false` is only "none seen", never "none exist".
  */
-async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string) => void, expect?: { sha: string; checksExpected: boolean }): Promise<string | null> {
+function checksAreExpected(ctx: Context, reviewedSha: string): boolean {
+  if (ctx.knobs.checks !== 'auto') return ctx.knobs.checks === 'required';
+  return hadChecks(ctx, reviewedSha) || hadChecks(ctx, ctx.project.baseBranch);
+}
+
+/**
+ * Waits for the checks of `expect.sha`, the head that would land. After a catch-up push the rollup
+ * is empty for a moment before the new head's checks register, and merging in that moment would
+ * outrun the build. So an empty rollup is never green at first sight: where checks are expected it
+ * is waited out to the timeout, and where none were seen it is watched for a grace period, since
+ * "none seen" on one commit is an observation and not the repository's policy.
+ */
+export async function awaitGreenChecks(
+  ctx: Context,
+  pr: number,
+  say: (message: string) => void,
+  expect?: { sha: string; checksExpected: boolean },
+  /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
+  io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
+): Promise<string | null> {
   type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
   const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
   const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
@@ -387,16 +408,29 @@ async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string)
   };
   const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
 
-  const deadline = Date.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
+  const started = io.now();
+  const deadline = started + ctx.knobs.checksTimeoutMinutes * 60_000;
   for (;;) {
-    const raw = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
+    const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
     const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
     const rollup: CheckNode[] = view.statusCheckRollup ?? [];
-    const notYet = expect && (view.headRefOid !== expect.sha ? 'the pull request does not show the landing head yet' : rollup.length === 0 && expect.checksExpected ? 'no check has registered for the landing head yet' : null);
+    const empty = rollup.length === 0;
+    const notYet = !expect
+      ? null
+      : view.headRefOid !== expect.sha
+        ? 'the pull request does not show the landing head yet'
+        : empty && expect.checksExpected
+          ? 'no check has registered for the landing head yet'
+          : null;
     if (notYet) {
-      if (Date.now() >= deadline) return `${notYet}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
+      if (io.now() >= deadline) return `${notYet}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
       say(`${notYet}; waiting`);
-      await Bun.sleep(15_000);
+      await io.sleep(15_000);
+      continue;
+    }
+    if (expect && empty && ctx.knobs.checks === 'auto' && io.now() - started < CHECK_REGISTRATION_GRACE_MS) {
+      say('no checks seen on this repository yet; watching the landing head a little longer before calling that green');
+      await io.sleep(15_000);
       continue;
     }
 
@@ -407,11 +441,11 @@ async function awaitGreenChecks(ctx: Context, pr: number, say: (message: string)
 
     const pending = rollup.filter((c) => classify(c) === 'pending');
     if (pending.length === 0) return null;
-    if (Date.now() >= deadline) {
+    if (io.now() >= deadline) {
       return `checks still unfinished after ${ctx.knobs.checksTimeoutMinutes} minutes: ${pending.map(nameOf).join(', ')}`;
     }
     say(`waiting on ${pending.length} unfinished check(s) before merging`);
-    await Bun.sleep(30_000);
+    await io.sleep(30_000);
   }
 }
 
@@ -611,7 +645,7 @@ async function land(
   // head that would land, and then looks upstream once more: checks, smoke, and a paused line can
   // each take long enough for another merge to land, and a head that lacks it must not merge.
   let landingSha = reviewedSha;
-  const checksExpected = ctx.dryRun ? false : hadChecks(ctx, reviewedSha);
+  const checksExpected = ctx.dryRun ? false : checksAreExpected(ctx, reviewedSha);
   for (let pass = 0; ; pass++) {
     const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge');
     if (caught === 'conflict') {

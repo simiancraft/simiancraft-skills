@@ -121,6 +121,13 @@ the last moment before merging and parks instead when they fail or never finish;
 is not a substitute. The merge pins the head it read and confirms afterwards that the pull request
 actually reports a merge, cancelling anything a merge queue scheduled instead.
 
+An empty list of checks is never green at first sight, because a head that was just pushed shows
+none for a moment before they register. The `checks` knob says what an empty list means:
+`required` waits for checks until the timeout and dead-letters the landing without them; `none`
+says the repository runs no checks and lands at once; `auto`, the default, expects checks when the
+reviewed commit or the base tip had any, and otherwise watches the landing head for ninety seconds
+before it accepts that there are none.
+
 ## Staying current, and when proof goes stale
 
 **Upstream is more correct until the work is merged.** Every merge moves the base under everything
