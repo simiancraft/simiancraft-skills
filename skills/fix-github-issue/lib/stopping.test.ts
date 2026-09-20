@@ -9,7 +9,7 @@ import type { ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { fixIssue } from './pipeline.ts';
 import { pool } from './pool.ts';
-import { beginStop, isStopping, mutate, resetStop, RunStopping, stoppableSleep } from './shell.ts';
+import { beginStop, finishDespiteStop, isStopping, mutate, resetStop, RunStopping, stoppableSleep } from './shell.ts';
 
 const HERE = import.meta.dir;
 let scratch: string;
@@ -56,6 +56,27 @@ describe('a stopping run', () => {
     expect(io.writes).toEqual([]);
     mutate(ctx, 'unclaim #1', ['gh', 'issue', 'comment', '1', '--body', 'released'], { whileStopping: true });
     expect(io.writes.map((w) => w.description)).toEqual(['unclaim #1']);
+  });
+
+  it('lets the lane whose merge is confirmed finish its record, and no other lane beside it', async () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(1), fakeIssue(2)]);
+    const ctx = context(io, false);
+    beginStop();
+    let refusedBeside = false;
+    const finishing = finishDespiteStop(async () => {
+      mutate(ctx, 'close #1 after its merge', ['gh', 'issue', 'comment', '1', '--body', 'Closed by #9.']);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      mutate(ctx, 'note the merge on #1', ['gh', 'issue', 'comment', '1', '--body', 'merged']);
+    });
+    // Another lane, begun outside and unwinding while that record is still being written.
+    const beside = Promise.resolve()
+      .then(() => mutate(ctx, 'count a failure on #2', ['gh', 'issue', 'comment', '2', '--body', 'x']))
+      .catch((error) => {
+        refusedBeside = error instanceof RunStopping;
+      });
+    await Promise.all([finishing, beside]);
+    expect(refusedBeside).toBe(true);
+    expect(io.writes.map((w) => w.description)).toEqual(['close #1 after its merge', 'note the merge on #1']);
   });
 
   it('refuses a dry-run rehearsal of a write too, so a stop reads the same in both modes', () => {

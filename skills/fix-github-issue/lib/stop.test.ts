@@ -19,7 +19,7 @@ async function drive(lane: string, signals: number) {
     script,
     `import { FakeTracker, fakeIssue } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'fake-tracker.ts')}';
 import { claim } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'claims.ts')}';
-import { stoppableSleep } from '${join(HERE, 'shell.ts')}';
+import { stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
 import { installStopHandler } from '${join(HERE, 'stop.ts')}';
 const io = new FakeTracker('loop-bot', [fakeIssue(1)]);
 const ctx = { botLogin: 'loop-bot', runId: 'host-1-1', dryRun: false, dryRunLog: [], project: { repo: 'o/r' }, log: () => {}, io } as never;
@@ -64,6 +64,15 @@ describe('the stop handler, in a process of its own', () => {
     expect(at('RELEASED true')).toBeGreaterThan(at('the run is stopping'));
     expect(at('BEFORE-EXIT')).toBeGreaterThan(at('RELEASED true'));
     expect(run.lines.some((l) => l.includes('still held'))).toBe(false);
+  }, 20_000);
+
+  it('hears a signal that arrived during synchronous reads before it begins a merge', async () => {
+    // The signal lands while the process is inside a synchronous child, as it would inside the
+    // tracker reads that precede a merge; nothing has heard it when those reads return.
+    const run = await drive("Bun.spawnSync(['sleep', '1']); await yieldToStop('merge PR #1'); console.log('MERGE BEGUN');", 1);
+    expect(run.code).toBe(130);
+    expect(run.lines.some((l) => l.includes('MERGE BEGUN'))).toBe(false);
+    expect(run.lines.some((l) => l.includes('RELEASED true'))).toBe(true);
   }, 20_000);
 
   it('exits at once on a second signal, naming the claim a lane that will not unwind still holds', async () => {

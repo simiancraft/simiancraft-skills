@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { type ClaimHandle, keepClaimed, LeaseLostError } from '../../carve-github-issue/lib/claims.ts';
 import type { Context } from './context.ts';
 import { move, serializePullMaster } from './pipeline.ts';
 
@@ -49,6 +50,24 @@ describe('the landing line', () => {
       await Promise.all([first, second]);
     });
   }
+
+  it('asks for the lease again when the turn comes: a lane that lost it while waiting lands nothing', async () => {
+    const { ctx } = line();
+    let release = () => {};
+    const first = serializePullMaster(ctx, issue(40), () => {}, () => new Promise<void>((resolve) => (release = resolve)));
+    let landed = false;
+    const second = serializePullMaster(ctx, issue(41), () => {}, async () => {
+      landed = true;
+    });
+    const handle: ClaimHandle = { kind: 'working', commentId: 1, label: 'loop/working', issue: 41, key: 'o/r#41', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+    keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+    await Bun.sleep(0);
+    release();
+    await first;
+    await expect(second).rejects.toThrow(LeaseLostError);
+    expect(landed).toBe(false);
+    expect(ctx.landingLine).toEqual([]);
+  });
 
   it('says nothing when the line is free, and frees the line when a landing throws', async () => {
     const { ctx, cards } = line();

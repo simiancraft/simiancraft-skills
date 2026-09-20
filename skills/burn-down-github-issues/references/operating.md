@@ -150,8 +150,10 @@ then releases the lock. Everything durable is already on GitHub.
 
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
-A landing whose merge had already been sent before the signal completes on GitHub's side; the next
-run start reconciles it.
+No merge begins after the signal, including one that arrives during the reads just before a merge. A
+merge GitHub has already confirmed is the one exception to the stop: its record is finished (the
+issue closed, the driver told, the card moved), so nobody finds a merged pull request against an open
+issue.
 
 ## After a run
 

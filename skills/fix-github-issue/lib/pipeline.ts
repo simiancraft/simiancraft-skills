@@ -21,7 +21,7 @@ import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { isStopping, mutate, RunStopping, sh, stoppableSleep } from './shell.ts';
+import { finishDespiteStop, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -580,6 +580,8 @@ export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message
   }
   const held = async () => {
     try {
+      // The wait for the line can outlast a lease; what was true when the lane joined is asked again.
+      holdLease(ctx, issue.number, 'take its turn in the landing line');
       return await action();
     } finally {
       line.splice(line.indexOf(issue.number), 1);
@@ -902,6 +904,8 @@ async function land(
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
+  // The reads above are synchronous, so a signal that arrived during them has not been heard yet.
+  await yieldToStop(`merge PR #${pr}`);
   mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
@@ -924,49 +928,52 @@ async function land(
     return { dlq: 'the merge was requested but the pull request did not report a merge' };
   }
 
-  // The paths that landed, read while the worktree still exists.
-  const paths = sh(ctx, ['git', 'diff', '--name-only', `${ctx.project.remote}/${ctx.project.baseBranch}...HEAD`], cwd)
-    .split('\n')
-    .filter(Boolean);
-  // The merge pins the head it lands, never the base it lands on. One driver's queue is single
-  // file, but a person or another operator's loop can merge in the seconds between the last look
-  // upstream and this merge, and a repository that does not require up-to-date branches lets it.
-  // That cannot be prevented from here, so it is detected and said plainly.
-  const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, pr, baseSeen, say);
-  if (unseenBase) {
-    mutate(ctx, `note on PR #${pr} that it landed across an unseen commit`, [
-      'gh', 'pr', 'comment', String(pr), '--body',
-      `This merged onto ${unseenBase.slice(0, 10)}, which landed on \`${ctx.project.baseBranch}\` between the last look upstream and the merge. The checks and the review covered the branch without that commit; the combination is unverified until the base's own checks pass.`,
-    ]);
-  }
-  move(ctx, issue, 'T1', `PR #${pr} merged ${merged}`);
-  // Tell the driver while the worktree still exists, so the event carries the paths that landed.
-  if (ctx.afterMerge) {
-    ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined });
-  }
-  // The person watching the main checkout sees the fix land, when the config asks for that.
-  followBase(ctx, paths);
-
-  // Read the branch name while the worktree still exists, then drop it.
-  const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-  removeWorktree(ctx, issue.number);
-  try {
-    sh(ctx, ['git', 'push', ctx.project.remote, '--delete', branch]);
-  } catch {
-    say(`merged branch ${branch} was already deleted`);
-  }
-  // Read once more before the close. The merge has landed either way; a refusal here parks the
-  // issue with the merge named, so a person sees a closed pull request against an open issue.
-  if (!ctx.dryRun) {
-    const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
-    if (!gate.ok) {
-      say(`merged PR #${pr} but not closing the issue: ${gate.why}`);
-      parkIssue(ctx, issue.number, `Pull request #${pr} merged at ${merged}, but the issue was not closed because ${gate.why}. A person closes it or carries on.`);
-      return 'merged';
+  // The merge is confirmed, so its record is finished even if the run is stopping meanwhile.
+  return finishDespiteStop(async (): Promise<Landing> => {
+    // The paths that landed, read while the worktree still exists.
+    const paths = sh(ctx, ['git', 'diff', '--name-only', `${ctx.project.remote}/${ctx.project.baseBranch}...HEAD`], cwd)
+      .split('\n')
+      .filter(Boolean);
+    // The merge pins the head it lands, never the base it lands on. One driver's queue is single
+    // file, but a person or another operator's loop can merge in the seconds between the last look
+    // upstream and this merge, and a repository that does not require up-to-date branches lets it.
+    // That cannot be prevented from here, so it is detected and said plainly.
+    const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, pr, baseSeen, say);
+    if (unseenBase) {
+      mutate(ctx, `note on PR #${pr} that it landed across an unseen commit`, [
+        'gh', 'pr', 'comment', String(pr), '--body',
+        `This merged onto ${unseenBase.slice(0, 10)}, which landed on \`${ctx.project.baseBranch}\` between the last look upstream and the merge. The checks and the review covered the branch without that commit; the combination is unverified until the base's own checks pass.`,
+      ]);
     }
-  }
-  await closeIssue(ctx, issue.number, `Closed by #${pr}.`, { kind: 'merged', pr, mergeSha: reviewedSha, reason: `merged #${pr}`, by: 'worker' });
-  return 'merged';
+    move(ctx, issue, 'T1', `PR #${pr} merged ${merged}`);
+    // Tell the driver while the worktree still exists, so the event carries the paths that landed.
+    if (ctx.afterMerge) {
+      ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined });
+    }
+    // The person watching the main checkout sees the fix land, when the config asks for that.
+    followBase(ctx, paths);
+
+    // Read the branch name while the worktree still exists, then drop it.
+    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    removeWorktree(ctx, issue.number);
+    try {
+      sh(ctx, ['git', 'push', ctx.project.remote, '--delete', branch]);
+    } catch {
+      say(`merged branch ${branch} was already deleted`);
+    }
+    // Read once more before the close. The merge has landed either way; a refusal here parks the
+    // issue with the merge named, so a person sees a closed pull request against an open issue.
+    if (!ctx.dryRun) {
+      const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+      if (!gate.ok) {
+        say(`merged PR #${pr} but not closing the issue: ${gate.why}`);
+        parkIssue(ctx, issue.number, `Pull request #${pr} merged at ${merged}, but the issue was not closed because ${gate.why}. A person closes it or carries on.`);
+        return 'merged';
+      }
+    }
+    await closeIssue(ctx, issue.number, `Closed by #${pr}.`, { kind: 'merged', pr, mergeSha: reviewedSha, reason: `merged #${pr}`, by: 'worker' });
+    return 'merged';
+  });
 }
 
 async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerResult, ceiling: number, say: (message: string) => void, pr?: number): Promise<FixOutcome | null> {

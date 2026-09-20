@@ -3,6 +3,7 @@
  * mutation wrapper that makes `--dry-run` total, and the two console writers.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Context } from './context.ts';
@@ -126,6 +127,25 @@ export async function stoppableSleep(ms: number, sleep: (ms: number) => Promise<
   if (stopping) throw new RunStopping('the run is stopping; no longer waiting');
 }
 
+/**
+ * A signal is only heard when the event loop turns, and a run of synchronous tracker reads does not
+ * turn it. Before an act that cannot be taken back, let a signal that arrived meanwhile be heard.
+ */
+export async function yieldToStop(before: string): Promise<void> {
+  await Bun.sleep(0);
+  if (stopping) throw new RunStopping(`the run is stopping; not begun: ${before}`);
+}
+
+const finishing = new AsyncLocalStorage<true>();
+/**
+ * The one exception to a stop, scoped to the lane that earns it: a merge GitHub has confirmed is
+ * a fact, and its record (the issue closed, the driver told, the card moved) is finished rather
+ * than left for a person to find a merged pull request against an open issue. Only the calls made
+ * inside `record` pass the stop; every other lane is refused as before.
+ */
+export const finishDespiteStop = <T>(record: () => Promise<T>): Promise<T> => finishing.run(true, record);
+export const isFinishing = (): boolean => finishing.getStore() === true;
+
 /** For tests only: a stop ends with the process, never before. */
 export function resetStop(): void {
   stopping = false;
@@ -137,7 +157,7 @@ export function resetStop(): void {
  * what the run holds (`whileStopping`) passes once the stop has begun.
  */
 export function mutate(ctx: Context, description: string, cmd: string[], options: { whileStopping?: boolean } = {}): void {
-  if (stopping && !options.whileStopping) throw new RunStopping(`the run is stopping; not written: ${description}`);
+  if (stopping && !options.whileStopping && !isFinishing()) throw new RunStopping(`the run is stopping; not written: ${description}`);
   if (ctx.dryRun) {
     ctx.dryRunLog.push(description);
     ctx.log(`  DRY RUN  ${description}`);
