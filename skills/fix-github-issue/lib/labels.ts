@@ -114,13 +114,16 @@ export function countOf(kind: Counter, labels: Array<{ name: string }>): number 
 /** The labels this process has already seen exist, by repository, so each is ensured once. */
 const ensuredLabels = new Set<string>();
 
+const labelKey = (ctx: Context, label: string) => `${ctx.project?.repo ?? ''}\n${label}`;
+const forgetLabel = (ctx: Context, label: string) => ensuredLabels.delete(labelKey(ctx, label));
+
 /**
  * Makes sure a label exists before it is put on an issue. A label that is already there is the
  * expected case and is left as it is: no --force, which would overwrite a person's edit to its
  * color or description on every count. Any other refusal is the caller's to know about.
  */
 export function ensureLabel(ctx: Context, label: string, color: string, description: string): void {
-  const key = `${ctx.project?.repo ?? ''}\n${label}`;
+  const key = labelKey(ctx, label);
   if (ensuredLabels.has(key)) return;
   try {
     // A mutation like any other: a dry run logs it and a fake tracker receives it.
@@ -145,7 +148,16 @@ export function recordCount(ctx: Context, kind: Counter, issue: number, previous
   ensureLabel(ctx, label, COUNTER_LABEL[kind].color, COUNTER_LABEL[kind].description);
   // Add the new count before removing the old one. A crash between the two leaves both labels,
   // and countOf reads the max; the other order would refund every spent round on a crash.
-  mutate(ctx, `mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
+  const mark = () => mutate(ctx, `mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
+  try {
+    mark();
+  } catch {
+    // The label was ensured earlier in this process and may have been deleted since. Ensure it
+    // afresh and try once more; a second refusal is the caller's to know about.
+    forgetLabel(ctx, label);
+    ensureLabel(ctx, label, COUNTER_LABEL[kind].color, COUNTER_LABEL[kind].description);
+    mark();
+  }
   if (previous > 0) {
     mutate(ctx, `clear loop/${kind}: ${previous} on #${issue}`, [
       'gh',

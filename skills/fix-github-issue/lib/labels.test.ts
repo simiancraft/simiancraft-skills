@@ -87,4 +87,18 @@ describe('the label a count is written as', () => {
     expect(r.created()).toBe(1);
     expect(r.on(1)).toContain('loop/carves: 1');
   });
+
+  it('that was deleted after it was ensured is ensured afresh, and the count is not lost', () => {
+    const r = rig('o/deleted-mid-run');
+    // Like gh: a label the repository does not have cannot be put on an issue.
+    r.io.beforeWrite = (op) => {
+      const at = op.argv.indexOf('--add-label');
+      if (at > -1 && !r.io.repoLabels.has(op.argv[at + 1])) throw new Error(`'${op.argv[at + 1]}' not found`);
+    };
+    recordCount(r.ctx, 'redrives', 1, 0);
+    r.io.repoLabels.delete('loop/redrives: 1');
+    expect(recordCount(r.ctx, 'redrives', 2, 0)).toBe(1);
+    expect(r.created()).toBe(2);
+    expect(r.on(2)).toContain('loop/redrives: 1');
+  });
 });
