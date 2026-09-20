@@ -25,8 +25,6 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCallbacksDir } from '../appraise-github-issues/lib/appraise.ts';
-import { shutdownAgents } from '../fix-github-issue/lib/agent.ts';
-import { awaitReleases } from './lib/claims.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines, isFixture, parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
@@ -36,6 +34,7 @@ import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { ISSUE_LIST_FIELDS } from '../appraise-github-issues/lib/appraise.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, JOURNAL_STEPS, type JournalStep } from './lib/carve.ts';
 import { carveIssue } from './lib/knife.ts';
+import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -160,16 +159,7 @@ if (DRY_RUN && !(isFixture(SEATS.carver) && isFixture(SEATS.confirmer))) {
   process.exit(0);
 }
 
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.on(signal, async () => {
-    log(`received ${signal}; stopping agents`);
-    const survivors = await shutdownAgents();
-    if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
-    const abandoned = await awaitReleases();
-    if (abandoned.length > 0) log(`exiting with claim(s) still held, which expire on their own: ${abandoned.join(', ')}`);
-    process.exit(signal === 'SIGINT' ? 130 : 143);
-  });
-}
+installStopHandler(log);
 
 if (!DRY_RUN) ensureLabels(ctx);
 

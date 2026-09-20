@@ -38,6 +38,7 @@ import { createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
+import { installStopHandler } from './lib/stop.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -129,6 +130,10 @@ const ctx = createContext({
   dryRun: DRY_RUN,
   onLane: BOARD && !DRY_RUN ? BOARD.onLane : undefined,
 });
+
+// Agents run under their own process group, so a signal to this driver does not reach them on its
+// own: without a handler, Ctrl+C would leave the agent running with its approvals bypassed.
+installStopHandler(log);
 
 step(`${ctx.project.name} fix-github-issue`);
 log(`base ${ctx.project.baseBranch} | merge: ${ctx.knobs.autoMerge} | config ${CONFIG_FILE}`);

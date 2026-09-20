@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readResult, runAgent, shutdownAgents } from '../fix-github-issue/lib/agent.ts';
+import { readResult, runAgent } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
@@ -46,6 +46,7 @@ import { handleIncident } from './lib/incident.ts';
 import { describe, probe } from './lib/liveness.ts';
 import { renderWalkerPrompt } from './lib/prompts.ts';
 import { classify, deployedRevision } from './lib/revision.ts';
+import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX_PROMPTS = join(HERE, '..', 'fix-github-issue', 'prompts');
@@ -456,16 +457,10 @@ async function main(): Promise<void> {
     return;
   }
   process.on('exit', release);
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    process.on(signal, async () => {
-      log(`received ${signal}; stopping agents and releasing the lock`);
-      const survivors = await shutdownAgents();
-      if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another walker`);
-      removeCheckout();
-      release();
-      process.exit(signal === 'SIGINT' ? 130 : 143);
-    });
-  }
+  installStopHandler(log, () => {
+    removeCheckout();
+    release();
+  });
 
   if (ONCE) {
     const wrong = await wake();

@@ -26,7 +26,7 @@
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { children, killAgent, shutdownAgents } from '../fix-github-issue/lib/agent.ts';
+import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
@@ -38,7 +38,7 @@ import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
-import { awaitReleases, refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
+import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
 import { createBoardWriter, placeByFacts, readBoardPointer } from './lib/board-writer.ts';
@@ -46,6 +46,7 @@ import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { FILES as FLOOR_FILES, type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
+import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -1179,24 +1180,10 @@ async function main(): Promise<void> {
     stopWalker();
     releaseLock();
   });
-  let stopping = false;
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    process.on(signal, async () => {
-      if (stopping) return;
-      stopping = true;
-      log(`received ${signal}; stopping agents and releasing the lock`);
-      // Wait for the agents to actually die before the lock goes: a child that ignores SIGTERM
-      // would otherwise keep working, approvals bypassed, under a replacement run's lock.
-      const survivors = await shutdownAgents();
-      if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
-      // The lanes release their own claims as the stop unwinds them; an exit before that skips every finally.
-      const abandoned = await awaitReleases();
-      if (abandoned.length > 0) log(`exiting with claim(s) still held, which expire on their own: ${abandoned.join(', ')}`);
-      await walker.stopAndWait();
-      releaseLock();
-      process.exit(signal === 'SIGINT' ? 130 : 143);
-    });
-  }
+  installStopHandler(log, async () => {
+    await walker.stopAndWait();
+    releaseLock();
+  });
 
   ensureLabels(ctx);
   if (!DRY_RUN) {
