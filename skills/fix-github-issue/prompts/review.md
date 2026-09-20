@@ -102,9 +102,12 @@ Then verify the change itself, independently of its proof:
   disagree, the code is what is true, and you say so in `adequacy` rather than blocking.
 - Classify what the diff touches yourself, from the diff and not from anything the author claimed:
   `code`, `ci`, `data` (any production or seeded record), `migration` (any schema change),
-  `stored-string` (any user-visible text held in the database). Report it in `touches`; the merge
-  boundary unions your classification with the author's and with a path scan, so an omission on
-  any side cannot widen what the loop may merge.
+  `stored-string` (any user-visible text held in the database). `ci` is the pipeline itself: a
+  workflow file, or a change to which commands CI runs or how it judges them; a test, a story, a
+  fixture, or a runner's configuration that the existing commands merely read is `code`. Report
+  it in `touches`; the merge boundary unions your classification with the author's and with a
+  path scan, so an omission on any side cannot widen what the loop may merge, and an over-report
+  on either side parks a change nobody needs to look at.
 - No agent or bot is listed as an author or co-author. This is a hard block.
 - No em dashes anywhere in the diff or the pull request prose.
 - The commit and title are Conventional Commits, imperative, facts only.

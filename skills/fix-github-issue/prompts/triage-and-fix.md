@@ -187,7 +187,10 @@ request you name here, and a verdict without them reads as no pull request and p
 `touches` is how the driver decides whether it may merge without a human. Use every value that
 applies: `code`, `ci`, `data` (any production or seeded record), `migration` (any database schema
 or migration change, whatever the ORM), `stored-string` (any user-visible text held in the
-database).
+database). `ci` means the continuous-integration pipeline itself: a workflow file, or a change to
+which commands CI runs or how it judges their result. A test, a story, a fixture, or a test
+runner's configuration that the existing commands merely read is `code`; calling it `ci` parks a
+change nobody needs to look at.
 
 Be accurate rather than generous in `reason`. A verdict the driver acts on is worth more than a
 verdict that flatters the run.

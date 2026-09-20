@@ -94,6 +94,12 @@ budget the issue never used.
 
 `autoMerge` says what may land without a person: `always`, `code-only`, or `never`.
 
+The five kinds are `code`, `ci`, `data`, `migration`, and `stored-string`. `ci` is the pipeline
+itself, which is what the config's `touchPaths.ci` points at (workflow files) and, for the two
+self-reports, any change to which commands CI runs or how it judges them; a test, a story, a
+fixture, or a runner's configuration that the existing commands read is `code`. Both prompts say
+so, because the union below means one over-report on either side parks the change.
+
 The boundary does not rest on the worker's self-report alone. The classification the merge decision
 uses is a union of three accounts: what the worker declared, what the reviewer independently
 declared, and what a scan of the diff's paths against the configured `touchPaths` mechanically
