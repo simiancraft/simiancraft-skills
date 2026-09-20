@@ -158,6 +158,9 @@ describe('the machine and the lane table agree', () => {
       const ok =
         transition.target.startsWith(own[phase]) ||
         transition.target.startsWith('ticket.human.') ||
+        // A person's redrive continues the pull request: catch up first, then the revision, or
+        // re-derive from facts when there is no pull request to continue.
+        (event === 'REDRIVEN' && ['ticket.landing.catchingUp', 'ticket.work.sentBack', 'ticket.reconcile'].includes(transition.target)) ||
         (from === 'ticket.deadLetters.work' && transition.target === 'ticket.carving.toCarve') ||
         (from === 'ticket.deadLetters.review' && transition.target === 'ticket.work.sentBack');
       expect(ok, `${from} on ${event} exits to ${transition.target}`).toBe(true);

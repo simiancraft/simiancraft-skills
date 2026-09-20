@@ -42,6 +42,18 @@ export type StateNode = {
   always?: Transition[];
 };
 
+/**
+ * A person's redrive (`fix.ts --redrive`, or the loop finding a lifted hold over a pull request):
+ * the hold comes off, the redrive is counted, and the existing pull request is continued rather
+ * than a second one opened. No seat begins on a stale lane, so a lane behind the base catches up
+ * first; the objection that stopped the work stands as the brief, which is a standing rejection.
+ */
+const REDRIVE: Transition[] = [
+  { target: 'ticket.landing.catchingUp', guard: 'prExists and behindBase', actions: ['countRedrive', 'unlabelHold', 'reclaim', 'prToDraft'] },
+  { target: 'ticket.work.sentBack', guard: 'prExists', actions: ['countRedrive', 'unlabelHold', 'reclaim'] },
+  { target: 'ticket.reconcile', actions: ['countRedrive', 'unlabelHold'] },
+];
+
 /** Transitions every ticket state inherits, tried before its own only for the events named here. */
 const TICKET_WIDE: Record<string, Transition | Transition[]> = {
   ISSUE_CLOSED: [
@@ -104,6 +116,10 @@ export const MACHINE: StateNode = {
               { target: 'ticket.work.coding', guard: 'ownClaimLive' },
               { target: 'ticket.deadLetters.work', guard: 'deadClaim and draftPr', actions: ['clearClaim'] },
               { target: 'ticket.review.readyForReview', guard: 'deadClaim and readyPr and trustedVerdict', actions: ['reclaim'] },
+              // A pull request with nobody driving it (a lifted park, a lifted dead letter, a run
+              // that died elsewhere): the card belongs with the work, not back in Ready.
+              { target: 'ticket.review.readyForReview', guard: 'readyPr', actions: ['clearClaim'] },
+              { target: 'ticket.work.drafted', guard: 'draftPr', actions: ['clearClaim'] },
               { target: 'ticket.carving.spawningChildren', guard: 'applyingRecord', actions: ['clearClaim'] },
               { target: 'ticket.carving.childrenInFlight', guard: 'liveRecord or openChild', actions: ['clearClaim'] },
               { target: 'ticket.carving.rollingUp', guard: 'releasedLabel', actions: ['clearClaim'] },
@@ -120,7 +136,12 @@ export const MACHINE: StateNode = {
             inbox: {
               lane: { key: 'A1', name: 'Inbox', description: 'On the board, unsized, not yet looked at' },
               entry: ['moveCard'],
-              on: { APPRAISER_DISPATCHED: { target: 'ticket.appraisal.appraising', guard: 'lineActive' } },
+              on: {
+                APPRAISER_DISPATCHED: { target: 'ticket.appraisal.appraising', guard: 'lineActive' },
+                // fix.ts on one named issue: a person's own dispatch, which skips the sizing pass.
+                // The worker's first step is still the appraisal, and its verdict can still be a close.
+                PERSON_DISPATCHED: { target: 'ticket.work.coding', guard: 'noOpenPr', actions: ['claim', 'createWorktree'] },
+              },
             },
             appraising: {
               lane: { key: 'A2', name: 'Appraising', description: 'An appraiser turn is running' },
@@ -250,6 +271,20 @@ export const MACHINE: StateNode = {
 
         work: {
           initial: 'coding',
+          // The worker's turn is atomic to the driver. Proving and Drafted are the worker's own
+          // progress reports from inside that turn; the verdict is the event the driver acts on,
+          // from whichever of the four lanes the card was last reported in. A lane's own list is
+          // tried first, so the hand-offs below are only the ones a lane does not refine.
+          on: {
+            WORKER_VERDICT: [
+              { target: 'ticket.review.readyForReview', guard: 'verdictFixed and readyPr' },
+              { target: 'ticket.deadLetters.work', guard: 'verdictFixed', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
+              { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
+              { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
+              { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
+              { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
+            ],
+          },
           states: {
             sentBack: {
               lane: { key: 'D4', name: 'Sent back', description: 'Rejected with actionable items; a revision is pending or in progress' },
@@ -339,8 +374,12 @@ export const MACHINE: StateNode = {
           states: {
             approved: {
               lane: { key: 'F1', name: 'Approved', description: 'Merge verdict pinned to a head; waiting for the front of the queue' },
-              entry: ['moveCard', 'enqueue'],
+              entry: ['moveCard', 'enqueue', 'checkBoundary'],
               on: {
+                // The boundary is a fact about the change, so it is asked once, before anything waits.
+                BOUNDARY_REFUSED: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+                // A lane that moved past the reviewed commit was never judged.
+                HEAD_MOVED: { target: 'ticket.review.readyForReview', actions: ['leaveQueue'] },
                 // Nothing lands that lacks the current base: behind at all is enough to catch up.
                 FRONT_OF_QUEUE: [
                   { target: 'ticket.landing.catchingUp', guard: 'behindBase' },
@@ -390,10 +429,15 @@ export const MACHINE: StateNode = {
             },
             merging: {
               lane: { key: 'F5', name: 'Merging', description: 'The line says go; merging the pinned head and confirming' },
-              entry: ['moveCard', 'askMayMerge', 'checkBoundary', 'mergeWithPinnedHead', 'confirmMerged'],
+              entry: ['moveCard', 'askMayMerge', 'liveGate', 'lookUpstreamOnceMore', 'mergeWithPinnedHead', 'confirmMerged'],
               on: {
                 MERGED: { target: 'ticket.terminal.merged', actions: ['closeIssueWithPointer', 'putOnFloor', 'followBase', 'leaveQueue', 'releaseClaim', 'removeWorktree'] },
-                BOUNDARY_REFUSED: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+                ISSUE_CHANGED_UNDER_REVIEW: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+                // Checks, smoke, and a paused line take time; anything that landed meanwhile is caught up first.
+                BASE_MOVED_WHILE_WAITING: [
+                  { target: 'ticket.landing.catchingUp', guard: 'refreshesUnderCap', actions: ['countRefresh'] },
+                  { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+                ],
                 MERGE_UNREPORTED: { target: 'ticket.deadLetters.landing', actions: ['cancelQueuedMerge', 'labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                 LINE_GAVE_UP: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
               },
@@ -463,6 +507,7 @@ export const MACHINE: StateNode = {
               lane: { key: 'Q3', name: 'Work DLQ', description: 'Worker failed past the cap, or the run died with undeclared work' },
               entry: ['moveCard', 'runTriage'],
               on: {
+                REDRIVEN: REDRIVE,
                 TRIAGED: [
                   { target: 'ticket.carving.toCarve', guard: 'decisionOversize', actions: ['unlabelDlq', 'labelSize'] },
                   { target: 'ticket.work.drafted', guard: 'decisionRetry and redrivesUnderCap and draftPr', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
@@ -480,6 +525,7 @@ export const MACHINE: StateNode = {
               lane: { key: 'Q4', name: 'Review DLQ', description: 'Review rounds exhausted, or no trusted verdict' },
               entry: ['moveCard', 'runTriage'],
               on: {
+                REDRIVEN: REDRIVE,
                 TRIAGED: [
                   { target: 'ticket.review.readyForReview', guard: 'decisionRerunReviewer and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
                   { target: 'ticket.work.sentBack', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'reclaim'] },
@@ -493,6 +539,7 @@ export const MACHINE: StateNode = {
               lane: { key: 'Q5', name: 'Landing DLQ', description: 'Conflicts, red checks, smoke failure, refresh cap, or unreported merge' },
               entry: ['moveCard', 'runTriage'],
               on: {
+                REDRIVEN: REDRIVE,
                 TRIAGED: [
                   { target: 'ticket.landing.catchingUp', guard: 'decisionResolveConflict and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
                   { target: 'ticket.landing.approved', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
@@ -526,7 +573,8 @@ export const MACHINE: StateNode = {
               lane: { key: 'H3', name: 'Parked', description: 'A PR exists and a person owns the landing' },
               entry: ['moveCard'],
               on: {
-                HOLD_REMOVED: { target: 'ticket.ready.ready', actions: ['unparkPr', 'keepPrForReuse'] },
+                HOLD_REMOVED: { target: 'ticket.reconcile', actions: ['unparkPr', 'keepPrForReuse'] },
+                REDRIVEN: REDRIVE,
                 LANDED_BY_HAND: { target: 'ticket.terminal.merged' },
               },
             },
