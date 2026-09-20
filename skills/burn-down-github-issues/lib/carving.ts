@@ -137,6 +137,11 @@ export class Carving {
 
   /** The card follows the outcome where it names a lane, and the tracker where it does not. */
   private settle(number: number, title: string, outcome: { outcome: string; reason: string }): void {
+    // Without the lease the card is another run's to place, from the tracker's facts or otherwise.
+    if (outcome.outcome === 'lease-lost') {
+      this.deps.log(`#${number}  card left alone: ${outcome.reason}`);
+      return;
+    }
     const lane = laneOf(outcome.outcome);
     if (lane) this.deps.mark(number, title, lane, outcome.reason.slice(0, 80));
     else this.rest(number, title, outcome.reason);

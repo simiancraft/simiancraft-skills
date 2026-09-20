@@ -717,7 +717,7 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     if (error instanceof RunStopping || isStopping()) throw error;
     if (leaseLost(ctx, issue.number)) {
       say(`stopped writing: ${(error as Error).message.split('\n')[0]}`);
-      if (error instanceof LeaseLostError) return { outcome: 'busy', reason: 'this run lost its lease on the issue' };
+      if (error instanceof LeaseLostError) return { outcome: 'lease-lost', reason: 'this run lost its lease on the issue' };
       throw error;
     }
     try {

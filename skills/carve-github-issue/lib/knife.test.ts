@@ -101,6 +101,20 @@ describe('the carving driver makes only moves the chart allows', () => {
       expect(applied(held)).toBe(true);
     });
   }
+  test('the driver places no card for a carve that lost its lease', async () => {
+    const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    let placedBeforeLoss = -1;
+    io.beforeWrite = (op) => {
+      if (op.argv[1] !== 'issue' || op.argv[2] !== 'create' || leaseLost(ctx, 10)) return;
+      const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+      placedBeforeLoss = lanes.length;
+    };
+    await makeDriver(ctx, k, lanes).revisit(10, 'first carve');
+    expect(placedBeforeLoss).toBeGreaterThan(0);
+    expect(lanes.length).toBe(placedBeforeLoss);
+  });
   test('a trunk with open children but no record enters its first carving along a chart edge', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(10, { subIssues: [11] }), fakeIssue(11, { parentNumber: 10 })]);
     const ctx = ctxFor(io); const lanes = ['C5'];
@@ -379,7 +393,7 @@ describe('carveIssue', () => {
       if (op.argv[1] === 'issue' && op.argv[2] === 'create' && !leaseLost(ctx, 10)) loseLease();
     };
     const out = await carveIssue(ctx, issue10, k, io);
-    expect(out).toMatchObject({ outcome: 'busy', reason: expect.stringMatching(/lost its lease/) });
+    expect(out).toMatchObject({ outcome: 'lease-lost', reason: expect.stringMatching(/lost its lease/) });
     const written = io.writes.length;
     expect(io.view(10)!.subIssues).toHaveLength(1);
     expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
@@ -404,7 +418,7 @@ describe('carveIssue', () => {
       keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
     };
     const out = await carveIssue(ctx, issue10, k, io);
-    expect(out.outcome).toBe('busy');
+    expect(out.outcome).toBe('lease-lost');
     expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
     // With the lease held, the same failed turn is counted.
     ctx.log = () => {};

@@ -35,8 +35,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 export type FixOutcome = {
   /** `not-run` is a dry run that reached a seat it does not run: nothing was tried, so nothing failed. */
+  /**
+   * `lease-lost` is not `busy`: `busy` says another run's claim was seen, and the driver places the
+   * card for it; here this run's own lease ran out, who holds the issue now is not known, and the
+   * card is no longer this run's to place.
+   */
   /** `stopped` is a lane the operator's stop unwound: nothing about it was settled, and the next run takes it up. */
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped';
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost';
   reason: string;
 };
 
@@ -1433,7 +1438,7 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
   // written on it, and the lane is kept for whoever reads what happened.
   if (error instanceof LeaseLostError || leaseLost(ctx, issue.number)) {
     say(`lost its lease; nothing is settled, and the lane is kept: ${error.message.split('\n')[0]}`);
-    return { outcome: { outcome: 'busy', reason: 'this run lost its lease on the issue' }, keepLane: true };
+    return { outcome: { outcome: 'lease-lost', reason: 'this run lost its lease on the issue' }, keepLane: true };
   }
   // Nor is a stop, which is the operator's: nothing is counted or queued, and the lane is kept,
   // since a worker stopped mid-change leaves its only record there.

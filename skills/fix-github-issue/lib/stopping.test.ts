@@ -169,7 +169,7 @@ describe('a lane that lost its lease', () => {
     expect(cards).toEqual(['D1']);
   });
 
-  it('settles nothing from the worker its lost lease killed: no attempt counted, no Ready card, outcome busy', async () => {
+  it('settles nothing from the worker its lost lease killed: no attempt counted, no Ready card, and an outcome no driver places a card for', async () => {
     writeFileSync(join(scratch, 'verdict.json'), JSON.stringify({ issue: 8, verdict: 'failed', reason: 'killed mid-change' }));
     const io = new FakeTracker('loop-bot', [fakeIssue(8, { labels: [{ name: 'size: 1' }] })]);
     const lines: string[] = [];
@@ -183,7 +183,7 @@ describe('a lane that lost its lease', () => {
     });
     ctx.onLane = (e) => lanes.push(e.lane);
     const outcome = await fixIssue(ctx, { number: 8, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] }, { maxPoints: 2 });
-    expect(outcome).toEqual({ outcome: 'busy', reason: 'this run lost its lease on the issue' });
+    expect(outcome).toEqual({ outcome: 'lease-lost', reason: 'this run lost its lease on the issue' });
     expect(lines.filter((l) => /attempt \d+ of \d+ failed|worker failed/.test(l))).toEqual([]);
     expect(ctx.dryRunLog.filter((d) => /loop\/attempts/.test(d))).toEqual([]);
     expect(lanes).toEqual(['D1']);
