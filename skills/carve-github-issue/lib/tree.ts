@@ -37,7 +37,8 @@ export type Node = Issue & {
   record: Record | null;
 };
 
-export type Claim = { kind: 'carving' | 'working'; runId: string; at: string; expires: string; commentId: number; released: boolean };
+/** `token` names one acquisition: a run claims an issue more than once, and only the token tells its claims apart. */
+export type Claim = { kind: 'carving' | 'working'; runId: string; at: string; expires: string; commentId: number; released: boolean; token: string | null };
 
 export type IntentKind = 'applying' | 'released' | 'carve-handoff' | 'appraise-handoff' | 'close';
 export type Intent = { kind: IntentKind; generation: number | null; commentId: number; createdAt: string; payload: unknown; finished: boolean };
@@ -357,6 +358,7 @@ export function claimsOf(node: Node, botLogin: string): Claim[] {
         expires: marker.fields.expires ?? c.createdAt,
         commentId: c.databaseId,
         released: false,
+        token: marker.fields.token ?? null,
       });
     } else if (marker.name === 'carve-unclaim') {
       for (const claim of claims) {

@@ -11,6 +11,8 @@ import { type Claim, ghIo, liveClaim, pointsOf, readTree, type TrackerIo, type T
 
 export const CLAIM_TTL_MS = 30 * 60 * 1000;
 export const CLAIM_RENEW_MS = 5 * 60 * 1000;
+/** How long a claim waits for the thread to show it; a test sets the wait to zero. */
+export const CLAIM_READBACK = { tries: 3, waitMs: 2_000 };
 
 /** The tracker this context reads: the fake a test supplied, or GitHub. */
 export function trackerIo(ctx: Context): TrackerIo {
@@ -18,8 +20,8 @@ export function trackerIo(ctx: Context): TrackerIo {
   return io && typeof io.view === 'function' && typeof io.search === 'function' ? (io as TrackerIo) : ghIo(ctx);
 }
 
-export function claimMarker(kind: Claim['kind'], runId: string, at: string, expires: string): string {
-  return `<!-- carve-claim kind=${kind} run=${runId} at=${at} expires=${expires} -->`;
+export function claimMarker(kind: Claim['kind'], runId: string, at: string, expires: string, token: string): string {
+  return `<!-- carve-claim kind=${kind} run=${runId} at=${at} expires=${expires} token=${token} -->`;
 }
 
 export type ClaimHandle = { kind: Claim['kind']; commentId: number | null; label: string; renew: () => void; release: (options?: { keepLabel?: boolean }) => void };
@@ -43,16 +45,19 @@ export function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['k
   }
   const at = new Date();
   const expires = new Date(at.getTime() + CLAIM_TTL_MS);
-  mutate(ctx, `claim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', claimMarker(kind, ctx.runId, at.toISOString(), expires.toISOString())]);
+  const token = crypto.randomUUID();
+  mutate(ctx, `claim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', claimMarker(kind, ctx.runId, at.toISOString(), expires.toISOString(), token)]);
   mutate(ctx, `label #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
 
   // The re-read must show this run's own claim: a claim nobody can see, its owner included, is
   // not a lock, and its lease could never be renewed. The thread can trail the write by a moment,
-  // so look again a few times before giving up, and give up closed.
+  // so look again a few times before giving up, and give up closed. It must be the claim just
+  // posted, known by its token: a run that claimed, released, and claims again can be shown its
+  // first claim by a read that trails the release, and that comment is no lease to renew.
   let after = readTree(ctx, issue, io);
-  const own = () => after.claims.find((c) => c.runId === ctx.runId && c.kind === kind && !c.released) ?? null;
-  for (let tries = 0; own() === null && tries < 3; tries++) {
-    Bun.sleepSync(2_000);
+  const own = () => after.claims.find((c) => c.runId === ctx.runId && c.kind === kind && !c.released && c.token === token) ?? null;
+  for (let tries = 0; own() === null && tries < CLAIM_READBACK.tries; tries++) {
+    if (CLAIM_READBACK.waitMs > 0) Bun.sleepSync(CLAIM_READBACK.waitMs);
     after = readTree(ctx, issue, io);
   }
   const mine = own();
@@ -70,7 +75,7 @@ export function claim(ctx: Context, io: TrackerIo, issue: number, kind: Claim['k
     label,
     renew: () => {
       const now = new Date();
-      const body = claimMarker(kind, ctx.runId, now.toISOString(), new Date(now.getTime() + CLAIM_TTL_MS).toISOString());
+      const body = claimMarker(kind, ctx.runId, now.toISOString(), new Date(now.getTime() + CLAIM_TTL_MS).toISOString(), token);
       try {
         mutate(ctx, `renew claim on #${issue}`, ['gh', 'api', '-X', 'PATCH', `repos/${ctx.project.repo}/issues/comments/${commentId}`, '-f', `body=${body}`]);
       } catch (error) {

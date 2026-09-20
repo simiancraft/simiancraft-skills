@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { claim, isTrunk, liveGate, refusal } from './claims.ts';
+import { CLAIM_READBACK, claim, isTrunk, liveGate, refusal } from './claims.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { type Record, renderRecord } from './record.ts';
 import { readTree } from './tree.ts';
@@ -175,5 +175,17 @@ describe('claim', () => {
     const handle = claim(ctx, io, 1, 'working');
     expect(handle).not.toBe('busy');
     expect(io.writes).toEqual([]);
+  });
+  test('a read that trails the release cannot pass the first claim off as the second', () => {
+    const io = new FakeTracker(BOT, [fakeIssue(1)]);
+    const ctx = ctxFor(io);
+    CLAIM_READBACK.waitMs = 0;
+    const first = claim(ctx, io, 1, 'working');
+    if (first === 'busy') throw new Error('the first claim should succeed');
+    const trailing = structuredClone(io.view(1));
+    first.release();
+    const view = io.view.bind(io);
+    io.view = (n) => (n === 1 ? structuredClone(trailing) : view(n));
+    expect(claim(ctx, io, 1, 'working')).toBe('busy');
   });
 });
