@@ -383,7 +383,15 @@ async function runWorker(
 
   for (;;) {
     if (!proveOnly) {
-      move(ctx, issue, revision ? 'D4' : 'D1', revision ? 'revision after a review' : undefined);
+      move(ctx, issue, revision ? 'D4' : 'D1', revision ? 'continuing on the existing branch' : undefined);
+      // Code on a branch that already exists starts on the current base like everything else: the
+      // prompt forbids the coder to merge it, so the driver does, before the agent and not after.
+      if (revision && !ctx.dryRun) {
+        holdLease(ctx, issue.number, 'start the code step');
+        if (catchUp(ctx, issue, cwd, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), say, 'before the code step') === 'conflict') {
+          return { issue: issue.number, verdict: 'failed', reason: `the branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+        }
+      }
       const coded = await runCode(ctx, issue, cwd, maxPoints, codeBrief, revision);
       if (coded.verdict !== 'coded') return coded;
       say(`coded at ${coded.sha?.slice(0, 10)} on ${coded.branch}; announced`);
