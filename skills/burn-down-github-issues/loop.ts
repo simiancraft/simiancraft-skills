@@ -30,7 +30,7 @@ import { children, killAgent, shutdownAgents } from '../fix-github-issue/lib/age
 import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { closeIssue, ensureLabels, HOLD_LABELS, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
@@ -637,7 +637,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
     for (const ref of new Set(issueRefs([pr], 'closing'))) {
       const issue = open.get(ref);
       if (!issue) continue;
-      if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq' || HOLD_LABELS.includes(l.name))) continue;
+      if (isHeldBy(issue.labels, CONFIG.skipLabels) || issue.labels.some((l) => HOLD_LABELS.includes(l.name))) continue;
       if (notALeafLabel(issue) || looksLikeTrunk(issue)) continue;
       if ((issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED'))) continue;
       if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
@@ -690,7 +690,7 @@ function selectCandidates(): Issue[] {
   const kept = all.filter((issue) => {
     if (ONLY && !ONLY.has(issue.number)) return false;
     if (!ONLY && !issue.parent && Date.parse(issue.createdAt) < cutoff) return false;
-    if (issue.labels.some((l) => CONFIG.skipLabels.includes(l.name) || l.name === 'loop/dlq')) return ONLY ? exclude(issue, 'a person holds it') : false;
+    if (isHeldBy(issue.labels, CONFIG.skipLabels)) return ONLY ? exclude(issue, 'a person holds it, or it is a dead letter') : false;
     if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) return ONLY ? exclude(issue, 'its review budget is spent') : false;
     if (claimed.has(issue.number)) return ONLY ? exclude(issue, 'an open pull request references it') : false;
     const label = notALeafLabel(issue);

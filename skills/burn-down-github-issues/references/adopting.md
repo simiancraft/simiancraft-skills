@@ -312,8 +312,9 @@ is cheap. `ageDays: 30` keeps it to issues whose context is still true. Widen af
 well, not before.
 
 `maxReviewRounds` is a **per-issue high-water mark**, not a per-run allowance; the count lives on
-the issue as `loop/reviews: N`. At the cap the issue goes to the dead-letter queue with the reason
-that put it there, and removing `loop/dlq` is the redrive.
+the issue as `loop/reviews: N`. At the cap the issue goes to the review dead-letter queue
+(`loop/dlq: review`) with the reason that put it there; there is one queue per phase, and removing
+the label or running `fix.ts --redrive` is the redrive, counted as `loop/redrives: N`.
 
 ## What will surprise you
 

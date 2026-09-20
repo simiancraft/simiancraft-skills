@@ -169,7 +169,7 @@ export function selectForAppraisal(
 
 /** True when a person's label holds the issue out of the loop's reach. */
 export function isHeld(labels: Array<{ name: string }>, skipLabels: string[]): boolean {
-  return labels.some((l) => skipLabels.includes(l.name) || l.name === 'loop/dlq');
+  return labels.some((l) => skipLabels.includes(l.name) || l.name === 'loop/dlq' || l.name.startsWith('loop/dlq:'));
 }
 
 // ---------------------------------------------------------------------------

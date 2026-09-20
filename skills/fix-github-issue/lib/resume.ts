@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
-import { parkIssue, reviewCount } from './labels.ts';
+import { isHeldBy, parkIssue, reviewCount } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
 import { type Issue, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
@@ -114,7 +114,7 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
 
     // The safety labels that gate selection gate resumption too: a parked, skipped, DLQed, or
     // budget-exhausted issue belongs to a human even when a worktree still remembers it.
-    if (issue.labels.some((l) => skipLabels.includes(l.name) || l.name === 'loop/dlq')) continue;
+    if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
 
     const verdict = parseJsonFile<WorkerResult>(join(dir, VERDICT_FILE));

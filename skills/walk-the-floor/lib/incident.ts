@@ -36,7 +36,9 @@ export type IncidentResult = {
 };
 
 /** Labels the fix pipeline leaves when it stops and hands an issue to a person. */
-const HUMAN_LABELS = new Set(['loop/parked', 'loop/dlq', 'needs-human', 'needs-decision', 'loop/skip']);
+const HUMAN_LABELS = new Set(['loop/parked', 'needs-human', 'needs-decision', 'loop/skip']);
+/** A dead letter is with the loop's triage or a person, never back in a worker's hands on its own. */
+const withAPersonOrTriage = (name: string) => HUMAN_LABELS.has(name) || name === 'loop/dlq' || name.startsWith('loop/dlq:');
 
 function readLogs(command: string | undefined, cwd: string): string {
   if (!command) return '';
@@ -78,7 +80,7 @@ export function openIncidentFor(ctx: Context, itemId: string): { number: number;
   const prefix = `floor: ${itemId} is `;
   const row = rows.find((candidate) => candidate.title.startsWith(prefix));
   if (!row) return null;
-  return { number: row.number, withAPerson: row.labels.some((label) => HUMAN_LABELS.has(label.name)) };
+  return { number: row.number, withAPerson: row.labels.some((label) => withAPersonOrTriage(label.name)) };
 }
 
 export function ensureIncidentLabel(ctx: Context): void {

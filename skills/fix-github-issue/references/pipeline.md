@@ -35,8 +35,8 @@ commands rather than trusting a claim of green, and returns a verdict.
 | `merged` | the reviewer approved, the proof was still fresh, the checks were green, and the branch landed |
 | `closed` | a verdict ended the issue without code: already fixed, or obsolete; the receipt is a comment |
 | `handed-off` | a person is needed: a product decision, or access an agent lacks. Work the worker finds larger than its appraisal is `out-of-band`, which a driver hands to carving, not to a person |
-| `parked` | a pull request exists and a human owns the next call; the issue carries the reason |
-| `dlq` | the per-issue review budget is spent; the issue is retained with the objection that outlived it |
+| `parked` | a pull request exists and a person owns the next call: the merge boundary refused it, or the issue changed under the review; the issue carries the reason |
+| `dlq` | a machine gave up: the issue carries `loop/dlq: <phase>` (work, review, or landing from this pipeline) and the reason that put it there |
 | `failed` | the worker process failed, so its answer is not trusted and nothing durable was written |
 
 ## The verdict-file contract
@@ -61,9 +61,11 @@ how a crashed reviewer's parting words could approve a merge.
 
 `maxReviewRounds` is a **per-issue high-water mark, not a per-run allowance**. The count lives on
 the issue as a label, so rounds spent in an earlier run are already spent. At the cap the issue is
-ejected to the **dead-letter queue**: labelled, retained with the reason that put it there, and
-invisible to selection. Removing the label is the redrive. This is what stops an issue nobody can
-get right from cycling between worker and reviewer forever, one restart at a time.
+ejected to the **review dead-letter queue** (`loop/dlq: review`): retained with the objection that
+outlived the budget, and invisible to selection. Removing the label, or `fix.ts --redrive`, is the
+redrive, and each redrive is counted on the issue as `loop/redrives: N`. This is what stops an
+issue nobody can get right from cycling between worker and reviewer forever, one restart at a
+time.
 
 A round is spent whenever a rejection sends the work back or parks it, and recorded before the
 revision starts, so a run killed mid-revision refunds nothing. Four things deliberately cost no
@@ -73,9 +75,16 @@ change; an approval the pull master declines to land (the merge boundary, a red 
 smoke, a conflict, a refused line), which is not an objection a revision could answer; and a
 merge, which ends the accounting because the issue is closing.
 
-Parked and DLQed are different states. Parked means a human should look at it, and it is where a
-reviewer that crashed, a conflict, or an `autoMerge` refusal ends up. The DLQ means the pipeline
-tried, spent the budget, and the objection outlived it.
+Parked and dead-lettered are different states. Parked means a person owns the next call, and
+only two things park: the merge boundary refusing an approved change, and the issue changing under
+the review (a hold, a pause, a claim). A dead letter means a machine gave up, and which queue says
+which machine: `loop/dlq: work` for a worker that failed past its attempts, failed on a revision,
+named no pull request, or left a draft or a dirty tree; `loop/dlq: review` for a spent budget or
+a reviewer with no trusted verdict; `loop/dlq: landing` for a conflict, red or unfinished checks,
+a failed smoke, the refresh cap, a refused line, or an unreported merge. The burndown's appraisal
+and carve queues are its own. Each queue is meant to be triaged differently
+(`burn-down-github-issues/references/state-machine.md`, "Dead letters"); today every one waits
+for a person, and the pull request carries the same label so the branch says what the issue says.
 
 A reviewer rejection, whether `gather-more` or `block`, sends the work back for a revision rather
 than parking it. Both name something a worker can act on, so giving up on the first one throws away

@@ -245,7 +245,7 @@ export class Carving {
     for (const issue of all) {
       if (!inScope(issue) || first.has(issue.number)) continue;
       const labels = issue.labels.map((l) => l.name);
-      if (labels.some((l) => HOLD_LABELS.includes(l) || l === 'loop/dlq')) continue;
+      if (labels.some((l) => HOLD_LABELS.includes(l))) continue;
       const points = pointsOf(issue.labels);
       const summary = issue.subIssuesSummary;
       const openChild = summary !== undefined && summary.total > summary.completed;

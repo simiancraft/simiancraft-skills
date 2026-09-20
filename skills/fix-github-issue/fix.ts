@@ -35,7 +35,7 @@ import {
 import { createContext } from './lib/context.ts';
 import { parseSeat, seatLabel } from './lib/engines.ts';
 import { createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
-import { clearCount, ensureLabels } from './lib/labels.ts';
+import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
 
@@ -183,17 +183,19 @@ log(`facts place #${ISSUE_NUMBER} in ${placed.lane} (${placed.why})`);
 if (BOARD && !DRY_RUN) BOARD.onLane({ issue: issue.number, title: issue.title, lane: placed.lane, note: placed.why });
 
 // A redrive is a person's act: lifting the hold is what makes the live gate let the issue through,
-// and the count labels come off with it so the fresh budget is real.
+// and the count labels come off with it so the fresh budget is real. The redrive itself is
+// counted, so a thread that keeps coming back shows how many times on its labels.
 const REDRIVE = flag('redrive');
 if (REDRIVE) {
-  for (const hold of ['loop/dlq', 'loop/parked']) {
-    if (issue.labels.some((l) => l.name === hold)) {
-      mutate(ctx, `lift ${hold} on #${ISSUE_NUMBER} (redrive)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', hold]);
-    }
+  const lifted = liftDlq(ctx, ISSUE_NUMBER, issue.labels);
+  if (issue.labels.some((l) => l.name === 'loop/parked')) {
+    mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (redrive)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
+    lifted.push('loop/parked');
   }
+  if (lifted.length > 0) recordRedrive(ctx, ISSUE_NUMBER, redriveCount(issue.labels));
   clearCount(ctx, 'reviews', ISSUE_NUMBER);
   clearCount(ctx, 'attempts', ISSUE_NUMBER);
-  issue.labels = issue.labels.filter((l) => !['loop/dlq', 'loop/parked'].includes(l.name) && !/^loop\/(reviews|attempts):/.test(l.name));
+  issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !/^loop\/(reviews|attempts):/.test(l.name));
 }
 
 // An open pull request to continue: named, or the newest open one that references the issue.

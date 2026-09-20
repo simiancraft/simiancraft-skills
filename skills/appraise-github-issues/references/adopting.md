@@ -44,12 +44,12 @@ export default {
 ## What it writes to the tracker
 
 Labels it creates on start, idempotently: `needs-decision`, `needs-human`, `loop/skip`,
-`loop/parked`, `loop/dlq`. Labels it applies: `size: N`, `needs-decision`, `needs-human`. Comments:
+`loop/parked`, any `loop/dlq: <phase>`. Labels it applies: `size: N`, `needs-decision`, `needs-human`. Comments:
 the question for a hand-off, the receipt for a close, both opinions for a disputed close, and the
 reason for a re-size. Closes: only `already-fixed` and `obsolete`, and only after the confirmer
 agrees unless `confirmCloses` is off.
 
-An issue carrying `needs-decision`, `needs-human`, `loop/skip`, `loop/parked`, or `loop/dlq` is
+An issue carrying `needs-decision`, `needs-human`, `loop/skip`, `loop/parked`, or a `loop/dlq: <phase>` is
 never selected; a person removes the label to put it back in reach. `--issue <n>` bypasses the
 window and the size filter but not those labels.
 

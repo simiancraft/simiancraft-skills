@@ -88,9 +88,9 @@ The counters worth watching, and what a stall in each means:
 | `running reviewer on #N` | judging; as long as CI takes, waited on inside one turn |
 | `review round N of M` | a rejection was recorded; the issue is being revised |
 | `merge PR #N` | the pull master landed it |
-| `park #N` | the loop stopped and handed the issue to a human |
+| `park #N` | the merge boundary refused an approved change, or the issue changed under the review; a person owns the landing |
 | `label #N needs-decision` or `needs-human` | handed off before any pull request; the reason is a comment on the issue, and the label keeps it out of selection until removed |
-| `to the DLQ` | the per-issue review budget is spent |
+| `to the <phase> DLQ` | a machine gave up: the worker past its attempts, the review budget spent, or a landing that could not complete; the issue carries `loop/dlq: <phase>` |
 
 **Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** A
 dirty-worktree bug looks like this: every worker parks and no reviewer ever runs.
@@ -145,12 +145,14 @@ untrustworthy for whether GitHub actually did the thing.
 ```bash
 gh pr list --state merged --limit 10 --json number,title,mergedAt
 gh issue list --label loop/parked --state open
-gh issue list --label loop/dlq --state open
+gh issue list --label "loop/dlq: work" --state open      # one queue per phase: appraisal, carve, work, review, landing
+gh issue list --search 'is:open label:"loop/dlq: review","loop/dlq: landing"'
 git worktree list | grep <worktreeRoot>          # expect none but checkouts you made yourself
 ```
 
-Then decide about anything parked or DLQed. A DLQed issue keeps the reason that put it there;
-removing `loop/dlq` is the redrive.
+Then decide about anything parked or dead-lettered. A dead letter keeps the reason that put it
+there; removing its `loop/dlq: <phase>` label is the redrive, and `fix.ts --issue <n> --redrive`
+lifts the letter, counts the redrive, and continues the pull request it left.
 
 ## Landing a parked pull request by hand
 

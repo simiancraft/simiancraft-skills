@@ -19,7 +19,7 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { attemptCount, closeIssue, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { mutate, sh } from './shell.ts';
 import { MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
@@ -387,7 +387,14 @@ function serializePullMaster<T>(ctx: Context, action: () => Promise<T>): Promise
 }
 
 export type Reviewed = { review: ReviewResult; reviewedSha: string };
-export type Landing = 'merged' | 'revise' | 'stale' | { park: string };
+/** A review that produced no trusted verdict says which dead-letter queue owns the reason. */
+export type DeadLetter = { dlq: DlqPhase; reason: string };
+/**
+ * `park` hands the landing to a person (the merge boundary, or the issue changed under the review);
+ * `dlq` is a landing the machine could not complete (a conflict, red checks, a failed smoke, a
+ * refused line, an unreported merge), which the landing queue's triage may retry.
+ */
+export type Landing = 'merged' | 'revise' | 'stale' | { park: string } | { dlq: string };
 
 /** How long the smoke command may run before the pull request parks as unbootable. */
 
@@ -406,20 +413,21 @@ async function review(
   cwd: string,
   say: (message: string) => void,
   round: number,
-): Promise<Reviewed | null> {
+): Promise<Reviewed | DeadLetter> {
   // A draft is the worker's own statement that the work is not finished. Reviewing one wastes the
   // review and, worse, can approve a branch the worker still intends to push to.
   if (isDraft(ctx, pr)) {
     say('worker left the pull request in draft; treating it as incomplete');
     move(ctx, issue, 'D3', `PR #${pr} left in draft`);
-    return null;
+    return { dlq: 'work', reason: `The worker reported a fix but left pull request #${pr} in draft, which is its own statement that the work is not finished.` };
   }
 
   // A dirty tree means checks run against files that are not in the pull request: a worker's
   // uncommitted edit could make the reviewer's re-run pass while the clean remote commit fails.
-  if (dirtyPaths(ctx, cwd).length > 0) {
+  const dirty = dirtyPaths(ctx, cwd);
+  if (dirty.length > 0) {
     say('worktree has uncommitted changes; a review here would judge code that is not in the pull request');
-    return null;
+    return { dlq: 'work', reason: `The worker left uncommitted changes in its worktree (${dirty.slice(0, 5).join(', ')}), so a review would judge code that is not in pull request #${pr}.` };
   }
 
   const reviewedSha = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
@@ -427,7 +435,7 @@ async function review(
   const verdict = await runReviewer(ctx, issue.number, pr, cwd, round);
   if (!verdict) {
     say('reviewer wrote no verdict');
-    return null;
+    return { dlq: 'review', reason: `The reviewer produced no trusted verdict on pull request #${pr} at ${reviewedSha.slice(0, 10)}.` };
   }
   // A verdict that is not merge is explained by what blocks it, not by how good the evidence was.
   const why = verdict.decision !== 'merge' && verdict.blocking.length > 0 ? verdict.blocking.join(' | ') : verdict.adequacy;
@@ -482,7 +490,7 @@ async function land(
         // branch the CI guard is configured to skip, and nothing else would ever flip it back.
         mutate(ctx, `mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
         say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-        return { park: `the branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+        return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
       }
     }
     return 'revise';
@@ -495,7 +503,7 @@ async function land(
     move(ctx, issue, 'F2', `base moved into ${overlap.slice(0, 3).join(', ')}`);
     if (!updateFromBase(ctx, cwd)) {
       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-      return { park: `the branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+      return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
     }
     return 'stale';
   }
@@ -516,7 +524,7 @@ async function land(
   const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, reviewedSha);
   if (mismatch) {
     say(`refusing to merge PR #${pr}: ${mismatch}`);
-    return { park: mismatch };
+    return { dlq: mismatch };
   }
 
   // A failing or unfinished build never merges, whatever the review said. The reviewer watched
@@ -527,7 +535,7 @@ async function land(
   const notGreen = await awaitGreenChecks(ctx, pr, say);
   if (notGreen) {
     say(`refusing to merge PR #${pr}: ${notGreen}`);
-    return { park: notGreen };
+    return { dlq: notGreen };
   }
 
   // A green build is not a booted result. A change can compile, type-check, and pass every test
@@ -548,20 +556,20 @@ async function land(
       const tail = `${smoke.stdout.toString()}\n${smoke.stderr.toString()}`.trim().split('\n').slice(-6).join(' | ');
       const reason = `the smoke command exited ${smoke.exitCode ?? 'by timeout'}: ${tail || 'no output'}`;
       say(`refusing to merge PR #${pr}: ${reason}`);
-      return { park: reason };
+      return { dlq: reason };
     }
     say('smoke command passed');
   }
 
   // The driver's last word. A driver holding its line waits here rather than answering; one that
-  // gives up answers with a reason, and the pull request parks without spending a review round.
+  // gives up answers with a reason, and the landing is a dead letter without a review round spent.
   // The card is in Merging for the whole wait: a paused line holds a card that is about to land.
   move(ctx, issue, 'F5', `PR #${pr} at ${reviewedSha.slice(0, 10)}`);
   if (ctx.mayMerge) {
     const permission = await ctx.mayMerge();
     if (!permission.ok) {
       say(`refusing to merge PR #${pr}: ${permission.reason}`);
-      return { park: permission.reason };
+      return { dlq: permission.reason };
     }
   }
 
@@ -590,7 +598,7 @@ async function land(
       // nothing was scheduled
     }
     say(`PR #${pr} did not report a merge; cancelled any queued merge and left the worktree and issue alone`);
-    return { park: 'the merge was requested but the pull request did not report a merge' };
+    return { dlq: 'the merge was requested but the pull request did not report a merge' };
   }
 
   // The paths that landed, read while the worktree still exists.
@@ -738,19 +746,34 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 }
 
 /**
- * One more worker or confirmer failure on the issue; at the cap the issue parks with the log tail,
- * so a leaf nobody can work stops costing attempts. The count lives on the issue, like reviews.
+ * One more worker or confirmer failure on the issue; at the cap the issue goes to the work
+ * dead-letter queue with the log tail, so a leaf nobody can work stops costing attempts. The
+ * count lives on the issue, like reviews.
  */
 function countFailure(ctx: Context, issue: Issue, reason: string, say: (message: string) => void): FixOutcome {
   const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
   say(`attempt ${attempts} of ${ctx.knobs.maxWorkerAttempts} failed`);
   if (attempts >= ctx.knobs.maxWorkerAttempts) {
-    parkIssue(ctx, issue.number, `The loop failed ${attempts} times on this issue and stops trying. Last failure: ${reason}\n\nRemove \`loop/parked\` to give it a fresh budget.`);
-    move(ctx, issue, 'H3', `parked after ${attempts} failed attempts`);
-    return { outcome: 'parked', reason: `parked after ${attempts} failed attempts: ${reason}` };
+    return deadLetter(ctx, issue, 'work', `The worker failed ${attempts} times on this issue and the loop stops trying. Last failure: ${reason}`, say);
   }
   move(ctx, issue, 'B1', `attempt ${attempts} failed; attempts remain`);
   return { outcome: 'failed', reason };
+}
+
+/** The lane each queue's card sits in. */
+const DLQ_LANE: Record<DlqPhase, string> = { appraisal: 'Q1', carve: 'Q2', work: 'Q3', review: 'Q4', landing: 'Q5' };
+
+/**
+ * Ejects the issue to one phase's dead-letter queue and says so on every projection. A pull
+ * request, when there is one, carries the same label, so a person reading the branch sees the
+ * state the issue carries rather than an unlabelled draft nobody claimed.
+ */
+function deadLetter(ctx: Context, issue: Issue, phase: DlqPhase, reason: string, say: (message: string) => void, pr?: number): FixOutcome {
+  sendToDlq(ctx, issue.number, phase, reason);
+  if (pr) mutate(ctx, `label PR #${pr} loop/dlq: ${phase}`, ['gh', 'pr', 'edit', String(pr), '--add-label', `loop/dlq: ${phase}`]);
+  say(`to the ${phase} DLQ: ${reason.split('\n')[0]}`);
+  move(ctx, issue, DLQ_LANE[phase], reason.slice(0, 120));
+  return { outcome: 'dlq', reason: `${phase} dead letter: ${reason.split('\n')[0]}` };
 }
 
 async function workIssue(
@@ -804,13 +827,10 @@ export async function reviewAndLand(
   let consumed = reviewCount(issue.labels);
   let refreshes = 0;
   // Why the work stopped, carried to the park comment so the reason lives on the issue rather
-  // than only in this run's log.
+  // than only in this run's log. Only a person's call parks; a machine's failure is a dead letter.
   let parkReason = 'the loop worked this issue and could not finish the call';
   while (consumed < ctx.knobs.maxReviewRounds) {
-    if (!result.pr) {
-      parkReason = 'the worker reported a fix but named no pull request';
-      break;
-    }
+    if (!result.pr) return deadLetter(ctx, issue, 'work', 'The worker reported a fix but named no pull request.', say);
     const pr = result.pr;
     const touches = result.touches;
 
@@ -819,10 +839,7 @@ export async function reviewAndLand(
     // Reviewing happens here, outside the queue, so lanes review at the same time.
     if (consumed > 0 || refreshes > 0) move(ctx, issue, 'E1', `PR #${pr} back for review`);
     const reviewed = await review(ctx, issue, pr, cwd, say, consumed + 1);
-    if (!reviewed) {
-      parkReason = 'the reviewer produced no trusted verdict on this round';
-      break;
-    }
+    if ('dlq' in reviewed) return deadLetter(ctx, issue, reviewed.dlq, reviewed.reason, say, pr);
 
     // Merging happens there, one branch at a time, because the base branch is shared.
     const outcome = await serializePullMaster(ctx, async () => land(ctx, issue, pr, touches, reviewed, cwd, say, ceiling));
@@ -834,19 +851,22 @@ export async function reviewAndLand(
     if (outcome === 'stale') {
       refreshes += 1;
       if (refreshes > MAX_BASE_REFRESHES) {
-        say(`base moved into this work ${refreshes} times; a human should land it`);
-        parkReason = `the base moved into this work ${refreshes} times; a human should land it`;
-        break;
+        say(`base moved into this work ${refreshes} times`);
+        return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
       }
       continue;
     }
 
     const { review: verdict } = reviewed;
 
-    // An approved change the pull master declined to land spends no round: the reviewer found
-    // nothing wrong with the work, and what stopped it (the merge boundary, a red check, a failed
-    // smoke, a conflict, a refused line) is not an objection a revision could answer. Charging
-    // the budget here would let three boundary refusals eject an issue nobody ever rejected.
+    // A landing the machine could not complete is the landing queue's, and it spends no round:
+    // the reviewer found nothing wrong with the work, and a conflict, a red check, a failed smoke,
+    // or a refused line is not an objection a revision could answer. Charging the budget here
+    // would let three red builds eject an issue nobody ever rejected.
+    if (typeof outcome === 'object' && 'dlq' in outcome) return deadLetter(ctx, issue, 'landing', outcome.dlq, say, pr);
+
+    // An approved change the merge boundary declined to land is a person's call, and it spends no
+    // round for the same reason.
     if (typeof outcome === 'object' && verdict.decision === 'merge') {
       parkReason = outcome.park;
       break;
@@ -868,10 +888,8 @@ export async function reviewAndLand(
     }
 
     if (consumed >= ctx.knobs.maxReviewRounds) {
-      sendToDlq(ctx, issue.number, consumed, verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy);
-      say(`ejected to the DLQ after ${consumed} review rounds`);
-      move(ctx, issue, 'Q4', `ejected after ${consumed} review rounds`);
-      return { outcome: 'dlq', reason: `ejected after ${consumed} review rounds` };
+      const objection = verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy;
+      return deadLetter(ctx, issue, 'review', `The review budget of ${consumed} rounds is spent without a merge.\n\n${objection}`, say, pr);
     }
 
     // Revision is programming, so it happens outside the queue; the branch rejoins it afterwards.
@@ -879,10 +897,9 @@ export async function reviewAndLand(
     result = await runWorker(ctx, issue, cwd, maxPoints, verdict);
     say(`verdict: ${result.verdict}; ${result.reason}`);
     if (result.verdict === 'failed') {
-      // an open pull request now needs a human; the attempt counts, and the park is at once
-      recordAttempt(ctx, issue.number, attemptCount(issue.labels));
-      parkReason = result.reason;
-      break;
+      // The attempt counts, and a failed revision on an open pull request is the work queue's.
+      const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
+      return deadLetter(ctx, issue, 'work', `The worker failed on a revision (attempt ${attempts}): ${result.reason}`, say, pr);
     }
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
     if (settled) return settled;

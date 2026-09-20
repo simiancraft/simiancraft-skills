@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { LaneEvent } from '../../fix-github-issue/lib/context.ts';
+import { dlqPhase } from '../../fix-github-issue/lib/labels.ts';
 import type { Board } from '../board.ts';
 import { type Lane, laneByKey, laneByLabel, laneLabel, phaseLabel } from './lanes.ts';
 
@@ -136,7 +137,8 @@ export function placeByFacts(facts: {
   if (has('needs-decision')) return { lane: 'H1', why: 'needs-decision' };
   if (has('needs-human')) return { lane: 'H2', why: 'needs-human' };
   if (has('loop/parked')) return { lane: 'H3', why: 'loop/parked' };
-  if (has('loop/dlq')) return { lane: 'Q4', why: 'loop/dlq (the review budget was spent)' };
+  const dead = dlqPhase(facts.labels.map((name) => ({ name })));
+  if (dead) return { lane: { appraisal: 'Q1', carve: 'Q2', work: 'Q3', review: 'Q4', landing: 'Q5' }[dead], why: `loop/dlq: ${dead}` };
   if (has('loop/paused')) return { lane: 'W2', why: 'loop/paused' };
   if (has('loop/released')) return { lane: 'C7', why: 'loop/released' };
   if (has('loop/carved') || facts.labels.some((l) => l.startsWith('loop/carve-gen:'))) return { lane: 'C5', why: 'a carved trunk' };

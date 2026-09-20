@@ -64,7 +64,7 @@ One issue, labelled `floor/incident`, titled for the item that failed, with:
 The issue is then worked by `fix-github-issue` exactly as any other issue: a worker in a worktree,
 a reviewer on another engine, a gated merge. Its outcome is on the issue and the pull request. A
 second `absent` or `down` for the same item while that issue is open does not file again, and if
-the issue carries a label the pipeline leaves for a person (`loop/parked`, `loop/dlq`,
+the issue carries a label the pipeline leaves for a person (`loop/parked`, a `loop/dlq: <phase>`,
 `needs-human`, `needs-decision`, `loop/skip`) it is not worked again either: the item is still
 walked every wake so the ledger notices when it comes right, and removing the label hands the
 incident back to the walker.

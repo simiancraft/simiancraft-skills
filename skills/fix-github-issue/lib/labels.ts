@@ -13,16 +13,14 @@ import { mutate, sh } from './shell.ts';
 /** The shape every function here reads. Callers carry richer issues; these only need the labels. */
 export type LabelledIssue = { number: number; labels: Array<{ name: string }> };
 
-export function ensureLabels(ctx: Context): void {
-  const existing = new Set(
-    sh(ctx, ['gh', 'label', 'list', '--limit', '200', '--json', 'name', '--jq', '.[].name']).split('\n'),
-  );
-  const wanted: Array<[string, string, string]> = [
+/** Every label the collection writes, with its color and description; GitHub caps a description at 100 characters. */
+export function loopLabels(): Array<[string, string, string]> {
+  return [
     ['needs-decision', 'ededed', 'Blocked on a product decision, not on effort'],
     ['needs-human', 'ededed', 'Needs access or authority an agent does not have'],
     ['loop/skip', 'ededed', 'Permanently out of the issue loop'],
     ['loop/parked', 'fbca04', 'The loop worked it and a human needs to finish the call'],
-    ['loop/dlq', 'b60205', 'Exhausted its reviews; retained with a reason, redrive by removing this label'],
+    ...DLQ_PHASES.map((phase): [string, string, string] => [dlqLabel(phase), 'b60205', `${DLQ_DESCRIPTION[phase]}; remove to redrive`]),
     ['loop/carved', '5319e7', 'Carved into sub-issues; worked by closing them'],
     ['loop/carving', '5319e7', 'A carve is in progress; other runs wait'],
     ['loop/released', '5319e7', 'Carving finished; awaiting re-appraisal'],
@@ -31,7 +29,13 @@ export function ensureLabels(ctx: Context): void {
     ['loop/handed-off', 'ededed', 'The knife handed this off before carving it; found by the sweep when the hold lifts'],
     ['spike', '0e8a16', 'Answer a question with evidence; no pull request'],
   ];
-  for (const [name, color, description] of wanted) {
+}
+
+export function ensureLabels(ctx: Context): void {
+  const existing = new Set(
+    sh(ctx, ['gh', 'label', 'list', '--limit', '200', '--json', 'name', '--jq', '.[].name']).split('\n'),
+  );
+  for (const [name, color, description] of loopLabels()) {
     if (existing.has(name)) continue;
     // --force: two drivers starting together can both see the label missing; the loser must not abort.
     mutate(ctx, `create label ${name}`, ['gh', 'label', 'create', name, '--force', '--color', color, '--description', description]);
@@ -39,16 +43,57 @@ export function ensureLabels(ctx: Context): void {
 }
 
 /**
- * The four counters, each a `loop/<kind>: N` label: review rounds, carve attempts, appraisal
- * attempts, and worker attempts. One pattern, one set of functions, four names.
+ * The dead-letter queues, one per phase that runs a machine, as `loop/dlq: <phase>` labels. Each
+ * phase's letters are triaged differently (references/state-machine.md, "Dead letters"), and an
+ * operator listing one queue must not have to read the reasons to tell them apart. The bare
+ * `loop/dlq` of earlier runs is still read as a hold and as the review queue, never written.
  */
-export type Counter = 'reviews' | 'carves' | 'appraisals' | 'attempts';
+export const DLQ_PHASES = ['appraisal', 'carve', 'work', 'review', 'landing'] as const;
+export type DlqPhase = (typeof DLQ_PHASES)[number];
+
+const DLQ_DESCRIPTION: Record<DlqPhase, string> = {
+  appraisal: 'Appraiser or confirmer failed past the cap',
+  carve: 'Carve failed or disputed past a cap',
+  work: 'Worker failed past the cap, or left undeclared work',
+  review: 'Review rounds exhausted, or no trusted verdict',
+  landing: 'Conflict, red checks, failed smoke, refresh cap, or unreported merge',
+};
+
+export const dlqLabel = (phase: DlqPhase): string => `loop/dlq: ${phase}`;
+
+/** True for any dead-letter label: a phase's, or the bare one earlier runs wrote. */
+export function isDlqLabel(name: string): boolean {
+  return name === 'loop/dlq' || name.startsWith('loop/dlq:');
+}
+
+/** Which queue holds the issue, or null when none does; the bare legacy label reads as the review queue. */
+export function dlqPhase(labels: Array<{ name: string }>): DlqPhase | null {
+  for (const { name } of labels) {
+    if (name === 'loop/dlq') return 'review';
+    const match = /^loop\/dlq:\s*(\w+)$/.exec(name);
+    if (match && (DLQ_PHASES as readonly string[]).includes(match[1])) return match[1] as DlqPhase;
+  }
+  return null;
+}
+
+/** True when a person's label, a dead letter, or the caller's own skip list holds the issue. */
+export function isHeldBy(labels: Array<{ name: string }>, skipLabels: string[]): boolean {
+  return labels.some((l) => skipLabels.includes(l.name) || isDlqLabel(l.name));
+}
+
+/**
+ * The five counters, each a `loop/<kind>: N` label: review rounds, carve attempts, appraisal
+ * attempts, worker attempts, and redrives out of a dead-letter queue. One pattern, one set of
+ * functions, five names.
+ */
+export type Counter = 'reviews' | 'carves' | 'appraisals' | 'attempts' | 'redrives';
 
 const COUNTER_LABEL: Record<Counter, { color: string; description: string }> = {
   reviews: { color: 'd4c5f9', description: 'Review rounds consumed' },
   carves: { color: 'd4c5f9', description: 'Carve attempts consumed' },
   appraisals: { color: 'd4c5f9', description: 'Appraisal attempts consumed' },
   attempts: { color: 'd4c5f9', description: 'Worker attempts consumed' },
+  redrives: { color: 'd4c5f9', description: 'Redrives out of a dead-letter queue' },
 };
 
 /**
@@ -122,9 +167,16 @@ export const clearAppraisals = (ctx: Context, issue: number) => clearCount(ctx, 
 export const attemptCount = (labels: Array<{ name: string }>) => countOf('attempts', labels);
 export const recordAttempt = (ctx: Context, issue: number, previous: number) => recordCount(ctx, 'attempts', issue, previous);
 export const clearAttempts = (ctx: Context, issue: number) => clearCount(ctx, 'attempts', issue);
+export const redriveCount = (labels: Array<{ name: string }>) => countOf('redrives', labels);
+export const recordRedrive = (ctx: Context, issue: number, previous: number) => recordCount(ctx, 'redrives', issue, previous);
 
-/** Ejects an issue to the dead-letter queue, retained with the reason that put it there. */
-export function sendToDlq(ctx: Context, issue: number, rounds: number, reason: string): void {
+/**
+ * Ejects an issue to one phase's dead-letter queue, retained with the reason that put it there.
+ * The review queue also takes the spent rounds off, or the redrive would be a lie: with any
+ * `loop/reviews: N` surviving, lifting the letter would hand the issue back with a short budget.
+ */
+export function sendToDlq(ctx: Context, issue: number, phase: DlqPhase, reason: string): void {
+  const label = dlqLabel(phase);
   // Reason first, label second: a crash between the two leaves an explained issue that is not yet
   // ejected, which the next run finishes; the other order hides an issue with no explanation.
   mutate(ctx, `comment on #${issue}`, [
@@ -133,17 +185,21 @@ export function sendToDlq(ctx: Context, issue: number, rounds: number, reason: s
     'comment',
     String(issue),
     '--body',
-    `Moved to the dead-letter queue after ${rounds} review rounds without a merge.\n\n${reason}\n\nRemove the \`loop/dlq\` label to put it back in the queue with a fresh review budget.`,
+    `Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`,
   ]);
-  mutate(ctx, `send #${issue} to the DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/dlq']);
-  // Every count label comes off, or the redrive is a lie: with any `loop/reviews: N` surviving,
-  // removing `loop/dlq` would put the issue somewhere selection still refuses to look, or hand it
-  // back with a short budget.
-  clearCount(ctx, 'reviews', issue);
+  mutate(ctx, `send #${issue} to the ${phase} DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
+  if (phase === 'review') clearCount(ctx, 'reviews', issue);
 }
 
-/** The labels under which a person, not the loop, owns an issue. */
-export const HOLD_LABELS = ['needs-human', 'needs-decision', 'loop/skip', 'loop/parked', 'loop/dlq', 'loop/paused'];
+/** Lifts every dead-letter label an issue carries, the bare legacy one included. Returns what came off. */
+export function liftDlq(ctx: Context, issue: number, labels: Array<{ name: string }>): string[] {
+  const lifted = labels.map((l) => l.name).filter(isDlqLabel);
+  for (const name of lifted) mutate(ctx, `lift ${name} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', name]);
+  return lifted;
+}
+
+/** The labels under which a person, not the loop, owns an issue; dead letters are `isDlqLabel`. */
+export const HOLD_LABELS = ['needs-human', 'needs-decision', 'loop/skip', 'loop/parked', 'loop/dlq', ...DLQ_PHASES.map(dlqLabel), 'loop/paused'];
 
 /**
  * Repairs label states a crash can leave half-written, so every durable transition is
@@ -167,7 +223,7 @@ export function repairDurableState(
   for (const issue of all) {
     const names = issue.labels.map((l) => l.name);
     const counts = names.filter((name) => /^loop\/reviews:/.test(name));
-    const dlq = names.includes('loop/dlq');
+    const dlq = dlqPhase(issue.labels) === 'review';
     const shelved = names.some((name) => skipLabels.includes(name));
     const held = names.some((name) => HOLD_LABELS.includes(name) || skipLabels.includes(name));
 
@@ -186,7 +242,7 @@ export function repairDurableState(
     }
     if (caps.reviews !== undefined && !dlq && !shelved && reviewCount(issue.labels) >= caps.reviews) {
       ctx.log(`repair: #${issue.number} sits at the review cap without loop/dlq; finishing the ejection`);
-      sendToDlq(ctx, issue.number, reviewCount(issue.labels), 'Completing an ejection an earlier run started and did not finish.');
+      sendToDlq(ctx, issue.number, 'review', `The review budget of ${reviewCount(issue.labels)} rounds is spent. Completing an ejection an earlier run started and did not finish.`);
       continue;
     }
     for (const kind of ['carves', 'appraisals', 'attempts'] as const) {
