@@ -35,10 +35,10 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
-import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
+import { log, RunStopping, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
-import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
+import { awaitReleases, refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
 import { createBoardWriter, placeByFacts, readBoardPointer } from './lib/board-writer.ts';
@@ -1187,6 +1187,9 @@ async function main(): Promise<void> {
       // would otherwise keep working, approvals bypassed, under a replacement run's lock.
       const survivors = await shutdownAgents();
       if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
+      // The lanes release their own claims as the stop unwinds them; an exit before that skips every finally.
+      const abandoned = await awaitReleases();
+      if (abandoned.length > 0) log(`exiting with claim(s) still held, which expire on their own: ${abandoned.join(', ')}`);
       await walker.stopAndWait();
       releaseLock();
       process.exit(signal === 'SIGINT' ? 130 : 143);
@@ -1309,4 +1312,11 @@ async function main(): Promise<void> {
   await finish();
 }
 
-if (import.meta.main) await main();
+// A stop unwinds main through RunStopping; that is the signal handler's exit to make, once the
+// lanes have released their claims, so it is not an error here.
+if (import.meta.main) {
+  await main().catch((error) => {
+    if (!(error instanceof RunStopping)) throw error;
+    log('the run is stopping; nothing further is started');
+  });
+}

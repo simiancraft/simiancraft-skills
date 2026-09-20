@@ -26,6 +26,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCallbacksDir } from '../appraise-github-issues/lib/appraise.ts';
 import { shutdownAgents } from '../fix-github-issue/lib/agent.ts';
+import { awaitReleases } from './lib/claims.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines, isFixture, parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
@@ -164,6 +165,8 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     log(`received ${signal}; stopping agents`);
     const survivors = await shutdownAgents();
     if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
+    const abandoned = await awaitReleases();
+    if (abandoned.length > 0) log(`exiting with claim(s) still held, which expire on their own: ${abandoned.join(', ')}`);
     process.exit(signal === 'SIGINT' ? 130 : 143);
   });
 }

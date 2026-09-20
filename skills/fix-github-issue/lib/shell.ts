@@ -97,8 +97,35 @@ export function api(ctx: Context, path: string, args: string[] = []): string {
   return sh(ctx, ['gh', 'api', path.replaceAll('{repo}', ctx.project.repo), ...args]);
 }
 
-/** A mutation the pipeline performs on GitHub. Every one routes through here so --dry-run is total. */
-export function mutate(ctx: Context, description: string, cmd: string[]): void {
+// ---------------------------------------------------------------------------
+// The run's stop
+// ---------------------------------------------------------------------------
+
+/** Thrown where a stopping run would have dispatched, trusted an agent's exit, or written to the tracker. */
+export class RunStopping extends Error {}
+
+let stopping = false;
+/**
+ * The operator signalled the run. From here it dispatches nothing, takes no agent's exit for an
+ * answer, and writes nothing to the tracker but the release of what it holds. Process-wide, like
+ * the signal; set before anything is awaited, so no lane runs a step in between.
+ */
+export function beginStop(): void {
+  stopping = true;
+}
+export const isStopping = (): boolean => stopping;
+/** For tests only: a stop ends with the process, never before. */
+export function resetStop(): void {
+  stopping = false;
+}
+
+/**
+ * A mutation the pipeline performs on GitHub. Every one routes through here so --dry-run is total,
+ * and so a stopping run cannot settle the agents it killed as failures: only a write that releases
+ * what the run holds (`whileStopping`) passes once the stop has begun.
+ */
+export function mutate(ctx: Context, description: string, cmd: string[], options: { whileStopping?: boolean } = {}): void {
+  if (stopping && !options.whileStopping) throw new RunStopping(`the run is stopping; not written: ${description}`);
   if (ctx.dryRun) {
     ctx.dryRunLog.push(description);
     ctx.log(`  DRY RUN  ${description}`);

@@ -21,7 +21,7 @@ import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { mutate, sh } from './shell.ts';
+import { isStopping, mutate, RunStopping, sh } from './shell.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -35,7 +35,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 export type FixOutcome = {
   /** `not-run` is a dry run that reached a seat it does not run: nothing was tried, so nothing failed. */
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run';
+  /** `stopped` is a lane the operator's stop unwound: nothing about it was settled, and the next run takes it up. */
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped';
   reason: string;
 };
 
@@ -1364,6 +1365,12 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * read, the lane is kept: the worktree is then the only record of what happened.
  */
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
+  // A stop is the operator's, not a failure of the work: nothing is counted or queued, and the
+  // lane is kept, since a worker stopped mid-change leaves its only record there.
+  if (error instanceof RunStopping || isStopping()) {
+    say('stopped with the run; nothing is settled, and the lane is kept');
+    return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
+  }
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
   // After the merge there is nothing to retry and nothing to queue: the change landed. The run

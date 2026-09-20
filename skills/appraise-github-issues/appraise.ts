@@ -33,6 +33,7 @@ import { ensureLabels } from '../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { shutdownAgents } from '../fix-github-issue/lib/agent.ts';
+import { awaitReleases } from '../carve-github-issue/lib/claims.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import {
   allOpenIssues,
@@ -176,6 +177,8 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     log(`received ${signal}; stopping agents and releasing the lock`);
     const survivors = await shutdownAgents();
     if (survivors > 0) log(`${survivors} agent(s) survived SIGKILL; check ps before starting another run`);
+    const abandoned = await awaitReleases();
+    if (abandoned.length > 0) log(`exiting with claim(s) still held, which expire on their own: ${abandoned.join(', ')}`);
     releaseLock();
     process.exit(signal === 'SIGINT' ? 130 : 143);
   });

@@ -9,6 +9,7 @@ import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
+import { beginStop, isStopping, RunStopping } from './shell.ts';
 
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
@@ -94,6 +95,8 @@ export function killAgent(proc: { pid: number; kill: () => void }): void {
  * first; whatever is still alive after `graceMs` gets SIGKILL; whatever survives that is reported.
  */
 export async function shutdownAgents(graceMs = 10_000): Promise<number> {
+  // First, and before anything is awaited: the kills below must not be settled as failures.
+  beginStop();
   const running = [...children];
   if (running.length === 0) return 0;
   for (const proc of running) killAgent(proc);
@@ -218,6 +221,7 @@ export type AgentRun = { logPath: string; exitCode: number; notRun?: true };
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
+  if (isStopping()) throw new RunStopping(`the run is stopping; ${role} not started on #${issue}`);
   mkdirSync(ctx.runDir, { recursive: true });
   const logPath = join(ctx.runDir, `${issue}-${role}-${Date.now()}.log`);
 
@@ -287,9 +291,14 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
 
   children.delete(proc);
   appendFileSync(logPath, `\nexit code: ${exitCode}\n`);
-  if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
-
   if (entry) entry.busy = false;
+  // An agent that ended under a stop was stopped: that is no answer and no failure, so nothing
+  // downstream may count it, queue it, or trust what it left behind.
+  if (isStopping()) {
+    ctx.log(`  #${issue}  ${role} was stopped with the run (exit ${exitCode}); nothing is settled from it`);
+    throw new RunStopping(`the run is stopping; ${role} on #${issue} was stopped, not answered`);
+  }
+  if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
 
   return { logPath, exitCode };
 }

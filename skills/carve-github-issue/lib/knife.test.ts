@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,8 @@ import { type Context, createContext } from '../../fix-github-issue/lib/context.
 import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
-import { type ClaimHandle, keepClaimed, leaseLost } from './claims.ts';
+import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { awaitReleases, type ClaimHandle, claim, keepClaimed, leaseLost } from './claims.ts';
 import { carveIssue } from './knife.ts';
 import { renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
@@ -21,6 +22,8 @@ let scratch: string;
 beforeAll(() => {
   scratch = mkdtempSync(join(tmpdir(), 'knife-'));
 });
+// A stop is process-wide, like the signal, so a case that begins one ends by lifting it.
+afterEach(resetStop);
 
 describe('the carving driver makes only moves the chart allows', () => {
   function makeDriver(ctx: Context, k: CarveKnobs, lanes: string[], appraiser?: string, confirmer?: string) {
@@ -296,6 +299,42 @@ const records = (io: FakeTracker, n: number) => io.view(n)!.comments.filter((c) 
 const labels = (io: FakeTracker, n: number) => io.view(n)!.labels.map((l) => l.name).sort();
 
 describe('carveIssue', () => {
+  test('a carver stopped with the run settles nothing: no count, no record, and the claim released by the lane itself', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    ctx.log = (m) => {
+      if (/running carver/.test(m)) beginStop();
+    };
+    const k = knobs(fixture('carve', {}), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    await expect(carveIssue(ctx, issue10, k, io)).rejects.toThrow(RunStopping);
+    expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
+    expect(records(io, 10)).toEqual([]);
+    // The release is the one write the stop allows, and it happened in the lane's own finally.
+    expect(labels(io, 10)).not.toContain('loop/carving');
+    expect(io.view(10)!.comments.some((c) => c.body.startsWith('<!-- carve-unclaim'))).toBe(true);
+    expect(await awaitReleases(0)).toEqual([]);
+  });
+
+  test('a release appraisal stopped with the run counts no failed appraisal', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
+    const ctx = ctxFor(io);
+    ctx.log = (m) => {
+      if (/running appraiser/.test(m)) beginStop();
+    };
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    await expect(new CarvingDriver({ ctx, knobs: k, appraisal: { seats: { appraiser: { engine: 'fixture', model: fixture('bad', {}) }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: () => {}, log: () => {} }).releaseAppraisal(10)).rejects.toThrow(RunStopping);
+    expect(labels(io, 10).some((l) => l.startsWith('loop/appraisals'))).toBe(false);
+    expect(await awaitReleases(0)).toEqual([]);
+  });
+
+  test('a claim nobody released is named when the wait for releases runs out', async () => {
+    const io = trunk();
+    const handle = await claim(ctxFor(io), io, 10, 'carving');
+    expect(await awaitReleases(0)).toEqual(['o/r#10']);
+    if (handle !== 'busy') handle.release();
+    expect(await awaitReleases(0)).toEqual([]);
+  });
+
   test('a knife that loses its lease mid-carve stops writing, counts nothing, and resumes on the next visit', async () => {
     const io = trunk();
     const ctx = ctxFor(io);

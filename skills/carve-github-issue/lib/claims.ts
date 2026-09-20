@@ -32,6 +32,19 @@ export type ClaimHandle = { kind: Claim['kind']; commentId: number | null; label
 
 /** Issues whose lease this process could not keep, by repository and issue. The live gate refuses them. */
 const lostLeases = new Set<string>();
+
+/** The claims this process holds and has not released, by repository and issue. */
+const heldClaims = new Set<string>();
+/**
+ * What a stopping run waits for before it exits: every lane to unwind through its own `finally`
+ * and release its claim, so none outlives the process that took it. Bounded; the claims still
+ * held when the time is up are returned by name, since the exit abandons them.
+ */
+export async function awaitReleases(graceMs = 30_000, sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<string[]> {
+  const deadline = Date.now() + graceMs;
+  while (heldClaims.size > 0 && Date.now() < deadline) await sleep(100);
+  return [...heldClaims];
+}
 const leaseKey = (ctx: Context, issue: number) => `${ctx.project?.repo ?? ''}#${issue}`;
 export const leaseLost = (ctx: Context, issue: number): boolean => lostLeases.has(leaseKey(ctx, issue));
 
@@ -81,6 +94,7 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
   const commentId = mine.commentId;
   lostLeases.delete(leaseKey(ctx, issue));
   let confirmedExpiry = expires.getTime();
+  heldClaims.add(leaseKey(ctx, issue));
   return {
     kind,
     commentId,
@@ -103,12 +117,14 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
       confirmedExpiry = until;
     },
     release: (options = {}) => {
-      mutate(ctx, `unclaim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`]);
+      heldClaims.delete(leaseKey(ctx, issue));
+      // Releasing is the one write a stopping run still makes, or its claims would outlive it.
+      mutate(ctx, `unclaim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`], { whileStopping: true });
       if (options.keepLabel) return;
       // The label comes off only when no other unreleased claim comment of this kind stands.
       const now = readTree(ctx, issue, io);
       const other = now.claims.some((c) => c.kind === kind && !c.released && c.runId !== ctx.runId && Date.parse(c.expires) > Date.now());
-      if (!other) mutate(ctx, `unlabel #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
+      if (!other) mutate(ctx, `unlabel #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label], { whileStopping: true });
     },
   };
 }

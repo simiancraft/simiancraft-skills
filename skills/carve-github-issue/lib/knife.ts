@@ -18,6 +18,7 @@ import { CARVING_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/cont
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, HOLD_LABELS, recordCarve } from '../../fix-github-issue/lib/labels.ts';
+import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { runCarveCallback } from './callbacks.ts';
@@ -104,6 +105,8 @@ export class LeaseLostError extends Error {}
  * knife stops writing; the journal stays open and the next visit finishes what was announced.
  */
 function holdLease(k: Knife, description: string): void {
+  // The knife's writes do not pass through mutate, so a stopping run is refused here.
+  if (isStopping()) throw new RunStopping(`the run is stopping; not written: ${description}`);
   if (leaseLost(k.ctx, k.trunk)) throw new LeaseLostError(`the lease on #${k.trunk} was lost before: ${description}`);
 }
 
@@ -711,6 +714,8 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     // announced and the next visit finishes it. A count that cannot be written is only logged.
     // A lost lease is neither: the count is itself a write this run may no longer make, and the
     // trunk is busy, not broken.
+    // Nor is a stop: the operator's, not the knife's, and the journal stays open for the next visit.
+    if (error instanceof RunStopping || isStopping()) throw error;
     if (leaseLost(ctx, issue.number)) {
       say(`stopped writing: ${(error as Error).message.split('\n')[0]}`);
       if (error instanceof LeaseLostError) return { outcome: 'busy', reason: 'this run lost its lease on the issue' };
