@@ -540,11 +540,14 @@ export async function awaitGreenChecks(
     // jobs of a run made while the pull request was a draft, and the run that counts. Judged by
     // name, then: a name passes on a node that passed. A name somebody expects is not satisfied by
     // being skipped, or a landing could merge with no check having run; a cancelled node with no
-    // passing sibling has no verdict either. Only a name nobody expects may rest on SKIPPED.
+    // passing sibling has no verdict either. "Expects" is the written list here, the config's and the
+    // base branch's, and not the names the reviewed head happened to carry: a repository can have
+    // jobs that are skipped on every pull request by design (a release, a deploy), those are on the
+    // reviewed head too, and waiting for them to pass would hold every landing to the timeout.
     const byName = new Map<string, Array<ReturnType<typeof classify>>>();
     for (const c of rollup) byName.set(nameOf(c), [...(byName.get(nameOf(c)) ?? []), classify(c)]);
     const unjudged = [...byName.entries()]
-      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || expected.includes(name)))
+      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || authoritative.includes(name)))
       .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
     if (unjudged.length > 0) {
       const gaveUp = await wait(`no check has reached a verdict under: ${unjudged.join(', ')}`, 30_000);

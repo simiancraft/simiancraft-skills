@@ -145,11 +145,14 @@ incomplete; suite data that cannot be read is waited on, never assumed. Checks a
 a head can carry several nodes under one name (a run the repository's concurrency rule cancelled, the
 skipped jobs of a run made while the pull request was a draft, and the run that counts): a name passes
 on a node that succeeded, fails on a node that failed, and has no verdict yet when all it carries is
-skipped or cancelled. A check nobody expects may rest on skipped; an expected one may not, or a landing
-could merge with no check having run, which branch protection alone does not prevent. Three things this
+skipped or cancelled. A check the written list does not name may rest on skipped; one it names may not, or a landing
+could merge with no check having run, which branch protection alone does not prevent. The written list
+is `requiredChecks` and the base branch's required status checks, and not the names the reviewed head
+carried: a job skipped on every pull request by design (a release, a deploy on push) is on that head
+too, and is passed over. Three things this
 rule deliberately allows, all on the one head that would land: a node that passed excuses a skipped or
 cancelled sibling of the same name, whichever came later, since no ordering is read; `NEUTRAL` counts as
-passed; and a check nobody expects may be skipped. One thing it holds that it used not to: a cancelled
+passed; and a check the written list does not name may be skipped. One thing it holds that it used not to: a cancelled
 check with no passing sibling waits to `checksTimeoutMinutes` even under a name nobody expects, so a
 repository whose concurrency rule cancels runs wants the run that counts to finish, or to be rerun by a
 person. The loop never reruns a repository's checks itself. An installed app that opens a
