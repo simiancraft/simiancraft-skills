@@ -146,7 +146,13 @@ a head can carry several nodes under one name (a run the repository's concurrenc
 skipped jobs of a run made while the pull request was a draft, and the run that counts): a name passes
 on a node that succeeded, fails on a node that failed, and has no verdict yet when all it carries is
 skipped or cancelled. A check nobody expects may rest on skipped; an expected one may not, or a landing
-could merge with no check having run, which branch protection alone does not prevent. An installed app that opens a
+could merge with no check having run, which branch protection alone does not prevent. Three things this
+rule deliberately allows, all on the one head that would land: a node that passed excuses a skipped or
+cancelled sibling of the same name, whichever came later, since no ordering is read; `NEUTRAL` counts as
+passed; and a check nobody expects may be skipped. One thing it holds that it used not to: a cancelled
+check with no passing sibling waits to `checksTimeoutMinutes` even under a name nobody expects, so a
+repository whose concurrency rule cancels runs wants the run that counts to finish, or to be rerun by a
+person. The loop never reruns a repository's checks itself. An installed app that opens a
 suite on every push and runs nothing in it leaves that suite queued for ever, so such apps are
 written down too, by slug, in `idleCheckSuiteApps`: a listed app's suite is passed over while it has
 no run in it, and holds the landing like any other once it has one. The list is a person's statement
