@@ -152,9 +152,10 @@ export const MACHINE: StateNode = {
               entry: ['moveCard'],
               on: {
                 APPRAISER_DISPATCHED: { target: 'ticket.appraisal.appraising', guard: 'lineActive' },
-                // fix.ts on one named issue: a person's own dispatch, which skips the sizing pass.
-                // The worker's first step is still the appraisal, and its verdict can still be a close.
-                PERSON_DISPATCHED: { target: 'ticket.work.coding', guard: 'noOpenPr', actions: ['claim', 'createWorktree'] },
+                // fix.ts on one named issue that nobody has sized: a person's own dispatch, and it is
+                // appraised first like any other. Appraise is a step of its own, never repeated inside a
+                // code seat, so a card that reaches Work always carries a size.
+                PERSON_DISPATCHED: { target: 'ticket.appraisal.appraising' },
               },
             },
             appraising: {

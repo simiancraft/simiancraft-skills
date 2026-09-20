@@ -46,4 +46,9 @@ describe('the work turn is steps, and a step ends at a durable fact', () => {
   it('still catches a stale lane up before either, whatever the reviewer asked for', () => {
     expect(lane('E2', 'REVIEWED', 'reviewRoundsUnderCap', 'behindBase', 'decisionGatherMore')?.lane).toBe('F2');
   });
+
+  it('appraises an unsized issue a person dispatches, and no longer takes it straight to Coding', () => {
+    expect(lane('A1', 'PERSON_DISPATCHED')?.lane).toBe('A2');
+    expect(lane('A1', 'PERSON_DISPATCHED', 'noOpenPr')?.lane).toBe('A2');
+  });
 });

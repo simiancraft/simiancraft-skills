@@ -92,7 +92,7 @@ mirrored to Number fields on the card.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| A1 Inbox | move card | `APPRAISER_DISPATCHED` [lineActive] to A2 |
+| A1 Inbox | move card | `APPRAISER_DISPATCHED` [lineActive] to A2; `PERSON_DISPATCHED` (a person's `fix.ts --issue N` on an unsized issue) to A2 as well: it is appraised first |
 | A2 Appraising | run appraiser | `APPRAISED`: close verdict to A3; needs-decision to H1; needs-human to H2; over ceiling to C1 (size label, size callback); within to B1 (size label). `AGENT_FAILED`: under cap back to A1 (count); else Q1 |
 | A3 Confirming close | run confirmer | `CONFIRMED` to T2 (both receipts, close); `DISPUTED` to H2 (both opinions); `AGENT_FAILED` to Q1 |
 

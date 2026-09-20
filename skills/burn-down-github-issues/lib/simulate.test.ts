@@ -4,10 +4,12 @@ import { MACHINE, transitions, walk } from './machine.ts';
 import { atoms, fire, laneKey, laneState, Leak, settle, successors } from './simulate.ts';
 
 /** Lane sequences the real driver wrote to its logs, per issue, from the runs on Ultrathin. */
-const RECORDED: Array<{ run: string; issue: number; lanes: string }> = [
+const RECORDED: Array<{ run: string; issue: number; lanes: string; retired?: string }> = [
   { run: 'stage 1, one issue', issue: 3594, lanes: 'D1 E1 E2 F1 F3 F4 F5 T1' },
   { run: 'stage 2, loop', issue: 3609, lanes: 'D1 E1 E2 F1 F3 F4 F5 T1' },
-  { run: 'stage 2, fix.ts, boundary park', issue: 3559, lanes: 'A1 D1 E1 E2 F1 H3' },
+  // History, kept as it was written: fix.ts then took an unsized issue from the Inbox straight to
+  // Coding. It appraises first now, so that one move is the machine's to refuse, and only that one.
+  { run: 'stage 2, fix.ts, boundary park', issue: 3559, lanes: 'A1 D1 E1 E2 F1 H3', retired: 'A1 -> D1' },
   { run: 'stage 3, boundary park', issue: 3590, lanes: 'D1 E1 E2 F1 H3' },
   { run: 'stage 3, base moved into the work', issue: 3593, lanes: 'D1 E1 E2 F1 F2 E1 E2 F1 F3 F4 F5 T1' },
   { run: 'stage 3, appraised then worked', issue: 3567, lanes: 'A2 B1 D1 E1 E2 F1 F3 F4 F5 T1' },
@@ -130,7 +132,7 @@ describe('the landing is single file and checks upstream', () => {
 });
 
 describe('the driver only makes moves the machine allows', () => {
-  for (const { run, issue, lanes } of RECORDED) {
+  for (const { run, issue, lanes, retired } of RECORDED) {
     it(`#${issue}, ${run}: ${lanes}`, () => {
       const keys = lanes.split(' ');
       const illegal: string[] = [];
@@ -138,7 +140,7 @@ describe('the driver only makes moves the machine allows', () => {
         const next = successors(laneState(keys[i]), { ownEventsOnly: true });
         if (!next.has(laneState(keys[i + 1]))) illegal.push(`${keys[i]} -> ${keys[i + 1]}`);
       }
-      expect(illegal).toEqual([]);
+      expect(illegal).toEqual(retired ? [retired] : []);
     });
   }
 });
