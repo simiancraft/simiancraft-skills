@@ -1106,6 +1106,10 @@ async function main(): Promise<void> {
   // The sweep: finish what a crash left announced, repair torn claims and pauses, and hand the
   // knife every trunk the tracker says needs it, so closes, edits, and holds made outside the loop
   // are seen before anything new is selected.
+  // Every seat reads the base as it is now: the knife and the appraisers judge against the
+  // fetched ref, and the lanes below are cut from it.
+  if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
+
   step('Sweeping trunks, claims, and pauses');
   await CARVING.sweep(allIssues());
 

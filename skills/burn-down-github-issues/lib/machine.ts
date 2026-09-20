@@ -307,7 +307,13 @@ export const MACHINE: StateNode = {
             readyForReview: {
               lane: { key: 'E1', name: 'Ready for review', description: 'PR ready; CI running; no reviewer has started' },
               entry: ['moveCard'],
-              on: { REVIEWER_DISPATCHED: { target: 'ticket.review.evidenceUnderReview' } },
+              on: {
+                // No review begins on a stale lane.
+                REVIEWER_DISPATCHED: [
+                  { target: 'ticket.landing.catchingUp', guard: 'behindBase' },
+                  { target: 'ticket.review.evidenceUnderReview' },
+                ],
+              },
             },
             evidenceUnderReview: {
               lane: { key: 'E2', name: 'Evidence under review', description: 'The reviewer reads the receipts, re-runs the checks, judges adequacy' },
@@ -332,19 +338,26 @@ export const MACHINE: StateNode = {
               lane: { key: 'F1', name: 'Approved', description: 'Merge verdict pinned to a head; waiting for the front of the queue' },
               entry: ['moveCard', 'enqueue'],
               on: {
+                // Nothing lands that lacks the current base: behind at all is enough to catch up.
                 FRONT_OF_QUEUE: [
-                  { target: 'ticket.landing.catchingUp', guard: 'incomingInsideClosure or globalInvalidator' },
+                  { target: 'ticket.landing.catchingUp', guard: 'behindBase' },
                   { target: 'ticket.landing.checksPending' },
                 ],
               },
             },
             catchingUp: {
-              lane: { key: 'F2', name: 'Catching up', description: 'The base moved into this work; merging it in, never rebasing' },
+              lane: { key: 'F2', name: 'Catching up', description: 'The base moved; merging it in before a revision, a review, or the merge, never rebasing' },
               entry: ['moveCard', 'leaveQueue', 'mergeBaseIntoBranch'],
               on: {
+                // The closure decides what the catch-up costs, never whether it happens. Movement
+                // outside the work leaves a standing approval or an unreviewed proof intact;
+                // movement inside it sends an approval back to review and a proof back to its author.
                 CAUGHT_UP: [
+                  { target: 'ticket.landing.checksPending', guard: 'standingVerdictMerge and movementOutsideClosure and netChangeIntact', actions: ['pushBranch', 'pinLandingHead'] },
                   { target: 'ticket.review.readyForReview', guard: 'standingVerdictMerge and refreshesUnderCap', actions: ['countRefresh', 'pushBranch'] },
                   { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection', actions: ['pushBranch'] },
+                  { target: 'ticket.review.readyForReview', guard: 'noVerdictYet and movementOutsideClosure and netChangeIntact', actions: ['pushBranch'] },
+                  { target: 'ticket.work.sentBack', guard: 'noVerdictYet and refreshesUnderCap', actions: ['countRefresh', 'pushBranch', 'briefReproof'] },
                   { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
                 CONFLICT: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },

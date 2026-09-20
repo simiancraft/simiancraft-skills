@@ -110,9 +110,11 @@ Two things do not follow the work into isolation, and both are handled:
 
 ## Staying current, and when proof goes stale
 
-Every merge moves the base under everything still in flight, and a branch that is merely behind is
-not the same as one whose proof has decayed. The rule, the import-closure method that implements
-it, and the draft-until-complete discipline that keeps a run's CI budget honest all belong to the
+Every merge moves the base under everything still in flight, and upstream is more correct until a
+piece of work is merged: no seat begins on a stale lane, and a lane behind at all merges the base
+forward before a revision, a review, or the merge. Whether proof or an approval survives that
+catch-up is the separate question the import closure answers. The rule, the closure method, and
+the draft-until-complete discipline that keeps a run's CI budget honest all belong to the
 pipeline: see
 [`fix-github-issue/references/pipeline.md`](../../fix-github-issue/references/pipeline.md).
 

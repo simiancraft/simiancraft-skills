@@ -22,7 +22,7 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { mutate, sh } from './shell.ts';
-import { MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { behindBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -386,6 +386,45 @@ function serializePullMaster<T>(ctx: Context, action: () => Promise<T>): Promise
   return next;
 }
 
+/**
+ * Upstream is more correct until this work is merged. No seat begins on a lane that lacks the
+ * current base: not a revision, not a review, not a merge. A lane that is behind at all merges the
+ * base in (never a rebase) and pushes; what that costs is decided separately, by whether the
+ * movement reached the paths the proof or the approval covers.
+ *
+ * `since` is the commit the standing proof or verdict was pinned to. Returns null when the lane
+ * already holds the base; `conflict` when the merge could not apply, which the pipeline never
+ * resolves itself; otherwise the head before and after, and the overlap: the incoming files
+ * inside the import closure of this work, or a global invalidator. An empty overlap means the
+ * world did not move beneath the proof; a non-empty one means it did.
+ */
+type CaughtUp = { before: string; after: string; overlap: string[]; netChangeIntact: boolean };
+
+function netChangeId(ctx: Context, cwd: string, head: string): string {
+  // The branch's own change against the base it contains, as a patch id: stable across a merge
+  // that brought in only files this work does not touch.
+  const target = `${ctx.project.remote}/${ctx.project.baseBranch}`;
+  const run = Bun.spawnSync(['sh', '-c', `git diff ${target}...${head} | git patch-id --stable`], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  return run.stdout.toString().trim().split(/\s+/)[0] ?? '';
+}
+
+function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string): CaughtUp | 'conflict' | null {
+  if (ctx.dryRun) return null;
+  const behind = behindBase(ctx, cwd);
+  if (behind.length === 0) return null;
+  // Both judged before the merge: afterwards the merge base is the base's own tip and every
+  // comparison against it is vacuously empty.
+  const overlap = staleAgainstBase(ctx, cwd, since);
+  const before = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+  const idBefore = netChangeId(ctx, cwd, before);
+  say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
+  move(ctx, issue, 'F2', `catching up ${why}`);
+  if (!updateFromBase(ctx, cwd)) return 'conflict';
+  const after = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+  const idAfter = netChangeId(ctx, cwd, after);
+  return { before, after, overlap, netChangeIntact: idBefore !== '' && idBefore === idAfter };
+}
+
 export type Reviewed = { review: ReviewResult; reviewedSha: string };
 /** A review that produced no trusted verdict says which dead-letter queue owns the reason. */
 export type DeadLetter = { dlq: DlqPhase; reason: string };
@@ -479,33 +518,42 @@ async function land(
     // Back to draft before anything is pushed: the catch-up below and the revision pushes that
     // follow must not each spend a CI run on a pull request still marked ready.
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-    // Catch up anyway, so the revision happens against current code rather than against the base as
-    // it stood when this branch started. Cheap here, and it saves the next review a refresh.
-    const behind = staleAgainstBase(ctx, cwd, reviewedSha);
-    if (behind.length > 0) {
-      say(`catching up before the revision (${behind.join(', ')})`);
-      move(ctx, issue, 'F2', `catching up before the revision`);
-      if (!updateFromBase(ctx, cwd)) {
-        // A parked pull request must not sit in draft: the human reading loop/parked would find a
-        // branch the CI guard is configured to skip, and nothing else would ever flip it back.
-        mutate(ctx, `mark PR #${pr} ready again before parking`, ['gh', 'pr', 'ready', String(pr)]);
-        say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-        return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
-      }
+    // A revision never begins on a stale lane: whatever the base changed, the author revises
+    // against current code rather than against the base as it stood when this branch started.
+    if (catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
+      // A dead letter must not sit in draft: the person reading it would find a branch the CI
+      // guard is configured to skip, and nothing else would ever flip it back.
+      mutate(ctx, `mark PR #${pr} ready again before the dead letter`, ['gh', 'pr', 'ready', String(pr)]);
+      say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
+      return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
     }
     return 'revise';
   }
 
-  // From here the verdict is `merge`, and only now does freshness decide anything.
-  const overlap = staleAgainstBase(ctx, cwd, reviewedSha);
-  if (overlap.length > 0) {
-    say(`base moved into this work (${overlap.join(', ')}); the approval no longer describes what would land`);
-    move(ctx, issue, 'F2', `base moved into ${overlap.slice(0, 3).join(', ')}`);
-    if (!updateFromBase(ctx, cwd)) {
-      say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
-      return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
+  // From here the verdict is `merge`. Nothing lands that lacks the current base: a lane behind at
+  // all merges the base in first, and what lands is a head that contains everything upstream has.
+  // Whether the approval survives that is the freshness question. Movement inside the work's
+  // import closure, or a global invalidator, means the approval no longer describes what would
+  // land, and the head is judged again. Movement outside it leaves the approval standing, provided
+  // the branch's own change is byte-identical across the merge; the landing head is then the
+  // caught-up one, and the checks below are waited on for that head, not the reviewed one.
+  let landingSha = reviewedSha;
+  const caught = catchUp(ctx, issue, cwd, reviewedSha, say, 'before the merge');
+  if (caught === 'conflict') {
+    say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
+    return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
+  }
+  if (caught) {
+    if (caught.overlap.length > 0) {
+      say(`base moved into this work (${caught.overlap.join(', ')}); the approval no longer describes what would land`);
+      return 'stale';
     }
-    return 'stale';
+    if (!caught.netChangeIntact) {
+      say('the catch-up changed what this branch contributes; the approval no longer describes what would land');
+      return 'stale';
+    }
+    say(`base moved outside this work; the approval stands and the landing head is ${caught.after.slice(0, 10)}`);
+    landingSha = caught.after;
   }
 
   const effective = effectiveTouches(ctx, touches, verdict.touches, cwd);
@@ -521,7 +569,7 @@ async function land(
     return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}` };
   }
 
-  const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, reviewedSha);
+  const mismatch = pullRequestMatchesReview(ctx, pr, issue.number, cwd, landingSha);
   if (mismatch) {
     say(`refusing to merge PR #${pr}: ${mismatch}`);
     return { dlq: mismatch };
@@ -564,7 +612,7 @@ async function land(
   // The driver's last word. A driver holding its line waits here rather than answering; one that
   // gives up answers with a reason, and the landing is a dead letter without a review round spent.
   // The card is in Merging for the whole wait: a paused line holds a card that is about to land.
-  move(ctx, issue, 'F5', `PR #${pr} at ${reviewedSha.slice(0, 10)}`);
+  move(ctx, issue, 'F5', `PR #${pr} at ${landingSha.slice(0, 10)}`);
   if (ctx.mayMerge) {
     const permission = await ctx.mayMerge();
     if (!permission.ok) {
@@ -585,7 +633,7 @@ async function land(
 
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
-  mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', reviewedSha]);
+  mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
   // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
@@ -608,7 +656,7 @@ async function land(
   move(ctx, issue, 'T1', `PR #${pr} merged ${merged}`);
   // Tell the driver while the worktree still exists, so the event carries the paths that landed.
   if (ctx.afterMerge) {
-    ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: reviewedSha, mergedAt: merged, paths });
+    ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths });
   }
   // The person watching the main checkout sees the fix land, when the config asks for that.
   followBase(ctx, paths);
@@ -836,8 +884,41 @@ export async function reviewAndLand(
 
     if (ctx.dryRun) break;
 
+    // No review begins on a stale lane. The proof was captured at the current head; a base that
+    // moved since is merged in first, so the reviewer judges what would actually land. Movement
+    // that reached the paths the proof covers means the world moved beneath the proof: the work
+    // goes back to its author to reacquire it, which is upstream churn and spends no round.
+    const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+    const current = catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+    if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
+    if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
+      refreshes += 1;
+      if (refreshes > MAX_BASE_REFRESHES) {
+        return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
+      }
+      say(`base moved into what the proof covers (${current.overlap.join(', ') || 'the branch\'s own change'}); the proof is stale and goes back to be reacquired`);
+      mutate(ctx, `return PR #${pr} to draft for the reproof`, ['gh', 'pr', 'ready', String(pr), '--undo']);
+      result = await runWorker(ctx, issue, cwd, maxPoints, {
+        pr,
+        decision: 'gather-more',
+        adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
+        confidence: 'freshness',
+        blocking: [
+          `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
+        ],
+      });
+      say(`verdict: ${result.verdict}; ${result.reason}`);
+      if (result.verdict === 'failed') {
+        const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
+        return deadLetter(ctx, issue, 'work', `The worker failed while reacquiring stale proof (attempt ${attempts}): ${result.reason}`, say, pr);
+      }
+      const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
+      if (resettled) return resettled;
+      continue;
+    }
+
     // Reviewing happens here, outside the queue, so lanes review at the same time.
-    if (consumed > 0 || refreshes > 0) move(ctx, issue, 'E1', `PR #${pr} back for review`);
+    if (consumed > 0 || refreshes > 0 || current) move(ctx, issue, 'E1', `PR #${pr} back for review`);
     const reviewed = await review(ctx, issue, pr, cwd, say, consumed + 1);
     if ('dlq' in reviewed) return deadLetter(ctx, issue, reviewed.dlq, reviewed.reason, say, pr);
 
@@ -1016,8 +1097,14 @@ export async function redriveIssue(
       say(`DRY RUN  would revise PR #${pull.number} on ${pull.branch} with the objection as the brief, then review and land`);
       return { outcome: 'failed', reason: 'dry run' };
     }
-    // The pull request goes back to draft first, so the revision's pushes spend no CI run.
+    // The pull request goes back to draft first, so the catch-up and the revision's pushes spend
+    // no CI run. Then the base: a redriven pull request has usually sat, and no revision begins on
+    // a stale lane.
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
+    const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+    if (catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
+      return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pull.number);
+    }
     const feedback: ReviewResult = {
       pr: pull.number,
       decision: 'gather-more',

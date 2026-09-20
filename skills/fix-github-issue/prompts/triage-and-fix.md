@@ -9,6 +9,32 @@ state, or to write to the evidence branch), create it as a sibling of this direc
 `/tmp`, and `git worktree remove --force` it before you finish. Leave the repository holding exactly
 the worktrees it had when you started.
 
+## Upstream is more correct until you are merged
+
+`{{REMOTE}}/{{BASE_BRANCH}}` moves while you work: other lanes land into it, and so do people. Until
+your change is merged, the base is the truth and your branch is a proposal against it. Never begin
+a piece of work on a stale tree, and never capture proof on one:
+
+```bash
+git fetch {{REMOTE}} {{BASE_BRANCH}}
+git rev-list --count HEAD..{{REMOTE}}/{{BASE_BRANCH}}    # anything but 0 means you are behind
+git merge --no-edit {{REMOTE}}/{{BASE_BRANCH}}           # merge forward; never rebase, never force-push
+```
+
+Run that before you write the first line, again before you start proving, and again before you
+mark the pull request ready. After any merge that brought something in, rerun
+`{{INSTALL_COMMAND}}` when the lockfile or manifest moved, rerun `{{CHECK_COMMAND}}`, and confirm
+your fix still holds; a receipt captured before the merge describes a tree that will never land,
+so reacquire it.
+
+When the merge conflicts, upstream wins by default: keep the base's version of the conflicting
+lines and re-apply your change on top of it, because whoever landed there knew something you did
+not. The one exception is the defect itself: where the conflicting upstream lines are the very
+behaviour this issue exists to fix, your fix stands, and you say so in the pull request body,
+naming the upstream commit you overrode and why. If you cannot tell which case you are in, or the
+conflict reaches code this issue has no business touching, that is `needs-human` with the
+conflicting files named, not a guess.
+
 ## You are not alone
 
 Other agents are working other issues at the same time, in their own worktrees, against this same
@@ -97,7 +123,9 @@ Otherwise the verdict is `fixed`, and the rest of this document is how you get t
 
 ## Step 2: fix
 
-1. `git switch -c fix/<short-kebab-description>-{{ISSUE}}`
+0. Fetch and confirm you hold the current base (above). A first attempt starts on it; a revision
+   has been caught up by the driver; check anyway, because minutes have passed.
+1. `git switch -c fix/<short-kebab-description>-{{ISSUE}}` (on a revision, stay on your branch)
 2. Make the smallest change that resolves the issue. Nothing else. No opportunistic tidying, no
    drive-by renames, no reformatting of untouched lines.
 3. `{{CHECK_COMMAND}}` and `{{INSTALL_COMMAND}}` must both pass before you commit, and again before
@@ -111,7 +139,9 @@ request. Use a semicolon between independent clauses. Use the Oxford comma.
 
 ## Step 3: prove
 
-First move your card: `{{CARD_PROVING}}`. The board is where the people watching this run see
+First fetch and merge the base forward if it has moved (above), and rerun the checks if it did:
+proof is pinned to the commit it was captured at, and proof on a stale head proves a tree that
+will never land. Then move your card: `{{CARD_PROVING}}`. The board is where the people watching this run see
 what is happening; the seat doing the work is the one that moves the card, and this is the moment
 the change is pushed and the proof begins. The command prints what it did and never fails the
 work; if it says there is no board, carry on.

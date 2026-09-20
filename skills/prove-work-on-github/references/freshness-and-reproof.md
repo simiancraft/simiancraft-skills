@@ -57,8 +57,13 @@ themselves. A test receipt or a rendered frame depends on the whole module graph
 component; a base change to a shared chassis module or a generated type invalidates the proof
 while touching nothing the diff touched, and comparing filenames alone calls that fresh.
 
-The working method, applied by the merge gate in the `burn-down-github-issues` skill in
-its whole-change form (see the honest limits below for what "whole-change" concedes):
+Catching up and reproving are separate decisions. A branch that is behind its base at all should
+merge the base forward before proof is captured, before it is judged, and before it lands, because
+the base is the truth until the work is merged; the intersection below never excuses a branch from
+catching up. What it decides is whether the proof survives the catch-up or must be reacquired.
+
+The working method, applied before every review and every merge by the `fix-github-issue` pipeline
+in its whole-change form (see the honest limits below for what "whole-change" concedes):
 
 1. **Incoming**: `git diff --name-only <captureSha>...<remote>/<base>`, the base's movement since
    capture. Empty means fresh, however long ago the capture was; time is a backstop, not a signal.

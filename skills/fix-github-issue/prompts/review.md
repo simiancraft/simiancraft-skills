@@ -108,6 +108,11 @@ Then verify the change itself, independently of its proof:
   it in `touches`; the merge boundary unions your classification with the author's and with a
   path scan, so an omission on any side cannot widen what the loop may merge, and an over-report
   on either side parks a change nobody needs to look at.
+- The driver merged the current base into this branch before it called you, so the head you
+  judge is what would land. If `git fetch {{REMOTE}} {{BASE_BRANCH}}` shows the base has moved
+  again since, do not block on it; the pull master catches up once more before merging and
+  returns the change to you if that movement reaches this work. Do block on history that was
+  rebased or force-pushed rather than merged forward.
 - No agent or bot is listed as an author or co-author. This is a hard block.
 - No em dashes anywhere in the diff or the pull request prose.
 - The commit and title are Conventional Commits, imperative, facts only.

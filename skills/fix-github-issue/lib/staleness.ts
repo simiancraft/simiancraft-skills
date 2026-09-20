@@ -97,6 +97,22 @@ export function isVersionOnlyPackageJsonBump(ctx: Context, cwd: string, sinceSha
 }
 
 /**
+ * Every file the base has changed that this lane does not yet contain, release noise included.
+ * Empty means the lane holds the current base. This is the "is it behind at all" question, which
+ * decides whether a lane catches up; `staleAgainstBase` is the narrower question of whether that
+ * movement reached what a proof or an approval covers, which decides what the catch-up costs.
+ */
+export function behindBase(ctx: Context, cwd: string): string[] {
+  const target = `${ctx.project.remote}/${ctx.project.baseBranch}`;
+  sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch], cwd);
+  if (sh(ctx, ['git', 'rev-list', '--count', `HEAD..${target}`], cwd) === '0') return [];
+  const files = sh(ctx, ['git', 'diff', '--name-only', `HEAD...${target}`], cwd).split('\n').filter(Boolean);
+  // A base that moved by commits which change no file against this lane (a revert pair, say) is
+  // still movement the lane lacks; name the ref so the caller's list is never empty when behind.
+  return files.length > 0 ? files : [target];
+}
+
+/**
  * What the base has changed since `sinceSha` that this branch's proof actually depends on.
  *
  * Being behind the base is not by itself stale proof. Decay is a function of distance from the base

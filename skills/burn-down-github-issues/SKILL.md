@@ -50,6 +50,12 @@ into the prompts and checked by the reviewer.
   that count.
 - **Nothing lands except through a reviewed pull request.** The loop never pushes to the base
   branch; the gated merge is the only write it makes there.
+- **Upstream is more correct until the work is merged, and no seat begins on a stale lane.** The
+  base is fetched and merged forward before a fix starts, before proof is captured, before a
+  revision, before a review, and before the merge; what lands is a head that contains everything
+  upstream has. Whether proof or an approval survives a catch-up is decided by whether the base
+  moved into the import closure of the work ("did the world move beneath us"); whether the
+  catch-up happens is not.
 - **Pushed history is merged forward, never rebased.** Catch-ups merge the base into the branch,
   so nothing another reader has fetched is rewritten.
 - **No agent or bot is an author or co-author.** Authorship is for humans; the reviewer hard-blocks

@@ -123,16 +123,36 @@ actually reports a merge, cancelling anything a merge queue scheduled instead.
 
 ## Staying current, and when proof goes stale
 
-Every merge moves the base under everything still in flight. A branch is brought up to date **only
-at the front of the queue**, never while a review is running against it, because updating a branch
-that has already been reviewed moves the head out from under the approval and the merge then refuses
-its own reviewed commit. Freshness is judged against the commit the reviewer read, not against the
-current head.
+**Upstream is more correct until the work is merged.** Every merge moves the base under everything
+still in flight, and the base is the truth while a branch is a proposal against it. So no seat
+begins on a stale lane, and nothing lands that lacks the current base. There are five moments, and
+each one fetches, and merges the base forward (never a rebase) when the lane is behind at all:
 
-Falling behind is not the same as having stale proof. Following the freshness rule in
-[`prove-work-on-github`](../../prove-work-on-github/references/freshness-and-reproof.md), decay is a
-function of distance from the base **and** of how much of the incoming change intersects the paths
-the proof covers.
+| Moment | Who | What a base that moved costs |
+|---|---|---|
+| before the first line of a fix | the lane is cut from the fetched base; the worker fetches again | nothing; there is no work yet |
+| before proving, and before marking ready | the worker, in its own turn | a rerun of the checks, and any receipt captured before the merge |
+| before a revision or a redrive | the driver | nothing beyond the merge; the author revises against current code |
+| before a review | the driver | see the table below: the proof stands, or goes back to be reacquired |
+| before the merge, at the front of the queue | the pull master | see the table below: the approval stands, or the head is reviewed again |
+
+A branch is never updated **while** a review is running against it, because that moves the head out
+from under the verdict. The catch-up happens before the reviewer starts and again when the pull
+master takes the branch, and the head that lands is the caught-up one: the merge pins it, and the
+checks that gate it are the checks of that head.
+
+A worker that meets a conflict while merging forward resolves it toward upstream and re-applies
+its change on top, with one exception: where the conflicting upstream lines are the very defect
+the issue exists to fix, the fix stands and the pull request says which upstream commit it
+overrode. The driver itself never resolves a conflict; one it meets is a landing dead letter.
+
+Catching up and having stale proof are different questions. Whether a lane catches up is decided
+by whether it is behind at all. What that catch-up costs is the freshness rule in
+[`prove-work-on-github`](../../prove-work-on-github/references/freshness-and-reproof.md): did the
+world move beneath the proof. Decay is a function of how much of the incoming change intersects the
+paths the proof covers, judged against the commit the proof or the verdict was pinned to, and
+judged before the merge, since afterwards the merge base is the base's own tip and every
+comparison against it is vacuously empty.
 
 **Covered paths are the import closure, not the edited files.** That distinction is the whole
 mechanism. A check-command receipt or a rendered frame depends on every module beneath the
@@ -154,13 +174,18 @@ moving does not fill it, so a rejected change catches up and goes straight to it
 than being re-reviewed first. Re-reviewing one only re-derives it, at the cost of a full review
 reaching the same verdict twice.
 
-| Incoming change | What happens |
-|---|---|
-| nothing the closure reaches | merge proceeds, however far behind the branch was |
-| inside the closure, or a global invalidator, on an **approval** | the branch is updated and **re-reviewed**, because the approval was pinned to a head that no longer exists |
-| inside the closure, on a **rejection** | the branch is updated and revised; the verdict still stands |
-| a closure too large to compute | treated as stale; the conservative answer is the cheap one |
-| conflicts | parked for a human; the pipeline does not resolve conflicts |
+| Incoming change | Before a review | Before the merge |
+|---|---|---|
+| none | the review starts | the merge proceeds |
+| nothing the closure reaches, and the branch's own change is byte-identical across the merge (compared by patch id) | the base is merged in; the proof stands; the review starts on the caught-up head | the base is merged in; the approval stands; the pull master waits on the caught-up head's checks and lands that head |
+| inside the closure, or a global invalidator, or the merge altered the branch's own change | the base is merged in; the proof is stale; the work goes back to its author to rerun the checks and reacquire what the movement reached, spending no review round | the base is merged in; the approval no longer describes what would land; the head is **re-reviewed**, spending no round |
+| any, on a **rejection** | | the base is merged in and the author revises; the verdict still stands |
+| a closure too large to compute | treated as inside the closure; the conservative answer is the cheap one | the same |
+| conflicts | a landing dead letter; the driver does not resolve conflicts | the same |
+
+Reproofs and re-reviews caused by the base are bounded together by the refresh cap; past it the
+landing is a dead letter, because a base that keeps landing into these files needs a quiet moment
+or a person.
 
 Only the merge is serialized. A catch-up and its re-review run outside the lock, because holding it
 across a review would stall every other lane behind one stale branch; the lock is then re-entered
