@@ -23,6 +23,7 @@ import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat } from '../fix-github-issue/lib/engines.ts';
+import { ensureLabels } from '../fix-github-issue/lib/labels.ts';
 
 const HERE = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
@@ -74,6 +75,10 @@ const ctx = createContext({
 });
 
 type Report = { runId: string; result: 'won' | 'busy'; commentId: number | null; claimedAt: number; error?: string };
+
+// The parent creates the loop's labels once, before any contender starts, so a repository that has
+// never seen the loop races on the claim and not on a missing label, and the creation is not timed.
+if (!CONTEND) ensureLabels(ctx);
 
 if (CONTEND) {
   // A contender: wait for the shared instant, claim, report on stdout as one JSON line, release.
