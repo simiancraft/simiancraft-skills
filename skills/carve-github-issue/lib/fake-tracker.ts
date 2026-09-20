@@ -33,6 +33,8 @@ export function fakeIssue(number: number, partial: Partial<FakeIssue> = {}): Fak
 export class FakeTracker implements TrackerIo {
   readonly issues = new Map<number, FakeIssue>();
   readonly writes: TrackerWrite[] = [];
+  /** The labels the repository has, as `gh label create` sees them. */
+  readonly repoLabels = new Set<string>();
   /** A write whose description matches throws once; the knife must leave a finishable state. */
   throwOn: RegExp | null = null;
   /** Called before every write; a test can interleave another runner's writes here. */
@@ -190,7 +192,14 @@ export class FakeTracker implements TrackerIo {
         return;
       }
     }
-    if (sub === 'label') return;
+    if (sub === 'label') {
+      // Like gh: creating a label the repository already has is refused unless forced.
+      if (verb === 'create' && !rest.includes('--force')) {
+        if (this.repoLabels.has(rest[0])) throw new Error(`label with name "${rest[0]}" already exists; use \`--force\` to update its color and description`);
+        this.repoLabels.add(rest[0]);
+      }
+      return;
+    }
     throw new Error(`fake tracker: unhandled write ${op.argv.join(' ')}`);
   }
 

@@ -111,6 +111,27 @@ export function countOf(kind: Counter, labels: Array<{ name: string }>): number 
   return count;
 }
 
+/** The labels this process has already seen exist, by repository, so each is ensured once. */
+const ensuredLabels = new Set<string>();
+
+/**
+ * Makes sure a label exists before it is put on an issue. A label that is already there is the
+ * expected case and is left as it is: no --force, which would overwrite a person's edit to its
+ * color or description on every count. Any other refusal is the caller's to know about.
+ */
+export function ensureLabel(ctx: Context, label: string, color: string, description: string): void {
+  const key = `${ctx.project?.repo ?? ''}\n${label}`;
+  if (ensuredLabels.has(key)) return;
+  try {
+    // A mutation like any other: a dry run logs it and a fake tracker receives it.
+    mutate(ctx, `ensure label ${label} exists`, ['gh', 'label', 'create', label, '--color', color, '--description', description]);
+  } catch (error) {
+    if (!/already exists/i.test((error as Error).message)) throw error;
+  }
+  // A dry run made nothing, so it has ensured nothing.
+  if (!ctx.dryRun) ensuredLabels.add(key);
+}
+
 /**
  * Records one more of `kind`. Written by one role only per kind, so the count cannot be lost.
  *
@@ -121,13 +142,7 @@ export function countOf(kind: Counter, labels: Array<{ name: string }>): number 
 export function recordCount(ctx: Context, kind: Counter, issue: number, previous: number): number {
   const next = previous + 1;
   const label = `loop/${kind}: ${next}`;
-  try {
-    // A mutation like any other: a dry run logs it and a fake tracker receives it. Through `sh` it
-    // reached the real tracker from both.
-    mutate(ctx, `create label ${label}`, ['gh', 'label', 'create', label, '--color', COUNTER_LABEL[kind].color, '--description', COUNTER_LABEL[kind].description]);
-  } catch {
-    // already exists
-  }
+  ensureLabel(ctx, label, COUNTER_LABEL[kind].color, COUNTER_LABEL[kind].description);
   // Add the new count before removing the old one. A crash between the two leaves both labels,
   // and countOf reads the max; the other order would refund every spent round on a crash.
   mutate(ctx, `mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
