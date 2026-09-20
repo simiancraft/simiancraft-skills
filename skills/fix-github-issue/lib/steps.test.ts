@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { isBotMarker } from '../../carve-github-issue/lib/tree.ts';
 import type { Context } from './context.ts';
-import { announceStep, newestStep, parseStepMarker, placeInWork, readWorkFacts, renderStepMarker, type StepMarker, type WorkFacts, type WorkReads } from './steps.ts';
+import { announceStep, everyStep, newestStep, parseStepMarker, placeInWork, readWorkFacts, renderStepMarker, type StepMarker, type WorkFacts, type WorkReads } from './steps.ts';
 
 const BOT = 'loop-bot';
 const S = 'a'.repeat(40);
@@ -24,11 +24,15 @@ describe('a step marker', () => {
   it('counts only when the loop itself wrote it, and the newest one wins', () => {
     const comments = [
       { author: BOT, body: renderStepMarker(coded) },
-      { author: 'a-person', body: renderStepMarker({ ...coded, step: 'proved', sha: T }) },
+      { author: 'a-person', body: renderStepMarker({ ...coded, step: 'refused', sha: T }) },
       { author: BOT, body: 'a plain comment' },
     ];
     expect(newestStep(comments, BOT)?.step).toBe('coded');
-    expect(newestStep([...comments, { author: BOT, body: renderStepMarker({ ...coded, step: 'proved', sha: T }) }], BOT)).toMatchObject({ step: 'proved', sha: T });
+    const later = [...comments, { author: BOT, body: renderStepMarker({ ...coded, step: 'refused', sha: T, attempt: 2 }) }];
+    expect(newestStep(later, BOT)).toMatchObject({ step: 'refused', sha: T, attempt: 2 });
+    // Asked for by kind, the refusal does not hide the hand-off the prover needs.
+    expect(newestStep(later, BOT, 'coded')).toMatchObject({ step: 'coded', sha: S });
+    expect(everyStep(later, BOT, 'coded')).toHaveLength(1);
     expect(newestStep([], BOT)).toBeNull();
   });
 
@@ -62,10 +66,8 @@ describe('placing a card in Work from facts', () => {
     expect(placeInWork({ ...nothing, marker: coded })).toEqual({ lane: 'D1', dispatch: 'code', from: 'nothing' });
   });
 
-  it('marks ready a draft that was proved at its head, and proves again when the head moved on', () => {
-    const proved: StepMarker = { ...coded, step: 'proved', sha: T };
-    expect(placeInWork({ ...nothing, remoteHead: T, draftHead: T, marker: proved, remoteCarriesMarker: true })).toEqual({ lane: 'D3', dispatch: 'mark-ready' });
-    expect(placeInWork({ ...nothing, remoteHead: S, draftHead: S, marker: proved, remoteCarriesMarker: true })).toEqual({ lane: 'D2', dispatch: 'prove' });
+  it('proves a draft again: only a ready pull request says a proof is done', () => {
+    expect(placeInWork({ ...nothing, remoteHead: S, draftHead: S, marker: coded, remoteCarriesMarker: true })).toEqual({ lane: 'D2', dispatch: 'prove' });
   });
 
   it('sends a ready pull request to review whatever else is true', () => {
@@ -74,7 +76,7 @@ describe('placing a card in Work from facts', () => {
 });
 
 describe('reading where the work stands, from the remote and the tracker alone', () => {
-  const reads = (over: Partial<WorkReads>): WorkReads => ({ marker: () => null, remoteBranches: () => [], pull: () => null, ...over });
+  const reads = (over: Partial<WorkReads>): WorkReads => ({ marker: () => null, remoteBranches: () => [], workedBefore: () => true, pull: () => null, ...over });
 
   it('resumes at Prove when a run died after Code announced: the marker and the branch are enough', () => {
     const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
@@ -102,6 +104,12 @@ describe('reading where the work stands, from the remote and the tracker alone',
     const facts = readWorkFacts(reads({ remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
     expect(facts.branch).toBe('fix/x-7');
     expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'branch' });
+  });
+
+  it('adopts no unannounced branch on an issue the loop never worked: a name is not ownership', () => {
+    const facts = readWorkFacts(reads({ remoteBranches: () => [{ branch: 'fix/cart-7', sha: S }], workedBefore: () => false }));
+    expect(facts.branch).toBeNull();
+    expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'nothing' });
   });
 
   it('does not guess between two unannounced branches named for the issue', () => {

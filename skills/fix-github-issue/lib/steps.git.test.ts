@@ -37,6 +37,8 @@ beforeAll(() => {
   git(clone, 'push', '-q', 'origin', 'fix/parser-7');
   // A branch for another issue whose number only ends the same way, and one for issue 17.
   git(clone, 'push', '-q', 'origin', 'HEAD:refs/heads/fix/other-17');
+  // A person's branch that merely ends in the issue number, outside the coder's `fix/` rule.
+  git(clone, 'push', '-q', 'origin', 'HEAD:refs/heads/feature/cart-7');
 });
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });

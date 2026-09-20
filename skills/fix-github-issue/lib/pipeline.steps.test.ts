@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
-import { codedTouches, fixIssue, unionTouches } from './pipeline.ts';
+import { codedTouches, fixIssue, repairRefusedAttempt, unionTouches } from './pipeline.ts';
 import { newestStep } from './steps.ts';
 
 const BOT = 'loop-bot';
@@ -100,6 +100,8 @@ describe('the work turn, as steps', () => {
     // The refusal is a fact on the issue before the attempt is spent, so a run that dies there leaves
     // the next one a brief and not a head to prove again.
     const refusedAt = r.rehearsed.findIndex((d) => d.startsWith('announce refused'));
+    // Each refusal names the attempt it spends, so the count is a fact on the issue and not a race.
+    expect(r.lines.filter((l) => l.includes('announce refused')).length).toBe(3);
     const countedAt = r.rehearsed.findIndex((d) => /^mark #25 at loop\/attempts: 1$/.test(d));
     expect(refusedAt).toBeGreaterThan(-1);
     expect(countedAt).toBeGreaterThan(refusedAt);
@@ -140,6 +142,8 @@ describe("what the change touches, across the step boundary", () => {
     io.comment(40, 'a-person', `<!-- loop-step step=coded run=r sha=${S} gated=${S} touches=code -->\nnot the loop's word`);
     expect(codedTouches(ctx, 40)).toBeUndefined();
     io.comment(40, BOT, `<!-- loop-step step=coded run=r sha=${S} gated=${S} touches=code,data -->\nhand-off`);
+    // A second coder, after a refused proof, says only code: its narrower word does not take back the first one's.
+    io.comment(40, BOT, `<!-- loop-step step=coded run=r2 sha=${S} gated=${S} touches=code -->\nsecond hand-off`);
     // A later refusal or proof does not hide what the coder said.
     io.comment(40, BOT, `<!-- loop-step step=refused run=r sha=${S} gated=${S} touches=none -->\nreason`);
     expect(codedTouches(ctx, 40)).toEqual(['code', 'data']);
@@ -147,3 +151,27 @@ describe("what the change touches, across the step boundary", () => {
     expect(unionTouches(['code'], codedTouches(ctx, 40))).toEqual(['code', 'data']);
   });
 });
+
+describe('the attempt a refusal spends', () => {
+  const rig = () => {
+    const io = new FakeTracker(BOT, [fakeIssue(50, { labels: [{ name: 'loop/attempts: 1' }] })]);
+    const ctx = { botLogin: BOT, runId: 'host-1-1', project: { repo: 'o/steps-attempts' }, io, dryRun: false, dryRunLog: [], log: () => {} } as never;
+    const issue = { number: 50, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'loop/attempts: 1' }] };
+    return { io, ctx, issue };
+  };
+
+  it('is written by the next run when the one that announced it died before the label', () => {
+    const r = rig();
+    expect(repairRefusedAttempt(r.ctx, r.issue, { attempt: 2 }, 1, () => {})).toBe(2);
+    expect(r.io.view(50)!.labels.map((l) => l.name)).toEqual(['loop/attempts: 2']);
+    expect(r.issue.labels.map((l) => l.name)).toEqual(['loop/attempts: 2']);
+  });
+
+  it('is never written twice: a marker whose attempt the issue already shows changes nothing', () => {
+    const r = rig();
+    expect(repairRefusedAttempt(r.ctx, r.issue, { attempt: 1 }, 1, () => {})).toBe(1);
+    expect(repairRefusedAttempt(r.ctx, r.issue, {}, 1, () => {})).toBe(1);
+    expect(r.io.writes).toEqual([]);
+  });
+});
+

@@ -13,11 +13,12 @@ import type { Context } from './context.ts';
 import { mutate } from './shell.ts';
 
 /**
- * `coded`: the change is on the remote and passed the repository's own gate at `gated`. `proved`: a
- * draft carries proof of `sha`. `refused`: a prover could not prove `sha`, and the hand-off is its
- * reason, which is the next coder's brief.
+ * `coded`: the change is on the remote and passed the repository's own gate at `gated`. `refused`:
+ * a prover could not prove `sha`, and the hand-off is its reason, which is the next coder's brief.
+ * There is no `proved`: the prover marks its own pull request ready as its last act, so the fact
+ * that says a proof is done is the ready pull request, and a draft is simply proved again.
  */
-export type Step = 'coded' | 'proved' | 'refused';
+export type Step = 'coded' | 'refused';
 
 export type StepMarker = {
   step: Step;
@@ -29,14 +30,16 @@ export type StepMarker = {
   touches: string[];
   /** What the next step needs and cannot read from the diff: what changed, and how to exercise it. */
   handoff: string;
+  /** For `refused`: the attempt this refusal spends, so a label write that was cut short can be repaired and never counted twice. */
+  attempt?: number;
 };
 
-const STEPS: Step[] = ['coded', 'proved', 'refused'];
+const STEPS: Step[] = ['coded', 'refused'];
 const SHA = /^[0-9a-f]{7,40}$/;
 
 /** The comment that announces a step: a marker line a driver parses, then the hand-off a person or an agent reads. */
 export function renderStepMarker(marker: StepMarker): string {
-  const fields = `step=${marker.step} run=${marker.runId} sha=${marker.sha} gated=${marker.gated} touches=${marker.touches.join(',') || 'none'}`;
+  const fields = `step=${marker.step} run=${marker.runId} sha=${marker.sha} gated=${marker.gated} touches=${marker.touches.join(',') || 'none'}${marker.attempt ? ` attempt=${marker.attempt}` : ''}`;
   return `<!-- loop-step ${fields} -->\n${marker.handoff.trim()}`;
 }
 
@@ -44,23 +47,28 @@ export function renderStepMarker(marker: StepMarker): string {
 export function parseStepMarker(body: string): StepMarker | null {
   const parsed = parseMarker(body);
   if (parsed?.name !== 'loop-step') return null;
-  const { step, run, sha, gated, touches } = parsed.fields;
+  const { step, run, sha, gated, touches, attempt } = parsed.fields;
   if (!STEPS.includes(step as Step) || !run || !SHA.test(sha ?? '') || !SHA.test(gated ?? '')) return null;
   const end = body.indexOf('-->');
-  return { step: step as Step, runId: run, sha, gated, touches: !touches || touches === 'none' ? [] : touches.split(','), handoff: body.slice(end + 3).trim() };
+  return { step: step as Step, runId: run, sha, gated, touches: !touches || touches === 'none' ? [] : touches.split(','), handoff: body.slice(end + 3).trim(), ...(/^[1-9]\d*$/.test(attempt ?? '') ? { attempt: Number(attempt) } : {}) };
 }
 
 /**
  * The newest step the loop itself announced on an issue. Only the bot's own comments count: a
  * marker anybody else can type is not a fact about what a step reached.
  */
-export function newestStep(comments: Array<{ author: string; body: string }>, botLogin: string): StepMarker | null {
+export function newestStep(comments: Array<{ author: string; body: string }>, botLogin: string, step?: Step): StepMarker | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     if (comments[i].author !== botLogin) continue;
     const marker = parseStepMarker(comments[i].body);
-    if (marker) return marker;
+    if (marker && (!step || marker.step === step)) return marker;
   }
   return null;
+}
+
+/** Every step of one kind the loop announced on an issue, oldest first. */
+export function everyStep(comments: Array<{ author: string; body: string }>, botLogin: string, step: Step): StepMarker[] {
+  return comments.flatMap((c) => (c.author === botLogin ? [parseStepMarker(c.body)] : [])).filter((m): m is StepMarker => m !== null && m.step === step);
 }
 
 /** Announces a step on the issue. A mutation like any other: refused under a stop, rehearsed in a dry run. */
@@ -88,7 +96,6 @@ export type WorkFacts = {
 /** Where in Work a card is, and what is dispatched from there. */
 export type WorkPlacement =
   | { lane: 'E1'; dispatch: 'review' }
-  | { lane: 'D3'; dispatch: 'mark-ready' }
   | { lane: 'D2'; dispatch: 'prove' }
   | { lane: 'D1'; dispatch: 'code'; from: 'branch' | 'nothing' | 'refusal' };
 
@@ -103,7 +110,6 @@ export function placeInWork(facts: WorkFacts): WorkPlacement {
   // A refusal stands until a newer Code announcement supersedes it, whatever the head has done
   // since: a catch-up moves the head and repairs nothing, so the refused code is not proved again.
   if (facts.marker?.step === 'refused' && facts.remoteHead) return { lane: 'D1', dispatch: 'code', from: 'refusal' };
-  if (facts.draftHead && announced && facts.marker?.step === 'proved' && facts.marker.sha === facts.draftHead) return { lane: 'D3', dispatch: 'mark-ready' };
   if (announced) return { lane: 'D2', dispatch: 'prove' };
   return { lane: 'D1', dispatch: 'code', from: facts.remoteHead ? 'branch' : 'nothing' };
 }
@@ -112,8 +118,14 @@ export function placeInWork(facts: WorkFacts): WorkPlacement {
 export type WorkReads = {
   /** The newest step the loop announced on the issue. */
   marker: () => StepMarker | null;
-  /** The remote branches whose names end in `-<issue>`, with their heads: the coder's naming rule. */
+  /** The remote branches named by the coder's rule, `fix/<description>-<issue>`, with their heads. */
   remoteBranches: () => Array<{ branch: string; sha: string }>;
+  /**
+   * Whether an earlier run of the loop worked this issue. A name is not ownership: a person's
+   * branch can follow the same rule, so a branch no marker speaks for is adopted only when the
+   * loop is known to have been here before.
+   */
+  workedBefore: () => boolean;
   /** The open pull request for a branch, if any. */
   pull: (branch: string) => { number: number; isDraft: boolean; headRefOid: string } | null;
 };
@@ -128,7 +140,7 @@ export function readWorkFacts(reads: WorkReads): WorkFacts & { branch: string | 
   // The branch the marker speaks of is the one that carries its head; with no marker, the one
   // branch named for the issue, and with several and no marker there is no telling which.
   const carrying = marker ? branches.find((b) => b.sha === marker.sha) : undefined;
-  const chosen = carrying ?? (branches.length === 1 ? branches[0] : undefined);
+  const chosen = carrying ?? (branches.length === 1 && reads.workedBefore() ? branches[0] : undefined);
   const pull = chosen ? reads.pull(chosen.branch) : null;
   return {
     readyPr: pull !== null && !pull.isDraft,

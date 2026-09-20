@@ -14,6 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { readTree } from '../../carve-github-issue/lib/tree.ts';
 import { agentCapMs, children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
@@ -22,7 +23,7 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
-import { announceStep, newestStep, parseStepMarker, placeInWork, readWorkFacts, type WorkReads } from './steps.ts';
+import { announceStep, everyStep, newestStep, placeInWork, readWorkFacts, type WorkReads } from './steps.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -218,15 +219,13 @@ async function runStep(
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
-/** What the coder said the change touches, from the newest coded marker on the issue; none when there is no such marker. */
+/** What the coders said the change touches, from every coded marker on the issue; none when there is no such marker. */
 export function codedTouches(ctx: Context, issue: number): string[] | undefined {
-  const comments = trackerIo(ctx).view(issue)?.comments ?? [];
-  for (let i = comments.length - 1; i >= 0; i--) {
-    if (comments[i].author !== ctx.botLogin) continue;
-    const marker = parseStepMarker(comments[i].body);
-    if (marker?.step === 'coded') return marker.touches;
-  }
-  return undefined;
+  // Every coder that announced, not only the last: after a refused proof a second coder works the
+  // same branch, its commits sit beside the first one's in the pull request, and its narrower word
+  // does not take back what the first one said.
+  const all = everyStep(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin, 'coded');
+  return all.length === 0 ? undefined : [...new Set(all.flatMap((m) => m.touches))];
 }
 
 /**
@@ -250,6 +249,18 @@ export function announceIfMoved(ctx: Context, issue: number, cwd: string, coded:
   if (head !== coded.sha) announceStep(ctx, issue, { step: 'coded', runId: ctx.runId, sha: head, gated: coded.gated, touches: coded.touches, handoff: coded.handoff });
 }
 
+/**
+ * A refusal names the attempt it spends. A run that died between announcing the refusal and
+ * writing the label left the issue one short; the next run to read the marker writes it, once.
+ */
+export function repairRefusedAttempt(ctx: Context, issue: Issue, refused: { attempt?: number }, spent: number, say: (message: string) => void): number {
+  if (refused.attempt !== spent + 1) return spent;
+  say(`the refusal announced attempt ${refused.attempt} and the issue shows ${spent}; recording it`);
+  const now = recordAttempt(ctx, issue.number, spent);
+  issue.labels = [...issue.labels.filter((l) => !/^loop\/attempts:/.test(l.name)), { name: `loop/attempts: ${now}` }];
+  return now;
+}
+
 /** How many commits a lane holds that neither the issue's remote branch nor the base has: work that exists nowhere else. */
 export function lanesOwnCommits(ctx: Context, cwd: string, branch: string): number {
   return Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', `${ctx.project.remote}/${branch}`, `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd));
@@ -259,15 +270,17 @@ export function lanesOwnCommits(ctx: Context, cwd: string, branch: string): numb
 export function workReads(ctx: Context, issue: number, cwd: string): WorkReads {
   return {
     marker: () => newestStep(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin),
-    // The coder's branch is named for its issue, `fix/<description>-<issue>`.
+    // The coder's branch is named for its issue, `fix/<description>-<issue>`; nothing outside `fix/` is looked at.
     remoteBranches: () =>
-      sh(ctx, ['git', 'ls-remote', '--heads', ctx.project.remote, `refs/heads/*-${issue}`], cwd)
+      sh(ctx, ['git', 'ls-remote', '--heads', ctx.project.remote, `refs/heads/fix/*-${issue}`], cwd)
         .split('\n')
         .filter(Boolean)
         .map((line) => {
           const [sha, ref] = line.split(/\s+/);
           return { branch: ref.replace('refs/heads/', ''), sha };
         }),
+    // This run's own claim is on the thread by now, so only another run's counts as having been here.
+    workedBefore: () => readTree(ctx, issue, trackerIo(ctx)).claims.some((c) => c.kind === 'working' && c.runId !== ctx.runId),
     pull: (branch) => {
       const found = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,isDraft,headRefOid'])) as Array<{ number: number; isDraft: boolean; headRefOid: string }>;
       return found[0] ?? null;
@@ -314,7 +327,8 @@ async function runProve(ctx: Context, issue: Issue, cwd: string, maxPoints: numb
   // What Code left is read from the issue, never from this process: the coder may have been
   // another run, on another day.
   const thread = ctx.dryRun && !ctx.io ? [] : (trackerIo(ctx).view(issue.number)?.comments ?? []);
-  const coded = newestStep(thread, ctx.botLogin);
+  // The newest coded marker, whatever came after it: a refusal is not a hand-off.
+  const coded = newestStep(thread, ctx.botLogin, 'coded');
   const prompt = renderPrompt(ctx, 'prove.md', {
     ISSUE: String(issue.number),
     TITLE: issue.title,
@@ -374,6 +388,7 @@ async function runWorker(
     const newest = newestStep(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin);
     if (newest?.step === 'refused') {
       say(`a proof of ${newest.sha.slice(0, 10)} was refused and no Code step has answered it; Code runs first, with that refusal as its brief`);
+      spent = repairRefusedAttempt(ctx, issue, newest, spent, say);
       proveOnly = false;
       reproof = false;
       revision = true;
@@ -407,9 +422,10 @@ async function runWorker(
         // Nothing more to decide: the coder has the lane as it stands.
       } else if (placed.dispatch === 'code' && placed.from === 'refusal') {
         say(`a proof of ${facts.marker?.sha.slice(0, 10)} was refused by an earlier run; Code continues with that refusal as its brief`);
+        if (facts.marker) spent = repairRefusedAttempt(ctx, issue, facts.marker, spent, say);
         revision = true;
         codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${facts.marker?.handoff}`;
-      } else if (placed.dispatch === 'prove' || placed.dispatch === 'mark-ready') {
+      } else if (placed.dispatch === 'prove') {
         say(`an earlier run coded this on ${facts.branch} and announced it at ${facts.marker?.sha.slice(0, 10)}; resuming at Prove`);
         proveOnly = true;
         proveBrief = 'An earlier run coded this change and did not get to prove it, or did not finish. Prove the head of this branch.';
@@ -460,7 +476,7 @@ async function runWorker(
     // announced before anything else, so a run that dies here leaves the next one a fact to start
     // from: it continues Code with this brief, and does not prove the refused head again.
     const refusedHead = ctx.dryRun ? (proved.sha ?? '0'.repeat(40)) : sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    announceStep(ctx, issue.number, { step: 'refused', runId: ctx.runId, sha: refusedHead, gated: refusedHead, touches: [], handoff: proved.reason });
+    announceStep(ctx, issue.number, { step: 'refused', runId: ctx.runId, sha: refusedHead, gated: refusedHead, touches: [], handoff: proved.reason, attempt: spent + 1 });
     spent = recordAttempt(ctx, issue.number, spent);
     // Every later count in this run starts from the issue it holds, so the spent attempt goes there too.
     issue.labels = [...issue.labels.filter((l) => !/^loop\/attempts:/.test(l.name)), { name: `loop/attempts: ${spent}` }];
