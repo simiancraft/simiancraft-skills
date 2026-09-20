@@ -23,6 +23,16 @@ export type BoardWriter = {
   onLane: (event: LaneEvent) => boolean;
   /** Read the lane the card is in now, or undefined when the issue is not on the board. */
   laneOf: (issue: number) => Lane | undefined;
+  /** Every card on the board with its lane and its issue's state and labels, in one read. Throws on a failed read. */
+  snapshot: () => Map<number, Card>;
+};
+
+export type Card = {
+  item: string;
+  /** Undefined when the Status option is empty or not one the lane table knows. */
+  lane: Lane | undefined;
+  state: 'OPEN' | 'CLOSED';
+  labels: string[];
 };
 
 function gh(args: string[]): string {
@@ -114,7 +124,43 @@ export function createBoardWriter(board: Board, repo: string, log: (message: str
     }
   };
 
-  return { board, onLane, laneOf };
+  /**
+   * One GraphQL read per hundred cards, paginated: the item id, the Status option name, and the
+   * issue's number, state, and labels. Item ids are remembered so a later move needs no item-add.
+   */
+  const snapshot = (): Map<number, Card> => {
+    const cards = new Map<number, Card>();
+    let cursor: string | null = null;
+    for (;;) {
+      const after = cursor ? `, after:"${cursor}"` : '';
+      const data = graphql(
+        `{ node(id:"${board.id}") { ... on ProjectV2 { items(first:100${after}) { pageInfo { hasNextPage endCursor } nodes { id status: fieldValueByName(name:"Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } content { ... on Issue { number state labels(first:50) { nodes { name } } } } } } } } }`,
+      ) as {
+        node: {
+          items: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: Array<{ id: string; status: { name?: string } | null; content: { number?: number; state?: 'OPEN' | 'CLOSED'; labels?: { nodes: Array<{ name: string }> } } | null }>;
+          };
+        };
+      };
+      for (const node of data.node.items.nodes) {
+        const number = node.content?.number;
+        if (number === undefined || !node.content?.state) continue; // a draft item or a pull request card
+        items.set(number, node.id);
+        cards.set(number, {
+          item: node.id,
+          lane: node.status?.name ? laneByLabel(node.status.name) : undefined,
+          state: node.content.state,
+          labels: (node.content.labels?.nodes ?? []).map((l) => l.name),
+        });
+      }
+      if (!data.node.items.pageInfo.hasNextPage) break;
+      cursor = data.node.items.pageInfo.endCursor;
+    }
+    return cards;
+  };
+
+  return { board, onLane, laneOf, snapshot };
 }
 
 /**
@@ -125,10 +171,12 @@ export function createBoardWriter(board: Board, repo: string, log: (message: str
 export function placeByFacts(facts: {
   state: 'OPEN' | 'CLOSED';
   labels: string[];
-  /** The open pull requests that reference the issue, newest first. */
+  /** The pull requests that own the issue, newest first: open ones, and merged ones for a closed issue. */
   pulls: Array<{ number: number; isDraft: boolean; merged: boolean }>;
   points?: number;
   ceiling: number;
+  /** True when a blocked-by edge points at an issue not closed as completed. */
+  blocked?: boolean;
 }): { lane: string; why: string } {
   const has = (label: string) => facts.labels.includes(label);
   const merged = facts.pulls.find((p) => p.merged);
@@ -144,6 +192,7 @@ export function placeByFacts(facts: {
   if (has('loop/carved') || facts.labels.some((l) => l.startsWith('loop/carve-gen:'))) return { lane: 'C5', why: 'a carved trunk' };
   const open = facts.pulls.find((p) => !p.merged);
   if (open) return open.isDraft ? { lane: 'D3', why: `draft PR #${open.number}` } : { lane: 'E1', why: `ready PR #${open.number}` };
+  if (facts.blocked) return { lane: 'W1', why: 'a blocker is not closed as completed' };
   if (facts.points !== undefined && facts.points > facts.ceiling) return { lane: 'C1', why: `size ${facts.points} over the ceiling of ${facts.ceiling}` };
   if (facts.points !== undefined) return { lane: 'B1', why: `size ${facts.points}` };
   return { lane: 'A1', why: 'unsized' };

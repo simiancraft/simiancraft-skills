@@ -41,10 +41,10 @@ import { appraiseIssue, assertConfirmCloses, ISSUE_LIST_FIELDS, looksLikeTrunk, 
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
-import { createBoardWriter, readBoardPointer } from './lib/board-writer.ts';
+import { createBoardWriter, placeByFacts, readBoardPointer } from './lib/board-writer.ts';
 import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
-import { type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
+import { FILES as FLOOR_FILES, type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 
 // ---------------------------------------------------------------------------
@@ -335,6 +335,41 @@ type Walker = { stop: () => void;
   /** stop, then wait for the exit with a bounded escalation to SIGKILL. */
   stopAndWait: () => Promise<void>; drain: () => Promise<void> };
 
+/**
+ * The previous run releases its instance lock before it drains its walker, so this run can start
+ * while that walker still holds the floor. One walker per floor: wait for it to finish, bounded
+ * by the drain window, rather than start a second one that would refuse the lock and leave this
+ * run unprotected.
+ */
+async function awaitFloorFree(maxMinutes: number): Promise<void> {
+  const lock = join(FLOOR_DIR, FLOOR_FILES.lock);
+  const holder = (): number | null => {
+    if (!existsSync(lock)) return null;
+    const pid = Number(readFileSync(lock, 'utf8').trim());
+    try {
+      process.kill(pid, 0);
+      return pid;
+    } catch {
+      return null;
+    }
+  };
+  const deadline = Date.now() + maxMinutes * 60_000;
+  let announced = false;
+  for (;;) {
+    const pid = holder();
+    if (pid === null) return;
+    if (!announced) {
+      log(`a walker from an earlier run (pid ${pid}) still holds the floor; waiting up to ${maxMinutes} minute(s) for it to finish`);
+      announced = true;
+    }
+    if (Date.now() > deadline) {
+      log(`walker ${pid} still holds the floor after ${maxMinutes} minute(s); starting without one would leave this run unprotected, so this run runs without the floor`);
+      return;
+    }
+    await Bun.sleep(10_000);
+  }
+}
+
 function startWalker(cadenceMinutes: number, drainMinutes: number): Walker {
   mkdirSync(FLOOR_DIR, { recursive: true });
   mkdirSync(RUN_DIR, { recursive: true });
@@ -595,20 +630,23 @@ function notALeafLabel(issue: Issue): string | null {
  * pull requests that reference an open, unheld, sized issue close it with a pointer, and the merge
  * goes on the floor as it would have. Runs under the lock before anything is selected.
  */
-async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
-  type Merged = {
-    number: number;
-    title: string;
-    body: string;
-    headRefName: string;
-    mergedAt: string;
-    mergeCommit: { oid: string } | null;
-    files: Array<{ path: string }>;
-  };
-  const since = new Date(Date.now() - CONFIG.reconciliationDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  let merged: Merged[];
-  try {
-    merged = JSON.parse(
+type Merged = {
+  number: number;
+  title: string;
+  body: string;
+  headRefName: string;
+  mergedAt: string;
+  mergeCommit: { oid: string } | null;
+  files: Array<{ path: string }>;
+};
+
+/** Pull requests merged into the base within the reconciliation window, read once per run. */
+const mergedPullRequests = (() => {
+  let cached: Merged[] | null = null;
+  return (): Merged[] => {
+    if (cached) return cached;
+    const since = new Date(Date.now() - CONFIG.reconciliationDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    cached = JSON.parse(
       sh(ctx, [
         'gh',
         'pr',
@@ -624,7 +662,15 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
         '--json',
         'number,title,body,headRefName,mergedAt,mergeCommit,files',
       ]),
-    );
+    ) as Merged[];
+    return cached;
+  };
+})();
+
+async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
+  let merged: Merged[];
+  try {
+    merged = mergedPullRequests();
   } catch (error) {
     log(`could not list merged pull requests: ${(error as Error).message}; skipping merge reconciliation`);
     return;
@@ -665,6 +711,80 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
       open.delete(ref);
     }
   }
+}
+
+/**
+ * The machine's `reconcile` for every card at once: the run start puts each issue in the window,
+ * and each card already on the board, where its facts say (references/state-machine.md,
+ * "Reconcile"). Writes only the cards whose lane differs, straight to the board rather than the
+ * console, so a large backlog costs one read and a line per move. An issue another run holds is
+ * left where it is; the sweep has already cleared dead claims.
+ */
+async function placeBacklog(all: Issue[]): Promise<void> {
+  if (!BOARD) return;
+  let cards: ReturnType<typeof BOARD.snapshot>;
+  try {
+    cards = BOARD.snapshot();
+  } catch (error) {
+    log(`board: could not read the cards: ${(error as Error).message}; placing nothing`);
+    return;
+  }
+  const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
+  const inWindow = (issue: Issue) => (ONLY ? ONLY.has(issue.number) : Boolean(issue.parent) || Date.parse(issue.createdAt) >= cutoff || cards.has(issue.number));
+  type Pull = { number: number; isDraft: boolean; body: string; title: string; headRefName: string };
+  const openPulls = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'number,isDraft,body,title,headRefName'])) as Pull[];
+  const owning = (pulls: Array<Pull | Merged>, issue: number) => pulls.filter((pr) => issueRefs([pr], 'owning').includes(issue));
+  let moved = 0;
+  let kept = 0;
+  const settle = (issue: number, title: string, lane: string, why: string) => {
+    const current = cards.get(issue)?.lane?.key;
+    if (current === lane) {
+      kept += 1;
+      return;
+    }
+    moved += 1;
+    const note = `${current ? `was ${current}; ` : ''}${why}`;
+    if (DRY_RUN) log(`DRY RUN  would place #${issue} in ${lane} (${note})`);
+    else BOARD?.onLane({ issue, title, lane, note });
+  };
+
+  const open = new Set<number>();
+  for (const issue of all) {
+    if (!inWindow(issue)) continue;
+    open.add(issue.number);
+    const labels = issue.labels.map((l) => l.name);
+    if (labels.includes('loop/working') || labels.includes('loop/carving')) {
+      kept += 1;
+      continue;
+    }
+    const placed = placeByFacts({
+      state: 'OPEN',
+      labels,
+      pulls: owning(openPulls, issue.number).map((pr) => ({ number: pr.number, isDraft: (pr as Pull).isDraft, merged: false })),
+      points: pointsFromLabels(issue.labels) ?? undefined,
+      ceiling: MAX_POINTS,
+      blocked: (issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
+    });
+    settle(issue.number, issue.title, placed.lane, placed.why);
+  }
+  // A card whose issue closed since it was placed: merged by a pull request that owns it, or closed without code.
+  let merged: Merged[] = [];
+  try {
+    merged = mergedPullRequests();
+  } catch (error) {
+    log(`board: could not list merged pull requests: ${(error as Error).message}; closed cards keep their lane`);
+  }
+  for (const [number, card] of cards) {
+    if (open.has(number) || card.state !== 'CLOSED' || card.lane?.phase === 'terminal') continue;
+    const placed = placeByFacts({
+      state: 'CLOSED',
+      labels: card.labels,
+      pulls: owning(merged, number).map((pr) => ({ number: pr.number, isDraft: false, merged: true })),
+      ceiling: MAX_POINTS,
+    });
+    settle(number, '', placed.lane, placed.why);
+  }
+  log(`board: ${moved} card(s) placed by their facts, ${kept} already where the facts put them`);
 }
 
 /**
@@ -922,10 +1042,21 @@ async function main(): Promise<void> {
   // SIGKILL can still leave wreckage, which is what `reconcile` exists to clear on the next run.
   // The walker is a child that would otherwise keep this process alive after the run is done, so
   // main drains it (finish the floor, then exit) and every other exit path stops it outright.
+  if (CONFIG.floor && !DRY_RUN) await awaitFloorFree(CONFIG.floor.drainMinutes ?? 60);
   const walker: Walker =
     CONFIG.floor && !DRY_RUN
       ? startWalker(CONFIG.floor.cadenceMinutes, CONFIG.floor.drainMinutes ?? 60)
       : { stop: () => {}, stopAndWait: async () => {}, drain: async () => {} };
+  // The run's own work is done once the last lane returns; the walker's drain is the floor's, not
+  // the instance's, so the lock goes first and the next run may start while this one waits.
+  const finish = async () => {
+    step('done');
+    pulse('final');
+    stopPulse();
+    releaseLock();
+    log('instance lock released; the walker drains without it');
+    await walker.drain();
+  };
   const stopWalker = walker.stop;
   const stopPulse = startPulse(PULSE_MINUTES);
   if (!SILENT) log(`operator board: a line per issue on every change, the whole board every ${PULSE_MINUTES} minute(s); --silent turns it off`);
@@ -978,6 +1109,10 @@ async function main(): Promise<void> {
   step('Sweeping trunks, claims, and pauses');
   await CARVING.sweep(allIssues());
 
+  // Every card where its facts put it, before any lane moves one: the board is resumed from, so it
+  // has to be right at the start of a run, not only after the run has touched a card.
+  await placeBacklog(allIssues());
+
   // Appraisal first, and on its own timeline. Workers only ever pick up something already judged
   // real and sized, so the expensive population never pays for a worktree to discover an issue was
   // already fixed. This queue drains: once the window is appraised there is nothing here to do.
@@ -1006,10 +1141,7 @@ async function main(): Promise<void> {
   const candidates = selectCandidates().slice(0, LIMIT);
   if (candidates.length === 0) {
     log('no sized candidates in the window; widen CONFIG.ageDays or raise --max-points');
-    step('done');
-    pulse('final');
-    stopPulse();
-    await walker.drain();
+    await finish();
     return;
   }
 
@@ -1029,10 +1161,7 @@ async function main(): Promise<void> {
     (issue) => `#${issue.number}`,
   );
 
-  step('done');
-  pulse('final');
-  stopPulse();
-  await walker.drain();
+  await finish();
 }
 
 if (import.meta.main) await main();
