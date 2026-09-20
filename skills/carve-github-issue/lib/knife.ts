@@ -705,7 +705,11 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
   }
   const stopRenewing = keepClaimed(handle);
   try {
-    return await drive(k, tree);
+    const outcome = await drive(k, tree);
+    // Asked here, before the cleanup below clears the mark: whatever the knife concluded, a driver
+    // told anything but this would place a card that is no longer this run's to place.
+    if (leaseLost(ctx, issue.number)) return { outcome: 'lease-lost', reason: `this run lost its lease on the issue; the knife had reached: ${outcome.outcome} (${outcome.reason})` };
+    return outcome;
   } catch (error) {
     // A throw is a failed turn like any other, so it is counted, and at the cap it is a carve dead
     // letter: a knife that crashes on this trunk every time must not be handed it for ever. The

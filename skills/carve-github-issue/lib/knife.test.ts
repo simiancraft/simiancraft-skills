@@ -122,6 +122,25 @@ describe('the carving driver makes only moves the chart allows', () => {
     expect(lanes.length).toBe(placedBeforeLoss);
   });
 
+  test('the driver places no card when the lease is lost and the knife still returns an ordinary outcome', async () => {
+    // The tracker changes under the confirmer, which the knife returns as a failed turn, not a throw,
+    // without having tried a write; the lease is lost in the same moment.
+    const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    let marksAtLoss = -1;
+    ctx.log = (m) => {
+      if (!/running confirmer/.test(m) || leaseLost(ctx, 10)) return;
+      io.comment(10, 'a-person', 'one more thing about this issue');
+      const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+      keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+      marksAtLoss = lanes.length;
+    };
+    await makeDriver(ctx, k, lanes).revisit(10, 'first carve');
+    expect(marksAtLoss).toBeGreaterThan(0);
+    expect(lanes.length).toBe(marksAtLoss);
+    expect(records(io, 10)).toEqual([]);
+  });
+
   test('the driver places no card for a carve that lost its lease', async () => {
     const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
     const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
