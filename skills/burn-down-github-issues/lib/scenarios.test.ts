@@ -82,10 +82,13 @@ class Work extends Card {
   }
   review(decision: 'merge' | 'reject'): this {
     this.send('REVIEWER_DISPATCHED', this.facts());
-    while (this.lane === 'F2') {
+    // `lane` is a getter that `send` changes; read it through a call so the checker does not
+    // narrow it to the loop's condition.
+    const at = () => this.lane;
+    while (at() === 'F2') {
       this.catchUp();
-      if (this.lane === 'D2') this.send('PROOF_REACQUIRED');
-      if (this.lane !== 'E1') return this;
+      if (at() === 'D2') this.send('PROOF_REACQUIRED');
+      if (at() !== 'E1') return this;
       this.send('REVIEWER_DISPATCHED', this.facts());
     }
     this.verdict = decision;
