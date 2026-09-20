@@ -204,6 +204,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const APPRAISE_PROMPTS = join(HERE, '..', 'appraise-github-issues', 'prompts');
 /** The fix pipeline's own prompts, shipped with the sibling skill this loop depends on. */
 const FIX_PROMPTS = join(HERE, '..', 'fix-github-issue', 'prompts');
+/** The knife's prompts: the sweep revisits trunks in process, so the loop renders carve.md and revisit.md itself. */
+const CARVE_PROMPTS = join(HERE, '..', 'carve-github-issue', 'prompts');
 
 /**
  * The main checkout of the target repository, resolved from the invoking directory. The loop may
@@ -572,7 +574,7 @@ const ctx = createContext({
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
-  promptsDirs: [APPRAISE_PROMPTS, FIX_PROMPTS],
+  promptsDirs: [APPRAISE_PROMPTS, FIX_PROMPTS, CARVE_PROMPTS],
   dryRun: DRY_RUN,
   mayMerge: async () => {
     await waitForGo('the merge queue');
