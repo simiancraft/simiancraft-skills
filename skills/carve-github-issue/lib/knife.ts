@@ -17,7 +17,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import { CARVING_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { carveCount, clearCarves, closeIssue, dlqLabel, HOLD_LABELS, recordCarve } from '../../fix-github-issue/lib/labels.ts';
+import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
@@ -139,8 +139,14 @@ function labelsOf(node: { labels: Array<{ name: string }> }): string[] {
   return node.labels.map((l) => l.name);
 }
 
+/** The labels every driver creates at start; any other name the knife writes is computed, and may not exist yet. */
+const CREATED_AT_START = new Set(loopLabels().map(([name]) => name));
+
 function addLabel(k: Knife, step: JournalStep, issue: number, label: string, current: string[]): void {
   if (current.includes(label)) return;
+  // A label the repository lacks cannot be put on an issue, and a carve that threw here had already
+  // created its children. `loop/carve-gen: N` is a new name with every generation.
+  if (!CREATED_AT_START.has(label) && !k.ctx.dryRun) ensureLabel(k.ctx, label, '5319e7', 'Written by the knife; see the carving record on the issue');
   write(k, step, `label #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label], issue);
 }
 
@@ -737,7 +743,10 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
   } finally {
     stopRenewing();
     try {
-      handle.release({ keepLabel: k.journal.journal.status === 'open' && k.journal.journal.steps.length > 0 });
+      const unfinished = k.journal.journal.status === 'open' && k.journal.journal.steps.length > 0;
+      // Said aloud, since an unclaim that leaves the label on reads as a defect in the log.
+      if (unfinished) say('keeping loop/carving: this generation is announced and unfinished, and the next visit finishes it');
+      handle.release({ keepLabel: unfinished });
     } catch (error) {
       say(`could not release the claim: ${(error as Error).message}`);
     }

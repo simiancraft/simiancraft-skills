@@ -8,6 +8,7 @@ import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation } from
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { awaitReleases, type ClaimHandle, claim, keepClaimed, leaseLost } from './claims.ts';
+import { loopLabels } from '../../fix-github-issue/lib/labels.ts';
 import { carveIssue } from './knife.ts';
 import { renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
@@ -434,6 +435,24 @@ describe('carveIssue', () => {
     expect(await awaitReleases(0)).toEqual(['o/r#10']);
     if (handle !== 'busy') handle.release();
     expect(await awaitReleases(0)).toEqual([]);
+  });
+
+  test('a first carve on a repository that has never been carved: the generation label does not exist yet', async () => {
+    const io = trunk();
+    // Like gh: a label the repository does not have cannot be put on an issue. Every fixed label
+    // is created at start by the driver; the generation label is a new name with every generation.
+    for (const [name] of loopLabels()) io.repoLabels.add(name);
+    io.beforeWrite = (op) => {
+      const at = op.argv.indexOf('--add-label');
+      if (at > -1 && !io.repoLabels.has(op.argv[at + 1])) throw new Error(`'${op.argv[at + 1]}' not found`);
+    };
+    const ctx = ctxFor(io);
+    ctx.project = { ...ctx.project, repo: 'o/never-carved' };
+    const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    expect(out.outcome).toBe('carve');
+    expect(labels(io, 10)).toContain('loop/carve-gen: 1');
+    expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
+    expect(records(io, 10)).toEqual(['applying', 'live']);
   });
 
   test('a knife that loses its lease mid-carve stops writing, counts nothing, and resumes on the next visit', async () => {
