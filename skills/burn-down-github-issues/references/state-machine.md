@@ -126,7 +126,7 @@ so any run can finish a spawn another run started.
 | D4 Sent back | PR to draft, run worker revision | `DRAFT_PUSHED` to D3; `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision parks at once; the attempt counts) |
 | D1 Coding | run worker | `WORKER_STARTED_PROOF` to D2; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
 | D2 Proving | move card (the worker moves its own card at step 3) | `DRAFT_OPENED` to D3; `AGENT_FAILED` to Q3 |
-| D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared) |
+| D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
 
 D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
@@ -134,7 +134,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2 |
+| E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
 | E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card to D4), else to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
 
 ### Landing (the pull master; serial)

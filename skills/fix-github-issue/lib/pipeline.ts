@@ -1245,11 +1245,16 @@ export async function redriveIssue(
   ctx: Context,
   issue: Issue,
   pull: { number: number; branch: string },
-  objection: string,
+  /**
+   * What stopped the work, which is the revision's brief. Null when nothing did: the pull request
+   * only lost its driver (a run that died elsewhere, a lane that is gone), so there is no objection
+   * to answer and the card goes to the closest lane that can carry it on, Proving, not to a revision.
+   */
+  objection: string | null,
   options: { maxPoints?: number; ceiling?: number; confirmer?: Seat } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
-  ctx.step(`#${issue.number} ${issue.title} (redrive of PR #${pull.number})`);
+  ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
   const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
   const ceiling = options.ceiling ?? maxPoints;
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
@@ -1272,7 +1277,7 @@ export async function redriveIssue(
       : worktreeAtPullRequest(ctx, issue.number, pull.branch);
     inFlight.set(issue.number, { dir: cwd, busy: false });
     if (ctx.dryRun) {
-      say(`DRY RUN  would revise PR #${pull.number} on ${pull.branch} with the objection as the brief, then review and land`);
+      say(`DRY RUN  would ${objection === null ? 'reacquire the proof of' : 'revise'} PR #${pull.number} on ${pull.branch}, then review and land`);
       return { outcome: 'failed', reason: 'dry run' };
     }
     // The pull request goes back to draft first, so the catch-up and the revision's pushes spend
@@ -1283,16 +1288,27 @@ export async function redriveIssue(
     if (catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
       return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pull.number);
     }
-    const feedback: ReviewResult = {
-      pr: pull.number,
-      decision: 'gather-more',
-      adequacy: 'This pull request was stopped by the objection below; a person has asked for it to be continued.',
-      confidence: 'redrive',
-      blocking: [objection],
-    };
-    let result = await runWorker(ctx, issue, cwd, maxPoints, feedback);
+    const feedback: ReviewResult =
+      objection === null
+        ? {
+            pr: pull.number,
+            decision: 'gather-more',
+            adequacy: 'This pull request lost its driver before it was reviewed. Nobody has objected to the change; its proof has to be current before a review can start.',
+            confidence: 'resume',
+            blocking: [
+              `The branch has been caught up with ${ctx.project.baseBranch}. Re-run the checks on the current head, confirm the fix still holds, reacquire any receipt that no longer describes this head, and update the proof. Change code only if something fails.`,
+            ],
+          }
+        : {
+            pr: pull.number,
+            decision: 'gather-more',
+            adequacy: 'This pull request was stopped by the objection below; a person has asked for it to be continued.',
+            confidence: 'redrive',
+            blocking: [objection],
+          };
+    let result = await runWorker(ctx, issue, cwd, maxPoints, feedback, objection === null);
     say(`verdict: ${result.verdict}; ${result.reason}`);
-    if (result.verdict === 'failed') return countFailure(ctx, issue, `on a redrive: ${result.reason}`, say, pull.number);
+    if (result.verdict === 'failed') return countFailure(ctx, issue, `on a ${objection === null ? 'resume' : 'redrive'}: ${result.reason}`, say, pull.number);
     if (result.verdict === 'fixed' && !result.pr) result = { ...result, pr: pull.number, branch: pull.branch };
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pull.number);
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pull.number) : settled;

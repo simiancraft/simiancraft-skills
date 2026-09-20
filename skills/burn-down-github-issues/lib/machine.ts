@@ -54,6 +54,17 @@ const REDRIVE: Transition[] = [
   { target: 'ticket.reconcile', actions: ['countRedrive', 'unlabelHold'] },
 ];
 
+/**
+ * A pull request of the loop's own whose driver is gone, with no hold on it: a run that died on
+ * another machine, a lane that was removed. Nobody objected to the work, so it is not a revision.
+ * It catches up, then goes to the closest lane that can carry it on: Proving, where its author
+ * makes the proof current and hands it to review.
+ */
+const RESUME: Transition[] = [
+  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['reclaim', 'markResuming'] },
+  { target: 'ticket.work.proving', actions: ['reclaim', 'prToDraft', 'runWorkerReproof'] },
+];
+
 /** Transitions every ticket state inherits, tried before its own only for the events named here. */
 const TICKET_WIDE: Record<string, Transition | Transition[]> = {
   ISSUE_CLOSED: [
@@ -347,6 +358,7 @@ export const MACHINE: StateNode = {
               entry: ['moveCard'],
               on: {
                 PR_READY: { target: 'ticket.review.readyForReview' },
+                RESUMED: RESUME,
                 RUN_DIED: { target: 'ticket.deadLetters.work', actions: ['labelDlq', 'commentReason'] },
               },
             },
@@ -366,6 +378,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.landing.catchingUp', guard: 'behindBase' },
                   { target: 'ticket.review.evidenceUnderReview' },
                 ],
+                RESUMED: RESUME,
               },
             },
             evidenceUnderReview: {
@@ -414,6 +427,9 @@ export const MACHINE: StateNode = {
                 // outside the work leaves a standing approval or an unreviewed proof intact;
                 // movement inside it sends an approval back to review and a proof back to its author.
                 CAUGHT_UP: [
+                  // A resumed pull request has no verdict and no driver's memory of its proof:
+                  // whatever the base changed, its author makes the proof current next.
+                  { target: 'ticket.work.proving', guard: 'resuming', actions: ['pushBranch', 'prToDraft', 'runWorkerReproof'] },
                   { target: 'ticket.landing.checksPending', guard: 'standingVerdictMerge and movementOutsideClosure and netChangeIntact', actions: ['pushBranch', 'pinLandingHead'] },
                   { target: 'ticket.review.readyForReview', guard: 'standingVerdictMerge and refreshesUnderCap', actions: ['countRefresh', 'pushBranch'] },
                   { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection', actions: ['pushBranch'] },

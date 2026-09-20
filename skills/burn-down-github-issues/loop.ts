@@ -719,7 +719,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
 }
 
 /** Where the facts put every issue in the window: the queue the run dispatches from. */
-type Placement = Map<number, { lane: string; why: string; issue: Issue; pull?: { number: number; branch: string } }>;
+type Placement = Map<number, { lane: string; why: string; issue: Issue; pull?: { number: number; branch: string; author: string } }>;
 
 /**
  * The machine's `reconcile` for every card at once: the run start puts each issue in the window,
@@ -742,8 +742,8 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
   }
   const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
   const inWindow = (issue: Issue) => (ONLY ? ONLY.has(issue.number) : Boolean(issue.parent) || Date.parse(issue.createdAt) >= cutoff || cards.has(issue.number));
-  type Pull = { number: number; isDraft: boolean; body: string; title: string; headRefName: string };
-  const openPulls = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'number,isDraft,body,title,headRefName'])) as Pull[];
+  type Pull = { number: number; isDraft: boolean; body: string; title: string; headRefName: string; author?: { login?: string } };
+  const openPulls = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'number,isDraft,body,title,headRefName,author'])) as Pull[];
   const owning = (pulls: Array<Pull | Merged>, issue: number) => pulls.filter((pr) => issueRefs([pr], 'owning').includes(issue));
   let moved = 0;
   let kept = 0;
@@ -779,7 +779,7 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
       blocked: (issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
       openChildren: looksLikeTrunk(issue),
     });
-    placement.set(issue.number, { ...placed, issue, pull: mine[0] ? { number: mine[0].number, branch: mine[0].headRefName } : undefined });
+    placement.set(issue.number, { ...placed, issue, pull: mine[0] ? { number: mine[0].number, branch: mine[0].headRefName, author: mine[0].author?.login ?? '' } : undefined });
     if (BOARD) settle(issue.number, issue.title, placed.lane, placed.why);
   }
   const byLane = new Map<string, number>();
@@ -820,6 +820,13 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
   const out: Array<{ issue: Issue; pull: { number: number; branch: string } }> = [];
   for (const { lane, issue, pull } of placement.values()) {
     if ((lane !== 'E1' && lane !== 'D3') || !pull) continue;
+    // Ownership is the pull request's, not the issue's: the loop once working an issue does not
+    // make a person's later branch for it the loop's to resume. The loop's own pull requests are
+    // opened by its login on a branch that ends in the issue number.
+    if (pull.author !== ctx.botLogin || !pull.branch.endsWith(`-${issue.number}`)) {
+      log(`  #${issue.number} has PR #${pull.number} by ${pull.author || 'an unknown author'} on ${pull.branch}, which is not the loop's; left to its author`);
+      continue;
+    }
     const tree = readTree(ctx, issue.number, io);
     if (!tree.claims.some((c) => c.kind === 'working')) {
       log(`  #${issue.number} has PR #${pull.number} but the loop never worked it; left to its author`);
@@ -835,13 +842,18 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
   return out;
 }
 
-/** The newest reason the loop left on the thread for stopping, which is the brief a resumed worker gets. */
-function lastObjection(issue: number): string {
+/**
+ * The newest reason the loop left on the thread for stopping, which is the brief a redriven worker
+ * gets. Null when the loop never stopped this work: the pull request only lost its driver, and it
+ * is resumed from Proving with no objection to answer. Null also when the thread cannot be read,
+ * since inventing an objection would send sound work to a revision.
+ */
+function lastObjection(issue: number): string | null {
   try {
     const raw = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
-    return raw.trim() || 'The pull request was stopped before it could land; finish it and re-prove it.';
+    return raw.trim() || null;
   } catch {
-    return 'The pull request was stopped before it could land; finish it and re-prove it.';
+    return null;
   }
 }
 

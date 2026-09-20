@@ -70,15 +70,23 @@ class Work extends Card {
     return this.send('AGENT_FAILED', this.facts());
   }
   /** The driver's catch-up: merge the base forward, then let the closure decide the cost. */
-  private catchUp(): this {
+  private catchUp(extra: string[] = []): this {
     if (this.conflicts()) return this.send('CONFLICT');
-    const facts = this.facts(); // judged before the merge, as the pipeline does
+    const facts = this.facts(extra); // judged before the merge, as the pipeline does
     if (!facts.has('movementOutsideClosure') || !facts.has('netChangeIntact')) this.refreshes += 1;
     this.holds = this.world.base.length;
     const was = this.verdict;
     this.send('CAUGHT_UP', facts);
     if (this.lane === 'E1' || this.lane === 'D2') this.verdict = was === 'reject' ? 'reject' : 'none';
     return this;
+  }
+  /** The driver is gone and nothing holds the card: the next run resumes it from the closest lane. */
+  resume(): this {
+    this.send('RESUMED', this.facts());
+    if (this.lane === 'F2') this.catchUp(['resuming']);
+    expect(this.lanes.at(-1), `${this.name} resumes in Proving, holding the base`).toBe('D2');
+    expect(this.holds).toBe(this.world.base.length);
+    return this.send('PROOF_REACQUIRED');
   }
   /** A review; `meanwhile` lands something else while the reviewer reads. */
   review(decision: 'merge' | 'reject', meanwhile?: () => void): this {
@@ -315,6 +323,25 @@ describe('single file at the end', () => {
     world.base.push(['app/shared.ts']);
     b.land();
     expect(b.lane).toBe('Q5');
+  });
+});
+
+describe('a pull request whose driver is gone', () => {
+  it('is resumed from Proving, never sent to a revision nobody asked for, and lands', () => {
+    const world = new World();
+    const a = new Work('A', world, ['app/a.ts']).work().review('merge');
+    const b = new Work('B', world, ['app/b.ts']).work();
+    a.land();
+    b.resume().review('merge').land();
+    expect(b.lanes.join(' ')).toBe('B1 D1 E1 F2 D2 E1 E2 F1 F3 F4 F5 T1');
+    expect(b.lanes).not.toContain('D4');
+    expect(b.rounds).toBe(0);
+  });
+
+  it('on a base that has not moved goes straight to Proving', () => {
+    const world = new World();
+    const b = new Work('B', world, ['app/b.ts']).work().resume();
+    expect(b.lanes.join(' ')).toBe('B1 D1 E1 D2 E1');
   });
 });
 
