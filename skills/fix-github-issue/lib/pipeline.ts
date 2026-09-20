@@ -22,7 +22,7 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
-import { announceStep, newestStep } from './steps.ts';
+import { announceStep, newestStep, placeInWork, readWorkFacts, type WorkReads } from './steps.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 
 /**
@@ -218,6 +218,36 @@ async function runStep(
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
+/** The reads that say where an issue's work stands, against the real remote and tracker. */
+export function workReads(ctx: Context, issue: number, cwd: string): WorkReads {
+  return {
+    marker: () => newestStep(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin),
+    // The coder's branch is named for its issue, `fix/<description>-<issue>`.
+    remoteBranches: () =>
+      sh(ctx, ['git', 'ls-remote', '--heads', ctx.project.remote, `refs/heads/*-${issue}`], cwd)
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [sha, ref] = line.split(/\s+/);
+          return { branch: ref.replace('refs/heads/', ''), sha };
+        }),
+    carries: (ancestor, head) => {
+      if (ancestor === head) return true;
+      try {
+        sh(ctx, ['git', 'fetch', ctx.project.remote, head], cwd, 1);
+        sh(ctx, ['git', 'merge-base', '--is-ancestor', ancestor, head], cwd, 1);
+        return true;
+      } catch {
+        return false; // not an ancestor, or an object the remote no longer has: either way, not carried
+      }
+    },
+    pull: (branch) => {
+      const found = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,isDraft,headRefOid'])) as Array<{ number: number; isDraft: boolean; headRefOid: string }>;
+      return found[0] ?? null;
+    },
+  };
+}
+
 /**
  * The Code step: the change, on the remote, announced. It ends at a durable fact, so whatever
  * happens to this run afterwards the next one dispatches Prove and not Code again.
@@ -302,6 +332,32 @@ async function runWorker(
         : 'This is the first proof of this change.';
   let spent = attemptCount(issue.labels);
   let revision = Boolean(feedback);
+
+  // A first dispatch starts from the facts, not from nothing: an earlier run may have coded this
+  // issue and died, and what it reached is on the remote and announced on the issue. A pushed
+  // branch nobody announced is continued by Code, never proved: a push is not a statement of
+  // completion.
+  if (!feedback && !reproof && !ctx.dryRun) {
+    const facts = readWorkFacts(workReads(ctx, issue.number, cwd));
+    const placed = placeInWork(facts);
+    if (facts.branch && placed.lane !== 'E1') {
+      sh(ctx, ['git', 'fetch', ctx.project.remote, facts.branch], cwd);
+      sh(ctx, ['git', 'switch', '-C', facts.branch, `${ctx.project.remote}/${facts.branch}`], cwd);
+      if (placed.dispatch === 'prove' || placed.dispatch === 'mark-ready') {
+        say(`an earlier run coded this on ${facts.branch} and announced it at ${facts.marker?.sha.slice(0, 10)}; resuming at Prove`);
+        proveOnly = true;
+        proveBrief = 'An earlier run coded this change and did not get to prove it, or did not finish. Prove the head of this branch.';
+        holdLease(ctx, issue.number, 'resume at the proof');
+        if (catchUp(ctx, issue, cwd, facts.remoteHead as string, say, 'before the proof') === 'conflict') {
+          return { issue: issue.number, verdict: 'failed', reason: `the coded branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
+        }
+      } else {
+        say(`an earlier run pushed ${facts.branch} and never announced it finished; continuing Code from it`);
+        revision = true;
+        codeBrief = `A branch for this issue already exists with commits, pushed by an earlier run that did not finish: you are on it. Read what is there, continue from it, and finish the step.`;
+      }
+    }
+  }
 
   for (;;) {
     if (!proveOnly) {

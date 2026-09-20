@@ -96,3 +96,39 @@ export function placeInWork(facts: WorkFacts): WorkPlacement {
   if (announced) return { lane: 'D2', dispatch: 'prove' };
   return { lane: 'D1', dispatch: 'code', from: facts.remoteHead ? 'branch' : 'nothing' };
 }
+
+/** The reads placement needs, injectable so a test neither shells out nor needs a remote. */
+export type WorkReads = {
+  /** The newest step the loop announced on the issue. */
+  marker: () => StepMarker | null;
+  /** The remote branches whose names end in `-<issue>`, with their heads: the coder's naming rule. */
+  remoteBranches: () => Array<{ branch: string; sha: string }>;
+  /** Whether `ancestor` is `head` or one of its ancestors, asked of the remote's objects. */
+  carries: (ancestor: string, head: string) => boolean;
+  /** The open pull request for a branch, if any. */
+  pull: (branch: string) => { number: number; isDraft: boolean; headRefOid: string } | null;
+};
+
+/**
+ * Where a card's work stands, from the remote and the tracker alone. This is what makes a step
+ * resumable by any run on any machine: nothing here is read from a worktree or a verdict file.
+ */
+export function readWorkFacts(reads: WorkReads): WorkFacts & { branch: string | null; pr: number | null } {
+  const marker = reads.marker();
+  const branches = reads.remoteBranches();
+  // The branch the marker speaks of is the one that carries its head; with no marker, the one
+  // branch named for the issue, and with several and no marker there is no telling which.
+  const carrying = marker ? branches.find((b) => reads.carries(marker.sha, b.sha)) : undefined;
+  const chosen = carrying ?? (branches.length === 1 ? branches[0] : undefined);
+  const pull = chosen ? reads.pull(chosen.branch) : null;
+  return {
+    readyPr: pull !== null && !pull.isDraft,
+    draftHead: pull?.isDraft ? pull.headRefOid : null,
+    remoteHead: chosen?.sha ?? null,
+    marker,
+    remoteCarriesMarker: carrying !== undefined,
+    branch: chosen?.branch ?? null,
+    pr: pull?.number ?? null,
+  };
+}
+

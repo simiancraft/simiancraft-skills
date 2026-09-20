@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { isBotMarker } from '../../carve-github-issue/lib/tree.ts';
 import type { Context } from './context.ts';
-import { announceStep, newestStep, parseStepMarker, placeInWork, renderStepMarker, type StepMarker, type WorkFacts } from './steps.ts';
+import { announceStep, newestStep, parseStepMarker, placeInWork, readWorkFacts, renderStepMarker, type StepMarker, type WorkFacts, type WorkReads } from './steps.ts';
 
 const BOT = 'loop-bot';
 const S = 'a'.repeat(40);
@@ -73,3 +73,48 @@ describe('placing a card in Work from facts', () => {
     expect(placeInWork({ ...nothing, readyPr: true, marker: coded, remoteCarriesMarker: true })).toEqual({ lane: 'E1', dispatch: 'review' });
   });
 });
+
+describe('reading where the work stands, from the remote and the tracker alone', () => {
+  const reads = (over: Partial<WorkReads>): WorkReads => ({ marker: () => null, remoteBranches: () => [], carries: (a, h) => a === h, pull: () => null, ...over });
+
+  it('resumes at Prove when a run died after Code announced: the marker and the branch are enough', () => {
+    const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
+    expect(facts).toMatchObject({ branch: 'fix/x-7', remoteCarriesMarker: true, pr: null });
+    expect(placeInWork(facts)).toEqual({ lane: 'D2', dispatch: 'prove' });
+  });
+
+  it('still resumes at Prove when the driver caught the branch up after the announcement', () => {
+    const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: T }], carries: (a, h) => a === S && h === T }));
+    expect(placeInWork(facts)).toEqual({ lane: 'D2', dispatch: 'prove' });
+  });
+
+  it('continues Code when a run died before the announcement: a pushed branch, no marker', () => {
+    const facts = readWorkFacts(reads({ remoteBranches: () => [{ branch: 'fix/x-7', sha: S }] }));
+    expect(facts.branch).toBe('fix/x-7');
+    expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'branch' });
+  });
+
+  it('does not guess between two unannounced branches named for the issue', () => {
+    const facts = readWorkFacts(reads({ remoteBranches: () => [{ branch: 'fix/a-7', sha: S }, { branch: 'fix/b-7', sha: T }] }));
+    expect(facts.branch).toBeNull();
+    expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'nothing' });
+  });
+
+  it('picks the branch that carries the marker when there are several', () => {
+    const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/old-7', sha: T }, { branch: 'fix/x-7', sha: S }] }));
+    expect(facts.branch).toBe('fix/x-7');
+  });
+
+  it('ignores a marker whose head is on no remote branch: the branch was deleted or rewritten', () => {
+    const facts = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: T }] }));
+    expect(placeInWork(facts)).toEqual({ lane: 'D1', dispatch: 'code', from: 'branch' });
+  });
+
+  it('reads a draft and a ready pull request off the chosen branch', () => {
+    const draft = readWorkFacts(reads({ marker: () => coded, remoteBranches: () => [{ branch: 'fix/x-7', sha: S }], pull: () => ({ number: 9, isDraft: true, headRefOid: S }) }));
+    expect(draft).toMatchObject({ draftHead: S, readyPr: false, pr: 9 });
+    const ready = readWorkFacts(reads({ remoteBranches: () => [{ branch: 'fix/x-7', sha: S }], pull: () => ({ number: 9, isDraft: false, headRefOid: S }) }));
+    expect(placeInWork(ready)).toEqual({ lane: 'E1', dispatch: 'review' });
+  });
+});
+
