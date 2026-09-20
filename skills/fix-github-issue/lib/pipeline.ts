@@ -888,6 +888,8 @@ async function land(
     // The last read before the merge: a hold, a pause, a child, or another run's claim that landed
     // during the review makes the merge someone else's call.
     if (!ctx.dryRun) {
+      // A lost lease is not a changed issue, and it is not this run's to park.
+      holdLease(ctx, issue.number, 'read the gate before an act on the issue');
       const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
       if (!gate.ok) {
         say(`refusing to merge PR #${pr}: ${gate.why}`);
@@ -906,6 +908,8 @@ async function land(
   // the call, so the commit that lands is the commit that was read.
   // The reads above are synchronous, so a signal that arrived during them has not been heard yet.
   await yieldToStop(`merge PR #${pr}`);
+  // The yield lets a failed renewal be heard too: the lease is asked for once more, last of all.
+  holdLease(ctx, issue.number, `merge PR #${pr}`);
   mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
@@ -964,6 +968,8 @@ async function land(
     // Read once more before the close. The merge has landed either way; a refusal here parks the
     // issue with the merge named, so a person sees a closed pull request against an open issue.
     if (!ctx.dryRun) {
+      // A lost lease is not a changed issue, and it is not this run's to park.
+      holdLease(ctx, issue.number, 'read the gate before an act on the issue');
       const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
       if (!gate.ok) {
         say(`merged PR #${pr} but not closing the issue: ${gate.why}`);
@@ -984,6 +990,8 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
   // that landed since the worker started makes the close someone else's call.
   const gateBeforeClose = (): FixOutcome | null => {
     if (ctx.dryRun) return null;
+    // A lost lease is not a changed issue, and it is not this run's to park.
+    holdLease(ctx, issue.number, 'read the gate before an act on the issue');
     const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
     if (gate.ok) return null;
     say(`refusing to close: ${gate.why}`);
@@ -1290,6 +1298,7 @@ export async function reviewAndLand(
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pr) : settled;
   }
 
+  holdLease(ctx, issue.number, 'park the issue');
   parkIssue(ctx, issue.number, parkReason);
   // The pull request is parked too, so a human reading the branch sees the same state the issue
   // carries rather than an unlabelled draft nobody claimed.
@@ -1395,18 +1404,6 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * read, the lane is kept: the worktree is then the only record of what happened.
  */
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
-  // A stop is the operator's, not a failure of the work: nothing is counted or queued, and the
-  // lane is kept, since a worker stopped mid-change leaves its only record there.
-  // Nor is a lost lease a failure of the work: another run may hold the issue, so nothing is
-  // written on it, and the lane is kept for whoever reads what happened.
-  if (error instanceof LeaseLostError || leaseLost(ctx, issue.number)) {
-    say(`lost its lease; nothing is settled, and the lane is kept: ${error.message.split('\n')[0]}`);
-    return { outcome: { outcome: 'busy', reason: 'this run lost its lease on the issue' }, keepLane: true };
-  }
-  if (error instanceof RunStopping || isStopping()) {
-    say('stopped with the run; nothing is settled, and the lane is kept');
-    return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
-  }
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
   // After the merge there is nothing to retry and nothing to queue: the change landed. The run
@@ -1414,6 +1411,18 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
   if (lane?.startsWith('T')) {
     say(`${reason}. The change had already landed; the next run start reconciles the issue with its merged pull request`);
     return { outcome: { outcome: 'merged', reason: `${reason} (after the merge)` }, keepLane: false };
+  }
+  // A lost lease is not a failure of the work: another run may hold the issue, so nothing is
+  // written on it, and the lane is kept for whoever reads what happened.
+  if (error instanceof LeaseLostError || leaseLost(ctx, issue.number)) {
+    say(`lost its lease; nothing is settled, and the lane is kept: ${error.message.split('\n')[0]}`);
+    return { outcome: { outcome: 'busy', reason: 'this run lost its lease on the issue' }, keepLane: true };
+  }
+  // Nor is a stop, which is the operator's: nothing is counted or queued, and the lane is kept,
+  // since a worker stopped mid-change leaves its only record there.
+  if (error instanceof RunStopping || isStopping()) {
+    say('stopped with the run; nothing is settled, and the lane is kept');
+    return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
   }
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
