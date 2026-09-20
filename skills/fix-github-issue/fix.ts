@@ -217,6 +217,15 @@ const RESUME_PR = (() => {
   return REDRIVE ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
 })();
 
+// The pull request carries the same hold its issue did; a redrive lifts both, or a merged pull
+// request keeps saying parked.
+if (REDRIVE && RESUME_PR && !DRY_RUN) {
+  const held = sh(ctx, ['gh', 'pr', 'view', String(RESUME_PR.number), '--json', 'labels', '--jq', '.labels[].name'])
+    .split('\n')
+    .filter((name) => name === 'loop/parked' || isDlqLabel(name));
+  for (const name of held) mutate(ctx, `lift ${name} on PR #${RESUME_PR.number} (redrive)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', name]);
+}
+
 /** The objection that stopped the work last time: the newest dead-letter or park comment on the thread. */
 const OBJECTION = (() => {
   const raw = sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
