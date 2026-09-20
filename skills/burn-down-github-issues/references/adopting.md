@@ -227,7 +227,9 @@ said so in the log.
   once, to protect the CI budget. Without the draft guard every intermediate push spends a run. A
   typical guard is `types: [..., ready_for_review]` plus
   `if: github.event.pull_request.draft == false`. Verify it before a batch run: open one draft pull
-  request by hand and confirm nothing queues.
+  request by hand and confirm nothing queues. The Code step also pushes its branch before any pull
+  request exists, and pushes early so a cut-short step loses minutes and not the work, so a workflow's
+  `on: push` should be limited to the base branch, or every such push spends a run.
 - An issue tracker where issues carry `size: N` labels, or an appraiser run to create them. The
   driver creates every label it uses (`size: N`, `needs-decision`, `needs-human`, `loop/*`) on
   start and applies the appraiser's verdict itself; nothing needs pre-creating.

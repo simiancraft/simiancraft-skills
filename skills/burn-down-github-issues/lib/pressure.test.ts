@@ -368,7 +368,7 @@ describe('runtime moves and settlement', () => {
     expect(lanes).toEqual(['H2']);
   });
   it('revision proof reports are chart events, too', () => {
-    const prompt = readFileSync(new URL('../../fix-github-issue/prompts/triage-and-fix.md', import.meta.url), 'utf8');
+    const prompt = readFileSync(new URL('../../fix-github-issue/prompts/prove.md', import.meta.url), 'utf8');
     expect(prompt).toContain('{{CARD_PROVING}}');
     expect(legal('D4', 'D2')).toBe(true);
   });

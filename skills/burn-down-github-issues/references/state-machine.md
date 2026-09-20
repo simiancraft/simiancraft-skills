@@ -199,12 +199,20 @@ phase, never Ready.
 
 T1 and T2 roll up to the parent on entry. T3 exists only when `floor` is configured.
 
-The worker's turn is atomic to the driver. Proving and Drafted are the worker's own progress
-reports from inside one agent turn (it moves its own card with `card.ts`); the event the driver
-acts on is `WORKER_VERDICT`, answered at the Work phase from whichever of its four lanes the card
-was last reported in: fixed with a ready pull request to E1, fixed without one to Q3, a close to
-A3, and the hand-offs to their human lanes. A person's `fix.ts --issue N` is `PERSON_DISPATCHED`
-from the Inbox straight to Coding, skipping the sizing pass but not the worker's own appraisal.
+The work turn is steps, and a step ends at a durable fact. Code (D1, or D4 for a revision) ends
+at a branch on the remote and a `coded` marker on the issue that names the head and the head the
+repository's gate passed on, announced by the driver once it has seen that head on the remote.
+Prove (D2) is a fresh agent, handed the marker's hand-off; it runs the gate only when its head is
+not the gated one, opens or updates the draft (D3, its own card move with `card.ts`), and marks
+it ready. The base is caught up by the driver between steps and never inside one. A kill, a cap,
+a stop, or a lost lease therefore costs one step: the next dispatch reads the marker, the remote
+branch, and the pull request, and resumes at Prove, or continues Code from a branch that was
+pushed and never announced. A proof that cannot be done is `PROOF_REFUSED`: an attempt is spent
+and the card goes back a step with the prover's reason as the brief. The event the driver acts on
+is still `WORKER_VERDICT`, answered at the Work phase: fixed with a ready pull request to E1,
+fixed without one to Q3, a close to A3, and the hand-offs to their human lanes. A person's
+`fix.ts --issue N` appraises first when the issue carries no size, so a card that reaches Work
+always has one.
 
 Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`). Its
 last act before the merge is one more look upstream: `BASE_MOVED_WHILE_WAITING` returns the card

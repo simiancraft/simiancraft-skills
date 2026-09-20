@@ -311,6 +311,27 @@ tracker's authors, not enforcement.
 
 Dead-letter-queue ejection has not been exercised end to end. It is written; it is not proven.
 
+## The work turn is steps
+
+One worker turn used to code, run the repository's gate, prove, open the pull request, and chase the
+base three times over; a kill anywhere lost all of it, and the turn outgrew the agent cap. It is now
+two steps on the worker's seat, each sufficient from durable state alone:
+
+| Step | Prompt | Ends at |
+|---|---|---|
+| Code | `prompts/code.md` | the branch on the remote, and a `coded` marker on the issue naming the head, the gated head, and a hand-off |
+| Prove | `prompts/prove.md` | a ready pull request whose head is the proven one |
+
+The driver announces the marker, after it has seen the coder's head on the remote, and catches the
+lane up with the base between the steps; neither prompt tells a seat to fetch or merge the base. The
+prover is a fresh agent that reads the branch, the issue, and the hand-off, and runs the gate only
+when its head is not the gated one. It may refuse (`unprovable`): an attempt is spent, and Code runs
+again with the prover's reason as its brief, until the attempts are spent. A review that wants more
+evidence (`gather-more`) runs Prove alone; one that objects to the code (`block`) runs Code, then
+Prove. A redispatch starts from the facts: a `coded` marker the remote still carries resumes at
+Prove, and a pushed branch nobody announced continues Code. An agent that hits the cap is a sign
+its step is doing too much; the answer is a smaller step, never a longer cap.
+
 ## What a killed agent leaves behind
 
 The driver kills an agent in three cases, and what it does with the answer files differs on purpose.
