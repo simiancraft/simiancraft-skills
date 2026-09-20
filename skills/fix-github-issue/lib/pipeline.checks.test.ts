@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import type { Context } from './context.ts';
 import { awaitGreenChecks } from './pipeline.ts';
+import { beginStop, resetStop, RunStopping } from './shell.ts';
 
 type Check = { name: string; conclusion: string };
 
@@ -25,6 +26,19 @@ const suite = (app: string, runs: number): Suite => ({ app, runs });
 const EXPECT = { sha: 'landing', required: ['build'] };
 
 describe('the build gate', () => {
+  afterEach(resetStop);
+
+  it('stops waiting within a second of a stop, so the lane can release its claim before the run exits', async () => {
+    const w = world('required', () => [{ name: 'build', conclusion: '' }]);
+    const sleep = w.io.sleep;
+    w.io.sleep = async (ms) => {
+      await sleep(ms);
+      if (w.waited() >= 60_000) beginStop();
+    };
+    await expect(awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).rejects.toThrow(RunStopping);
+    expect(w.waited()).toBeLessThanOrEqual(61_000);
+  });
+
   it('never calls an empty list green, however long it stays empty', async () => {
     const w = world('required', () => []);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('have not registered');

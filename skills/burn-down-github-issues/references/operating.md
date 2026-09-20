@@ -139,12 +139,19 @@ by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-sw
 
 ## Stopping
 
-`kill $PID` on the pid from the lock, or Ctrl+C in the foreground. The driver traps the signal,
-takes each agent down with its whole process group, and releases the lock. Everything durable is
-already on GitHub.
+`kill $PID` on the pid from the lock, or Ctrl+C in the foreground. The driver traps the signal and
+the run is stopping from that moment: no agent starts, nothing is selected or dispatched, no merge
+begins, and nothing is written to the tracker or the board except the release of the run's own
+claims. Each agent goes down with its whole process group. An agent that ends under the stop was
+stopped, not answered: its exit is never settled as a verdict, so it costs no attempt, earns no
+comment or label, and reaches no dead-letter queue. The driver waits up to thirty seconds for the
+lanes to unwind and release their claims, logs any claim it must abandon (it expires on its own),
+then releases the lock. Everything durable is already on GitHub.
 
-A signal skips the per-issue cleanup deliberately, so a killed run leaves worktrees behind for
-`reconcile` to judge on the next start; that is what lets a stranded pull request resume.
+A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
+what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
+A landing whose merge had already been sent before the signal completes on GitHub's side; the next
+run start reconciles it.
 
 ## After a run
 

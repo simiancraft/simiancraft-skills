@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { LaneEvent } from '../../fix-github-issue/lib/context.ts';
 import { dlqPhase } from '../../fix-github-issue/lib/labels.ts';
+import { isStopping } from '../../fix-github-issue/lib/shell.ts';
 import type { Board } from '../board.ts';
 import { type Lane, laneByKey, laneByLabel, laneLabel, phaseLabel } from './lanes.ts';
 
@@ -94,6 +95,8 @@ export function createBoardWriter(board: Board, repo: string, log: (message: str
   };
 
   const onLane = (event: LaneEvent): boolean => {
+    // A stopping run settles nothing, its cards included; the next run start places them by facts.
+    if (isStopping()) return false;
     try {
       const lane = laneByKey(event.lane);
       const { status, phase } = readFields();

@@ -27,7 +27,7 @@ import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/co
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
 import { appraisalCount, clearAppraisals, closeIssue, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
-import { isStopping, mutate, sh } from '../../fix-github-issue/lib/shell.ts';
+import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
 
 export const APPRAISAL_VERDICTS = ['valid', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'failed'] as const;
@@ -297,8 +297,9 @@ export function refusedAsTrunk(tree: Tree, release: boolean | undefined): boolea
 /** One more failed appraisal; at the cap the issue goes to the appraisal dead-letter queue with the log tail. */
 function countFailedAppraisal(ctx: Context, issue: Issue, cap: number, reason: string, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
   if (ctx.dryRun) return { verdict: 'failed', reason, retry: true };
-  // A stop is the operator's, not the appraiser's; the turn is not a failed one.
-  if (isStopping()) return { verdict: 'failed', reason: `the run is stopping: ${reason}`, retry: true, changed: true };
+  // A stop is the operator's, not the appraiser's: the turn is not a failed one, and nothing about
+  // it is settled, the card included, so it unwinds the same way the agent's own stop does.
+  if (isStopping()) throw new RunStopping(`the run is stopping; not counted: ${reason}`);
   // A release appraisal runs under a lease. Once that is lost the count is another run's to keep.
   if (leaseLost(ctx, issue.number)) {
     say(`not counted, since this run lost its lease on the issue: ${reason}`);

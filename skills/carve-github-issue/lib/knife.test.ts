@@ -327,6 +327,25 @@ describe('carveIssue', () => {
     expect(await awaitReleases(0)).toEqual([]);
   });
 
+  test('a claim is held from the moment it is posted, and a stop during its readback still releases it', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    let heldWhilePosting: string[] = [];
+    io.beforeWrite = (op) => {
+      if (!/^claim #10/.test(op.description)) return;
+      void awaitReleases(0).then((held) => (heldWhilePosting = held));
+      // Another run's earlier claim wins the readback, so this one rolls back, under the stop.
+      io.comment(10, BOT, '<!-- carve-claim kind=carving run=other-host-1-1 at=2026-01-01T00:00:00Z expires=2999-01-01T00:00:00Z token=t -->');
+      beginStop();
+    };
+    // The label write after the claim comment is refused by the stop; the claim must not stay held.
+    await expect(claim(ctx, io, 10, 'carving')).rejects.toThrow(RunStopping);
+    expect(heldWhilePosting).toEqual(['o/r#10']);
+    // The half-made claim was withdrawn, which is the one write a stop allows, and is held no longer.
+    expect(io.view(10)!.comments.filter((c) => c.body.startsWith('<!-- carve-unclaim')).length).toBe(1);
+    expect(await awaitReleases(0)).toEqual([]);
+  });
+
   test('a claim nobody released is named when the wait for releases runs out', async () => {
     const io = trunk();
     const handle = await claim(ctxFor(io), io, 10, 'carving');

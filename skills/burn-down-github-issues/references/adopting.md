@@ -340,9 +340,13 @@ the label or running `fix.ts --redrive` is the redrive, counted as `loop/redrive
 
 ## Stopping a run
 
-Ctrl+C, or SIGTERM to the pid in `<worktreeRoot>/runs/loop.lock`, stops the loop politely: agents are killed with
-their process groups and the lock is released. Everything durable is already on GitHub, so after a
-stop, check three places: open drafts (work finished but never marked ready), issues labelled
+Ctrl+C, or SIGTERM to the pid in `<worktreeRoot>/runs/loop.lock`, stops the loop politely. From the signal on the run is stopping: it starts no agent, selects and
+dispatches nothing, begins no merge, and writes nothing to the tracker or the board except the
+release of the claims it holds. Agents are killed with their process groups, and an agent that ends
+under the stop was stopped, which is neither an answer nor a failure: no comment, label, counter, or
+dead letter is written for it. The run then waits up to thirty seconds for its lanes to release their
+claims, names any it has to abandon (they expire on their own), and releases the lock. Everything
+durable is already on GitHub, so after a stop, check three places: open drafts (work finished but never marked ready), issues labelled
 `loop/parked`, and `<worktreeRoot>/runs/*.log` for the lanes that were in flight. Worktrees left behind are
 reclaimed by `reconcile` on the next start; nothing needs hand-cleanup, and `--dry-run` is always
 safe to run while deciding what to do next.

@@ -6,7 +6,7 @@
 
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
-import { api, mutate } from '../../fix-github-issue/lib/shell.ts';
+import { api, isStopping, mutate, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { type Claim, ghIo, liveClaim, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
 
 export const CLAIM_TTL_MS = 30 * 60 * 1000;
@@ -68,33 +68,51 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
   const at = new Date();
   const expires = new Date(at.getTime() + CLAIM_TTL_MS);
   const token = crypto.randomUUID();
-  mutate(ctx, `claim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', claimMarker(kind, ctx.runId, at.toISOString(), expires.toISOString(), token)]);
-  mutate(ctx, `label #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
-
-  // The re-read must show this run's own claim: a claim nobody can see, its owner included, is
-  // not a lock, and its lease could never be renewed. The thread can trail the write by a moment,
-  // so look again a few times before giving up, and give up closed. It must be the claim just
-  // posted, known by its token: a run that claimed, released, and claims again can be shown its
-  // first claim by a read that trails the release, and that comment is no lease to renew.
-  let after = readTree(ctx, issue, io);
+  if (isStopping()) throw new RunStopping(`the run is stopping; #${issue} not claimed`);
+  // Held from the moment the claim is posted, not from when it is read back: a stop that lands in
+  // between must still wait for it, or report it.
+  heldClaims.add(leaseKey(ctx, issue));
+  let after: Tree;
   const own = () => after.claims.find((c) => c.runId === ctx.runId && c.kind === kind && !c.released && c.token === token) ?? null;
-  for (let tries = 0; own() === null && tries < CLAIM_READBACK.tries; tries++) {
-    // Awaited, not slept through: a claim that blocks the process would stall every other lane's renewals.
-    if (CLAIM_READBACK.waitMs > 0) await Bun.sleep(CLAIM_READBACK.waitMs);
+  try {
+    mutate(ctx, `claim #${issue} (${kind})`, ['gh', 'issue', 'comment', String(issue), '--body', claimMarker(kind, ctx.runId, at.toISOString(), expires.toISOString(), token)]);
+    mutate(ctx, `label #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
+
+    // The re-read must show this run's own claim: a claim nobody can see, its owner included, is
+    // not a lock, and its lease could never be renewed. The thread can trail the write by a moment,
+    // so look again a few times before giving up, and give up closed. It must be the claim just
+    // posted, known by its token: a run that claimed, released, and claims again can be shown its
+    // first claim by a read that trails the release, and that comment is no lease to renew.
     after = readTree(ctx, issue, io);
+    for (let tries = 0; own() === null && tries < CLAIM_READBACK.tries; tries++) {
+      // Awaited, not slept through: a claim that blocks the process would stall every other lane's renewals.
+      if (CLAIM_READBACK.waitMs > 0) await Bun.sleep(CLAIM_READBACK.waitMs);
+      after = readTree(ctx, issue, io);
+    }
+  } catch (error) {
+    // Anything that throws between posting the claim and handing back its handle (a stop, a label
+    // write, a read) would leave a claim on the issue that nobody holds and nobody renews.
+    try {
+      mutate(ctx, `unclaim #${issue} (${kind}), the claim could not be completed`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`], { whileStopping: true });
+      heldClaims.delete(leaseKey(ctx, issue));
+    } catch (second) {
+      ctx.log(`  #${issue}  could not withdraw an incomplete claim: ${(second as Error).message.split('\n')[0]}`);
+    }
+    throw error;
   }
   const mine = own();
   const winner = liveClaim(after, new Date().toISOString(), ctx.runId);
   if (mine === null || (winner && winner.commentId < mine.commentId)) {
     const why = mine === null ? 'this run could not see its own claim on the thread' : `${winner?.runId} was first`;
-    mutate(ctx, `unclaim #${issue} (${kind}), ${why}`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`]);
-    if (mine === null && !winner) mutate(ctx, `unlabel #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
+    // A release like any other, so a stopping run still makes it.
+    mutate(ctx, `unclaim #${issue} (${kind}), ${why}`, ['gh', 'issue', 'comment', String(issue), '--body', `<!-- carve-unclaim kind=${kind} run=${ctx.runId} -->`], { whileStopping: true });
+    if (mine === null && !winner) mutate(ctx, `unlabel #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label], { whileStopping: true });
+    heldClaims.delete(leaseKey(ctx, issue));
     return 'busy';
   }
   const commentId = mine.commentId;
   lostLeases.delete(leaseKey(ctx, issue));
   let confirmedExpiry = expires.getTime();
-  heldClaims.add(leaseKey(ctx, issue));
   return {
     kind,
     commentId,

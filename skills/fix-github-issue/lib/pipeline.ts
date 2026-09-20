@@ -438,7 +438,13 @@ export async function awaitGreenChecks(
     const left = deadline - io.now();
     if (left <= 0) return `${why}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
     say(`${why}; waiting`);
-    await io.sleep(Math.min(ms, left));
+    // Slept a second at a time: a stop must unwind this lane, and release its claim, well inside
+    // the time the signal handler waits, not at the end of a thirty second nap or a checks timeout.
+    for (let slept = 0, span = Math.min(ms, left); slept < span; slept += 1000) {
+      if (isStopping()) throw new RunStopping(`the run is stopping; no longer waiting: ${why}`);
+      await io.sleep(Math.min(1000, span - slept));
+    }
+    if (isStopping()) throw new RunStopping(`the run is stopping; no longer waiting: ${why}`);
     return null;
   };
   type Suite = { app: string; runs: number };
