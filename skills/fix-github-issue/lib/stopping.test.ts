@@ -2,12 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type ClaimHandle, keepClaimed, leaseLost } from '../../carve-github-issue/lib/claims.ts';
+import { type ClaimHandle, keepClaimed, LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { runAgent, shutdownAgents } from './agent.ts';
 import type { ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
-import { fixIssue } from './pipeline.ts';
+import { fixIssue, move } from './pipeline.ts';
 import { pool } from './pool.ts';
 import { beginStop, finishDespiteStop, isStopping, mutate, resetStop, RunStopping, stoppableSleep } from './shell.ts';
 
@@ -152,6 +152,23 @@ describe('a stopping run', () => {
 });
 
 describe('a lane that lost its lease', () => {
+  it('starts no agent and moves no card: a retry after a backoff would otherwise run unowned', async () => {
+    const lines: string[] = [];
+    const cards: string[] = [];
+    const ctx = context(new FakeTracker('loop-bot', [fakeIssue(9)]), false, (m) => lines.push(m));
+    ctx.onLane = (e) => cards.push(e.lane);
+    const handle: ClaimHandle = { kind: 'working', commentId: 1, label: 'loop/working', issue: 9, key: 'o/stop#9', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
+    const stop = keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
+    await expect(runAgent(ctx, 'worker', 9, join(scratch, 'wt', 'issue-9'), { engine: 'fixture', model: 'unused' }, 'prompt')).rejects.toThrow(LeaseLostError);
+    move(ctx, { number: 9, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [] }, 'F3', 'PR #1');
+    expect(lines).toEqual([]);
+    expect(cards).toEqual([]);
+    // Once that lease's holder has stopped, the issue is this run's to work again.
+    stop();
+    move(ctx, { number: 9, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [] }, 'D1');
+    expect(cards).toEqual(['D1']);
+  });
+
   it('settles nothing from the worker its lost lease killed: no attempt counted, no Ready card, outcome busy', async () => {
     writeFileSync(join(scratch, 'verdict.json'), JSON.stringify({ issue: 8, verdict: 'failed', reason: 'killed mid-change' }));
     const io = new FakeTracker('loop-bot', [fakeIssue(8, { labels: [{ name: 'size: 1' }] })]);

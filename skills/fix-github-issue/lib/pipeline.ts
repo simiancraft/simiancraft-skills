@@ -123,6 +123,9 @@ function holdLease(ctx: Context, issue: number, before: string): void {
  * a lane: the lane's facts are on the tracker, and the card is a projection of them.
  */
 export function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
+  // A card is a projection of an issue this run holds. Without the lease the card is another
+  // run's to place, and the lane this one remembers stays the last it placed with the lease.
+  if (leaseLost(ctx, issue.number)) return;
   lastLane.set(laneKeyOf(ctx, issue.number), lane);
   if (!ctx.onLane) return;
   try {
