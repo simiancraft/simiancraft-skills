@@ -65,11 +65,13 @@ ejected to the **dead-letter queue**: labelled, retained with the reason that pu
 invisible to selection. Removing the label is the redrive. This is what stops an issue nobody can
 get right from cycling between worker and reviewer forever, one restart at a time.
 
-A round is spent whenever a verdict sends the work back or parks it, and recorded before the
-revision starts, so a run killed mid-revision refunds nothing. Three things deliberately cost no
+A round is spent whenever a rejection sends the work back or parks it, and recorded before the
+revision starts, so a run killed mid-revision refunds nothing. Four things deliberately cost no
 round: a reviewer that crashes or exits nonzero without a trusted verdict, which is not evidence
 the issue is unworkable; a `stale` outcome, which is upstream churn rather than a defect in the
-change; and a merge, which ends the accounting because the issue is closing.
+change; an approval the pull master declines to land (the merge boundary, a red check, a failed
+smoke, a conflict, a refused line), which is not an objection a revision could answer; and a
+merge, which ends the accounting because the issue is closing.
 
 Parked and DLQed are different states. Parked means a human should look at it, and it is where a
 reviewer that crashed, a conflict, or an `autoMerge` refusal ends up. The DLQ means the pipeline

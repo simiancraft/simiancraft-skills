@@ -843,7 +843,16 @@ export async function reviewAndLand(
 
     const { review: verdict } = reviewed;
 
-    // A verdict was reached and the work goes back or stops, so the round is spent whether the
+    // An approved change the pull master declined to land spends no round: the reviewer found
+    // nothing wrong with the work, and what stopped it (the merge boundary, a red check, a failed
+    // smoke, a conflict, a refused line) is not an objection a revision could answer. Charging
+    // the budget here would let three boundary refusals eject an issue nobody ever rejected.
+    if (typeof outcome === 'object' && verdict.decision === 'merge') {
+      parkReason = outcome.park;
+      break;
+    }
+
+    // A rejection was reached and the work goes back or stops, so the round is spent whether the
     // outcome is a revision or a park. Recorded before the revision starts rather than after it
     // finishes, so a run killed mid-revision still leaves the budget honest; the alternative
     // silently refunds a round every time a run dies. A merge ends the accounting instead: the
@@ -852,9 +861,9 @@ export async function reviewAndLand(
     say(`review round ${consumed} of ${ctx.knobs.maxReviewRounds}`);
 
     if (typeof outcome === 'object') {
-      // The gate that parked says why; a rejected review adds the reviewer's own words.
+      // The gate that parked says why, and the rejected review adds the reviewer's own words.
       const reviewerWords = verdict.blocking.length > 0 ? verdict.blocking.join('\n') : verdict.adequacy;
-      parkReason = verdict.decision === 'merge' ? outcome.park : `${outcome.park}\n\nReviewer: ${reviewerWords}`;
+      parkReason = `${outcome.park}\n\nReviewer: ${reviewerWords}`;
       break;
     }
 
