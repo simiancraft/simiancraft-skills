@@ -1,0 +1,98 @@
+/**
+ * The work turn's steps, and the durable facts they end at.
+ *
+ * A step ends at something the next run can read on the remote and the tracker: a pushed branch,
+ * and a marker on the issue announcing what the step reached. The driver dispatches the next step
+ * from those, never from a dead process's memory, so a kill, a cap, a stop, or a lost lease costs
+ * one step. The markers follow the carve lifecycle's announced intents and are parsed by the same
+ * parser.
+ */
+
+import { parseMarker } from '../../carve-github-issue/lib/tree.ts';
+import type { Context } from './context.ts';
+import { mutate } from './shell.ts';
+
+/** `coded`: the change is on the remote and passed the repository's own gate at `gated`. `proved`: a draft carries proof of `sha`. */
+export type Step = 'coded' | 'proved';
+
+export type StepMarker = {
+  step: Step;
+  runId: string;
+  /** The head the step reached, on the remote. */
+  sha: string;
+  /** The head the repository's gate last passed on; a prover whose head differs runs the gate again. */
+  gated: string;
+  touches: string[];
+  /** What the next step needs and cannot read from the diff: what changed, and how to exercise it. */
+  handoff: string;
+};
+
+const STEPS: Step[] = ['coded', 'proved'];
+const SHA = /^[0-9a-f]{7,40}$/;
+
+/** The comment that announces a step: a marker line a driver parses, then the hand-off a person or an agent reads. */
+export function renderStepMarker(marker: StepMarker): string {
+  const fields = `step=${marker.step} run=${marker.runId} sha=${marker.sha} gated=${marker.gated} touches=${marker.touches.join(',') || 'none'}`;
+  return `<!-- loop-step ${fields} -->\n${marker.handoff.trim()}`;
+}
+
+/** The step a comment announces, or null: not a step marker, or one a driver cannot act on. */
+export function parseStepMarker(body: string): StepMarker | null {
+  const parsed = parseMarker(body);
+  if (parsed?.name !== 'loop-step') return null;
+  const { step, run, sha, gated, touches } = parsed.fields;
+  if (!STEPS.includes(step as Step) || !run || !SHA.test(sha ?? '') || !SHA.test(gated ?? '')) return null;
+  const end = body.indexOf('-->');
+  return { step: step as Step, runId: run, sha, gated, touches: !touches || touches === 'none' ? [] : touches.split(','), handoff: body.slice(end + 3).trim() };
+}
+
+/**
+ * The newest step the loop itself announced on an issue. Only the bot's own comments count: a
+ * marker anybody else can type is not a fact about what a step reached.
+ */
+export function newestStep(comments: Array<{ author: string; body: string }>, botLogin: string): StepMarker | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (comments[i].author !== botLogin) continue;
+    const marker = parseStepMarker(comments[i].body);
+    if (marker) return marker;
+  }
+  return null;
+}
+
+/** Announces a step on the issue. A mutation like any other: refused under a stop, rehearsed in a dry run. */
+export function announceStep(ctx: Context, issue: number, marker: StepMarker): void {
+  mutate(ctx, `announce ${marker.step} at ${marker.sha.slice(0, 10)} on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', renderStepMarker(marker)]);
+}
+
+/** What is known about a card's work, all of it readable from the remote and the tracker. */
+export type WorkFacts = {
+  /** A pull request for the issue's branch that is ready for review. */
+  readyPr: boolean;
+  /** A draft pull request exists, and the sha at its head. */
+  draftHead: string | null;
+  /** The issue's branch on the remote, or null when there is none. */
+  remoteHead: string | null;
+  marker: StepMarker | null;
+  /** Whether `remoteHead` is the marker's sha or a descendant of it (the driver's own catch-up merges onto it). */
+  remoteCarriesMarker: boolean;
+};
+
+/** Where in Work a card is, and what is dispatched from there. */
+export type WorkPlacement =
+  | { lane: 'E1'; dispatch: 'review' }
+  | { lane: 'D3'; dispatch: 'mark-ready' }
+  | { lane: 'D2'; dispatch: 'prove' }
+  | { lane: 'D1'; dispatch: 'code'; from: 'branch' | 'nothing' };
+
+/**
+ * Places a card in Work from facts, in order. A pushed branch with no `coded` marker dispatches
+ * Code, never Prove: a push says work happened, and only the announcement says the coder called
+ * it finished and gated.
+ */
+export function placeInWork(facts: WorkFacts): WorkPlacement {
+  if (facts.readyPr) return { lane: 'E1', dispatch: 'review' };
+  const announced = facts.marker !== null && facts.remoteCarriesMarker;
+  if (facts.draftHead && announced && facts.marker?.step === 'proved' && facts.marker.sha === facts.draftHead) return { lane: 'D3', dispatch: 'mark-ready' };
+  if (announced) return { lane: 'D2', dispatch: 'prove' };
+  return { lane: 'D1', dispatch: 'code', from: facts.remoteHead ? 'branch' : 'nothing' };
+}
