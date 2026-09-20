@@ -20,7 +20,7 @@
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isTrunk, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
+import { liveClaim, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
@@ -273,6 +273,16 @@ function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs
   mutate(ctx, `label #${issue} ${verdict}`, ['gh', 'issue', 'edit', String(issue), '--add-label', verdict]);
 }
 
+/**
+ * A trunk is not appraised, with one exception the burndown asks for: the released trunk whose
+ * remainder it wants sized or closed. Every gate in an appraisal asks this, not `isTrunk`, or the
+ * exception admitted at the start is refused at the end.
+ */
+export function refusedAsTrunk(tree: Tree, release: boolean | undefined): boolean {
+  if (!isTrunk(tree)) return false;
+  return !(release && tree.issue.labels.some((l) => l.name === 'loop/released'));
+}
+
 /** One more failed appraisal; at the cap the issue goes to the appraisal dead-letter queue with the log tail. */
 function countFailedAppraisal(ctx: Context, issue: Issue, cap: number, reason: string, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
   if (ctx.dryRun) return { verdict: 'failed', reason, retry: true };
@@ -318,8 +328,7 @@ export async function appraiseIssue(
   // exception is a released trunk the burndown asks this to finish.
   const io = trackerIo(ctx);
   const before = readTree(ctx, issue.number, io);
-  const released = before.issue.labels.some((l) => l.name === 'loop/released');
-  if (isTrunk(before) && !(options.release && released)) {
+  if (refusedAsTrunk(before, options.release)) {
     say('a trunk is not appraised; it is worked by closing its children');
     return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
   }
@@ -353,6 +362,12 @@ export async function appraiseIssue(
     say(`appraiser sized it ${result.points}, which is not on the scale ${ctx.knobs.pointScale.join(', ')}`);
     return countFailedAppraisal(ctx, issue, cap, `size ${result.points} is not on the scale`, run.logPath, say);
   }
+  // A valid issue with no size is half a verdict, and half a verdict is a failed turn: counted,
+  // or an appraiser that never sizes this issue would be asked again on every run, for ever.
+  if (result.verdict === 'valid' && !result.points) {
+    say('appraiser called it valid but gave no size');
+    return countFailedAppraisal(ctx, issue, cap, 'valid, with no size', run.logPath, say);
+  }
   say(`appraisal: ${result.verdict}${result.points ? ` at ${result.points} points` : ''}; ${result.reason}`);
   const outcome: AppraisalOutcome = { verdict: result.verdict, points: result.points, reason: result.reason };
   options.onVerdict?.(outcome);
@@ -371,7 +386,7 @@ export async function appraiseIssue(
     rmSync(cwd, { recursive: true, force: true });
     return { ...outcome, verdict: 'failed', reason: 'issue held while being appraised' };
   }
-  if (isTrunk(now) && !(options.release && now.issue.labels.some((l) => l.name === 'loop/released'))) {
+  if (refusedAsTrunk(now, options.release)) {
     say('became a trunk while being appraised; nothing applied');
     rmSync(cwd, { recursive: true, force: true });
     return { ...outcome, verdict: 'failed', reason: 'issue became a trunk while being appraised', retry: false };
@@ -417,7 +432,7 @@ export async function appraiseIssue(
             ? 'it was closed'
             : isHeld(late.issue.labels, options.skipLabels)
               ? 'a hold label landed'
-              : isTrunk(late)
+              : refusedAsTrunk(late, options.release)
                 ? 'it became a trunk'
                 : lateClaim
                   ? `${lateClaim.runId} claimed it`
@@ -461,11 +476,7 @@ export async function appraiseIssue(
       break;
 
     case 'valid':
-      if (!result.points) {
-        say('appraiser called it valid but gave no size; leaving it for the next pass');
-        outcome.retry = true;
-        break;
-      }
+      if (!result.points) break; // refused above; this narrows the type
       if (priorPoints === result.points) {
         say(`already sized at ${result.points}; nothing to change`);
       } else {
