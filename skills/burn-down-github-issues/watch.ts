@@ -67,14 +67,16 @@ const EVENT = new RegExp(
     'nothing on the floor',
     'received SIG',
     '^done$',
-    'no sized candidates',
+    'nothing in Ready',
+    'backlog by lane',
+    'board:',
     'nothing to appraise',
   ].join('|'),
 );
 
 /** A terminal line is one that decides an issue's fate or ends the run; `--wait` prints only these. */
 const TERMINAL =
-  /merge PR|merged|park|DLQ|needs-(decision|human)|already-fixed|obsolete|worker failed|reviewer wrote no verdict|exceeded \d+ minutes|refusing|conflicts with|incident|liveness: down|received SIG|^done$|no sized candidates/;
+  /merge PR|merged|park|DLQ|needs-(decision|human)|already-fixed|obsolete|worker failed|reviewer wrote no verdict|exceeded \d+ minutes|refusing|conflicts with|incident|liveness: down|received SIG|^done$|nothing in Ready/;
 
 type Followed = { path: string; offset: number; label: string; inode?: number };
 

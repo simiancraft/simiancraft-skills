@@ -177,11 +177,16 @@ export function placeByFacts(facts: {
   ceiling: number;
   /** True when a blocked-by edge points at an issue not closed as completed. */
   blocked?: boolean;
+  /** True when the issue has an open sub-issue: a trunk whose children must move first. */
+  openChildren?: boolean;
 }): { lane: string; why: string } {
   const has = (label: string) => facts.labels.includes(label);
   const merged = facts.pulls.find((p) => p.merged);
   if (facts.state === 'CLOSED') return merged ? { lane: 'T1', why: `closed; PR #${merged.number} merged` } : { lane: 'T2', why: 'closed' };
   if (merged) return { lane: 'T1', why: `PR #${merged.number} merged, issue still open` };
+  // The machine sends a skipped issue off the board; a card that already exists for one sits in
+  // the human lane, since a person's never is the one hold no seat may lift.
+  if (has('loop/skip')) return { lane: 'H2', why: 'loop/skip' };
   if (has('needs-decision')) return { lane: 'H1', why: 'needs-decision' };
   if (has('needs-human')) return { lane: 'H2', why: 'needs-human' };
   if (has('loop/parked')) return { lane: 'H3', why: 'loop/parked' };
@@ -190,6 +195,7 @@ export function placeByFacts(facts: {
   if (has('loop/paused')) return { lane: 'W2', why: 'loop/paused' };
   if (has('loop/released')) return { lane: 'C7', why: 'loop/released' };
   if (has('loop/carved') || facts.labels.some((l) => l.startsWith('loop/carve-gen:'))) return { lane: 'C5', why: 'a carved trunk' };
+  if (facts.openChildren) return { lane: 'C5', why: 'it has an open child' };
   const open = facts.pulls.find((p) => !p.merged);
   if (open) return open.isDraft ? { lane: 'D3', why: `draft PR #${open.number}` } : { lane: 'E1', why: `ready PR #${open.number}` };
   if (facts.blocked) return { lane: 'W1', why: 'a blocker is not closed as completed' };

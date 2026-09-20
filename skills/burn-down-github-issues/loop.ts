@@ -715,21 +715,27 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
   }
 }
 
+/** Where the facts put every issue in the window: the queue the run dispatches from. */
+type Placement = Map<number, { lane: string; why: string; issue: Issue }>;
+
 /**
  * The machine's `reconcile` for every card at once: the run start puts each issue in the window,
  * and each card already on the board, where its facts say (references/state-machine.md,
- * "Reconcile"). Writes only the cards whose lane differs, straight to the board rather than the
- * console, so a large backlog costs one read and a line per move. An issue another run holds is
- * left where it is; the sweep has already cleared dead claims.
+ * "Reconcile"). The placement is the queue: the appraisers take the inbox, the workers take
+ * Ready, and nothing is selected by re-reading labels a second way. With a board, the cards whose
+ * lane differs are written, straight to the board rather than the console, so a large backlog
+ * costs one read and a line per move. An issue another run holds is left where it is; the sweep
+ * has already cleared dead claims.
  */
-async function placeBacklog(all: Issue[]): Promise<void> {
-  if (!BOARD) return;
-  let cards: ReturnType<typeof BOARD.snapshot>;
-  try {
-    cards = BOARD.snapshot();
-  } catch (error) {
-    log(`board: could not read the cards: ${(error as Error).message}; placing nothing`);
-    return;
+async function placeBacklog(all: Issue[]): Promise<Placement> {
+  const placement: Placement = new Map();
+  let cards = new Map<number, { lane?: { key: string; phase: string }; state: 'OPEN' | 'CLOSED'; labels: string[] }>();
+  if (BOARD) {
+    try {
+      cards = BOARD.snapshot();
+    } catch (error) {
+      log(`board: could not read the cards: ${(error as Error).message}; the placement is computed but not written`);
+    }
   }
   const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
   const inWindow = (issue: Issue) => (ONLY ? ONLY.has(issue.number) : Boolean(issue.parent) || Date.parse(issue.createdAt) >= cutoff || cards.has(issue.number));
@@ -756,6 +762,7 @@ async function placeBacklog(all: Issue[]): Promise<void> {
     open.add(issue.number);
     const labels = issue.labels.map((l) => l.name);
     if (labels.includes('loop/working') || labels.includes('loop/carving')) {
+      placement.set(issue.number, { lane: cards.get(issue.number)?.lane?.key ?? 'W3', why: `it carries ${labels.includes('loop/working') ? 'loop/working' : 'loop/carving'}`, issue });
       kept += 1;
       continue;
     }
@@ -766,9 +773,15 @@ async function placeBacklog(all: Issue[]): Promise<void> {
       points: pointsFromLabels(issue.labels) ?? undefined,
       ceiling: MAX_POINTS,
       blocked: (issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
+      openChildren: looksLikeTrunk(issue),
     });
-    settle(issue.number, issue.title, placed.lane, placed.why);
+    placement.set(issue.number, { ...placed, issue });
+    if (BOARD) settle(issue.number, issue.title, placed.lane, placed.why);
   }
+  const byLane = new Map<string, number>();
+  for (const { lane } of placement.values()) byLane.set(lane, (byLane.get(lane) ?? 0) + 1);
+  log(`backlog by lane: ${[...byLane.entries()].sort().map(([lane, n]) => `${lane} ${n}`).join(', ') || 'nothing in the window'}`);
+  if (!BOARD) return placement;
   // A card whose issue closed since it was placed: merged by a pull request that owns it, or closed without code.
   let merged: Merged[] = [];
   try {
@@ -786,65 +799,48 @@ async function placeBacklog(all: Issue[]): Promise<void> {
     });
     settle(number, '', placed.lane, placed.why);
   }
-  log(`board: ${moved} card(s) placed by their facts, ${kept} already where the facts put them`);
+  log(`board: ${moved} card(s) ${DRY_RUN ? 'would be ' : ''}placed by their facts, ${kept} already where the facts put them`);
+  return placement;
 }
 
 /**
- * Candidates are open, unclaimed leaves sized within the band: recent unless they have a parent,
- * not held, not a trunk, not paused (themselves or an ancestor), not blocked. An issue sized above
- * the band is the knife's; an unsized one is the appraiser's. A trunk's leaves are worked in the
- * order its newest carving record says, grouped where the trunk's newest leaf would have sat; the
- * rest of the backlog stays newest-first.
+ * The workers' queue is the Ready lane: every issue the placement put in B1 (sized within the
+ * band, unheld, no pull request, not a trunk, not blocked, not paused), less any the tree refuses
+ * (a pause above, an edge in a carving record) and any at its review cap. Every other lane is
+ * another seat's: the inbox is the appraisers', To carve is the knife's, the human and dead-letter
+ * lanes wait for a person. A trunk's leaves are worked in the order its newest carving record
+ * says, grouped where the trunk's newest leaf would have sat; the rest stays newest-first.
  */
-function selectCandidates(): Issue[] {
-  const all = allIssues();
-  const claimed = new Set(openPullRequestIssueRefs());
-  const cutoff = Date.now() - CONFIG.ageDays * 24 * 60 * 60 * 1000;
+function selectCandidates(placement: Placement): Issue[] {
   const io = trackerIo(ctx);
   const orderIn = new Map<number, Map<number, number>>();
-  const excluded = new Map<number, string>();
   const exclude = (issue: Issue, rule: string): false => {
-    excluded.set(issue.number, rule);
     log(`  #${issue.number} not selected: ${rule}`);
     return false;
   };
 
-  const kept = all.filter((issue) => {
-    if (ONLY && !ONLY.has(issue.number)) return false;
-    if (!ONLY && !issue.parent && Date.parse(issue.createdAt) < cutoff) return false;
-    if (isHeldBy(issue.labels, CONFIG.skipLabels)) return ONLY ? exclude(issue, 'a person holds it, or it is a dead letter') : false;
-    if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) return ONLY ? exclude(issue, 'its review budget is spent') : false;
-    if (claimed.has(issue.number)) return ONLY ? exclude(issue, 'an open pull request references it') : false;
-    const label = notALeafLabel(issue);
-    if (label) return exclude(issue, `it carries ${label}`);
-    if (looksLikeTrunk(issue)) return exclude(issue, 'it has an open child');
-    // Sized only, within the band. An unsized issue belongs to the appraisers; handing one to a
-    // worker is what the split exists to stop, since a worker pays for a worktree before
-    // discovering it is not work. Oversized is the knife's.
-    const points = pointsFromLabels(issue.labels);
-    if (points === null) return ONLY ? exclude(issue, 'it is unsized') : false;
-    if (points > MAX_POINTS) return ONLY ? exclude(issue, `it is sized ${points}, over ${MAX_POINTS}`) : false;
-    // Ancestors and blockers need the thread: a pause above, an edge on the tracker or in a record.
-    if (issue.parent || (issue.blockedBy?.nodes.length ?? 0) > 0) {
-      const tree = readTree(ctx, issue.number, io);
-      const why = refusal(tree, MAX_POINTS);
-      if (why) return exclude(issue, why);
-      const trunk = tree.ancestors[0];
-      if (trunk?.record) {
-        const orders = orderIn.get(trunk.number) ?? new Map<number, number>();
-        for (const child of trunk.record.children) if (child.number !== null) orders.set(child.number, child.order);
-        orderIn.set(trunk.number, orders);
+  const kept = [...placement.values()]
+    .filter(({ lane, why, issue }) => {
+      if (lane !== 'B1') return ONLY ? exclude(issue, `it is in ${lane} (${why})`) : false;
+      if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) return exclude(issue, 'its review budget is spent');
+      // Ancestors and blockers need the thread: a pause above, an edge on the tracker or in a record.
+      if (issue.parent || (issue.blockedBy?.nodes.length ?? 0) > 0) {
+        const tree = readTree(ctx, issue.number, io);
+        const why2 = refusal(tree, MAX_POINTS);
+        if (why2) return exclude(issue, why2);
+        const trunk = tree.ancestors[0];
+        if (trunk?.record) {
+          const orders = orderIn.get(trunk.number) ?? new Map<number, number>();
+          for (const child of trunk.record.children) if (child.number !== null) orders.set(child.number, child.order);
+          orderIn.set(trunk.number, orders);
+        }
       }
-    }
-    return true;
-  });
+      return true;
+    })
+    .map(({ issue }) => issue);
 
   if (ONLY) {
-    const present = new Set(all.map((i) => i.number));
-    for (const n of ONLY) {
-      if (!present.has(n)) log(`  #${n} is not an open issue`);
-      else if (!excluded.has(n) && !kept.some((i) => i.number === n)) log(`  #${n} not selected`);
-    }
+    for (const n of ONLY) if (!placement.has(n)) log(`  #${n} is not an open issue`);
   }
 
   // Newest first, with each trunk's leaves grouped at the position of the group's newest member and
@@ -939,15 +935,17 @@ function placeSizeCallbacks(): string {
   return dir;
 }
 
-/** The sizing stage: fetch the base ref, select the unsized window, appraise it through the sibling skill. */
-async function sizeTheWindow(): Promise<void> {
+/** The sizing stage: fetch the base ref, take the inbox lane, appraise it through the sibling skill. */
+async function sizeTheWindow(placement: Placement): Promise<void> {
   // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
   // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
   if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
   const callbacksDir = placeSizeCallbacks();
   log(`size callbacks in ${callbacksDir}`);
-  const population = ONLY ? allIssues().filter((i) => ONLY.has(i.number)) : allIssues();
-  const toAppraise = selectForAppraisal(population, CONFIG, { allAges: ONLY !== null }).slice(0, APPRAISE_LIMIT);
+  // The appraisers' queue is the inbox lane; the appraise skill's own filter runs over it too, so
+  // its contract (the window, the holds, the trunks) is honoured by the same code its command uses.
+  const inbox = [...placement.values()].filter(({ lane }) => lane === 'A1').map(({ issue }) => issue);
+  const toAppraise = selectForAppraisal(inbox, CONFIG, { allAges: ONLY !== null }).slice(0, APPRAISE_LIMIT);
   if (toAppraise.length === 0) {
     log('nothing to appraise; the window is fully sized');
   } else {
@@ -1112,8 +1110,9 @@ async function main(): Promise<void> {
   await CARVING.sweep(allIssues());
 
   // Every card where its facts put it, before any lane moves one: the board is resumed from, so it
-  // has to be right at the start of a run, not only after the run has touched a card.
-  await placeBacklog(allIssues());
+  // has to be right at the start of a run, not only after the run has touched a card. The
+  // placement is also the queue every seat below takes from.
+  let placement = await placeBacklog(allIssues());
 
   // Appraisal first, and on its own timeline. Workers only ever pick up something already judged
   // real and sized, so the expensive population never pays for a worktree to discover an issue was
@@ -1131,18 +1130,18 @@ async function main(): Promise<void> {
       SKIP_APPRAISAL_THIS_RUN = true;
     }
     try {
-      if (!SKIP_APPRAISAL_THIS_RUN) await sizeTheWindow();
+      if (!SKIP_APPRAISAL_THIS_RUN) await sizeTheWindow(placement);
     } finally {
       releaseAppraisal();
     }
   }
 
-  // Selection is re-read rather than reused
-  // Selection is re-read rather than reused: the appraisal above has just changed the labels this
-  // depends on, and a worker must see them.
-  const candidates = selectCandidates().slice(0, LIMIT);
+  // Placed again rather than reused: the appraisal above has just changed the labels the
+  // placement depends on, and a worker must see them.
+  if (!SKIP_APPRAISAL && !SKIP_APPRAISAL_THIS_RUN) placement = await placeBacklog(allIssues());
+  const candidates = selectCandidates(placement).slice(0, LIMIT);
   if (candidates.length === 0) {
-    log('no sized candidates in the window; widen CONFIG.ageDays or raise --max-points');
+    log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
     await finish();
     return;
   }
