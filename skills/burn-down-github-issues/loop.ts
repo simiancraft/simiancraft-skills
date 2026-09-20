@@ -317,15 +317,16 @@ async function waitForGo(where: string): Promise<void> {
 }
 
 /** One list item per merge, in the floor's documented shape, so the walker checks what landed. */
-function putOnTheFloor(event: { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[] }): void {
+function putOnTheFloor(event: { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[]; unseenBase?: string }): void {
   if (!CONFIG.floor) return;
   mkdirSync(FLOOR_DIR, { recursive: true });
   const item = {
     id: `pull-request:${event.pr}`,
     addedAt: new Date().toISOString(),
     source: 'burndown',
-    text: event.title,
-    ref: { pullRequest: event.pr, sha: event.sha, mergedAt: event.mergedAt, paths: event.paths },
+    // A merge that landed across a commit nobody checked it against is the walker's first suspect.
+    text: event.unseenBase ? `${event.title} (landed on unseen base ${event.unseenBase.slice(0, 10)})` : event.title,
+    ref: { pullRequest: event.pr, sha: event.sha, mergedAt: event.mergedAt, paths: event.paths, unseenBase: event.unseenBase },
   };
   appendFileSync(join(FLOOR_DIR, 'list.jsonl'), `${JSON.stringify(item)}\n`);
 }

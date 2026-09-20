@@ -162,6 +162,8 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runAppraiser'],
               on: {
                 APPRAISED: [
+                  // An adopter may turn the second opinion off; the close is then the appraiser's alone.
+                  { target: 'ticket.terminal.closedWithoutCode', guard: 'verdictIsClose and closesUnconfirmed', actions: ['commentReceipt', 'closeIssue'] },
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason'] },
@@ -275,6 +277,8 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.carving.spawningChildren', guard: 'verdictAmend', actions: ['countGeneration'] },
                   { target: 'ticket.carving.rollingUp', guard: 'verdictExhausted' },
                   { target: 'ticket.human.needsDecision', guard: 'verdictQuestion', actions: ['labelHold', 'commentQuestion', 'pauseTouchedLeaves', 'releaseClaim'] },
+                  // The carver's own opinion that what is left cannot be cut: a person weighs it.
+                  { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible', actions: ['labelHold', 'commentBothOpinions', 'pauseTouchedLeaves', 'releaseClaim'] },
                   { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
                 CAP_REACHED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
@@ -386,6 +390,8 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.review.evidenceUnderReview' },
                 ],
                 RESUMED: RESUME,
+                // The reviewer's seat finds the pull request in draft: it was never declared complete.
+                PR_TO_DRAFT: { target: 'ticket.work.drafted' },
               },
             },
             evidenceUnderReview: {

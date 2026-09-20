@@ -13,7 +13,20 @@ import type { Seat } from './engines.ts';
 import { log as defaultLog, step as defaultStep } from './shell.ts';
 
 /** What the pull master tells a driver once a merge is confirmed. */
-export type MergeEvent = { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[] };
+export type MergeEvent = {
+  issue: number;
+  title: string;
+  pr: number;
+  sha: string;
+  mergedAt: string;
+  paths: string[];
+  /**
+   * Set when the merge landed on a base this lane never saw: another writer merged between the
+   * last look upstream and this merge, so the combination that now sits on the base was never
+   * checked by anything. The value is the base commit the merge actually landed on.
+   */
+  unseenBase?: string;
+};
 
 /**
  * A driver's answer to "may this merge now". Resolving `ok` lets the merge proceed; a driver that

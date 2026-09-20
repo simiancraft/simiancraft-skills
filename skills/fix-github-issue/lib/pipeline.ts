@@ -462,6 +462,23 @@ export async function awaitGreenChecks(
 }
 
 /**
+ * The base commit a merge landed on, when it is not the one this lane last fetched; null when the
+ * merge landed on the base the lane held, or when it cannot be told (which is logged, not guessed).
+ */
+function landedOnUnseenBase(ctx: Context, pr: number, seen: string, say: (message: string) => void): string | null {
+  try {
+    const mergeCommit = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
+    const landedOn = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${mergeCommit}`, '--jq', '.parents[0].sha']);
+    if (!landedOn || landedOn === seen) return null;
+    say(`merged onto ${landedOn.slice(0, 10)}, but this lane last saw ${ctx.project.baseBranch} at ${seen.slice(0, 10)}: something else landed in between, and the combination is unverified`);
+    return landedOn;
+  } catch (error) {
+    say(`could not tell which base commit the merge landed on: ${(error as Error).message.split('\n')[0]}`);
+    return null;
+  }
+}
+
+/**
  * The integration queue: the pull master.
  *
  * Coding is the concurrent part of this loop. Everything downstream of "I think this is done" is
@@ -657,6 +674,8 @@ async function land(
   // head that would land, and then looks upstream once more: checks, smoke, and a paused line can
   // each take long enough for another merge to land, and a head that lacks it must not merge.
   let landingSha = reviewedSha;
+  /** The base commit this lane held at its last look upstream. */
+  let baseSeen = '';
   const checksExpected = ctx.dryRun ? false : checksAreExpected(ctx, reviewedSha);
   for (let pass = 0; ; pass++) {
     const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge');
@@ -691,7 +710,13 @@ async function land(
     // upstream is looked at after each one, before the card enters the next lane: a card is never
     // in Smoke or Merging lacking the base, and a stale one goes straight back to the catch-up.
     const lookUpstream = (after: string): 'fresh' | 'again' | { dlq: string } => {
-      if (ctx.dryRun || behindBase(ctx, cwd).length === 0) return 'fresh';
+      if (ctx.dryRun) return 'fresh';
+      if (behindBase(ctx, cwd).length === 0) {
+        // Remembered here, at the look, because the remote-tracking ref is shared with every
+        // other lane and any of them may fetch again before this one merges.
+        baseSeen = sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd);
+        return 'fresh';
+      }
       if (pass >= MAX_BASE_REFRESHES) {
         return { dlq: `the base moved ${pass + 1} times while this landing waited on its gates; it needs a quiet base or a person` };
       }
@@ -793,10 +818,21 @@ async function land(
   const paths = sh(ctx, ['git', 'diff', '--name-only', `${ctx.project.remote}/${ctx.project.baseBranch}...HEAD`], cwd)
     .split('\n')
     .filter(Boolean);
+  // The merge pins the head it lands, never the base it lands on. One driver's queue is single
+  // file, but a person or another operator's loop can merge in the seconds between the last look
+  // upstream and this merge, and a repository that does not require up-to-date branches lets it.
+  // That cannot be prevented from here, so it is detected and said plainly.
+  const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, pr, baseSeen, say);
+  if (unseenBase) {
+    mutate(ctx, `note on PR #${pr} that it landed across an unseen commit`, [
+      'gh', 'pr', 'comment', String(pr), '--body',
+      `This merged onto ${unseenBase.slice(0, 10)}, which landed on \`${ctx.project.baseBranch}\` between the last look upstream and the merge. The checks and the review covered the branch without that commit; the combination is unverified until the base's own checks pass.`,
+    ]);
+  }
   move(ctx, issue, 'T1', `PR #${pr} merged ${merged}`);
   // Tell the driver while the worktree still exists, so the event carries the paths that landed.
   if (ctx.afterMerge) {
-    ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths });
+    ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined });
   }
   // The person watching the main checkout sees the fix land, when the config asks for that.
   followBase(ctx, paths);

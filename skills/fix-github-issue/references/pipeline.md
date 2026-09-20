@@ -121,6 +121,14 @@ the last moment before merging and parks instead when they fail or never finish;
 is not a substitute. The merge pins the head it read and confirms afterwards that the pull request
 actually reports a merge, cancelling anything a merge queue scheduled instead.
 
+The merge pins the head that lands, not the base it lands on. One driver's queue is single file,
+and it looks upstream after every gate, but a person or another operator's loop can still merge in
+the seconds between the last look and the merge. A repository closes that window by requiring
+branches to be up to date before merging; without that rule the pipeline cannot prevent it, so it
+detects it: after the merge it compares the base commit the merge landed on with the one the lane
+last saw, and when they differ it says so on the pull request and tells the driver
+(`unseenBase` on the merge event), so the walker checks that base first.
+
 An empty list of checks is never green at first sight, because a head that was just pushed shows
 none for a moment before they register. The `checks` knob says what an empty list means:
 `required` waits for checks until the timeout and dead-letters the landing without them; `none`
