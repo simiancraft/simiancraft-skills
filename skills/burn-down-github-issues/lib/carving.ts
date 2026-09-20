@@ -86,7 +86,16 @@ function issueOf(tree: Tree): Issue {
 /** One revisit per trunk per run; later closes in the same run are seen by the next sweep. */
 export class Carving {
   private readonly revisited = new Set<number>();
-  constructor(private readonly deps: CarvingDeps) {}
+  private readonly deps: CarvingDeps;
+  constructor(deps: CarvingDeps) {
+    // Every card this driver places goes through `mark`. A card is a projection of an issue the run
+    // holds, so once its lease on an issue is lost that issue's card is another run's to place.
+    const mark: CarvingDeps['mark'] = (number, title, lane, note) => {
+      if (leaseLost(deps.ctx, number)) return;
+      deps.mark(number, title, lane, note);
+    };
+    this.deps = { ...deps, mark };
+  }
 
   /** `ctx.onClosed`: roll the close up to the parent, then revisit the parent once this run. */
   async onClosed(event: CloseEvent): Promise<void> {

@@ -84,13 +84,18 @@ describe('the carving driver makes only moves the chart allows', () => {
       const applied = (io: FakeTracker) => (verdict === 'valid' ? io.view(10)!.labels.some((l) => l.name === 'size: 1') : io.view(10)!.state === 'CLOSED');
       const lost = released(); const ctx = ctxFor(lost);
       let lostDuringTurn = false;
+      let marksAtLoss = -1;
+      const lanes = ['C7'];
       ctx.log = (m) => {
         if (!during.test(m) || leaseLost(ctx, 10)) return;
         lostDuringTurn = true;
+        marksAtLoss = lanes.length;
         const handle: ClaimHandle = { kind: 'carving', commentId: 1, label: 'loop/carving', issue: 10, key: 'o/r#10', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
         keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
       };
-      await makeDriver(ctx, k, ['C7'], appraiser(), confirmer()).releaseAppraisal(10);
+      await makeDriver(ctx, k, lanes, appraiser(), confirmer()).releaseAppraisal(10);
+      // No card was placed for the issue after the loss.
+      expect(lanes.length).toBe(marksAtLoss);
       // The mark is gone again once the appraisal's own lease stopped; the turn is what lost it.
       expect(lostDuringTurn).toBe(true);
       expect(leaseLost(ctx, 10)).toBe(false);
