@@ -10,7 +10,8 @@
  */
 
 import { mkdirSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { logTail, readResult, renderPrompt, runAgent } from './agent.ts';
@@ -30,6 +31,8 @@ import { MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.t
  * is one that needs a person (a product decision, access an agent lacks, work outside the band);
  * `parked` means a pull request exists and a human owns the next call.
  */
+const HERE = dirname(fileURLToPath(import.meta.url));
+
 export type FixOutcome = {
   outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy';
   reason: string;
@@ -97,6 +100,17 @@ function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
   }
 }
 
+/**
+ * The command the worker runs to move its own card: the seat that does the work moves the card,
+ * and the board then says what the agent is doing rather than what the driver last knew. The
+ * board pointer and repository are rendered in, since a worktree may not carry the config.
+ */
+function cardCommand(ctx: Context, issue: number, lane: string): string {
+  const card = join(HERE, '..', '..', 'burn-down-github-issues', 'card.ts');
+  const pointer = join(ctx.runDir, 'board.json');
+  return `bun run ${card} --board ${pointer} --repo ${ctx.project.repo} --issue ${issue} --lane ${lane}`;
+}
+
 async function runWorker(
   ctx: Context,
   issue: Issue,
@@ -108,6 +122,8 @@ async function runWorker(
     ISSUE: String(issue.number),
     TITLE: issue.title,
     MAX_POINTS: String(maxPoints),
+    CARD_PROVING: cardCommand(ctx, issue.number, 'D2'),
+    CARD_DRAFTED: cardCommand(ctx, issue.number, 'D3'),
     FEEDBACK: feedback
       ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
         `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`

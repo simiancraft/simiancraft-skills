@@ -111,6 +111,11 @@ request. Use a semicolon between independent clauses. Use the Oxford comma.
 
 ## Step 3: prove
 
+First move your card: `{{CARD_PROVING}}`. The board is where the people watching this run see
+what is happening; the seat doing the work is the one that moves the card, and this is the moment
+the change is pushed and the proof begins. The command prints what it did and never fails the
+work; if it says there is no board, carry on.
+
 Load the `prove-work-on-github` skill; it ships alongside the loop that sent you this prompt, in
 the [simiancraft-skills](https://github.com/simiancraft/simiancraft-skills) collection, so
 wherever this prompt came from, that skill sits beside it. Follow its lifecycle: size the change, name what it must prove,
@@ -141,7 +146,8 @@ resolve, and a receipt pinned to that is not a receipt.
 1. **Finish the work before you open anything.** Commit and push every change you intend to make,
    having run `{{CHECK_COMMAND}}` and `{{INSTALL_COMMAND}}` locally first. Do not open a pull request against a branch
    you are still going to iterate on.
-2. **Open it as a draft**: `gh pr create -R {{REPO}} --draft --base {{BASE_BRANCH}}`.
+2. **Open it as a draft**: `gh pr create -R {{REPO}} --draft --base {{BASE_BRANCH}}`, then move
+   your card: `{{CARD_DRAFTED}}`.
 3. **Attach the proof** to the draft.
 4. **Mark it ready only when you believe it is feature complete**: the fix is whole, the checks pass
    locally, and the proof is attached. `gh pr ready <number> -R {{REPO}}`. That flip is your statement that this

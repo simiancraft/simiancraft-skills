@@ -18,8 +18,8 @@ type Field = { id: string; name: string; options: Array<{ id: string; name: stri
 
 export type BoardWriter = {
   board: Board;
-  /** The `onLane` hook: ensure the issue is on the board and set its Status and Phase. */
-  onLane: (event: LaneEvent) => void;
+  /** The `onLane` hook: ensure the issue is on the board and set its Status and Phase. True when both writes landed. */
+  onLane: (event: LaneEvent) => boolean;
   /** Read the lane the card is in now, or undefined when the issue is not on the board. */
   laneOf: (issue: number) => Lane | undefined;
 };
@@ -82,7 +82,7 @@ export function createBoardWriter(board: Board, repo: string, log: (message: str
     gh(['project', 'item-edit', '--id', item, '--project-id', board.id, '--field-id', field.id, '--single-select-option-id', option.id]);
   };
 
-  const onLane = (event: LaneEvent) => {
+  const onLane = (event: LaneEvent): boolean => {
     try {
       const lane = laneByKey(event.lane);
       const { status, phase } = readFields();
@@ -90,8 +90,10 @@ export function createBoardWriter(board: Board, repo: string, log: (message: str
       setOption(item, status, laneLabel(lane));
       setOption(item, phase, phaseLabel(lane.phase));
       log(`#${event.issue}  board: ${lane.key} ${lane.name}${event.note ? ` (${event.note})` : ''}`);
+      return true;
     } catch (error) {
       log(`#${event.issue}  board write failed: ${(error as Error).message}`);
+      return false;
     }
   };
 
