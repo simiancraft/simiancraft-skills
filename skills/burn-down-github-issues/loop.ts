@@ -37,7 +37,7 @@ import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { log, sh, step, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { appraiseIssue, assertConfirmCloses, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
+import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
@@ -560,6 +560,30 @@ function place(issue: number, title: string, lane: string, note?: string): void 
   if (!DRY_RUN) BOARD?.onLane({ issue, title, lane, note });
 }
 
+/**
+ * Places a card from what the tracker says now, for the moments a driver knows only that
+ * something changed under it (an issue that became a trunk, was held, or closed while a turn ran).
+ * Guessing a lane from the turn's outcome would show a hold nobody placed.
+ */
+function placeFromTracker(issue: number, title: string, note: string): void {
+  if (DRY_RUN) return;
+  try {
+    const tree = readTree(ctx, issue, trackerIo(ctx));
+    const placed = placeByFacts({
+      state: tree.issue.state === 'OPEN' ? 'OPEN' : 'CLOSED',
+      labels: tree.issue.labels.map((l) => l.name),
+      pulls: [],
+      points: pointsFromLabels(tree.issue.labels) ?? undefined,
+      ceiling: MAX_POINTS,
+      blocked: tree.blockers.some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
+      openChildren: tree.children.some((c) => c.state === 'OPEN'),
+    });
+    place(issue, title, placed.lane, `${note}; ${placed.why}`.slice(0, 120));
+  } catch (error) {
+    log(`  #${issue} could not be placed from the tracker: ${(error as Error).message.split('\n')[0]}`);
+  }
+}
+
 const ctx = createContext({
   project: PROJECT,
   knobs: {
@@ -1022,10 +1046,22 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
             callbacks: { dir: callbacksDir, seat: SEATS.callback },
           });
         } catch (error) {
-          // A lane that threw changed nothing on the issue: the card goes back to the inbox with
-          // the error as its note, never left saying Appraising.
-          place(issue.number, issue.title, 'A1', `appraiser threw: ${(error as Error).message}`.slice(0, 120));
+          // A lane that threw is a failed appraisal: counted, a dead letter at the cap, and the
+          // card says which. Never left saying Appraising, and never an uncounted retry.
+          try {
+            const counted = recordAppraisalThrow(ctx, issue, CONFIG.maxAppraiseAttempts, error as Error, (m) => log(`#${issue.number}  ${m}`));
+            place(issue.number, issue.title, counted.deadLetter ? 'Q1' : 'A1', counted.reason.slice(0, 120));
+          } catch (second) {
+            log(`#${issue.number}  could not record the failed appraisal: ${(second as Error).message.split('\n')[0]}`);
+            place(issue.number, issue.title, 'A1', `appraiser threw: ${(error as Error).message}`.slice(0, 120));
+          }
           throw error;
+        }
+        // An appraisal that stopped because the issue changed under it (held, closed, claimed,
+        // became a trunk) has no lane of its own to report: the tracker says where the card is.
+        if (outcome.verdict === 'failed' && !outcome.retry && !outcome.deadLetter) {
+          placeFromTracker(issue.number, issue.title, outcome.reason);
+          return;
         }
         // `retry` means nothing changed on the issue and the next run tries again; the card
         // says so rather than claiming a size or a hand-off that never landed.

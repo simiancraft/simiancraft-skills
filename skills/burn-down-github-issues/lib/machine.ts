@@ -183,7 +183,14 @@ export const MACHINE: StateNode = {
               on: {
                 CONFIRMED: { target: 'ticket.terminal.closedWithoutCode', actions: ['commentBothReceipts', 'closeIssue'] },
                 DISPUTED: { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions'] },
-                AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] },
+                // The close is the appraiser's or a worker's. A confirmer that fails is a failed
+                // turn of whichever asked: a worker's attempt, or one more appraisal.
+                AGENT_FAILED: [
+                  { target: 'ticket.ready.ready', guard: 'closeByWorker and attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
+                  { target: 'ticket.deadLetters.work', guard: 'closeByWorker', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
+                  { target: 'ticket.appraisal.inbox', guard: 'appraisalsUnderCap', actions: ['countAppraisal'] },
+                  { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] },
+                ],
               },
             },
           },

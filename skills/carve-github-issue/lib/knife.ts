@@ -457,6 +457,19 @@ async function callback(k: Knife, tree: Tree, name: 'on-carve-pass' | 'on-carve-
  * agreed) is a dead letter: `deadLetter` puts the trunk in the carve queue instead, where a person
  * redrives it by lifting the label, and the record and the pauses are written the same way.
  */
+/**
+ * Says where the trunk's card is on the driver's board, when the driver has one. The knife is the
+ * seat in these lanes, so it moves the card; a board write never fails a carving.
+ */
+function lane(k: Knife, title: string, key: string, note?: string): void {
+  if (!k.ctx.onLane) return;
+  try {
+    k.ctx.onLane({ issue: k.trunk, title, lane: key, note });
+  } catch (error) {
+    k.say(`board: ${(error as Error).message}`);
+  }
+}
+
 async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>, pauseAll: boolean, verdict: string, deadLetter = false): Promise<CarveOutcome> {
   const hold = deadLetter ? dlqLabel('carve') : (HAND_OFFS[verdict] ?? 'needs-human');
   const ledger = carving.ledger;
@@ -729,6 +742,8 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
   let reply: string | null = null;
   const opinions: Array<{ carver: string; confirmer: string }> = [];
   for (let round = 1; round <= k.knobs.maxCarveRounds; round++) {
+    // A first carving is Carving; a visit to a carved trunk is Revisiting. A later round says so.
+    lane(k, tree.issue.title, mode === 'revisit' ? 'C6' : 'C2', round > 1 ? `round ${round}, after a dispute` : trigger);
     const carved = await runCarver(k, tree, mode, previousLedger, feedback, trigger);
     if (!carved.ok) return countFailure(k, tree, carved.why, carved.logPath);
     const carving = carved.carving;
@@ -751,6 +766,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
       plan = normalized.plan;
     }
 
+    if (mode !== 'revisit') lane(k, tree.issue.title, 'C3', `round ${round}: ${carving.verdict}`);
     const confirmed = await runConfirmer(k, tree, mode, carving, previousLedger, round, reply);
     if (!confirmed.ok) return countFailure(k, tree, confirmed.why, confirmed.logPath);
     const confirmation = confirmed.confirmation;
@@ -794,6 +810,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     };
     k.journal = new JournalFile(k.ctx, k.knobs, k.trunk, generation, k.ctx.dryRun || k.ctx.io ? null : join(k.ctx.runDir, `carve-${k.trunk}-gen${generation}.json`));
     postRecord(k, applying);
+    lane(k, tree.issue.title, 'C4', `generation ${generation}, ${children.length} children`);
     const applied = await applyRecord(k, applying);
     if (!applied.ok) {
       const handOff: Carving = { ...carving, verdict: 'indivisible', reason: applied.why, affected: [] };

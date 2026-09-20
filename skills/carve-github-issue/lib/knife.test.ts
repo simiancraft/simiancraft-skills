@@ -138,6 +138,17 @@ describe('carveIssue', () => {
     expect(t.record?.children.map((c) => c.number)).toEqual(t.children.map((c) => c.number));
   });
 
+  test('the knife moves its own card: Carving, Confirming cut, Spawning children, in that order', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    const lanes: string[] = [];
+    ctx.onLane = (event) => {
+      lanes.push(event.lane);
+    };
+    await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    expect(lanes).toEqual(['C2', 'C3', 'C4']);
+  });
+
   test('a dispute to the round cap is a carve dead letter, with every open leaf paused and no child created', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(10, { title: '[t] big', labels: [{ name: 'size: 8' }], subIssues: [11] }), fakeIssue(11, { parentNumber: 10, title: 'leaf' })]);
     const ctx = ctxFor(io);

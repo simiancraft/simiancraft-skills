@@ -274,6 +274,15 @@ function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs
 }
 
 /**
+ * A driver's appraisal lane threw (a fetch, a worktree, a tracker write). That is a failed
+ * appraisal like any other: counted, and at the cap a dead letter, or the issue would be asked
+ * again on every run with nothing accumulating against it.
+ */
+export function recordAppraisalThrow(ctx: Context, issue: Issue, cap: number | undefined, error: Error, say: (m: string) => void): AppraisalOutcome {
+  return countFailedAppraisal(ctx, issue, cap ?? APPRAISE_DEFAULTS.maxAppraiseAttempts, `the appraisal threw: ${error.message.split('\n')[0]}`, null, say);
+}
+
+/**
  * A trunk is not appraised, with one exception the burndown asks for: the released trunk whose
  * remainder it wants sized or closed. Every gate in an appraisal asks this, not `isTrunk`, or the
  * exception admitted at the start is refused at the end.
@@ -410,6 +419,12 @@ export async function appraiseIssue(
         await closeIssue(ctx, issue.number, closeComment, { kind: 'closed', reason: result.verdict, by: 'appraiser' });
         outcome.close = 'skipped';
         break;
+      }
+      // The appraiser is the seat here, so it moves the card; a board write never fails an appraisal.
+      try {
+        ctx.onLane?.({ issue: issue.number, title: issue.title, lane: 'A3', note: `a second engine re-checks the ${result.verdict}` });
+      } catch (error) {
+        say(`board: ${(error as Error).message}`);
       }
       const confirmation = await confirmClose(ctx, issue, result, options.seats.confirmer, say);
       if (!confirmation) {

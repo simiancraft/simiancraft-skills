@@ -91,7 +91,9 @@ export class Carving {
     const io = trackerIo(ctx);
     const tree = readTree(ctx, number, io);
     const issue = issueOf(tree);
-    mark(number, issue.title, 'C6', why);
+    // A trunk with a live record is revisited; anything else handed to the knife is a first carving.
+    // The knife moves the card from here as it works (Confirming cut, Spawning children).
+    mark(number, issue.title, tree.record?.state === 'live' ? 'C6' : 'C2', why);
     let outcome: Awaited<ReturnType<typeof carveIssue>>;
     try {
       outcome = await carveIssue(ctx, issue, knobs, io);
@@ -130,6 +132,8 @@ export class Carving {
         const issue = issueOf(tree);
         const points = pointsOf(tree.issue.labels);
         if (points === null) {
+          // Rolling up hands the remainder to an appraiser, and the card says so while it runs.
+          mark(number, issue.title, 'A2', 'release appraisal of the remainder');
           const outcome = await appraiseIssue(ctx, issue, { ...appraisal, ageDays: null, release: true, ownClaim: ctx.runId, onVerdict: undefined });
           mark(
             number,

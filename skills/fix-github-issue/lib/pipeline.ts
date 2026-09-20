@@ -206,6 +206,7 @@ async function runWorker(
 /** The second engine on a worker's close: the appraiser's confirmer for a close, its own prompt for a spike's answer. */
 async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void): Promise<{ agree: boolean; reason: string } | null> {
   const confirmer = ctx.seats.confirmer ?? ctx.seats.reviewer;
+  move(ctx, issue, 'A3', `a second engine re-checks the worker's ${result.verdict}`);
   if (result.verdict !== 'answered') {
     return confirmClose(ctx, issue, { verdict: result.verdict as 'already-fixed' | 'obsolete', reason: result.reason, closeComment: result.closeComment }, confirmer, say);
   }
@@ -1220,7 +1221,10 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  */
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(issue.number);
-  const phase = phaseOfLane(lane);
+  // This pipeline visits Confirming close only for a worker's own close, so a throw there is
+  // still the worker's failure; the appraisal and carve queues belong to their own drivers.
+  const owner = phaseOfLane(lane);
+  const phase = owner === 'appraisal' || owner === 'carve' ? 'work' : owner;
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
