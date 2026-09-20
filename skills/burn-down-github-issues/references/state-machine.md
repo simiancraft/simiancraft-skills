@@ -142,7 +142,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | F1 Approved | enqueue | `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
-| F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D4 with a reproof brief (count refresh); else Q5. `CONFLICT` to Q5 |
+| F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the proof is reacquired on the existing pull request and `PROOF_REACQUIRED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
 | F3 Checks pending | wait on checks | `CHECKS`: green and smoke configured to F4; green to F5; else Q5 |
 | F4 Smoke | run smoke | `SMOKE`: passed to F5; else Q5 (tail as the reason) |
 | F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
@@ -192,7 +192,7 @@ T1 and T2 roll up to the parent on entry. T3 exists only when `floor` is configu
 
 ## Demotions the loop makes
 
-E2 to D4 (rejection, round spent); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D4 (stale proof, no round spent, or the
+E2 to D4 (rejection, round spent); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
 standing verdict was a rejection); D1 to B1 (failed attempt, attempts remain); C3 to C2 (cut
 disputed); C6 to C5 (still-good) and C6 to C4 (amend); C7 to A2 (release appraisal); every Q lane
 to its phase's entry on redrive; every H lane through reconcile on hold removal; every W lane

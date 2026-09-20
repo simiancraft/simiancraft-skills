@@ -287,6 +287,9 @@ export const MACHINE: StateNode = {
               entry: ['moveCard'],
               on: {
                 DRAFT_OPENED: { target: 'ticket.work.drafted' },
+                // A reproof works on a pull request that already exists: the proof is reacquired
+                // on the caught-up head and the card goes straight back to review.
+                PROOF_REACQUIRED: { target: 'ticket.review.readyForReview', actions: ['prReady'] },
                 AGENT_FAILED: { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
               },
             },
@@ -357,7 +360,8 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.review.readyForReview', guard: 'standingVerdictMerge and refreshesUnderCap', actions: ['countRefresh', 'pushBranch'] },
                   { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection', actions: ['pushBranch'] },
                   { target: 'ticket.review.readyForReview', guard: 'noVerdictYet and movementOutsideClosure and netChangeIntact', actions: ['pushBranch'] },
-                  { target: 'ticket.work.sentBack', guard: 'noVerdictYet and refreshesUnderCap', actions: ['countRefresh', 'pushBranch', 'briefReproof'] },
+                  // Stale proof is demoted to the closest lane that can correct it: Proving, not a revision.
+                  { target: 'ticket.work.proving', guard: 'noVerdictYet and refreshesUnderCap', actions: ['countRefresh', 'pushBranch', 'prToDraft', 'runWorkerReproof'] },
                   { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
                 CONFLICT: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },

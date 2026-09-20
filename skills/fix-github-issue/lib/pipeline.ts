@@ -108,7 +108,10 @@ function move(ctx: Context, issue: Issue, lane: string, note?: string): void {
 function cardCommand(ctx: Context, issue: number, lane: string): string {
   const card = join(HERE, '..', '..', 'burn-down-github-issues', 'card.ts');
   const pointer = join(ctx.runDir, 'board.json');
-  return `bun run ${card} --board ${pointer} --repo ${ctx.project.repo} --issue ${issue} --lane ${lane}`;
+  // Single-quoted for the agent's shell: a checkout under a path with a space, or a repository
+  // name with anything a shell reads as syntax, must arrive as one literal argument.
+  const q = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+  return `bun run ${q(card)} --board ${q(pointer)} --repo ${q(ctx.project.repo)} --issue ${issue} --lane ${lane}`;
 }
 
 async function runWorker(
@@ -117,6 +120,8 @@ async function runWorker(
   cwd: string,
   maxPoints: number,
   feedback?: ReviewResult,
+  /** True when nothing was rejected: the base moved beneath the proof and only the proof is owed. */
+  reproof = false,
 ): Promise<WorkerResult> {
   const prompt = renderPrompt(ctx, 'triage-and-fix.md', {
     ISSUE: String(issue.number),
@@ -124,18 +129,25 @@ async function runWorker(
     MAX_POINTS: String(maxPoints),
     CARD_PROVING: cardCommand(ctx, issue.number, 'D2'),
     CARD_DRAFTED: cardCommand(ctx, issue.number, 'D3'),
-    FEEDBACK: feedback
-      ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
-        `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`
-      : 'This is the first attempt at this issue.',
+    FEEDBACK: reproof && feedback
+      ? `Nobody rejected your work. The base branch moved beneath your proof after you captured it, and the ` +
+        `branch has been caught up for you. Start at Step 3: confirm the fix still holds on the current head, ` +
+        `reacquire the receipts the movement reached, update the proof on the same pull request, and mark it ` +
+        `ready. Change code only if the base's movement requires it.\n\n${JSON.stringify(feedback, null, 2)}`
+      : feedback
+        ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
+          `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`
+        : 'This is the first attempt at this issue.',
   });
 
-  move(ctx, issue, feedback ? 'D4' : 'D1', feedback ? 'revision after a review' : undefined);
+  // The closest lane that can correct the card: stale proof goes back to Proving, a rejection to
+  // Sent back, and only a first attempt starts at Coding.
+  move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', reproof ? 'reacquiring proof after the base moved' : feedback ? 'revision after a review' : undefined);
   // A revision is the exception: its lane holds the branch and the pull request under review, so a
   // reset would throw away work the reviewer already read. Only a first attempt may be reset.
   const { logPath, exitCode } = await runAgent(
     ctx,
-    feedback ? 'worker-revise' : 'worker',
+    reproof ? 'worker-reprove' : feedback ? 'worker-revise' : 'worker',
     issue.number,
     cwd,
     ctx.seats.worker,
@@ -971,7 +983,7 @@ export async function reviewAndLand(
         blocking: [
           `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
         ],
-      });
+      }, true);
       say(`verdict: ${result.verdict}; ${result.reason}`);
       if (result.verdict === 'failed') {
         const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));

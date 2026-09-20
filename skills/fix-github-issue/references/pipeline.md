@@ -178,7 +178,7 @@ reaching the same verdict twice.
 |---|---|---|
 | none | the review starts | the merge proceeds |
 | nothing the closure reaches, and the branch's own change is byte-identical across the merge (compared by patch id) | the base is merged in; the proof stands; the review starts on the caught-up head | the base is merged in; the approval stands; the pull master waits on the caught-up head's checks and lands that head |
-| inside the closure, or a global invalidator, or the merge altered the branch's own change | the base is merged in; the proof is stale; the work goes back to its author to rerun the checks and reacquire what the movement reached, spending no review round | the base is merged in; the approval no longer describes what would land; the head is **re-reviewed**, spending no round |
+| inside the closure, or a global invalidator, or the merge altered the branch's own change | the base is merged in; the proof is stale; the card goes back to Proving, not to a revision: the author reruns the checks and reacquires what the movement reached on the same pull request, spending no review round | the base is merged in; the approval no longer describes what would land; the head is **re-reviewed**, spending no round |
 | any, on a **rejection** | | the base is merged in and the author revises; the verdict still stands |
 | a closure too large to compute | treated as inside the closure; the conservative answer is the cheap one | the same |
 | conflicts | a landing dead letter; the driver does not resolve conflicts | the same |
