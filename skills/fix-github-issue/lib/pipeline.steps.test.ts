@@ -89,7 +89,10 @@ describe('the work turn, as steps', () => {
   it("sends a refused proof back a step: an attempt is spent, and the prover's reason is the next coder's brief", async () => {
     const r = await run(25, coded(25), { issue: 25, verdict: 'unprovable', reason: 'the endpoint still returns 500 for an empty list' });
     // Code, Prove (refused), Code again, Prove (refused)... until the attempts are spent.
-    expect(r.roles.slice(0, 4)).toEqual(['worker', 'prover', 'worker', 'prover']);
+    // The second Code turn continues the branch the first one pushed: it is a revision, which the
+    // driver catches up first and never resets, though with no pull request the card is still D1.
+    expect(r.roles.slice(0, 4)).toEqual(['worker', 'prover', 'worker-revise', 'prover']);
+    expect(r.lanes.slice(0, 4)).toEqual(['D1', 'D2', 'D1', 'D2']);
     // One count across the run: each refusal spends the next attempt, and the dead letter at the cap
     // does not count the last one a second time.
     expect(r.rehearsed.filter((d) => d.startsWith('mark #25 at loop/attempts')).map((d) => d.at(-1))).toEqual(['1', '2', '3']);

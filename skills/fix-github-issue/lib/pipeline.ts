@@ -335,7 +335,10 @@ async function runWorker(
         ? 'The code was revised after a review. Prove the revised head on the same pull request, and mark it ready.'
         : 'This is the first proof of this change.';
   let spent = attemptCount(issue.labels);
+  // Two different facts: whether a branch for this issue already exists, which decides how Code is
+  // run (caught up first, never reset), and whether a pull request does, which decides the lane.
   let revision = Boolean(feedback);
+  let hasPull = Boolean(feedback);
 
   // A first dispatch starts from the facts, not from nothing: an earlier run may have coded this
   // issue and died, and what it reached is on the remote and announced on the issue. A pushed
@@ -383,7 +386,7 @@ async function runWorker(
 
   for (;;) {
     if (!proveOnly) {
-      move(ctx, issue, revision ? 'D4' : 'D1', revision ? 'continuing on the existing branch' : undefined);
+      move(ctx, issue, hasPull ? 'D4' : 'D1', revision ? 'continuing on the existing branch' : undefined);
       // Code on a branch that already exists starts on the current base like everything else: the
       // prompt forbids the coder to merge it, so the driver does, before the agent and not after.
       if (revision && !ctx.dryRun) {
@@ -423,7 +426,9 @@ async function runWorker(
     if (spent >= ctx.knobs.maxWorkerAttempts) {
       return { issue: issue.number, verdict: 'failed', counted: true, pr: proved.pr, reason: `the proof was refused ${spent} time(s), and the attempts are spent. Last refusal: ${proved.reason}` };
     }
-    revision = revision || proved.pr !== undefined || (!ctx.dryRun && openPullFor(ctx, issue.number) !== undefined);
+    // Code pushed a branch before this proof was tried, so whatever comes next continues it.
+    revision = true;
+    hasPull = hasPull || proved.pr !== undefined || (!ctx.dryRun && openPullFor(ctx, issue.number) !== undefined);
     codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${proved.reason}`;
     proveBrief = 'The code was changed after a proof of it was refused. Prove the new head.';
     proveOnly = false;
