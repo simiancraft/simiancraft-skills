@@ -112,7 +112,7 @@ function readBotLogin(): string {
 export function createContext(options: {
   project: ProjectConfig;
   /** The newest knobs default, so a driver that predates them still compiles and runs. */
-  knobs: Partial<Pick<PipelineKnobs, 'pointScale' | 'maxWorkerAttempts' | 'checks'>> & Omit<PipelineKnobs, 'seats' | 'pointScale' | 'maxWorkerAttempts' | 'checks'>;
+  knobs: Partial<Pick<PipelineKnobs, 'pointScale' | 'maxWorkerAttempts' | 'checks' | 'requiredChecks'>> & Omit<PipelineKnobs, 'seats' | 'pointScale' | 'maxWorkerAttempts' | 'checks' | 'requiredChecks'>;
   seats: { worker: Seat; reviewer: Seat; confirmer?: Seat };
   repoRoot: string;
   invokeRoot: string;

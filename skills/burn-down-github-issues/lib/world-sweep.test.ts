@@ -288,8 +288,11 @@ describe('intervention and recovery at every lane', () => {
       if (!successors(laneState(from), { ownEventsOnly: true }).has(laneState(to))) absent.push(`${from}->${to}`);
     }
     expect(absent).toEqual([]);
-    // And the moves they no longer make: a driverless pull request is never sent to a revision.
-    for (const from of ['E1', 'D3']) expect(successors(laneState(from), { ownEventsOnly: true }).has(laneState('D4'))).toBe(false);
+    // A driverless pull request is never sent to a revision: only a person's redrive reaches one.
+    for (const from of ['E1', 'D3']) for (const behind of [false, true]) {
+      const m = new Model(); m.pr = from === 'E1' ? 'ready' : 'draft'; if (behind) m.world.base.push(['other.ts']);
+      expect(laneKey(fire(laneState(from), 'RESUMED', facts(m))!.state)).toBe(behind ? 'F2' : 'D2');
+    }
   });
   it('a failed triage agent leaves the card resting in its queue, never in a person\'s hold', () => {
     const m = new Model(); m.pr = 'ready';
@@ -342,6 +345,6 @@ describe('owner invariants', () => {
     let clock = 0;
     const ctx = { project: { repo: 'o/r' }, knobs: { checksTimeoutMinutes: 10, checks: 'auto' } } as unknown as Context;
     const io = { now: () => clock, sleep: async (ms: number) => { clock += ms; }, read: () => JSON.stringify({ headRefOid: 'landing', statusCheckRollup: clock >= 30_000 ? [{ name: 'build', conclusion: 'FAILURE' }] : [] }) };
-    expect(await awaitGreenChecks(ctx, 1, () => {}, { sha: 'landing' }, io)).toContain('checks failed');
+    expect(await awaitGreenChecks(ctx, 1, () => {}, { sha: 'landing', names: ['build'] }, io)).toContain('checks failed');
   });
 });

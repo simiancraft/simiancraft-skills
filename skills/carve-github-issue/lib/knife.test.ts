@@ -7,10 +7,11 @@ import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { carveIssue } from './knife.ts';
-import type { Record } from './record.ts';
+import { renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
 import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carving.ts';
 import { laneState, successors } from '../../burn-down-github-issues/lib/simulate.ts';
+import { runAgent } from '../../fix-github-issue/lib/agent.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -18,6 +19,118 @@ let scratch: string;
 
 beforeAll(() => {
   scratch = mkdtempSync(join(tmpdir(), 'knife-'));
+});
+
+describe('the carving driver makes only moves the chart allows', () => {
+  function makeDriver(ctx: Context, k: CarveKnobs, lanes: string[], appraiser?: string, confirmer?: string) {
+    ctx.onLane = e => lanes.push(e.lane);
+    return new CarvingDriver({ ctx, knobs: k, appraisal: { seats: { appraiser: { engine: 'fixture', model: appraiser }, confirmer: { engine: 'fixture2', model: confirmer } }, confirmCloses: true, skipLabels: ['needs-human', 'needs-decision', 'loop/skip', 'loop/parked'], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (_n, _t, lane) => lanes.push(lane), log: () => {} });
+  }
+  function illegal(lanes: string[]) {
+    return lanes.slice(1).flatMap((to, i) => lanes[i] === to || successors(laneState(lanes[i]), { ownEventsOnly: true }).has(laneState(to)) ? [] : [`${lanes[i]}->${to}`]);
+  }
+  for (const failure of ['carver', 'confirmer', 'setup', 'spawn'] as const) {
+    test(`first carving ${failure} failure follows chart edges`, async () => {
+      const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
+      const k = knobs(fixture('carver', failure === 'carver' ? {} : carving(10)), fixture('confirmer', failure === 'confirmer' ? {} : confirmation(10, 'carve', 'cover', true)));
+      if (failure === 'setup') ctx.promptsDirs = [];
+      if (failure === 'spawn') io.beforeWrite = op => { if (op.argv[2] === 'create' && op.argv[1] === 'issue') throw new Error('create unavailable'); };
+      const d = makeDriver(ctx, k, lanes);
+      if (failure === 'setup' || failure === 'spawn') await expect(d.revisit(10, 'first carve')).rejects.toThrow();
+      else await d.revisit(10, 'first carve');
+      
+      expect(illegal(lanes)).toEqual([]);
+    });
+  }
+  for (const points of [1, 8]) {
+    test(`release resumed after size ${points} was written follows chart edges`, async () => {
+      const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }, { name: `size: ${points}` }] })]);
+      const ctx = ctxFor(io); const lanes = ['C7'];
+      const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+      await makeDriver(ctx, k, lanes).releaseAppraisal(10);
+      
+      expect(illegal(lanes)).toEqual([]);
+    });
+  }
+  test('a trunk with open children but no record enters its first carving along a chart edge', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { subIssues: [11] }), fakeIssue(11, { parentNumber: 10 })]);
+    const ctx = ctxFor(io); const lanes = ['C5'];
+    await makeDriver(ctx, knobs(fixture('bad', {}), fixture('bad2', {})), lanes).revisit(10, 'open child, no record');
+    expect(illegal(lanes)).toEqual([]);
+  });
+  test('a resumed release with the new carving already recorded has a chart edge', async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    await carveIssue(ctx, issue10, k, io);
+    io.addLabel(10, 'loop/released');
+    const lanes = ['C7']; await makeDriver(ctx, k, lanes).releaseAppraisal(10);
+    expect(illegal(lanes)).toEqual([]);
+  });
+  test('lifting a carve dead letter reaches Revisiting along a chart edge', async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    const answer = { ...carving(10), mode: 'revisit', verdict: 'still-good', cuts: undefined, chosen: undefined };
+    const k = knobs(fixture('still-good', answer), fixture('agree', confirmation(10, 'revisit', 'still-good', true)), { maxRevisitsPerGeneration: 0 });
+    expect((await carveIssue(ctx, issue10, k, io)).outcome).toBe('dlq');
+    io.removeLabel(10, 'loop/dlq: carve');
+    const lanes = ['Q2']; await makeDriver(ctx, k, lanes).revisit(10, 'person lifted carve DLQ');
+    expect(readTree(ctx, 10, io).record!.epoch).toBe(2);
+    expect(illegal(lanes)).toEqual([]);
+  });
+  test('an oversized release whose confirmer fails follows chart edges', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }, { name: 'size: 8' }] })]);
+    const lanes = ['C7']; const ctx = ctxFor(io);
+    await makeDriver(ctx, knobs(fixture('carve', carving(10)), fixture('invalid-confirmation', {})), lanes).releaseAppraisal(10);
+    
+    expect(illegal(lanes)).toEqual([]);
+  });
+  test('an interrupted applying record resumes in its own lane', async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    io.beforeWrite = op => { if (op.argv[1] === 'issue' && op.argv[2] === 'create') throw new Error('interrupted'); };
+    await expect(carveIssue(ctx, issue10, k, io)).rejects.toThrow();
+    io.beforeWrite = null;
+    const lanes = ['C4']; await makeDriver(ctx, k, lanes).revisit(10, 'finish applying');
+    
+    expect(illegal(lanes)).toEqual([]);
+  });
+  for (const oldSizeStillPresent of [true, false]) test(`interrupted release retains its outcome (old size present: ${oldSizeStillPresent})`, async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    await carveIssue(ctx, issue10, k, io);
+    for (const child of io.view(10)!.subIssues) io.close(child);
+    const record = readTree(ctx, 10, io).record!;
+    io.comment(10, BOT, renderRecord({ ...record, state: 'released', verdict: 'exhausted' }));
+    if (!oldSizeStillPresent) io.removeLabel(10, 'size: 8');
+    const lanes = ['C7'];
+    await makeDriver(ctx, k, lanes, fixture('remainder', { issue: 10, verdict: 'valid', points: 1, reason: 'small remainder' })).revisit(10, 'finish release');
+    
+    expect(lanes.at(-1)).toBe('B1');
+    expect(labels(io, 10)).not.toContain('loop/released');
+  });
+  for (const when of ['appraising', 'confirming'] as const) {
+    test(`release appraisal reconciles a hold added while ${when}`, async () => {
+      const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
+      const ctx = ctxFor(io); const lanes = ['C7'];
+      const k = knobs('', '');
+      const d = makeDriver(ctx, k, lanes, fixture('appraisal', { issue: 10, verdict: 'obsolete', reason: 'no longer needed' }), fixture('close', { issue: 10, agree: true, reason: 'agreed' }));
+      if (when === 'appraising') {
+        // A person posts the hold after the preflight read and before the verdict is applied.
+        const original = io.view.bind(io); let reads = 0;
+        io.view = n => { if (n === 10 && ++reads === 5) io.addLabel(10, 'needs-human'); return original(n); };
+      } else ctx.onLane = e => { lanes.push(e.lane); if (e.lane === 'A3') io.addLabel(10, 'needs-human'); };
+      await d.releaseAppraisal(10);
+      expect(io.view(10)!.state).toBe('OPEN');
+      expect(labels(io, 10)).toContain('needs-human');
+      
+      expect(lanes.at(-1)).toBe('H2');
+    });
+  }
+  test('the fixture engine supports the reproof seat used by resumes', async () => {
+    const ctx = ctxFor(trunk());
+    const result = await runAgent(ctx, 'worker-reprove', 10, join(scratch, 'reproof'), { engine: 'fixture', model: fixture('fixed', { issue: 10, verdict: 'fixed', pr: 7, reason: 'proved' }) }, 'reprove');
+    expect(result.exitCode).toBe(0);
+  });
 });
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });

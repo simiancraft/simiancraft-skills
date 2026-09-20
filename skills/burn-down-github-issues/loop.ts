@@ -59,6 +59,7 @@ type LoopKnobs = {
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
   checks: 'required' | 'none';
+  requiredChecks?: string[];
   smokeTimeoutMinutes: number;
   pointScale: number[];
   maxWorkerAttempts: number;
@@ -591,15 +592,10 @@ function placeFromTracker(issue: number, title: string, note: string): void {
   }
 }
 
-/** The open pull requests whose branch names the issue; none when the list cannot be read, which the log says. */
+/** The open pull requests whose branch names the issue. Throws when the list cannot be read: "unknown" is not "none", and the caller leaves the card where it is. */
 function pullsNaming(issue: number): Array<{ number: number; isDraft: boolean; merged: boolean }> {
-  try {
-    const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,isDraft,headRefName']);
-    return (JSON.parse(raw) as Array<{ number: number; isDraft: boolean; headRefName: string }>).filter((pr) => pr.headRefName.endsWith(`-${issue}`)).map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: false }));
-  } catch (error) {
-    log(`  #${issue} pull requests could not be read: ${(error as Error).message.split('\n')[0]}`);
-    return [];
-  }
+  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,isDraft,headRefName']);
+  return (JSON.parse(raw) as Array<{ number: number; isDraft: boolean; headRefName: string }>).filter((pr) => pr.headRefName.endsWith(`-${issue}`)).map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: false }));
 }
 
 const ctx = createContext({
@@ -609,6 +605,7 @@ const ctx = createContext({
     maxReviewRounds: CONFIG.maxReviewRounds,
     checksTimeoutMinutes: CONFIG.checksTimeoutMinutes,
     checks: CONFIG.checks,
+    requiredChecks: CONFIG.requiredChecks,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
     pointScale: CONFIG.pointScale,
     maxWorkerAttempts: CONFIG.maxWorkerAttempts,
@@ -885,15 +882,19 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
 }
 
 /**
- * The newest reason the loop itself left on the thread for stopping, which is the brief a redriven
- * worker gets. Null when the loop never stopped this work: the pull request only lost its driver,
- * and it is resumed from Proving with no objection to answer. A thread that cannot be read throws:
- * "unknown" is neither an objection nor the absence of one, and the caller leaves the card alone.
+ * The newest reason the loop itself left on the thread for stopping this pull request, which is
+ * the brief a redriven worker gets. Bound to the work in hand: only the loop's own comments, and
+ * only those written after this pull request was opened, since an issue's thread also holds the
+ * stops of earlier attempts that this pull request never met. Null when the loop never stopped
+ * this work: it only lost its driver, and it is resumed from Proving with no objection to answer.
+ * A thread that cannot be read throws: "unknown" is neither an objection nor the absence of one.
  */
-function lastObjection(issue: number): string | null {
+function lastObjection(issue: number, pull: number): string | null {
+  const opened = sh(ctx, ['gh', 'pr', 'view', String(pull), '--json', 'createdAt', '--jq', '.createdAt']).trim();
+  if (!opened) throw new Error(`pull request #${pull} has no creation time`);
   const raw = sh(ctx, [
     'gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq',
-    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""`,
+    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.createdAt > "${opened}") | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""`,
   ]);
   return raw.trim() || null;
 }
@@ -1266,7 +1267,7 @@ async function main(): Promise<void> {
         await waitForGo(`#${issue.number}`);
         let objection: string | null;
         try {
-          objection = lastObjection(issue.number);
+          objection = lastObjection(issue.number, pull.number);
         } catch (error) {
           log(`#${issue.number}  PR #${pull.number} not resumed this run: its thread could not be read (${(error as Error).message.split('\n')[0]})`);
           return;

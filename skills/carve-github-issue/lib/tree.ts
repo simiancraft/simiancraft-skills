@@ -442,7 +442,11 @@ export function intentsOf(node: Node, botLogin: string): Intent[] {
           // Consumed by the label, by the release appraisal that took the label off again (a size
           // label, a newer record, or a close), never resurrected by a later reopen.
           const newer = records.some((r) => r.comment.databaseId > c.databaseId);
-          const finished = labels.has('loop/released') || newer || node.state !== 'OPEN' || pointsOf(node.labels) !== null;
+          // A size is evidence only once the trunk labels are gone: the release takes the old size
+          // and then `loop/carved` off before anything else, so a size beside `loop/carved` is the
+          // old one surviving a crash, not the release appraisal's new one.
+          const stillCarved = labels.has('loop/carved') || [...labels].some((l) => l.startsWith('loop/carve-gen:'));
+          const finished = labels.has('loop/released') || newer || node.state !== 'OPEN' || (pointsOf(node.labels) !== null && !stillCarved);
           intents.push({ ...base, kind: 'released', generation: record.generation, payload: record, finished });
         }
         break;

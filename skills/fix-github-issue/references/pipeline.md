@@ -129,12 +129,15 @@ detects it: after the merge it compares the base commit the merge landed on with
 last saw, and when they differ it says so on the pull request and tells the driver
 (`unseenBase` on the merge event), so the walker checks that base first.
 
-An empty list of checks is never green, because checks register one at a time after a push and no
-amount of waiting turns "none seen" into "none exist". With `checks: 'required'`, the default, an
-empty list is waited out to the timeout and the landing is then a dead letter that names the knob;
-only `checks: 'none'` says the repository runs no checks on a pull request. A green list is believed
-only once every check suite GitHub has opened on the head is complete and the list has stayed the
-same for thirty seconds, so one fast check cannot stand in for a slower one still registering.
+An observation of the checks is never proof of the whole list: they register one at a time after
+a push, so neither an empty list, nor a short green one, nor one that has stopped changing says
+that nothing else is coming. What complete looks like is therefore named: by `requiredChecks` in
+the config, or else by the checks the reviewed head carried, which had the length of a review to
+register. A landing waits until every expected check is present and green on the landing head,
+every other check shown is green, and no check suite GitHub has opened on the head is incomplete;
+suite data that cannot be read is waited on, never assumed. With nothing to name the expected
+checks the landing is a dead letter that says so. Only `checks: 'none'` says the repository runs no
+checks on a pull request, and every wait ends at `checksTimeoutMinutes`.
 
 ## Staying current, and when proof goes stale
 

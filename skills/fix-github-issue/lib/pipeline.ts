@@ -236,6 +236,7 @@ function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, 
   mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', body]);
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
   say('the second engine disputed the close; handed to a person');
+  move(ctx, issue, 'H2', `close disputed: ${confirmation.reason}`.slice(0, 120));
   return { outcome: 'handed-off', reason: `close disputed: ${confirmation.reason}` };
 }
 
@@ -375,25 +376,35 @@ function isDraft(ctx: Context, pr: number): boolean {
  * Returns null when every check passed (or the repository runs none), otherwise a refusal reason.
  * Unknown states fail closed; a merge with a failing or unfinished build is never allowed.
  */
-/** How long a green list of checks must stay the same before it is believed to be the whole list. */
-const CHECKS_SETTLE_MS = 30_000;
-
 /**
  * Waits for the checks of `expect.sha`, the head that would land. Checks register one at a time
- * after a push, so neither an empty list nor a short one proves anything by itself, and no amount
- * of waiting turns "none seen" into "none exist". The rules, all of which fail closed:
+ * after a push, so an observation of the list is never proof of the whole list: neither an empty
+ * list, nor a short green one, nor one that has stopped changing. What "all of them" means has to
+ * come from somewhere that is not this moment's view. The rules, all of which fail closed:
  *
- * - An empty list is never green. Only `checks: 'none'` in the config says the repository runs no
- *   checks; without it an empty list is waited out to the timeout and then refused by name.
- * - A green list is believed only once every check suite GitHub has opened on the head is
- *   complete, and the list has then stayed the same for a settling period, so one fast check
- *   cannot stand in for a slower one that has not registered yet.
+ * - The expected checks are named: by `requiredChecks` in the config, or else by the checks the
+ *   reviewed head carried, which had the length of a review to register. With neither, nothing
+ *   says what complete looks like and the landing is refused by name. Only `checks: 'none'` says
+ *   the repository runs no checks on a pull request.
+ * - Every expected check must be present and green on the landing head, every other check present
+ *   must be green too, and no check suite GitHub has opened on the head may be incomplete. Suite
+ *   data that cannot be read is waited on, never assumed complete.
  */
+/**
+ * The names of the checks and statuses a commit carries. For the reviewed head this is the
+ * expected set of a landing: it had the length of a review to register all of them.
+ */
+function checkNamesOn(ctx: Context, sha: string): string[] {
+  const runs = JSON.parse(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-runs`, '--paginate', '--jq', '[.check_runs[].name]'])) as string[];
+  const statuses = JSON.parse(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/statuses`, '--jq', '[.[].context]'])) as string[];
+  return [...new Set([...runs, ...statuses])];
+}
+
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
   say: (message: string) => void,
-  expect?: { sha: string },
+  expect?: { sha: string; names?: string[] },
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<string | null> {
@@ -411,21 +422,25 @@ export async function awaitGreenChecks(
 
   const deadline = io.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
   const wait = async (why: string, ms: number): Promise<string | null> => {
-    if (io.now() >= deadline) return `${why}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
+    const left = deadline - io.now();
+    if (left <= 0) return `${why}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
     say(`${why}; waiting`);
-    await io.sleep(Math.max(1_000, Math.min(ms, deadline - io.now())));
+    await io.sleep(Math.min(ms, left));
     return null;
   };
-  /** Suites GitHub has opened on the head that are not complete; unreadable counts as none, and the settling period covers it. */
-  const openSuites = (sha: string): number => {
+  /** Suites GitHub has opened on the head that are not complete, whether or not a run has registered in them yet; null when it cannot be read. */
+  const openSuites = (sha: string): number | null => {
     try {
-      const n = Number(io.read(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-suites`, '--jq', '[.check_suites[] | select(.status != "completed" and .latest_check_runs_count > 0)] | length']));
-      return Number.isFinite(n) ? n : 0;
+      const n = Number(io.read(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-suites`, '--jq', '[.check_suites[] | select(.status != "completed")] | length']));
+      return Number.isFinite(n) ? n : null;
     } catch {
-      return 0;
+      return null;
     }
   };
-  let settled = { names: '', since: io.now() };
+  const expected = [...new Set([...(ctx.knobs.requiredChecks ?? []), ...(expect?.names ?? [])])];
+  if (expect && ctx.knobs.checks !== 'none' && expected.length === 0) {
+    return "nothing names the checks this landing must pass: the reviewed head carried none and the config lists no requiredChecks (a repository that runs no checks says so with checks: 'none')";
+  }
   for (;;) {
     const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
     const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
@@ -435,12 +450,7 @@ export async function awaitGreenChecks(
       if (gaveUp) return gaveUp;
       continue;
     }
-    if (rollup.length === 0) {
-      if (ctx.knobs.checks === 'none' || !expect) return null;
-      const gaveUp = await wait("no check has registered for the landing head (a repository that runs no checks says so with checks: 'none')", 15_000);
-      if (gaveUp) return gaveUp;
-      continue;
-    }
+    if (rollup.length === 0 && (ctx.knobs.checks === 'none' || !expect)) return null;
 
     const failed = rollup.filter((c) => classify(c) === 'failed');
     if (failed.length > 0) {
@@ -449,19 +459,24 @@ export async function awaitGreenChecks(
 
     const pending = rollup.filter((c) => classify(c) === 'pending');
     if (pending.length > 0) {
-      settled = { names: '', since: io.now() };
-      const gaveUp = await wait(`${pending.length} unfinished check(s): ${pending.map(nameOf).join(', ')}`, 30_000);
-      if (gaveUp) return gaveUp.replace(/^\d+ unfinished check\(s\): /, 'checks still unfinished: ');
+      const gaveUp = await wait(`checks still unfinished: ${pending.map(nameOf).join(', ')}`, 30_000);
+      if (gaveUp) return gaveUp;
       continue;
     }
 
-    // Every check in the list is green. Believe the list only when nothing else is still coming.
+    // Everything visible is green. It is the whole list only when every expected check is in it
+    // and nothing GitHub has opened on this head is still running or still to register.
     if (!expect) return null;
+    const present = new Set(rollup.map(nameOf));
+    const missing = expected.filter((name) => !present.has(name));
+    if (missing.length > 0) {
+      const gaveUp = await wait(`expected check(s) have not registered on the landing head: ${missing.join(', ')}`, 15_000);
+      if (gaveUp) return gaveUp;
+      continue;
+    }
     const open = openSuites(expect.sha);
-    const names = rollup.map(nameOf).sort().join('|');
-    if (open > 0 || settled.names !== names) settled = { names, since: io.now() };
-    if (open === 0 && io.now() - settled.since >= CHECKS_SETTLE_MS) return null;
-    const gaveUp = await wait(open > 0 ? `${open} check suite(s) on the landing head have not finished` : 'the checks are green; making sure no other check is still registering', CHECKS_SETTLE_MS);
+    if (open === 0) return null;
+    const gaveUp = await wait(open === null ? 'the check suites of the landing head cannot be read' : `${open} check suite(s) on the landing head have not finished`, 15_000);
     if (gaveUp) return gaveUp;
   }
 }
@@ -620,6 +635,8 @@ async function land(
   cwd: string,
   say: (message: string) => void,
   ceiling: number = DEFAULT_MAX_POINTS,
+  /** False when a rejection here would spend the issue's last review round. */
+  revisionFollows = true,
 ): Promise<Landing> {
   const { review: verdict, reviewedSha } = reviewed;
 
@@ -632,6 +649,9 @@ async function land(
   // `gather-more` says the evidence is short; `block` says the change is. Both spend a round, both
   // go back to the author, and the per-issue budget bounds the retries with the DLQ underneath.
   if (verdict.decision === 'block' || verdict.decision === 'gather-more') {
+    // The rejection that spends the last round is followed by no revision: the pull request stays
+    // ready for the person who reads the dead letter, and nothing is caught up for nobody.
+    if (!revisionFollows) return 'revise';
     // Back to draft before anything is pushed: the catch-up below and the revision pushes that
     // follow must not each spend a CI run on a pull request still marked ready.
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
@@ -679,6 +699,8 @@ async function land(
   // head that would land, and then looks upstream once more: checks, smoke, and a paused line can
   // each take long enough for another merge to land, and a head that lacks it must not merge.
   let landingSha = reviewedSha;
+  // What complete looks like, read before anything moves the head: the checks the reviewed head carried.
+  const expectedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : checkNamesOn(ctx, reviewedSha);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
   for (let pass = 0; ; pass++) {
@@ -715,10 +737,11 @@ async function land(
     // in Smoke or Merging lacking the base, and a stale one goes straight back to the catch-up.
     const lookUpstream = (after: string): 'fresh' | 'again' | { dlq: string } => {
       if (ctx.dryRun) return 'fresh';
-      if (behindBase(ctx, cwd).length === 0) {
-        // Remembered here, at the look, because the remote-tracking ref is shared with every
-        // other lane and any of them may fetch again before this one merges.
-        baseSeen = sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd);
+      // The commit fetched is the commit compared and the commit remembered. The remote-tracking
+      // ref is shared with every other lane, so reading it again could name a commit never checked.
+      const checked = fetchBase(ctx, cwd);
+      if (behindBase(ctx, cwd, checked).length === 0) {
+        baseSeen = checked;
         return 'fresh';
       }
       if (pass >= MAX_BASE_REFRESHES) {
@@ -729,7 +752,7 @@ async function land(
     };
 
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
-    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha });
+    const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: expectedChecks });
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };
@@ -1018,14 +1041,16 @@ async function workIssue(
   const result = await runWorker(ctx, issue, cwd, maxPoints);
   say(`verdict: ${result.verdict}; ${result.reason}`);
 
+  // The pull request this work has, resolved once for every settlement below. A worker that died
+  // after opening one, or a verdict that closes the issue, names none, so the tracker is asked. A
+  // list that cannot be read throws, and the throw keeps the lane: unknown is not "none".
+  const pr = result.verdict === 'fixed' ? result.pr : (result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
-    // A worker that died after opening its pull request reports none, so the tracker is asked.
-    // A list that cannot be read throws, and the throw keeps the lane: unknown is not "none".
-    return countFailure(ctx, issue, result.reason, say, result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
+    return countFailure(ctx, issue, result.reason, say, pr);
   }
-  const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say);
-  if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, result.pr) : settled;
+  const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
+  if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pr) : settled;
 
   if (result.pr) move(ctx, issue, 'E1', `PR #${result.pr} ready for review`);
   return reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
@@ -1062,6 +1087,11 @@ export async function reviewAndLand(
   // Why the work stopped, carried to the park comment so the reason lives on the issue rather
   // than only in this run's log. Only a person's call parks; a machine's failure is a dead letter.
   let parkReason = 'the loop worked this issue and could not finish the call';
+  // A budget already spent when the work arrives here (a resume, a redrive nobody reset) is the
+  // review queue's, as it is when the last round is spent below: a machine's limit, not a person's call.
+  if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun) {
+    return deadLetter(ctx, issue, 'review', `The review budget of ${consumed} rounds was already spent when this pull request came back for review.`, say, result.pr);
+  }
   while (consumed < ctx.knobs.maxReviewRounds) {
     if (!result.pr) return deadLetter(ctx, issue, 'work', 'The worker reported a fix but named no pull request.', say);
     const pr = result.pr;
@@ -1105,7 +1135,7 @@ export async function reviewAndLand(
     if ('dlq' in reviewed) return deadLetter(ctx, issue, reviewed.dlq, reviewed.reason, say, pr);
 
     // Merging happens there, one branch at a time, because the base branch is shared.
-    const outcome = await serializePullMaster(ctx, async () => land(ctx, issue, pr, touches, reviewed, cwd, say, ceiling));
+    const outcome = await serializePullMaster(ctx, async () => land(ctx, issue, pr, touches, reviewed, cwd, say, ceiling, consumed + 1 < ctx.knobs.maxReviewRounds));
     if (outcome === 'merged') return { outcome: 'merged', reason: `merged pull request #${pr}` };
 
     // The base reached this work while the review was running. That is upstream churn, not a defect
@@ -1264,15 +1294,23 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  */
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
-  // This pipeline visits Confirming close only for a worker's own close, so a throw there is
-  // still the worker's failure; the appraisal and carve queues belong to their own drivers.
-  const owner = phaseOfLane(lane);
-  const phase = owner === 'appraisal' || owner === 'carve' ? 'work' : owner;
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
+  // After the merge there is nothing to retry and nothing to queue: the change landed. The run
+  // start reconciles a merged pull request against an open issue, so the card stays where it is.
+  if (lane?.startsWith('T')) {
+    say(`${reason}. The change had already landed; the next run start reconciles the issue with its merged pull request`);
+    return { outcome: { outcome: 'merged', reason: `${reason} (after the merge)` }, keepLane: false };
+  }
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
   try {
     const pr = knownPr ?? openPullFor(ctx, issue.number);
+    // With no lane remembered (the driver placed the card; this pipeline had not moved it yet), the
+    // pull request says which phase the card was in: a draft is still Work's, a ready one is Review's.
+    const owner = lane ? phaseOfLane(lane) : pr && !isDraft(ctx, pr) ? 'review' : 'work';
+    // This pipeline visits Confirming close only for a worker's own close, so a throw there is
+    // still the worker's failure; the appraisal and carve queues belong to their own drivers.
+    const phase = owner === 'appraisal' || owner === 'carve' ? 'work' : owner;
     const outcome = pr || phase !== 'work' ? deadLetter(ctx, issue, phase, reason, say, pr) : countFailure(ctx, issue, reason, say);
     return { outcome, keepLane: false };
   } catch (second) {

@@ -6,6 +6,7 @@
  * to call it and what to do with the answer.
  */
 
+import { placeByFacts } from './board-writer.ts';
 import { appraiseIssue, recordAppraisalThrow, type AppraiseKnobs, isHeld } from '../../appraise-github-issues/lib/appraise.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import type { CarveKnobs } from '../../carve-github-issue/lib/carve.ts';
@@ -42,14 +43,37 @@ const SWEEP_LABELS = ['loop/carved', 'loop/released', 'loop/handed-off', 'loop/c
  * ran (To carve for a fresh cut, Epic for a revisit): a verdict that changed nothing, a failure
  * short of the cap, and a claim held elsewhere all leave it there.
  */
-function laneOf(outcome: string, atRest: 'C1' | 'C5'): string {
-  if (outcome === 'carve' || outcome === 'amend' || outcome === 'resumed' || outcome === 'still-good') return 'C5';
+/**
+ * The lane an outcome names outright. Null for every outcome that names none (a failed turn, a
+ * trunk left alone, a busy one, a resumed announcement, a throw): there the tracker says where
+ * the card rests, and a guess would show progress that did not happen.
+ */
+function laneOf(outcome: string): string | null {
+  if (outcome === 'carve' || outcome === 'amend' || outcome === 'still-good') return 'C5';
   if (outcome === 'exhausted') return 'C7';
   if (outcome === 'too-uncertain') return 'H1';
   // The carver's opinions about the issue all take `needs-human`, so the card rests where the label does.
   if (outcome === 'indivisible' || outcome === 'nothing-left' || outcome === 'small-enough') return 'H2';
   if (outcome === 'dlq') return 'Q2';
-  return atRest;
+  return null;
+}
+
+/** Where a trunk's card rests by the tracker's own facts, its carving record included. */
+function restingLane(tree: Tree, ceiling: number, runId: string): { lane: string; why: string } {
+  if (tree.record?.state === 'applying' && tree.issue.state === 'OPEN') return { lane: 'C4', why: `generation ${tree.record.generation} is still being applied` };
+  const now = Date.now();
+  const foreign = tree.claims.find((c) => !c.released && Date.parse(c.expires) > now && c.runId !== runId);
+  return placeByFacts({
+    state: tree.issue.state === 'OPEN' ? 'OPEN' : 'CLOSED',
+    labels: tree.issue.labels.map((l) => l.name),
+    pulls: [],
+    points: pointsOf(tree.issue.labels) ?? undefined,
+    ceiling,
+    blocked: tree.blockers.some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED')),
+    openChildren: tree.children.some((c) => c.state === 'OPEN'),
+    claimedBy: foreign?.runId,
+    pausedAbove: tree.ancestors.some((a) => a.labels.includes('loop/paused')),
+  });
 }
 
 function issueOf(tree: Tree): Issue {
@@ -92,18 +116,38 @@ export class Carving {
     const io = trackerIo(ctx);
     const tree = readTree(ctx, number, io);
     const issue = issueOf(tree);
-    // A trunk with a live record is revisited; anything else handed to the knife is a first carving.
-    // The knife moves the card from here as it works (Confirming cut, Spawning children).
-    mark(number, issue.title, tree.record?.state === 'live' ? 'C6' : 'C2', why);
+    // The card enters the lane of the work about to happen: an announced generation is finished
+    // in Spawning children, a trunk that already has a record or children is visited in
+    // Revisiting, and anything else is a first carving. The knife moves the card as it works.
+    const visiting = tree.record?.state === 'live' || tree.children.some((c) => c.state === 'OPEN');
+    mark(number, issue.title, tree.record?.state === 'applying' ? 'C4' : visiting ? 'C6' : 'C2', why);
     let outcome: Awaited<ReturnType<typeof carveIssue>>;
     try {
       outcome = await carveIssue(ctx, issue, knobs, io);
     } catch (error) {
-      mark(number, issue.title, 'C5', `revisit threw: ${(error as Error).message}`.slice(0, 80));
+      this.rest(number, issue.title, `the knife threw: ${(error as Error).message}`);
       throw error;
     }
-    mark(number, issue.title, laneOf(outcome.outcome, 'C5'), outcome.reason.slice(0, 80));
+    this.settle(number, issue.title, outcome);
     if (outcome.outcome === 'exhausted') await this.releaseAppraisal(number);
+  }
+
+  /** The card follows the outcome where it names a lane, and the tracker where it does not. */
+  private settle(number: number, title: string, outcome: { outcome: string; reason: string }): void {
+    const lane = laneOf(outcome.outcome);
+    if (lane) this.deps.mark(number, title, lane, outcome.reason.slice(0, 80));
+    else this.rest(number, title, outcome.reason);
+  }
+
+  /** Places the card from the tracker's facts; a tracker that cannot be read leaves it where it is. */
+  private rest(number: number, title: string, note: string): void {
+    const { ctx, knobs, mark, log } = this.deps;
+    try {
+      const placed = restingLane(readTree(ctx, number, trackerIo(ctx)), knobs.ceiling, ctx.runId);
+      mark(number, title, placed.lane, `${note}; ${placed.why}`.slice(0, 80));
+    } catch (error) {
+      log(`#${number} could not be placed from the tracker: ${(error as Error).message.split('\n')[0]}`);
+    }
   }
 
   /**
@@ -145,12 +189,13 @@ export class Carving {
             mark(number, issue.title, counted.deadLetter ? 'Q1' : 'C7', `release appraisal: ${counted.reason}`.slice(0, 80));
             throw error;
           }
-          mark(
-            number,
-            issue.title,
-            outcome.deadLetter ? 'Q1' : outcome.retry ? 'C7' : outcome.verdict === 'valid' ? ((outcome.points ?? 0) > knobs.ceiling ? 'C1' : 'B1') : outcome.verdict === 'needs-decision' ? 'H1' : outcome.verdict === 'needs-human' || outcome.close === 'disputed' || outcome.close === 'unconfirmed' ? 'H2' : 'T2',
-            `release appraisal: ${outcome.reason}`.slice(0, 80),
-          );
+          // An appraisal that stopped because the trunk changed under it (a hold, a claim, a close)
+          // names no lane, and one that must be tried again leaves the trunk rolling up.
+          if (outcome.changed) this.rest(number, issue.title, `release appraisal: ${outcome.reason}`);
+          else {
+            const lane = outcome.deadLetter ? 'Q1' : outcome.retry ? 'C7' : outcome.verdict === 'valid' ? ((outcome.points ?? 0) > knobs.ceiling ? 'C1' : 'B1') : outcome.verdict === 'needs-decision' ? 'H1' : outcome.verdict === 'needs-human' || outcome.close === 'disputed' ? 'H2' : outcome.close === 'confirmed' || outcome.close === 'skipped' ? 'T2' : 'C7';
+            mark(number, issue.title, lane, `release appraisal: ${outcome.reason}`.slice(0, 80));
+          }
           if (outcome.verdict !== 'valid') return;
           continue;
         }
@@ -159,8 +204,16 @@ export class Carving {
           // The knife claims for itself; this claim steps aside for it and is retaken after.
           stop();
           handle.release();
-          const outcome = await carveIssue(ctx, issue, knobs, io);
-          mark(number, issue.title, laneOf(outcome.outcome, 'C1'), outcome.reason.slice(0, 80));
+          // The remainder is oversized, so it is To carve before the knife takes it.
+          mark(number, issue.title, 'C1', `released at ${points}, over the ceiling of ${knobs.ceiling}`);
+          let outcome: Awaited<ReturnType<typeof carveIssue>>;
+          try {
+            outcome = await carveIssue(ctx, issue, knobs, io);
+          } catch (error) {
+            this.rest(number, issue.title, `the knife threw: ${(error as Error).message}`);
+            throw error;
+          }
+          this.settle(number, issue.title, outcome);
           if (outcome.outcome !== 'carve' && outcome.outcome !== 'resumed') return;
           handle = await claim(ctx, io, number, 'carving');
           if (handle === 'busy') return;

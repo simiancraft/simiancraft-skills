@@ -169,7 +169,8 @@ describe('the machine and the lane table agree', () => {
         // A person's redrive continues the pull request: catch up first, then the revision, or
         // re-derive from facts when there is no pull request to continue.
         (event === 'REDRIVEN' && ['ticket.landing.catchingUp', 'ticket.work.sentBack', 'ticket.reconcile'].includes(transition.target)) ||
-        (from === 'ticket.deadLetters.work' && transition.target === 'ticket.carving.toCarve') ||
+        // Work with a pull request is carried on from the catch-up, never started over.
+        (from === 'ticket.deadLetters.work' && ['ticket.carving.toCarve', 'ticket.landing.catchingUp'].includes(transition.target)) ||
         // A retried rejection is a revision, reached through the catch-up when the lane is behind.
         (from === 'ticket.deadLetters.review' && ['ticket.work.sentBack', 'ticket.landing.catchingUp'].includes(transition.target));
       expect(ok, `${from} on ${event} exits to ${transition.target}`).toBe(true);

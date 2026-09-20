@@ -150,9 +150,10 @@ export function recordCount(ctx: Context, kind: Counter, issue: number, previous
  */
 export function clearCount(ctx: Context, kind: Counter, issue: number): void {
   const prefix = `loop/${kind}:`;
-  const current = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name'])
-    .split('\n')
-    .filter((name) => name.startsWith(prefix));
+  // Read through the context's tracker when it has one, so a fake tracker under test is the one read.
+  const viewed = ctx.io?.view?.(issue) as { labels?: Array<{ name: string }> } | null | undefined;
+  const names = ctx.io?.view ? (viewed?.labels ?? []).map((l) => l.name) : sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name']).split('\n');
+  const current = names.filter((name) => name.startsWith(prefix));
   for (const label of current) {
     mutate(ctx, `clear ${label} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
   }

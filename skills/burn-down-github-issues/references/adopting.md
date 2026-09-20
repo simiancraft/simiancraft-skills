@@ -56,8 +56,8 @@ export default {
   } satisfies ProjectConfig,
   // Optionally override any loop knob here: ageDays, maxPoints, autoMerge, maxReviewRounds,
   // checksTimeoutMinutes (how long the pull master waits on checks), checks ('required', the default,
-  // or 'none' for a repository that runs no checks on a pull request; an empty list of checks is
-  // never green otherwise),
+  // or 'none' for a repository that runs no checks on a pull request), requiredChecks (the
+  // names a landing must show green; without it, the checks the reviewed head carried),
   // smokeTimeoutMinutes,
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and

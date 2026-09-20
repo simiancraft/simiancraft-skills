@@ -23,7 +23,7 @@ function context(io: FakeTracker): Context {
     botLogin: bot, runId: 'review-host-1-1', dryRun: false, dryRunLog: [], io,
     repoRoot: scratch, invokeRoot: scratch, runDir: join(scratch, 'runs'), promptsDirs: [],
     project: { repo: 'o/r', baseBranch: 'main', remote: 'origin', worktreeRoot: '../wt' },
-    knobs: { checks: 'auto', checksTimeoutMinutes: 10, maxWorkerAttempts: 3, pointScale: [1, 2, 3, 5, 8] },
+    knobs: { checks: 'required', checksTimeoutMinutes: 10, maxWorkerAttempts: 3, pointScale: [1, 2, 3, 5, 8] },
     seats: { worker: { engine: 'fixture' }, reviewer: { engine: 'fixture2' } }, log: noop, step: noop,
   } as unknown as Context;
 }
@@ -217,7 +217,7 @@ function loadFunctions(path: string, names: string[], deps: Record<string, unkno
 describe('private failure routing, loaded in memory', () => {
   it('an unreadable objection is unknown, not evidence that nobody objected', () => {
     const api = loadFunctions('../loop.ts', ['lastObjection'], { ctx: { botLogin: bot }, sh: () => { throw new Error('tracker unavailable'); } });
-    expect(() => api.lastObjection(1)).toThrow();
+    expect(() => api.lastObjection(1, 7)).toThrow();
   });
   it('placement from tracker honors a live foreign claim', () => {
     const io = new FakeTracker(bot, [fakeIssue(1, { labels: [{ name: 'size: 1' }] })]); const ctx = context(io);
@@ -231,7 +231,7 @@ describe('private failure routing, loaded in memory', () => {
     const api = loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['phaseOfLane', 'move', 'recordThrow'], {
       deadLetter: (_ctx: unknown, _issue: unknown, phase: string) => { routes.push(phase); return { outcome: 'dlq' }; },
       openPullFor: () => 7, countFailure: () => { throw new Error('unexpected counter'); },
-    }, 'const lastLane = new Map();\nconst laneKeyOf = (ctx, issue) => `${ctx.project?.repo ?? ""}#${issue}`;\n');
+    }, 'const lastLane = new Map();\n' + readFileSync(new URL('../../fix-github-issue/lib/pipeline.ts', import.meta.url), 'utf8').match(/^const laneKeyOf = .*;$/m)![0] + '\n');
     const a = { project: { repo: 'a/r' } }; const b = { project: { repo: 'b/r' } }; const issue = { number: 1 };
     api.move(a, issue, 'F3'); api.move(b, issue, 'E2'); api.recordThrow(a, issue, new Error('checks read'), noop, 7);
     expect(routes).toEqual(['landing']);
@@ -249,5 +249,176 @@ describe('private failure routing, loaded in memory', () => {
     const api = loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['review'], { isDraft: () => false, dirtyPaths: () => ['uncommitted.ts'] });
     const result = await api.review({}, { number: 1 }, 7, '/fake', noop, 1); expect(result.dlq).toBe('work');
     expect(successors(laneState('E1'), { ownEventsOnly: true }).has(laneState('Q3'))).toBe(true);
+  });
+});
+
+describe('incomplete observations are not permission', () => {
+  for (const suites of ['unreadable', 'zero-runs', 'late-suite'] as const) {
+    it(`does not outrun the integration job when suites are ${suites}`, async () => {
+      let clock = 0;
+      const ctx = context(new FakeTracker(bot));
+      const io = {
+        now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        read: (argv: string[]) => {
+          if (argv[1] === 'api') {
+            if (suites === 'unreadable') throw new Error('suite read unavailable');
+            // Execute the filter requested by the production function on a modeled suite.
+            const suite = { status: 'queued', latest_check_runs_count: 0 };
+            if (suites === 'late-suite') return '0';
+            const excludesEmpty = argv.at(-1)!.includes('.latest_check_runs_count > 0');
+            return String(suite.status !== 'completed' && (!excludesEmpty || suite.latest_check_runs_count > 0) ? 1 : 0);
+          }
+          return JSON.stringify({ headRefOid: 'h', statusCheckRollup: [
+            { name: 'lint', conclusion: 'SUCCESS' },
+            ...(clock >= 60_000 ? [{ name: 'integration', conclusion: 'FAILURE' }] : []),
+          ] });
+        },
+      };
+      const result = await awaitGreenChecks(ctx, 1, noop, { sha: 'h' }, io);
+      
+      expect(result).not.toBeNull();
+    });
+  }
+  it('does not exceed a fractional timeout by rounding the final wait up', async () => {
+    let clock = 0; const ctx = context(new FakeTracker(bot)); ctx.knobs.checksTimeoutMinutes = 0.501;
+    await awaitGreenChecks(ctx, 1, noop, { sha: 'h' }, {
+      now: () => clock, sleep: async ms => { clock += ms; },
+      read: () => JSON.stringify({ headRefOid: 'h', statusCheckRollup: [] }),
+    });
+    expect(clock).toBeLessThanOrEqual(30_060);
+  });
+  it('keeps a card in place when its PR list cannot be read', () => {
+    const io = new FakeTracker(bot, [fakeIssue(1, { labels: [{ name: 'size: 1' }] })]);
+    const placements: string[] = [];
+    const api = loadFunctions('../loop.ts', ['placeFromTracker', 'pullsNaming'], {
+      DRY_RUN: false, ctx: context(io), trackerIo: () => io, readTree, placeByFacts,
+      sh: () => { throw new Error('PR list unavailable'); }, pointsFromLabels: () => 1, MAX_POINTS: 2,
+      place: (_n: unknown, _t: unknown, lane: string) => placements.push(lane), log: noop,
+    });
+    api.placeFromTracker(1, 'existing PR', 'changed while appraising');
+    expect(placements).toEqual([]);
+  });
+});
+
+describe('runtime moves and settlement', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
+  for (const initial of ['E1', 'D3']) it(`a resumed ${initial} card with a historical objection has a chart route to its revision`, async () => {
+    let lane = initial; const edges: string[] = [];
+    const api = loadFunctions(pipeline, ['redriveIssue'], {
+      DEFAULT_MAX_POINTS: 2, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
+      claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
+      inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
+      runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
+        const next = reproof ? 'D2' : 'D4'; if (!legal(lane, next)) edges.push(`${lane}->${next}`); lane = next;
+        return { verdict: 'failed', reason: 'stop after recording the seat' };
+      }, countFailure: () => ({ outcome: 'dlq' }), removeWorktree: noop,
+    });
+    await api.redriveIssue(context(new FakeTracker(bot)), { number: 1, title: 'issue' }, { number: 7, branch: 'fix-1' }, 'An old bot park comment from before this PR');
+    expect(edges).toEqual([]);
+  });
+  it('a stale rejection at the last review round has a legal DLQ edge', async () => {
+    let lane = 'E1'; const edges: string[] = [];
+    const move = (_ctx: unknown, _issue: unknown, next: string) => { if (!legal(lane, next)) edges.push(`${lane}->${next}`); lane = next; };
+    const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
+    const api = loadFunctions(pipeline, ['reviewAndLand'], {
+      reviewCount: () => 2, sh: () => 'h', catchUp: () => null, move,
+      review: async () => { move(null, null, 'E2'); return { review: { decision: 'block', blocking: ['fix defect'] }, reviewedSha: 'h' }; },
+      serializePullMaster: (_ctx: unknown, action: () => unknown) => action(),
+      land: async () => { move(null, null, 'F2'); return 'revise'; },
+      recordReview: () => 3,
+      deadLetter: (_ctx: unknown, _issue: unknown, phase: string) => { move(null, null, phase === 'review' ? 'Q4' : 'Q5'); return { outcome: 'dlq' }; },
+    });
+    await api.reviewAndLand(ctx, { number: 1, labels: [] }, '/fake', { pr: 7 }, 2, noop);
+    expect(edges).toEqual([]);
+  });
+  it('an exhausted review budget is a machine DLQ even on re-entry', async () => {
+    let parked = false; const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
+    const api = loadFunctions(pipeline, ['reviewAndLand'], {
+      reviewCount: () => 3, parkIssue: () => { parked = true; }, mutate: noop, move: noop,
+      deadLetter: () => ({ outcome: 'dlq' }),
+    });
+    const result = await api.reviewAndLand(ctx, { number: 1, labels: [{ name: 'loop/reviews: 3' }] }, '/fake', { pr: 7 }, 2, noop);
+    expect({ outcome: result.outcome, parked }).toEqual({ outcome: 'dlq', parked: false });
+  });
+  it('the first worker passes its existing PR to terminal settlement', async () => {
+    let pr: number | undefined;
+    const api = loadFunctions(pipeline, ['workIssue'], {
+      runWorker: async () => ({ verdict: 'obsolete', reason: 'now obsolete', pr: 7 }),
+      settleTerminalVerdict: async (_ctx: unknown, _issue: unknown, _result: unknown, _ceiling: unknown, _say: unknown, known?: number) => { pr = known; return { outcome: 'closed' }; },
+    });
+    await api.workIssue({}, { number: 1 }, '/fake', 2, 2, noop); expect(pr).toBe(7);
+  });
+  it('a first worker close with no PR in its verdict still discovers a PR before failed-confirmation settlement', async () => {
+    let pr: number | undefined;
+    const api = loadFunctions(pipeline, ['workIssue'], {
+      runWorker: async () => ({ verdict: 'obsolete', reason: 'now obsolete' }),
+      settleTerminalVerdict: async () => ({ outcome: 'failed', reason: 'no usable confirmer' }),
+      openPullFor: () => 7,
+      countFailure: (_ctx: unknown, _issue: unknown, _reason: unknown, _say: unknown, known?: number) => { pr = known; return { outcome: known ? 'dlq' : 'failed' }; },
+    });
+    await api.workIssue({}, { number: 1 }, '/fake', 2, 2, noop); expect(pr).toBe(7);
+  });
+  it('a disputed worker close reports the human lane', () => {
+    const lanes: string[] = [];
+    const api = loadFunctions(pipeline, ['parkWithBothOpinions'], { mutate: noop, move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane) });
+    api.parkWithBothOpinions({}, { number: 1 }, { verdict: 'obsolete', reason: 'worker' }, { reason: 'confirmer disagrees' }, noop);
+    expect(lanes).toEqual(['H2']);
+  });
+  it('revision proof reports are chart events, too', () => {
+    const prompt = readFileSync(new URL('../../fix-github-issue/prompts/triage-and-fix.md', import.meta.url), 'utf8');
+    expect(prompt).toContain('{{CARD_PROVING}}');
+    expect(legal('D4', 'D2')).toBe(true);
+  });
+  it('work DLQ retry with an existing stale ready PR never starts a first worker', () => {
+    const w = new World(); w.base.push(['shared.ts']); w.decision = 'retry';
+    const result = fire(laneState('Q3'), 'TRIAGED', w.facts)!;
+    expect(result.actions).not.toContain('runWorker');
+    expect(laneKey(result.state)).toBe('F2');
+  });
+  it('a resumed card reported in E1 keeps its phase when the first fetch throws', () => {
+    const routes: string[] = [];
+    const api = loadFunctions(pipeline, ['phaseOfLane', 'recordThrow'], {
+      deadLetter: (_ctx: unknown, _issue: unknown, phase: string) => { routes.push(phase); return { outcome: 'dlq' }; },
+      openPullFor: () => 7, isDraft: () => false,
+    }, 'const lastLane = new Map();\n' + readFileSync(new URL(pipeline, import.meta.url), 'utf8').match(/^const laneKeyOf = .*;$/m)![0] + '\n');
+    const ctx = context(new FakeTracker(bot));
+    let actualLane = 'E1'; ctx.onLane = event => { actualLane = event.lane; };
+    // loop.ts places a stranded card without calling pipeline.move().
+    ctx.onLane({ issue: 1, title: 'resuming', lane: 'E1' });
+    api.recordThrow(ctx, { number: 1 }, new Error('fetch failed before the first pipeline move'), noop, 7);
+    expect(actualLane).toBe('E1'); expect(routes).toEqual(['review']);
+  });
+  it('a tracker exception after a confirmed merge cannot return the card to Ready', () => {
+    const lanes: string[] = [];
+    const api = loadFunctions(pipeline, ['phaseOfLane', 'move', 'countFailure', 'recordThrow'], {
+      openPullFor: () => undefined, recordAttempt: () => 1, attemptCount: () => 0,
+    }, 'const lastLane = new Map();\n' + readFileSync(new URL(pipeline, import.meta.url), 'utf8').match(/^const laneKeyOf = .*;$/m)![0] + '\n');
+    const ctx = context(new FakeTracker(bot)); ctx.onLane = event => lanes.push(event.lane);
+    const issue = { number: 1, title: 'merged but not closed yet', labels: [] };
+    api.move(ctx, issue, 'T1');
+    api.recordThrow(ctx, issue, new Error('the post-merge live gate could not read the issue'), noop);
+    expect(lanes).toEqual(['T1']);
+  });
+  it('the post-merge diagnostic uses the base actually checked, not a later shared-ref value', async () => {
+    const checkedBase = 'A'; const landedOn = 'B'; let reported: string | undefined;
+    const ctx = context(new FakeTracker(bot)); ctx.afterMerge = event => { reported = event.unseenBase; };
+    const sh = (_ctx: unknown, argv: string[]) => {
+      if (argv[1] === 'rev-list') { expect(argv.at(-1)).toBe(`HEAD..${checkedBase}`); return '0'; }
+      if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? landedOn : 'h';
+      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
+      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv.at(-1) === '.parents[0].sha') return landedOn;
+      return '';
+    };
+    const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
+    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
+      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, fetchBase: () => checkedBase, checkNamesOn: () => ['ci'],
+      awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+      mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+    });
+    expect(await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop)).toBe('merged');
+    expect(reported).toBe(landedOn);
   });
 });

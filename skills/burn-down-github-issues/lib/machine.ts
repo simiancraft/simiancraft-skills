@@ -237,10 +237,14 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible or verdictSmallEnough or verdictNothingLeft', actions: ['labelHold', 'commentBothOpinions', 'liveRecord'] },
                   // A verdict the driver cannot read is a failed turn, not an opinion about the issue.
+                  // A released trunk's oversized remainder is still rolling up until its next carving lands.
+                  { target: 'ticket.carving.rollingUp', guard: 'carvesUnderCap and releasedLabel', actions: ['countCarve', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'carvesUnderCap', actions: ['countCarve', 'releaseClaim'] },
                   { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
                 AGENT_FAILED: [
+                  // A released trunk's oversized remainder is still rolling up until its next carving lands.
+                  { target: 'ticket.carving.rollingUp', guard: 'carvesUnderCap and releasedLabel', actions: ['countCarve', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'carvesUnderCap', actions: ['countCarve', 'releaseClaim'] },
                   { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
@@ -260,7 +264,13 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.carving.carving', guard: 'carveRoundsUnderCap', actions: ['countCarveRound'] },
                   { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentBothOpinions', 'releaseClaim'] },
                 ],
-                AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
+                // The confirmer's failed turn is counted like the carver's: tried again under the cap.
+                AGENT_FAILED: [
+                  // A released trunk's oversized remainder is still rolling up until its next carving lands.
+                  { target: 'ticket.carving.rollingUp', guard: 'carvesUnderCap and releasedLabel', actions: ['countCarve', 'releaseClaim'] },
+                  { target: 'ticket.carving.toCarve', guard: 'carvesUnderCap', actions: ['countCarve', 'releaseClaim'] },
+                  { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
+                ],
               },
             },
             spawningChildren: {
@@ -305,6 +315,11 @@ export const MACHINE: StateNode = {
               on: {
                 ROLLED_UP: [
                   { target: 'ticket.terminal.closedWithoutCode', guard: 'nothingRemains', actions: ['closeIssue'] },
+                  // A release that was interrupted after its remainder was sized, or carved again, is
+                  // finished from what the tracker already says.
+                  { target: 'ticket.carving.childrenInFlight', guard: 'liveRecord', actions: ['unlabelReleased'] },
+                  { target: 'ticket.carving.toCarve', guard: 'sizedOverCeiling' },
+                  { target: 'ticket.ready.ready', guard: 'sizedWithinCeiling', actions: ['unlabelReleased'] },
                   { target: 'ticket.appraisal.appraising', actions: ['unlabelSize'] },
                 ],
               },
@@ -342,6 +357,8 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'prToDraft', 'runWorkerRevision'],
               on: {
                 DRAFT_PUSHED: { target: 'ticket.work.drafted' },
+                // A revision proves its work like a first attempt does, and the worker's card move says so.
+                WORKER_STARTED_PROOF: { target: 'ticket.work.proving' },
                 WORKER_VERDICT: [
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
@@ -381,6 +398,7 @@ export const MACHINE: StateNode = {
               on: {
                 PR_READY: { target: 'ticket.review.readyForReview' },
                 RESUMED: RESUME,
+                REDRIVEN: REDRIVE,
                 RUN_DIED: { target: 'ticket.deadLetters.work', actions: ['labelDlq', 'commentReason'] },
               },
             },
@@ -401,6 +419,8 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.review.evidenceUnderReview' },
                 ],
                 RESUMED: RESUME,
+                // A person lifted a hold by hand; the run start finds the card here, the objection on the thread.
+                REDRIVEN: REDRIVE,
                 // The reviewer's seat finds the pull request in draft: it was never declared complete.
                 PR_TO_DRAFT: { target: 'ticket.work.drafted' },
                 // Or finds the lane dirty: work the author never committed, which no review can read.
@@ -458,7 +478,9 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.work.proving', guard: 'resuming', actions: ['pushBranch', 'prToDraft', 'runWorkerReproof'] },
                   { target: 'ticket.landing.checksPending', guard: 'standingVerdictMerge and movementOutsideClosure and netChangeIntact', actions: ['pushBranch', 'pinLandingHead'] },
                   { target: 'ticket.review.readyForReview', guard: 'standingVerdictMerge and refreshesUnderCap', actions: ['countRefresh', 'pushBranch'] },
-                  { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection', actions: ['pushBranch'] },
+                  { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection and reviewRoundsUnderCap', actions: ['pushBranch'] },
+                  // The rejection that spent the last round: there is no revision left to catch up for.
+                  { target: 'ticket.deadLetters.review', guard: 'standingVerdictRejection', actions: ['labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },
                   { target: 'ticket.review.readyForReview', guard: 'noVerdictYet and movementOutsideClosure and netChangeIntact', actions: ['pushBranch'] },
                   // Stale proof is demoted to the closest lane that can correct it: Proving, not a revision.
                   { target: 'ticket.work.proving', guard: 'noVerdictYet and refreshesUnderCap', actions: ['countRefresh', 'pushBranch', 'prToDraft', 'runWorkerReproof'] },
@@ -567,6 +589,11 @@ export const MACHINE: StateNode = {
               lane: { key: 'Q2', name: 'Carve DLQ', description: 'Carve failed, disputed past the cap, or hit a depth, generation, or revisit cap' },
               entry: ['moveCard', 'runTriage'],
               on: {
+                // A person lifted the label: a carved trunk is revisited in a new epoch, anything else is carved again.
+                REDRIVEN: [
+                  { target: 'ticket.carving.revisiting', guard: 'liveRecord or openChild', actions: ['countRedrive', 'unlabelHold', 'claimCarving'] },
+                  { target: 'ticket.carving.toCarve', actions: ['countRedrive', 'unlabelHold'] },
+                ],
                 TRIAGED: [
                   { target: 'ticket.carving.spawningChildren', guard: 'decisionRetry and redrivesUnderCap and applyingRecord', actions: ['countRedrive', 'unlabelDlq'] },
                   { target: 'ticket.carving.carving', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy'] },
@@ -582,6 +609,9 @@ export const MACHINE: StateNode = {
                 REDRIVEN: REDRIVE,
                 TRIAGED: [
                   { target: 'ticket.carving.toCarve', guard: 'decisionOversize', actions: ['unlabelDlq', 'labelSize'] },
+                  // Work that has a pull request is carried on, never started over: caught up first when behind.
+                  { target: 'ticket.landing.catchingUp', guard: 'decisionRetry and redrivesUnderCap and prExists and behindBase', actions: ['countRedrive', 'unlabelDlq', 'reclaim', 'markResuming'] },
+                  { target: 'ticket.work.proving', guard: 'decisionRetry and redrivesUnderCap and readyPr', actions: ['countRedrive', 'unlabelDlq', 'reclaim', 'prToDraft', 'runWorkerReproof'] },
                   { target: 'ticket.work.drafted', guard: 'decisionRetry and redrivesUnderCap and draftPr', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
                   { target: 'ticket.work.coding', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'clearAttempts'] },
                   { target: 'ticket.human.parked', guard: 'prExists', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },

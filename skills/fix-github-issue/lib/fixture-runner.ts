@@ -13,6 +13,7 @@ const FILE_BY_ROLE: Record<string, string> = {
   confirmer: CONFIRMATION_FILE,
   worker: VERDICT_FILE,
   'worker-revise': VERDICT_FILE,
+  'worker-reprove': VERDICT_FILE,
   reviewer: REVIEW_FILE,
   carver: CARVING_FILE,
 };

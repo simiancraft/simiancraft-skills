@@ -87,6 +87,12 @@ export type PipelineKnobs = {
    * amount of waiting turns "none seen" into "none exist".
    */
   checks: 'required' | 'none';
+  /**
+   * The checks a landing must show green, by name. Optional: without it the checks the reviewed
+   * head carried are the expected set. Name them where a check can be slow to register, since a
+   * name here is waited for and a check nobody named can only be seen if it is already there.
+   */
+  requiredChecks?: string[];
   /** How long `project.smokeCommand` may run before the pull request parks. */
   smokeTimeoutMinutes: number;
   /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
@@ -299,6 +305,10 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   }
   if (!['always', 'code-only', 'never'].includes((merged as Knobs).autoMerge as string)) {
     faults.push(`autoMerge must be 'always', 'code-only', or 'never'`);
+  }
+  const requiredChecks = (merged as Knobs).requiredChecks;
+  if (requiredChecks !== undefined && !(Array.isArray(requiredChecks) && requiredChecks.every((name) => typeof name === 'string' && name.length > 0))) {
+    faults.push('requiredChecks must be an array of check names');
   }
   const checks = (merged as Knobs).checks;
   if (checks !== undefined && !['required', 'none'].includes(checks as string)) {

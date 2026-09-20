@@ -682,6 +682,17 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
   const stopRenewing = keepClaimed(handle);
   try {
     return await drive(k, tree);
+  } catch (error) {
+    // A throw is a failed turn like any other, so it is counted, and at the cap it is a carve dead
+    // letter: a knife that crashes on this trunk every time must not be handed it for ever. The
+    // throw still propagates, since the caller's run has to know; an announced generation stays
+    // announced and the next visit finishes it. A count that cannot be written is only logged.
+    try {
+      await countFailure(k, readTree(ctx, issue.number, io), `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
+    } catch (second) {
+      say(`could not count the failed carve: ${(second as Error).message.split('\n')[0]}`);
+    }
+    throw error;
   } finally {
     stopRenewing();
     try {
@@ -747,7 +758,9 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
   const opinions: Array<{ carver: string; confirmer: string }> = [];
   for (let round = 1; round <= k.knobs.maxCarveRounds; round++) {
     // A first carving is Carving; a visit to a carved trunk is Revisiting. A later round says so.
-    lane(k, tree.issue.title, mode === 'revisit' ? 'C6' : 'C2', round > 1 ? `round ${round}, after a dispute` : trigger);
+    // A trunk that already has a record or children is visited in Revisiting, whatever prompt it gets.
+    const visiting = mode === 'revisit' || tree.children.some((c) => c.state === 'OPEN');
+    lane(k, tree.issue.title, visiting ? 'C6' : 'C2', round > 1 ? `round ${round}, after a dispute` : trigger);
     const carved = await runCarver(k, tree, mode, previousLedger, feedback, trigger);
     if (!carved.ok) return countFailure(k, tree, carved.why, carved.logPath);
     const carving = carved.carving;
@@ -770,7 +783,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
       plan = normalized.plan;
     }
 
-    if (mode !== 'revisit') lane(k, tree.issue.title, 'C3', `round ${round}: ${carving.verdict}`);
+    if (!visiting) lane(k, tree.issue.title, 'C3', `round ${round}: ${carving.verdict}`);
     const confirmed = await runConfirmer(k, tree, mode, carving, previousLedger, round, reply);
     if (!confirmed.ok) return countFailure(k, tree, confirmed.why, confirmed.logPath);
     const confirmation = confirmed.confirmation;
@@ -845,8 +858,9 @@ async function finishIntent(k: Knife, tree: Tree, pending: Intent): Promise<Carv
   }
   if (pending.kind === 'released') {
     const record = pending.payload as Record;
+    // The outcome stays `exhausted`: that is what tells the driver the remainder is still to be appraised.
     const out = await applyRelease(k, tree, null, record);
-    return { ...out, outcome: 'resumed', reason: `finished the release announced by generation ${record.generation}` };
+    return { ...out, reason: `finished the release announced by generation ${record.generation}` };
   }
   const payload = pending.payload as { verdict: string; deadLetter?: boolean; reason: string; affected?: string[]; pauseSet?: number[]; opinions?: Array<{ carver: string; confirmer: string }> };
   const carving: Carving = { issue: k.trunk, mode: tree.record && tree.record.state === 'live' ? 'revisit' : 'carve', verdict: payload.verdict as Carving['verdict'], reason: payload.reason, criteria: [], ledger: tree.record?.ledger ?? [], affected: payload.affected ?? [] };
