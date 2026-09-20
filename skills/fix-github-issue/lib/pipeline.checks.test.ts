@@ -137,6 +137,50 @@ describe('the build gate', () => {
     });
   }
 
+  const node = (name: string, conclusion: string) => ({ name, conclusion });
+
+  it('does not land on a required check that was only ever skipped: no check ran', async () => {
+    // A run made while the pull request was a draft reports every job as skipped. The name is
+    // present, nothing failed, and nothing is pending; nothing was checked either.
+    const w = world('required', () => [node('build', 'SKIPPED')]);
+    const refusal = await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io);
+    expect(refusal).toContain('no check has reached a verdict under: build (skipped)');
+    expect(w.waited()).toBe(10 * 60_000);
+  });
+
+  it('waits out a cancelled required check instead of refusing at once, and lands when its rerun passes', async () => {
+    // The live case: the repository cancelled the ready-for-review run, and the draft-time run is all skipped.
+    const said: string[] = [];
+    const w = world('required', (clock) => (clock < 120_000 ? [node('build', 'CANCELLED'), node('build', 'SKIPPED')] : [node('build', 'CANCELLED'), node('build', 'SKIPPED'), node('build', 'SUCCESS')]));
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBeGreaterThanOrEqual(120_000);
+    expect(said[0]).toContain('build (cancelled and skipped)');
+  });
+
+  it('refuses a cancelled required check that nothing reruns, and says cancelled', async () => {
+    const w = world('required', () => [node('build', 'CANCELLED')]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('build (cancelled), after 10 minutes');
+  });
+
+  it('lands on a required check that passed beside a skipped node of the same name', async () => {
+    const w = world('required', () => [node('build', 'SKIPPED'), node('build', 'SUCCESS')]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBe(0);
+  });
+
+  it('lets a check nobody expects rest on skipped, but not on cancelled', async () => {
+    const skipped = world('required', () => [GREEN, node('optional-lint', 'SKIPPED')]);
+    expect(await awaitGreenChecks(skipped.ctx, 1, () => {}, EXPECT, skipped.io)).toBeNull();
+    const cancelled = world('required', () => [GREEN, node('optional-lint', 'CANCELLED')]);
+    expect(await awaitGreenChecks(cancelled.ctx, 1, () => {}, EXPECT, cancelled.io)).toContain('optional-lint (cancelled)');
+  });
+
+  it('still refuses at once on a check that failed, whatever else its name carries', async () => {
+    const w = world('required', () => [node('build', 'SUCCESS'), node('build', 'FAILURE')]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
+    expect(w.waited()).toBe(0);
+  });
+
   it('lands a complete green list at once', async () => {
     const w = world('required', () => [GREEN]);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();

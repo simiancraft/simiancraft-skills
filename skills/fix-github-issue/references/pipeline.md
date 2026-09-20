@@ -141,7 +141,12 @@ in the config, or the status checks the base branch's protection requires. The c
 head carried are added to that list but cannot replace it, since a fast review sees a partly
 registered list too. A landing waits until every expected check is present and green on the landing
 head, every other check shown is green, and no check suite GitHub has opened on the head is
-incomplete; suite data that cannot be read is waited on, never assumed. An installed app that opens a
+incomplete; suite data that cannot be read is waited on, never assumed. Checks are judged by name, since
+a head can carry several nodes under one name (a run the repository's concurrency rule cancelled, the
+skipped jobs of a run made while the pull request was a draft, and the run that counts): a name passes
+on a node that succeeded, fails on a node that failed, and has no verdict yet when all it carries is
+skipped or cancelled. A check nobody expects may rest on skipped; an expected one may not, or a landing
+could merge with no check having run, which branch protection alone does not prevent. An installed app that opens a
 suite on every push and runs nothing in it leaves that suite queued for ever, so such apps are
 written down too, by slug, in `idleCheckSuiteApps`: a listed app's suite is passed over while it has
 no run in it, and holds the landing like any other once it has one. The list is a person's statement

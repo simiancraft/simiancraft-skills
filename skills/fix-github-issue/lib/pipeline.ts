@@ -406,7 +406,8 @@ function isDraft(ctx: Context, pr: number): boolean {
 /**
  * The build gate: block until the pull request's checks are green, or say why they never will be.
  * Returns null when every check passed (or the repository runs none), otherwise a refusal reason.
- * Unknown states fail closed; a merge with a failing or unfinished build is never allowed.
+ * Unknown states fail closed; a merge with a failing, unfinished, or never-run build is never allowed:
+ * a required check that was only skipped or cancelled has reached no verdict, and is waited on.
  */
 /**
  * Waits for the checks of `expect.sha`, the head that would land. Checks register one at a time
@@ -450,14 +451,21 @@ export async function awaitGreenChecks(
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<string | null> {
   type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
-  const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+  // A check that ran and was satisfied. SKIPPED and CANCELLED are neither this nor a failure: no
+  // verdict was reached, and a name whose every node is one of those has not been checked at all.
+  const PASSED = new Set(['SUCCESS', 'NEUTRAL']);
   const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
   // GitHub renders an unfinished CheckRun with conclusion "" (empty string, not null), so a
   // nullish coalesce would read "" as a verdict and fail-close a merely-running check.
-  const classify = (c: CheckNode): 'green' | 'pending' | 'failed' => {
+  const classify = (c: CheckNode): 'passed' | 'skipped' | 'cancelled' | 'pending' | 'failed' => {
     const verdict = c.conclusion || c.state || c.status || null;
     if (verdict === null || RUNNING.has(verdict)) return 'pending';
-    return GREEN.has(verdict) ? 'green' : 'failed';
+    if (PASSED.has(verdict)) return 'passed';
+    if (verdict === 'SKIPPED') return 'skipped';
+    // A cancelled run was superseded or stopped, often by the repository's own concurrency rule when
+    // a draft is marked ready; it says nothing about the change, so it is waited out, not refused.
+    if (verdict === 'CANCELLED') return 'cancelled';
+    return 'failed';
   };
   const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
 
@@ -528,7 +536,23 @@ export async function awaitGreenChecks(
       continue;
     }
 
-    // Everything visible is green. It is the whole list only when every expected check is in it
+    // A head can carry several nodes under one name: a run the repository cancelled, the skipped
+    // jobs of a run made while the pull request was a draft, and the run that counts. Judged by
+    // name, then: a name passes on a node that passed. A name somebody expects is not satisfied by
+    // being skipped, or a landing could merge with no check having run; a cancelled node with no
+    // passing sibling has no verdict either. Only a name nobody expects may rest on SKIPPED.
+    const byName = new Map<string, Array<ReturnType<typeof classify>>>();
+    for (const c of rollup) byName.set(nameOf(c), [...(byName.get(nameOf(c)) ?? []), classify(c)]);
+    const unjudged = [...byName.entries()]
+      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || expected.includes(name)))
+      .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
+    if (unjudged.length > 0) {
+      const gaveUp = await wait(`no check has reached a verdict under: ${unjudged.join(', ')}`, 30_000);
+      if (gaveUp) return gaveUp;
+      continue;
+    }
+
+    // Everything visible has passed. It is the whole list only when every expected check is in it
     // and nothing GitHub has opened on this head is still running or still to register.
     if (!expect) return null;
     const present = new Set(rollup.map(nameOf));
