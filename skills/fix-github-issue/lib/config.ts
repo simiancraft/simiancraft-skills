@@ -75,15 +75,17 @@ export type ProjectConfig = {
 };
 
 /** The seats an agent cap can be set for, and `default` for the rest. A worker's revision and reproof turns are the worker's. */
-export const AGENT_SEATS = ['default', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'diagnose'];
+export const AGENT_SEATS = ['default', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'walker', 'diagnose'];
+/** The longest cap a timer can hold: past this the runtime clamps the delay to a millisecond, and a generous cap would kill at once. */
+export const MAX_AGENT_TIMEOUT_MINUTES = Math.floor(2_147_483_647 / 60_000);
 
 /** What is wrong with an `agentTimeoutMinutes`, or null: a positive integer, or a map of them by seat. */
 export function agentCapFault(cap: unknown): string | null {
-  const positive = (value: unknown) => Number.isInteger(value) && (value as number) > 0;
+  const positive = (value: unknown) => Number.isInteger(value) && (value as number) > 0 && (value as number) <= MAX_AGENT_TIMEOUT_MINUTES;
   if (cap === undefined || positive(cap)) return null;
   const mapped = typeof cap === 'object' && cap !== null && !Array.isArray(cap);
   if (mapped && Object.entries(cap).every(([seat, minutes]) => AGENT_SEATS.includes(seat) && positive(minutes))) return null;
-  return `agentTimeoutMinutes must be a positive integer, or a map of positive integers keyed by ${AGENT_SEATS.join(', ')}`;
+  return `agentTimeoutMinutes must be a positive integer no greater than ${MAX_AGENT_TIMEOUT_MINUTES}, or a map of such integers keyed by ${AGENT_SEATS.join(', ')}`;
 }
 
 /** The knobs the fix pipeline itself enforces. A driver may carry more; the pipeline reads these. */
@@ -94,7 +96,7 @@ export type PipelineKnobs = {
   checksTimeoutMinutes: number;
   /**
    * How long an agent may run before the driver kills it: one number for every seat, or a map by
-   * seat (`worker`, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `diagnose`) with an
+   * seat (`worker`, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `walker`, `diagnose`) with an
    * optional `default`. Unset is 45 minutes. Size the worker's to the repository: its turn holds
    * the install, the repository's own gate (twice, when the base moves under it), and the proof,
    * and a wall clock runs on however loaded the machine is.

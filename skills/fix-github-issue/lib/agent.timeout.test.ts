@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { AGENT_TIMEOUT_MS, agentCapMs, agentTimeout, runAgent, TIMED_OUT_EXIT } from './agent.ts';
-import { agentCapFault, type ProjectConfig } from './config.ts';
+import { AGENT_SEATS, agentCapFault, MAX_AGENT_TIMEOUT_MINUTES, type ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
 import { VERDICT_FILE } from './control-files.ts';
 import { fixIssue } from './pipeline.ts';
@@ -124,6 +124,30 @@ describe('the cap a config sets', () => {
   it('is refused unless it is a positive integer or a map of them by a seat the driver knows', () => {
     for (const good of [undefined, 1, 90, { worker: 120 }, { default: 30, reviewer: 20 }]) expect(agentCapFault(good)).toBeNull();
     for (const bad of [0, -5, 1.5, '90', null, [90], { worker: 0 }, { worker: '90' }, { wroker: 90 }]) expect(agentCapFault(bad)).toContain('agentTimeoutMinutes must be');
+  });
+
+  it('can be set for every role a driver actually runs an agent as', () => {
+    // Read from the source, so a new runAgent role cannot arrive without a seat to cap it by.
+    const roots = [join(HERE, '..'), join(HERE, '..', '..', 'appraise-github-issues'), join(HERE, '..', '..', 'carve-github-issue'), join(HERE, '..', '..', 'walk-the-floor')];
+    const roles = new Set<string>();
+    for (const root of roots) {
+      for (const file of new Bun.Glob('**/*.ts').scanSync({ cwd: root })) {
+        if (file.endsWith('.test.ts')) continue;
+        for (const m of readFileSync(join(root, file), 'utf8').matchAll(/runAgent\(\s*[\w.]+,\s*([^,]+),/g)) {
+          for (const literal of m[1].matchAll(/'([a-z-]+)'/g)) roles.add(literal[1]);
+        }
+      }
+    }
+    expect(roles.size).toBeGreaterThan(6);
+    const seats = [...roles].map((role) => (role.startsWith('worker') ? 'worker' : role));
+    expect(seats.filter((seat) => !AGENT_SEATS.includes(seat))).toEqual([]);
+  });
+
+  it('refuses a cap too long for a timer to hold, which would otherwise kill at once', () => {
+    expect(agentCapFault(MAX_AGENT_TIMEOUT_MINUTES)).toBeNull();
+    expect(agentCapFault(MAX_AGENT_TIMEOUT_MINUTES + 1)).toContain('no greater than');
+    expect(agentCapFault({ worker: MAX_AGENT_TIMEOUT_MINUTES + 1 })).toContain('no greater than');
+    expect(MAX_AGENT_TIMEOUT_MINUTES * 60_000).toBeLessThanOrEqual(2_147_483_647);
   });
 
   it('is the cap the run is killed at, and the one its failure names', async () => {
