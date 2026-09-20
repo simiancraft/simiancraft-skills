@@ -324,7 +324,7 @@ describe('runtime moves and settlement', () => {
     const api = loadFunctions(pipeline, ['reviewAndLand'], {
       reviewCount: () => 2, sh: () => 'h', catchUp: () => null, move,
       review: async () => { move(null, null, 'E2'); return { review: { decision: 'block', blocking: ['fix defect'] }, reviewedSha: 'h' }; },
-      serializePullMaster: (_ctx: unknown, action: () => unknown) => action(),
+      serializePullMaster: (_ctx: unknown, _issue: unknown, _say: unknown, action: () => unknown) => action(),
       land: async () => { move(null, null, 'F2'); return 'revise'; },
       recordReview: () => 3,
       deadLetter: (_ctx: unknown, _issue: unknown, phase: string) => { move(null, null, phase === 'review' ? 'Q4' : 'Q5'); return { outcome: 'dlq' }; },

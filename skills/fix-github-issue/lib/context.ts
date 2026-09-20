@@ -82,6 +82,8 @@ export type Context = {
    * process never share one; the base branch each guards is not the same branch.
    */
   integrationQueue: Promise<unknown>;
+  /** The issue whose landing holds the integration queue now, so a lane waiting behind it can say so. */
+  landingHolder?: number | null;
   log: (message: string) => void;
   step: (message: string) => void;
   /** Asked once, just before every merge. Absent means always allowed. */

@@ -546,8 +546,23 @@ function landedOnUnseenBase(ctx: Context, pr: number, seen: string, say: (messag
  * this queue, so nothing can move the branch or the base between the read and the merge.
  */
 
-function serializePullMaster<T>(ctx: Context, action: () => Promise<T>): Promise<T> {
-  const next = ctx.integrationQueue.then(action, action);
+export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message: string) => void, action: () => Promise<T>): Promise<T> {
+  // A landing can wait on checks for as long as the timeout, and the lanes behind it are silent
+  // meanwhile; each says once whom it is waiting behind, on the console and on its card.
+  const holder = ctx.landingHolder ?? null;
+  if (holder !== null && holder !== issue.number) {
+    say(`waiting for the landing line behind #${holder}`);
+    move(ctx, issue, 'F1', `waiting for the landing line behind #${holder}`);
+  }
+  const held = async () => {
+    ctx.landingHolder = issue.number;
+    try {
+      return await action();
+    } finally {
+      if (ctx.landingHolder === issue.number) ctx.landingHolder = null;
+    }
+  };
+  const next = ctx.integrationQueue.then(held, held);
   ctx.integrationQueue = next.catch(() => undefined);
   return next;
 }
@@ -1178,7 +1193,7 @@ export async function reviewAndLand(
     if ('dlq' in reviewed) return deadLetter(ctx, issue, reviewed.dlq, reviewed.reason, say, pr);
 
     // Merging happens there, one branch at a time, because the base branch is shared.
-    const outcome = await serializePullMaster(ctx, async () => land(ctx, issue, pr, touches, reviewed, cwd, say, ceiling, consumed + 1 < ctx.knobs.maxReviewRounds));
+    const outcome = await serializePullMaster(ctx, issue, say, async () => land(ctx, issue, pr, touches, reviewed, cwd, say, ceiling, consumed + 1 < ctx.knobs.maxReviewRounds));
     if (outcome === 'merged') return { outcome: 'merged', reason: `merged pull request #${pr}` };
 
     // The base reached this work while the review was running. That is upstream churn, not a defect
