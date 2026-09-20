@@ -141,7 +141,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| F1 Approved | enqueue | `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
+| F1 Approved | enqueue, ask the merge boundary | `BOUNDARY_REFUSED` to H3 (the boundary is a fact about the change, asked once, before anything waits); `HEAD_MOVED` to E1 (the lane moved past the reviewed commit); `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
 | F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the proof is reacquired on the existing pull request and `PROOF_REACQUIRED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
 | F3 Checks pending | wait on checks | `CHECKS`: green and smoke configured to F4; green to F5; else Q5 |
 | F4 Smoke | run smoke | `SMOKE`: passed to F5; else Q5 (tail as the reason) |
@@ -189,6 +189,23 @@ phase, never Ready.
 | T3 Verified on the floor | `REOPENED` to reconcile |
 
 T1 and T2 roll up to the parent on entry. T3 exists only when `floor` is configured.
+
+The worker's turn is atomic to the driver. Proving and Drafted are the worker's own progress
+reports from inside one agent turn (it moves its own card with `card.ts`); the event the driver
+acts on is `WORKER_VERDICT`, answered at the Work phase from whichever of its four lanes the card
+was last reported in: fixed with a ready pull request to E1, fixed without one to Q3, a close to
+A3, and the hand-offs to their human lanes. A person's `fix.ts --issue N` is `PERSON_DISPATCHED`
+from the Inbox straight to Coding, skipping the sizing pass but not the worker's own appraisal.
+
+Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`). Its
+last act before the merge is one more look upstream: `BASE_MOVED_WHILE_WAITING` returns the card
+to F2 under the refresh cap, since checks, smoke, and a paused line each take long enough for
+something else to land, and to Q5 past it.
+
+A redrive (`REDRIVEN`, from H3, Q3, Q4, or Q5) continues the pull request the work left: to F2
+when the lane is behind the base, else to D4 with the objection as the brief, else through
+reconcile when there is no pull request. Reconcile puts an unclaimed pull request in E1 or D3,
+never back in Ready, so a hold a person lifts by removing the label lands where a redrive would.
 
 ## Demotions the loop makes
 
@@ -273,6 +290,8 @@ default and draws reconcile edges only where they land inside that phase.
 
 ```bash
 bun test <skill-dir>/lib/machine.test.ts                       # the checks above
+bun test <skill-dir>/lib/simulate.test.ts                      # the machine executed: no leaks, no orphans, single-file landing, and the recorded real runs replayed as legal moves
+bun test <skill-dir>/lib/scenarios.test.ts                     # several cards against one moving base: overlap, revoked proof, failures, the base moving during checks
 bun run <skill-dir>/export-machine.ts > burndown.machine.js    # XState v5 createMachine, for stately.ai/viz
 bun run <skill-dir>/chart-machine.ts --phase landing | dot -Tsvg > landing.svg   # one phase, Graphviz
 bun run <skill-dir>/lanes.ts                                   # write the lanes and the Phase field onto the board
