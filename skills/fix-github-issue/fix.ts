@@ -60,7 +60,9 @@ export const USAGE = `fix-github-issue: fix one known issue end to end, headless
   --max-points <n>   the largest size the worker may take on (default: the config's)
   --worker <seat>    engine[:model] for the worker seat, for example codex:gpt-5.6-sol
   --reviewer <seat>  engine[:model] for the reviewer seat; a different engine from the worker
-  --confirmer <seat> engine[:model] for the seat that re-checks a close the worker proposes (default: the reviewer)
+  --confirmer <seat> engine[:model] for the seat that re-checks a close the worker proposes; without it the
+                     config's confirmer, else the config's reviewer (--reviewer does not change this),
+                     and it must be a different engine from the worker
   --redrive          lift a park or a dead letter and continue the issue's pull request
   --resume-pr <pr>   continue that pull request rather than open another
   --help, -h         print this and exit
