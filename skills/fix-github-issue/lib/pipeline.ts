@@ -380,6 +380,8 @@ async function runWorker(
   // run (caught up first, never reset), and whether a pull request does, which decides the lane.
   let revision = Boolean(feedback);
   let hasPull = Boolean(feedback);
+  /** The reason of a refusal found standing on the issue when this turn began, if there was one. */
+  let standingRefusal: string | null = null;
 
   // Whatever brought the card here (a redrive, a resumed draft, a review's words), a proof that was
   // refused and never answered by a new Code announcement is not tried again: the newest marker
@@ -389,6 +391,7 @@ async function runWorker(
     if (newest?.step === 'refused') {
       say(`a proof of ${newest.sha.slice(0, 10)} was refused and no Code step has answered it; Code runs first, with that refusal as its brief`);
       spent = repairRefusedAttempt(ctx, issue, newest, spent, say);
+      standingRefusal = newest.handoff;
       proveOnly = false;
       reproof = false;
       revision = true;
@@ -422,7 +425,10 @@ async function runWorker(
         // Nothing more to decide: the coder has the lane as it stands.
       } else if (placed.dispatch === 'code' && placed.from === 'refusal') {
         say(`a proof of ${facts.marker?.sha.slice(0, 10)} was refused by an earlier run; Code continues with that refusal as its brief`);
-        if (facts.marker) spent = repairRefusedAttempt(ctx, issue, facts.marker, spent, say);
+        if (facts.marker) {
+          spent = repairRefusedAttempt(ctx, issue, facts.marker, spent, say);
+          standingRefusal = facts.marker.handoff;
+        }
         revision = true;
         codeBrief = `A prover could not prove the change on this branch, so it is yours again. Its reason is your brief; change the code so that it holds.\n\n${facts.marker?.handoff}`;
       } else if (placed.dispatch === 'prove') {
@@ -440,6 +446,13 @@ async function runWorker(
         codeBrief = `A branch for this issue already exists with commits, pushed by an earlier run that did not finish: you are on it. Read what is there, continue from it, and finish the step.`;
       }
     }
+  }
+
+  // A refusal read from the issue can be the one that spent the last attempt: a run that died on
+  // it must not buy the issue another turn. Counted already, so the caller queues it and counts
+  // nothing more.
+  if (standingRefusal !== null && spent >= ctx.knobs.maxWorkerAttempts) {
+    return { issue: issue.number, verdict: 'failed', counted: true, reason: `the proof was refused ${spent} time(s), and the attempts are spent. Last refusal: ${standingRefusal}` };
   }
 
   for (;;) {
