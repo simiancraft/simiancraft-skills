@@ -16,7 +16,6 @@ import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts'
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { mutate } from '../../fix-github-issue/lib/shell.ts';
-import type { Stage } from '../status.ts';
 
 export type CarvingDeps = {
   ctx: Context;
@@ -31,19 +30,24 @@ export type CarvingDeps = {
   /** `--only`, when given: the sweep restricts itself to these numbers. */
   only: Set<number> | null;
   ageDays: number;
-  mark: (issue: number, title: string, stage: Stage, note?: string) => void;
+  /** Places the trunk's card in a lane (a key from lib/lanes.ts) on every projection the driver keeps. */
+  mark: (issue: number, title: string, lane: string, note?: string) => void;
   log: (message: string) => void;
 };
 
 const SWEEP_LABELS = ['loop/carved', 'loop/released', 'loop/handed-off', 'loop/carving', 'loop/working', 'loop/paused'];
 
-function stageOf(outcome: string): Stage {
-  if (outcome === 'carve' || outcome === 'amend' || outcome === 'resumed') return 'carved';
-  if (outcome === 'exhausted') return 'released';
-  if (outcome === 'still-good') return 'revisited';
-  if (outcome === 'failed') return 'failed';
-  if (outcome === 'busy' || outcome === 'left-alone') return 'revisited';
-  return 'handed-off';
+/**
+ * The lane a knife outcome leaves the trunk in. `atRest` is where the card sat before the knife
+ * ran (To carve for a fresh cut, Epic for a revisit): a verdict that changed nothing, a failure
+ * short of the cap, and a claim held elsewhere all leave it there.
+ */
+function laneOf(outcome: string, atRest: 'C1' | 'C5'): string {
+  if (outcome === 'carve' || outcome === 'amend' || outcome === 'resumed' || outcome === 'still-good') return 'C5';
+  if (outcome === 'exhausted' || outcome === 'nothing-left' || outcome === 'small-enough') return 'C7';
+  if (outcome === 'too-uncertain') return 'H1';
+  if (outcome === 'indivisible') return 'H2';
+  return atRest;
 }
 
 function issueOf(tree: Tree): Issue {
@@ -86,15 +90,15 @@ export class Carving {
     const io = trackerIo(ctx);
     const tree = readTree(ctx, number, io);
     const issue = issueOf(tree);
-    mark(number, issue.title, 'revisited', why);
+    mark(number, issue.title, 'C6', why);
     let outcome: Awaited<ReturnType<typeof carveIssue>>;
     try {
       outcome = await carveIssue(ctx, issue, knobs, io);
     } catch (error) {
-      mark(number, issue.title, 'failed', (error as Error).message.slice(0, 80));
+      mark(number, issue.title, 'C5', `revisit threw: ${(error as Error).message}`.slice(0, 80));
       throw error;
     }
-    mark(number, issue.title, stageOf(outcome.outcome), outcome.reason.slice(0, 80));
+    mark(number, issue.title, laneOf(outcome.outcome, 'C5'), outcome.reason.slice(0, 80));
     if (outcome.outcome === 'exhausted') await this.releaseAppraisal(number);
   }
 
@@ -126,7 +130,12 @@ export class Carving {
         const points = pointsOf(tree.issue.labels);
         if (points === null) {
           const outcome = await appraiseIssue(ctx, issue, { ...appraisal, ageDays: null, release: true, ownClaim: ctx.runId, onVerdict: undefined });
-          mark(number, issue.title, outcome.retry ? 'failed' : outcome.verdict === 'valid' ? 'sized' : 'handed-off', `release appraisal: ${outcome.reason}`.slice(0, 80));
+          mark(
+            number,
+            issue.title,
+            outcome.retry ? 'C7' : outcome.verdict === 'valid' ? ((outcome.points ?? 0) > knobs.ceiling ? 'C1' : 'B1') : outcome.verdict === 'needs-decision' ? 'H1' : outcome.verdict === 'needs-human' || outcome.close === 'disputed' || outcome.close === 'unconfirmed' ? 'H2' : 'T2',
+            `release appraisal: ${outcome.reason}`.slice(0, 80),
+          );
           if (outcome.verdict !== 'valid') return;
           continue;
         }
@@ -136,7 +145,7 @@ export class Carving {
           stop();
           handle.release();
           const outcome = await carveIssue(ctx, issue, knobs, io);
-          mark(number, issue.title, stageOf(outcome.outcome), outcome.reason.slice(0, 80));
+          mark(number, issue.title, laneOf(outcome.outcome, 'C1'), outcome.reason.slice(0, 80));
           if (outcome.outcome !== 'carve' && outcome.outcome !== 'resumed') return;
           handle = claim(ctx, io, number, 'carving');
           if (handle === 'busy') return;
@@ -144,7 +153,7 @@ export class Carving {
           continue;
         }
         mutate(ctx, `unlabel #${number} loop/released`, ['gh', 'issue', 'edit', String(number), '--remove-label', 'loop/released']);
-        mark(number, issue.title, points > knobs.ceiling ? 'carved' : 'sized', `released at ${points}`);
+        mark(number, issue.title, points > knobs.ceiling ? 'C5' : 'B1', `released at ${points}`);
         return;
       }
     } finally {

@@ -1,45 +1,21 @@
 /**
- * Operator feedback: a board of every issue the run has touched, printed as one emoji line per
- * issue on every change (trigger) and as a whole on a cadence (pulse), so a person or an agent
- * watching the console can tell at a glance what merged, what parked, whether the line is paused,
- * and for how long. On by default; `--silent` turns the pulse and the trigger lines off, and the
- * timestamped driver log is unaffected either way.
+ * Operator feedback: the console's view of the board. Every card the run has touched is printed as
+ * one emoji line on every lane change (trigger) and as a whole on a cadence (pulse), so a person or
+ * an agent watching the console can tell at a glance where each issue is, whether the line is
+ * paused, and for how long. On by default; `--silent` turns the pulse and the trigger lines off,
+ * and the timestamped driver log is unaffected either way.
  *
- * Line shape: 🎫 #1234  ✅ merged  🟢 active  ⏱ 14:56 3/3/2026  fix(search): return a page
+ * The vocabulary is the lane table (`lib/lanes.ts`): a card is in a lane, the line shows the
+ * lane's phase emoji and name, and the pulse counts cards per phase, which is the same collapse
+ * the board's Phase field makes. The console and the GitHub board are two projections of one
+ * `place` call; neither has a word the other lacks.
+ *
+ * Line shape: 🎫 #1234  ✅ Merged  🟢 active  ⏱ 14:56 3/3/2026  fix(search): return a page
  */
 
-export type Stage =
-  | 'appraising'
-  | 'sized'
-  | 'closed'
-  | 'handed-off'
-  | 'working'
-  | 'merged'
-  | 'parked'
-  | 'dlq'
-  | 'failed'
-  | 'out-of-band'
-  | 'carved'
-  | 'revisited'
-  | 'released';
+import { type Lane, laneByKey, PHASES } from './lib/lanes.ts';
 
-const STAGE_EMOJI: Record<Stage, string> = {
-  appraising: '📏',
-  sized: '🏷️',
-  closed: '🗂️',
-  'handed-off': '🙋',
-  working: '🔨',
-  merged: '✅',
-  parked: '🅿️',
-  dlq: '☠️',
-  failed: '❌',
-  'out-of-band': '🌀',
-  carved: '🔪',
-  revisited: '🔁',
-  released: '🪵',
-};
-
-type Card = { title: string; stage: Stage; note: string; at: Date };
+type Card = { title: string; lane: Lane; note: string; at: Date };
 
 export type LineState = { state: 'active' | 'paused'; since: Date; reason: string };
 
@@ -86,12 +62,12 @@ function cardText(issue: number, card: Card, now = new Date()): string {
   const full = oneLine(card.title);
   const title = full.length > 60 ? `${full.slice(0, 57)}...` : full;
   const note = card.note ? `  (${oneLine(card.note)})` : '';
-  return `🎫 #${issue}  ${STAGE_EMOJI[card.stage]} ${card.stage}${note}  ${lineText(now)}  ⏱ ${stamp(card.at)}  ${title}`;
+  return `🎫 #${issue}  ${PHASES[card.lane.phase].emoji} ${card.lane.name}${note}  ${lineText(now)}  ⏱ ${stamp(card.at)}  ${title}`;
 }
 
-/** Records where an issue is and prints its line now, unless `--silent`. */
-export function mark(issue: number, title: string, stage: Stage, note = ''): void {
-  const card: Card = { title, stage, note, at: new Date() };
+/** Records the lane an issue's card is in and prints its line now, unless `--silent`. */
+export function mark(issue: number, title: string, lane: string, note = ''): void {
+  const card: Card = { title, lane: laneByKey(lane), note, at: new Date() };
   board.set(issue, card);
   if (!silent) console.log(cardText(issue, card));
 }
@@ -107,13 +83,16 @@ export function lineState(): LineState {
   return line;
 }
 
-/** The whole board, printed on the cadence and at the end of a run. */
+/** The whole board, printed on the cadence and at the end of a run; the summary counts per phase. */
 export function pulse(label = 'pulse'): void {
   if (silent) return;
   const now = new Date();
-  const counts = new Map<Stage, number>();
-  for (const card of board.values()) counts.set(card.stage, (counts.get(card.stage) ?? 0) + 1);
-  const summary = [...counts.entries()].map(([stage, n]) => `${STAGE_EMOJI[stage]} ${n} ${stage}`).join('  ');
+  const counts = new Map<Lane['phase'], number>();
+  for (const card of board.values()) counts.set(card.lane.phase, (counts.get(card.lane.phase) ?? 0) + 1);
+  const summary = (Object.keys(PHASES) as Lane['phase'][])
+    .filter((phase) => counts.has(phase))
+    .map((phase) => `${PHASES[phase].emoji} ${counts.get(phase)} ${PHASES[phase].label.toLowerCase()}`)
+    .join('  ');
   console.log(`\n💓 ${label}  ${lineText(now)}${line.state === 'paused' && line.reason ? ` (${line.reason})` : ''}  ⏱ ${stamp(now)}  ${summary || 'nothing touched yet'}`);
   for (const [issue, card] of [...board.entries()].sort((a, b) => b[1].at.getTime() - a[1].at.getTime())) {
     console.log(`   ${cardText(issue, card, now)}`);

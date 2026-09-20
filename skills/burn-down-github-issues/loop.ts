@@ -511,6 +511,16 @@ const BOARD = (() => {
   return pointer ? createBoardWriter(pointer, PROJECT.repo, log) : undefined;
 })();
 
+/**
+ * One placement, two projections: the console board always, and the GitHub board when board.ts
+ * has run for this repository and this is not a dry run. Every lane change the driver, the knife,
+ * or the fix pipeline makes comes through here, so the two views never disagree.
+ */
+function place(issue: number, title: string, lane: string, note?: string): void {
+  mark(issue, title, lane, note ?? '');
+  if (!DRY_RUN) BOARD?.onLane({ issue, title, lane, note });
+}
+
 const ctx = createContext({
   project: PROJECT,
   knobs: {
@@ -523,7 +533,7 @@ const ctx = createContext({
   },
   seats: { worker: SEATS.worker, reviewer: SEATS.reviewer, confirmer: SEATS.confirmer },
   onClosed: (event) => CARVING.onClosed(event),
-  onLane: BOARD && !DRY_RUN ? BOARD.onLane : undefined,
+  onLane: (event) => place(event.issue, event.title, event.lane, event.note),
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
@@ -533,10 +543,8 @@ const ctx = createContext({
     await waitForGo('the merge queue');
     return { ok: true } as const;
   },
-  afterMerge: (event) => {
-    mark(event.issue, event.title, 'merged', `PR #${event.pr} ${event.sha.slice(0, 10)}`);
-    putOnTheFloor(event);
-  },
+  // The pipeline has already placed the card in Merged by the time this fires.
+  afterMerge: (event) => putOnTheFloor(event),
 });
 
 /** The knife, as the loop runs it: the loop's ceiling, the config's carve block, the resolved seats. */
@@ -562,7 +570,7 @@ const CARVING = new Carving({
   },
   only: ONLY,
   ageDays: CONFIG.ageDays,
-  mark,
+  mark: place,
   log,
 });
 
@@ -650,7 +658,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
         reason: `merged #${pr.number} by reconciliation`,
         by: 'reconcile',
       });
-      mark(issue.number, issue.title, 'merged', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
+      place(issue.number, issue.title, 'T1', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
       if (!DRY_RUN && pr.mergeCommit) {
         putOnTheFloor({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
       }
@@ -827,8 +835,7 @@ async function sizeTheWindow(): Promise<void> {
       toAppraise,
       CONFIG.appraiserConcurrency,
       async (issue) => {
-        mark(issue.number, issue.title, 'appraising');
-        BOARD?.onLane({ issue: issue.number, title: issue.title, lane: 'A2' });
+        place(issue.number, issue.title, 'A2');
         let outcome: Awaited<ReturnType<typeof appraiseIssue>>;
         try {
           outcome = await appraiseIssue(ctx, issue, {
@@ -841,19 +848,13 @@ async function sizeTheWindow(): Promise<void> {
             callbacks: { dir: callbacksDir, seat: SEATS.callback },
           });
         } catch (error) {
-          // The board must not be left saying "appraising" for a lane that threw.
-          mark(issue.number, issue.title, 'failed', (error as Error).message.slice(0, 80));
+          // A lane that threw changed nothing on the issue: the card goes back to the inbox with
+          // the error as its note, never left saying Appraising.
+          place(issue.number, issue.title, 'A1', `appraiser threw: ${(error as Error).message}`.slice(0, 120));
           throw error;
         }
-        // `retry` means nothing changed on the issue and the next run tries again; the board
+        // `retry` means nothing changed on the issue and the next run tries again; the card
         // says so rather than claiming a size or a hand-off that never landed.
-        const stage = outcome.retry
-          ? 'failed'
-          : outcome.verdict === 'valid'
-            ? 'sized'
-            : outcome.close === 'confirmed' || outcome.close === 'skipped'
-              ? 'closed'
-              : 'handed-off';
         const note = outcome.retry
           ? outcome.reason
           : outcome.points
@@ -861,7 +862,6 @@ async function sizeTheWindow(): Promise<void> {
             : outcome.close
               ? `${outcome.verdict}, close ${outcome.close}`
               : outcome.verdict;
-        mark(issue.number, issue.title, stage, note);
         // The card follows the appraisal: sized within the ceiling is Ready, over it is To carve,
         // a confirmed close is Closed without code, a hand-off is its human lane, a retry is Inbox.
         const lane = outcome.retry
@@ -875,7 +875,7 @@ async function sizeTheWindow(): Promise<void> {
               : outcome.verdict === 'needs-decision'
                 ? 'H1'
                 : 'H2';
-        BOARD?.onLane({ issue: issue.number, title: issue.title, lane, note: note.slice(0, 120) });
+        place(issue.number, issue.title, lane, note.slice(0, 120));
       },
       (issue) => `#${issue.number}`,
     );
@@ -963,7 +963,7 @@ async function main(): Promise<void> {
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the
     // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
     const stranded = findStranded(ctx, allIssues(), CONFIG.skipLabels);
-    for (const entry of stranded) mark(entry.issue.number, entry.issue.title, 'working', `resumed PR #${entry.result.pr}`);
+    for (const entry of stranded) place(entry.issue.number, entry.issue.title, 'E1', `resumed PR #${entry.result.pr}`);
     await resumeStranded(
       ctx,
       stranded,
@@ -1020,15 +1020,11 @@ async function main(): Promise<void> {
     CONFIG.concurrency,
     async (issue) => {
       await waitForGo(`#${issue.number}`);
-      mark(issue.number, issue.title, 'working');
+      // The pipeline places the card at every seam from Coding on; the two ways it can decline to
+      // start are placed here, since no lane of its own ever saw the issue.
       const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
-      const stage =
-        result.outcome === 'merged' || result.outcome === 'parked' || result.outcome === 'dlq' || result.outcome === 'failed'
-          ? result.outcome
-          : result.outcome === 'closed'
-            ? 'closed'
-            : 'handed-off';
-      mark(issue.number, issue.title, stage, result.reason.slice(0, 80));
+      if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+      if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
     },
     (issue) => `#${issue.number}`,
   );

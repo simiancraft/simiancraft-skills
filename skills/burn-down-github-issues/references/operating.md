@@ -61,15 +61,18 @@ and the elapsed pause on every poll of the switch while the line is paused. `--s
 three off and leaves the log alone.
 
 ```
-🎫 #1234  ✅ merged (PR #1250 3f2a9c1d0e)  🟢 active  ⏱ 14:56 3/3/2026  fix(search): return a page
-🎫 #1240  🅿️ parked (autoMerge: code-only, touches migration)  🟢 active  ⏱ 15:02 3/3/2026  feat(...)
+🎫 #1234  ✅ Merged  (PR #1250 merged 2026-03-03T14:56:02Z)  🟢 active  ⏱ 14:56:10 3/3/2026  fix(search): return a page
+🎫 #1240  🙋 Parked  (autoMerge is code-only and the change touches migration)  🟢 active  ⏱ 15:02:44 3/3/2026  feat(...)
 ⏸️ paused 4m 30s  holding the merge queue  ⏱ 20:07:12
-💓 pulse  ⏸️ paused 5m 0s (floor: liveness is down)  ⏱ 15:07 3/3/2026  ✅ 1 merged  🅿️ 1 parked  🔨 2 working
+💓 pulse  ⏸️ paused 5m 0s (floor: liveness is down)  ⏱ 15:07:00 3/3/2026  🔨 2 work  🙋 1 human  ✅ 1 done
 ```
 
-Stages: 📏 appraising, 🏷️ sized, 🗂️ closed, 🙋 handed-off (needs-decision or needs-human), 🔨
-working, ✅ merged, 🅿️ parked, ☠️ dlq, ❌ failed, 🌀 out-of-band. A merge line is printed by the
-pull master at the moment of the merge, before the lane finishes, so it never waits for the pulse.
+The word after the emoji is the card's lane, exactly as the GitHub board shows it (📏 Appraising,
+🟢 Ready, 🔨 Coding, 🔍 Evidence under review, 🚀 Merging, ☠️ Review DLQ, 🙋 Parked, ✅ Merged,
+and the rest of the thirty-six in `references/state-machine.md`); the emoji is the lane's phase,
+and the pulse counts cards per phase. The console and the board are one projection, so a line
+here and a card there never disagree. A lane change is printed the moment it happens, so a merge
+never waits for the pulse.
 
 A pause is silent at one place by design: a lane already inside the check-wait for its pull request
 consults the switch only once the checks are green, so a `pause` written during a long CI run shows
