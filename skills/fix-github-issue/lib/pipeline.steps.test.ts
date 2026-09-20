@@ -90,7 +90,9 @@ describe('the work turn, as steps', () => {
     const r = await run(25, coded(25), { issue: 25, verdict: 'unprovable', reason: 'the endpoint still returns 500 for an empty list' });
     // Code, Prove (refused), Code again, Prove (refused)... until the attempts are spent.
     expect(r.roles.slice(0, 4)).toEqual(['worker', 'prover', 'worker', 'prover']);
-    expect(r.rehearsed.filter((d) => /loop\/attempts: \d/.test(d) && d.startsWith('mark')).length).toBeGreaterThanOrEqual(2);
+    // One count across the run: each refusal spends the next attempt, and the dead letter at the cap
+    // does not count the last one a second time.
+    expect(r.rehearsed.filter((d) => d.startsWith('mark #25 at loop/attempts')).map((d) => d.at(-1))).toEqual(['1', '2', '3']);
     expect(r.lines.some((l) => /the proof was refused \(attempt 1 of \d+\)/.test(l))).toBe(true);
     // The refusal is a fact on the issue before the attempt is spent, so a run that dies there leaves
     // the next one a brief and not a head to prove again.

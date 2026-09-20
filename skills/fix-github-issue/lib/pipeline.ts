@@ -218,6 +218,20 @@ async function runStep(
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
+/**
+ * A marker is trusted only at the exact head it names, so a catch-up that moved the head is
+ * announced too: the same finished code, the same gated head, on the head that now stands.
+ */
+export function announceIfMoved(ctx: Context, issue: number, cwd: string, coded: { sha: string; gated: string; touches: string[]; handoff: string }): void {
+  const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+  if (head !== coded.sha) announceStep(ctx, issue, { step: 'coded', runId: ctx.runId, sha: head, gated: coded.gated, touches: coded.touches, handoff: coded.handoff });
+}
+
+/** How many commits a lane holds that neither the issue's remote branch nor the base has: work that exists nowhere else. */
+export function lanesOwnCommits(ctx: Context, cwd: string, branch: string): number {
+  return Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', `${ctx.project.remote}/${branch}`, `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd));
+}
+
 /** The reads that say where an issue's work stands, against the real remote and tracker. */
 export function workReads(ctx: Context, issue: number, cwd: string): WorkReads {
   return {
@@ -334,7 +348,9 @@ async function runWorker(
       sh(ctx, ['git', 'fetch', ctx.project.remote, facts.branch], cwd);
       // A lane that survived an earlier run can hold commits that run never pushed. Those are the
       // only copy of that work, so the lane is never reset over them: Code continues from them.
-      const unpushed = Number(sh(ctx, ['git', 'rev-list', '--count', `${ctx.project.remote}/${facts.branch}..HEAD`], cwd)) > 0;
+      // A fresh lane sits on the base, which the saved branch may be behind; that is not work. Only
+      // commits that neither the saved branch nor the base holds are this lane's own.
+      const unpushed = lanesOwnCommits(ctx, cwd, facts.branch) > 0;
       if (unpushed) {
         say(`this lane holds commits that are not on ${ctx.project.remote}/${facts.branch}; continuing Code from them`);
         revision = true;
@@ -356,6 +372,7 @@ async function runWorker(
         if (catchUp(ctx, issue, cwd, facts.remoteHead as string, say, 'before the proof') === 'conflict') {
           return { issue: issue.number, verdict: 'failed', reason: `the coded branch conflicts with ${ctx.project.baseBranch}; a human has to resolve it` };
         }
+        if (facts.marker) announceIfMoved(ctx, issue.number, cwd, facts.marker);
       } else {
         say(`an earlier run pushed ${facts.branch} and never announced it finished; continuing Code from it`);
         revision = true;
@@ -378,8 +395,7 @@ async function runWorker(
         }
         // A marker is trusted only at the exact head it names, so a catch-up that moved the head is
         // announced too: the same finished code, the same gated head, on the head that now stands.
-        const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-        if (head !== coded.sha) announceStep(ctx, issue.number, { step: 'coded', runId: ctx.runId, sha: head, gated: coded.gated as string, touches: coded.touches ?? [], handoff: coded.handoff as string });
+        announceIfMoved(ctx, issue.number, cwd, { sha: coded.sha as string, gated: coded.gated as string, touches: coded.touches ?? [], handoff: coded.handoff as string });
       }
     }
     // The closest lane that can correct the card: stale proof and missing evidence go to Proving.
@@ -393,6 +409,8 @@ async function runWorker(
     const refusedHead = ctx.dryRun ? (proved.sha ?? '0'.repeat(40)) : sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
     announceStep(ctx, issue.number, { step: 'refused', runId: ctx.runId, sha: refusedHead, gated: refusedHead, touches: [], handoff: proved.reason });
     spent = recordAttempt(ctx, issue.number, spent);
+    // Every later count in this run starts from the issue it holds, so the spent attempt goes there too.
+    issue.labels = [...issue.labels.filter((l) => !/^loop\/attempts:/.test(l.name)), { name: `loop/attempts: ${spent}` }];
     say(`the proof was refused (attempt ${spent} of ${ctx.knobs.maxWorkerAttempts}): ${proved.reason}`);
     if (spent >= ctx.knobs.maxWorkerAttempts) {
       return { issue: issue.number, verdict: 'failed', counted: true, pr: proved.pr, reason: `the proof was refused ${spent} time(s), and the attempts are spent. Last refusal: ${proved.reason}` };
@@ -1332,6 +1350,11 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
  * dead-letter queue with the log tail, so a leaf nobody can work stops costing attempts. The
  * count lives on the issue, like reviews.
  */
+/** A failed work turn, settled once: a refused proof already spent its attempt on the issue, and past the cap there is only the queue. */
+function failedWork(ctx: Context, issue: Issue, result: WorkerResult, reason: string, say: (message: string) => void, pr?: number): FixOutcome {
+  return result.counted ? deadLetter(ctx, issue, 'work', reason, say, pr) : countFailure(ctx, issue, reason, say, pr);
+}
+
 function countFailure(ctx: Context, issue: Issue, reason: string, say: (message: string) => void, pr?: number): FixOutcome {
   holdLease(ctx, issue.number, 'count the failed attempt');
   const attempts = recordAttempt(ctx, issue.number, attemptCount(issue.labels));
@@ -1383,9 +1406,7 @@ async function workIssue(
   const pr = result.verdict === 'fixed' ? result.pr : (result.pr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number)));
   if (result.verdict === 'failed') {
     say('worker failed; leaving it untouched');
-    // A refused proof already spent its attempt on the issue; past the cap there is only the queue.
-    if (result.counted) return deadLetter(ctx, issue, 'work', result.reason, say, pr);
-    return countFailure(ctx, issue, result.reason, say, pr);
+    return failedWork(ctx, issue, result, result.reason, say, pr);
   }
   const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
   if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pr) : settled;
@@ -1461,7 +1482,7 @@ export async function reviewAndLand(
         ],
       }, true);
       say(`verdict: ${result.verdict}; ${result.reason}`);
-      if (result.verdict === 'failed') return countFailure(ctx, issue, `while reacquiring stale proof: ${result.reason}`, say, pr);
+      if (result.verdict === 'failed') return failedWork(ctx, issue, result, `while reacquiring stale proof: ${result.reason}`, say, pr);
       const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
       if (resettled) return resettled.outcome === 'failed' ? countFailure(ctx, issue, resettled.reason, say, pr) : resettled;
       continue;
@@ -1528,7 +1549,7 @@ export async function reviewAndLand(
     result = await runWorker(ctx, issue, cwd, maxPoints, say, verdict);
     say(`verdict: ${result.verdict}; ${result.reason}`);
     // The attempt counts, and a failed revision on an open pull request is the work queue's.
-    if (result.verdict === 'failed') return countFailure(ctx, issue, `on a revision: ${result.reason}`, say, pr);
+    if (result.verdict === 'failed') return failedWork(ctx, issue, result, `on a revision: ${result.reason}`, say, pr);
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pr) : settled;
   }
@@ -1755,7 +1776,7 @@ export async function redriveIssue(
           };
     let result = await runWorker(ctx, issue, cwd, maxPoints, say, feedback, objection === null);
     say(`verdict: ${result.verdict}; ${result.reason}`);
-    if (result.verdict === 'failed') return countFailure(ctx, issue, `on a ${objection === null ? 'resume' : 'redrive'}: ${result.reason}`, say, pull.number);
+    if (result.verdict === 'failed') return failedWork(ctx, issue, result, `on a ${objection === null ? 'resume' : 'redrive'}: ${result.reason}`, say, pull.number);
     if (result.verdict === 'fixed' && !result.pr) result = { ...result, pr: pull.number, branch: pull.branch };
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pull.number);
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pull.number) : settled;
