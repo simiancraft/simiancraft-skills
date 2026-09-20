@@ -25,7 +25,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
-import { appraisalCount, clearAppraisals, closeIssue, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
+import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
@@ -522,6 +522,9 @@ export async function appraiseIssue(
       } else {
         // Add the new size and only then note the disagreement; the prior label is left in place
         // because a person put it there, and `pointsFromLabels` reads the larger of the two.
+        // A repository that has never been appraised has no size labels, and a label the
+        // repository lacks cannot be put on an issue.
+        ensureLabel(ctx, `size: ${result.points}`, 'c5def5', `Sized at ${result.points} by an appraisal`);
         mutate(ctx, `size #${issue.number} at ${result.points}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', `size: ${result.points}`]);
         if (priorSizes.length > 0) {
           mutate(ctx, `note the sizing disagreement on #${issue.number}`, [

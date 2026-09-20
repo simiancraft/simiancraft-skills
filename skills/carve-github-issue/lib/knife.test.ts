@@ -155,6 +155,23 @@ describe('the carving driver makes only moves the chart allows', () => {
     expect(placedBeforeLoss).toBeGreaterThan(0);
     expect(lanes.length).toBe(placedBeforeLoss);
   });
+  test('an appraisal sizes an issue on a repository that has no size labels yet', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
+    // Like gh: a label the repository does not have cannot be put on an issue.
+    io.beforeWrite = (op) => {
+      const at = op.argv.indexOf('--add-label');
+      if (at > -1 && op.argv[at + 1].startsWith('size:') && !io.repoLabels.has(op.argv[at + 1])) throw new Error(`'${op.argv[at + 1]}' not found`);
+    };
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    // Which labels were ensured is remembered per repository for the life of the process, so this
+    // adopter gets a repository no other test has touched.
+    const ctx = ctxFor(io);
+    ctx.project = { ...ctx.project, repo: 'o/fresh-adopter' };
+    await makeDriver(ctx, k, ['C7'], fixture('appraisal', { issue: 10, verdict: 'valid', points: 1, reason: 'small' })).releaseAppraisal(10);
+    expect(io.view(10)!.labels.map((l) => l.name)).toContain('size: 1');
+    expect(io.view(10)!.labels.some((l) => l.name.startsWith('loop/appraisals'))).toBe(false);
+  });
+
   test('a trunk with open children but no record enters its first carving along a chart edge', async () => {
     const io = new FakeTracker(BOT, [fakeIssue(10, { subIssues: [11] }), fakeIssue(11, { parentNumber: 10 })]);
     const ctx = ctxFor(io); const lanes = ['C5'];
