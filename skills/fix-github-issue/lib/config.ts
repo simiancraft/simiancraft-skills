@@ -95,7 +95,8 @@ export type PipelineKnobs = {
   requiredChecks?: string[];
   /**
    * Installed GitHub Apps, by slug, that open a check suite on every push and may run nothing in
-   * it. Such a suite stays queued for ever; a landing passes over it only while it has no run.
+   * it. Such a suite stays queued for ever; a landing passes over it only while it has no run. This
+   * is the adopter's statement that the app runs nothing here; a later first run is not detected.
    */
   idleCheckSuiteApps?: string[];
   /** How long `project.smokeCommand` may run before the pull request parks. */

@@ -460,8 +460,9 @@ export async function awaitGreenChecks(
   };
   // GitHub opens a suite for every installed app on every push, and an app that runs nothing here
   // leaves its suite queued with no run in it for ever. Which apps those are is written down, like
-  // the checks: no age says a first run is not still on its way. A listed app's suite holds the
-  // landing all the same once it has a run in it.
+  // the checks: no age says a first run is not still on its way. The list is a person's word that
+  // the app runs nothing here, not a detection; a first run that registers after the landing has
+  // passed is not seen. While the gate still waits, a listed app's suite holds once it has a run.
   const idleApps = new Set(ctx.knobs.idleCheckSuiteApps ?? []);
   const holds = (suite: Suite) => suite.runs > 0 || !idleApps.has(suite.app);
   const passedOver = new Set<string>();

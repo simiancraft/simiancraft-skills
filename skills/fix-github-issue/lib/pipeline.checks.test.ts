@@ -81,8 +81,9 @@ describe('the build gate', () => {
     expect(said.map((m) => /^the (\S+) check suite/.exec(m)?.[1])).toEqual(['netlify', 'codecov']);
   });
 
-  it('holds for a listed app all the same once its suite has a run: a first run can arrive at any age', async () => {
-    // Idle for six minutes beside a running suite, then its first run registers; nothing may land until it finishes.
+  it('holds for a listed app once its suite has a run, when that run registers while the gate still waits', async () => {
+    // Idle for six minutes beside a running suite, then its first run registers. Seen only because the
+    // gate was still waiting on the other suite; a first run after the gate has passed is not detected.
     const w = world('required', () => [GREEN], {
       idleApps: ['slow-ci'],
       openSuites: (clock) => (clock < 360_000 ? [suite('slow-ci', 0), suite('github-actions', 1)] : clock < 480_000 ? [suite('slow-ci', 1)] : []),
