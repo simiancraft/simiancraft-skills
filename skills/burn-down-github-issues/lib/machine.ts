@@ -357,6 +357,8 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'prToDraft', 'runWorkerRevision'],
               on: {
                 DRAFT_PUSHED: { target: 'ticket.work.drafted' },
+                // A revision ends the way a first Code step does: pushed, announced, then proved afresh.
+                CODE_ANNOUNCED: { target: 'ticket.work.proving', actions: ['runProver'] },
                 // A revision proves its work like a first attempt does, and the worker's card move says so.
                 WORKER_STARTED_PROOF: { target: 'ticket.work.proving' },
                 WORKER_VERDICT: [
@@ -372,6 +374,9 @@ export const MACHINE: StateNode = {
               lane: { key: 'D1', name: 'Coding', description: 'Claim held; confirming the appraisal, then the smallest change' },
               entry: ['moveCard', 'runWorker'],
               on: {
+                // The Code step ends at a durable fact: the branch is on the remote and a `coded`
+                // marker on the issue names the gated head. Prove is dispatched from that fact.
+                CODE_ANNOUNCED: { target: 'ticket.work.proving', actions: ['runProver'] },
                 WORKER_STARTED_PROOF: { target: 'ticket.work.proving' },
                 WORKER_VERDICT: [
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
@@ -389,6 +394,15 @@ export const MACHINE: StateNode = {
                 // A reproof works on a pull request that already exists: the proof is reacquired
                 // on the caught-up head and the card goes straight back to review.
                 PROOF_REACQUIRED: { target: 'ticket.review.readyForReview', actions: ['prReady'] },
+                // The prover could not prove it: the code does not yet do the thing, or the thing
+                // cannot be shown. The card goes back a step with the prover's reason as the brief,
+                // and the refusal is an attempt spent. With a pull request open the step back is a
+                // revision, since a first Code step starts from nothing and this work exists.
+                PROOF_REFUSED: [
+                  { target: 'ticket.work.coding', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt'] },
+                  { target: 'ticket.work.sentBack', guard: 'attemptsUnderCap', actions: ['countAttempt'] },
+                  { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
+                ],
                 AGENT_FAILED: { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
               },
             },
@@ -436,6 +450,9 @@ export const MACHINE: StateNode = {
                   // A revision never begins on a stale lane: the rejection stands through the catch-up,
                   // and Catching up hands the card to Sent back once the lane holds the base.
                   { target: 'ticket.landing.catchingUp', guard: 'reviewRoundsUnderCap and behindBase', actions: ['spendRound', 'prToDraft'] },
+                  // A rejection goes to the step it is about. `gather-more` is about the evidence, so
+                  // Prove runs alone on the code the reviewer already read; `block` is about the code.
+                  { target: 'ticket.work.proving', guard: 'reviewRoundsUnderCap and decisionGatherMore', actions: ['spendRound', 'prToDraft', 'runProver'] },
                   { target: 'ticket.work.sentBack', guard: 'reviewRoundsUnderCap', actions: ['spendRound'] },
                   { target: 'ticket.deadLetters.review', actions: ['spendRound', 'labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },
                 ],
@@ -478,6 +495,8 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.work.proving', guard: 'resuming', actions: ['pushBranch', 'prToDraft', 'runWorkerReproof'] },
                   { target: 'ticket.landing.checksPending', guard: 'standingVerdictMerge and movementOutsideClosure and netChangeIntact', actions: ['pushBranch', 'pinLandingHead'] },
                   { target: 'ticket.review.readyForReview', guard: 'standingVerdictMerge and refreshesUnderCap', actions: ['countRefresh', 'pushBranch'] },
+                  // The rejection still goes to the step it is about once the lane holds the base.
+                  { target: 'ticket.work.proving', guard: 'standingVerdictRejection and rejectionWantsEvidence and reviewRoundsUnderCap', actions: ['pushBranch', 'runProver'] },
                   { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection and reviewRoundsUnderCap', actions: ['pushBranch'] },
                   // The rejection that spent the last round: there is no revision left to catch up for.
                   { target: 'ticket.deadLetters.review', guard: 'standingVerdictRejection', actions: ['labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },

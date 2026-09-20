@@ -123,9 +123,9 @@ so any run can finish a spawn another run started.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| D4 Sent back | PR to draft, run worker revision | `DRAFT_PUSHED` to D3; `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision parks at once; the attempt counts) |
-| D1 Coding | run worker | `WORKER_STARTED_PROOF` to D2; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
-| D2 Proving | move card (the worker moves its own card at step 3) | `DRAFT_OPENED` to D3; `AGENT_FAILED` to Q3 |
+| D4 Sent back | PR to draft, run worker revision | `CODE_ANNOUNCED` to D2 (run prover); `DRAFT_PUSHED` to D3; `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision parks at once; the attempt counts) |
+| D1 Coding | run worker | `CODE_ANNOUNCED` to D2 (run prover): the branch is on the remote and a `coded` marker on the issue names the gated head; `WORKER_STARTED_PROOF` to D2; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
+| D2 Proving | move card (the worker moves its own card at step 3) | `DRAFT_OPENED` to D3; `PROOF_REFUSED` (the proof cannot be done; an attempt is spent, the prover's reason is the brief): under cap to D1 with no pull request, to D4 with one, else Q3; `AGENT_FAILED` to Q3 |
 | D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
 
 D4 sits left of D1 on the board so a rejection is a visible leftward move.
@@ -220,8 +220,8 @@ never back in Ready, so a hold a person lifts by removing the label lands where 
 
 ## Demotions the loop makes
 
-E2 to D4 (rejection, round spent); E2 to F2 (rejection on a lane that fell behind; then F2 to D4); F3 or F4 to F2 (the base moved while a gate ran); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
-standing verdict was a rejection); D1 to B1 (failed attempt, attempts remain); C3 to C2 (cut
+E2 to D4 (a rejection of the code, round spent); E2 to D2 (a rejection that wants more evidence, round spent: Prove runs alone); D2 to D1 or D4 (the proof was refused; an attempt spent); E2 to F2 (rejection on a lane that fell behind; then F2 to D4); F3 or F4 to F2 (the base moved while a gate ran); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
+standing verdict was a rejection of the code) or F2 to D2 (it wanted more evidence); D1 to B1 (failed attempt, attempts remain); C3 to C2 (cut
 disputed); C6 to C5 (still-good) and C6 to C4 (amend); C7 to A2 (release appraisal); every Q lane
 to its phase's entry on redrive; every H lane through reconcile on hold removal; every W lane
 through reconcile when the wait clears; any B, D, E, or F lane to a W lane when a wait appears.
