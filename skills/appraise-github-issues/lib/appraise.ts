@@ -541,6 +541,9 @@ export async function appraiseIssue(
       // A released trunk fires no callback: the burndown that asked for the release appraisal
       // carves an oversized remainder itself, under the claim it already holds.
       if (options.callbacks && !options.release) {
+        // A callback can be another driver, and a long one: say what is running before it starts,
+        // so the log does not go silent while a carve happens somewhere else.
+        say(`handing #${issue.number} to the ${result.points}-point size callback in ${options.callbacks.dir}; its own log is where that callback writes one`);
         outcome.callback = await runSizeCallback(
           ctx,
           options.callbacks.dir,

@@ -21,8 +21,8 @@
  * the knife failed; 3 when another run holds the issue.
  */
 
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCallbacksDir } from '../appraise-github-issues/lib/appraise.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
@@ -36,6 +36,8 @@ import { CARVE_DEFAULTS, type CarveKnobs, JOURNAL_STEPS, type JournalStep } from
 import { carveIssue } from './lib/knife.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
+import type { Board } from '../burn-down-github-issues/board.ts';
+import { createBoardWriter } from '../burn-down-github-issues/lib/board-writer.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -181,6 +183,20 @@ if (DRY_RUN && !(isFixture(SEATS.carver) && isFixture(SEATS.confirmer))) {
 installStopHandler(log);
 
 if (!DRY_RUN) ensureLabels(ctx);
+
+// The knife moves its own cards (C2, C3, C4) when it knows where the board is. A carve started by
+// hand, or by a producer's size callback, is otherwise invisible for its whole run: the card sits
+// wherever the driver that dispatched it last left it. The pointer is the one card.ts reads.
+if (!DRY_RUN) {
+  const pointer = join(resolve(REPO_ROOT, CONFIG.project.worktreeRoot, 'runs'), 'board.json');
+  if (existsSync(pointer)) {
+    const writer = createBoardWriter(JSON.parse(readFileSync(pointer, 'utf8')) as Board, CONFIG.project.repo, log);
+    ctx.onLane = (event) => {
+      writer.onLane(event);
+    };
+    log(`board: moving #${ISSUE_NUMBER}'s card on ${pointer}`);
+  }
+}
 
 const issue: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', ISSUE_LIST_FIELDS]));
 const result = await carveIssue(ctx, issue, KNOBS);

@@ -148,6 +148,11 @@ comment or label, and reaches no dead-letter queue. The driver waits up to thirt
 lanes to unwind and release their claims, logs any claim it must abandon (it expires on its own),
 then releases the lock. Everything durable is already on GitHub.
 
+A callback that is itself a driver of this collection (the knife, through `carve.ts`, started by a
+size callback) is given a minute rather than an agent's ten seconds, since it has its own agent to
+kill and its own claims to release. Its card moves while it runs: a standalone `carve.ts` finds the
+same board pointer `card.ts` reads, so a carve nobody dispatched from the loop is still visible.
+
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
 No merge begins after the signal, including one that arrives during the reads just before a merge. A

@@ -1111,8 +1111,11 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
         }
         // An appraisal that stopped because the issue changed under it (held, closed, claimed,
         // became a trunk) has no lane of its own to report: the tracker says where the card is.
-        if (outcome.changed || (outcome.verdict === 'failed' && !outcome.retry && !outcome.deadLetter)) {
-          placeFromTracker(issue.number, issue.title, outcome.reason);
+        // A callback is another driver: the knife, usually, which carves, hands off, or fails, and
+        // writes what it did to the tracker. Nothing here can name the lane that left behind, so
+        // the tracker is asked, as for any other issue that changed under this appraisal.
+        if (outcome.changed || outcome.callback?.executable !== undefined || (outcome.verdict === 'failed' && !outcome.retry && !outcome.deadLetter)) {
+          placeFromTracker(issue.number, issue.title, outcome.callback?.executable ? `${outcome.reason}; ${outcome.callback.name} ran` : outcome.reason);
           return;
         }
         // `retry` means nothing changed on the issue and the next run tries again; the card

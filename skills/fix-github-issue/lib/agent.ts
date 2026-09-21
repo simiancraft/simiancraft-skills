@@ -15,7 +15,14 @@ import { beginStop, isStopping, RunStopping, stoppableSleep } from './shell.ts';
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
 /** Live agent processes, so a signal can take them down rather than orphaning them. */
-export const children = new Set<{ pid: number; kill: () => void; exitCode: number | null; issue?: number; repo?: string }>();
+export const children = new Set<{ pid: number; kill: () => void; exitCode: number | null; issue?: number; repo?: string; ownDriver?: true }>();
+
+/**
+ * A child that is itself a driver of this collection needs its own stop to finish: it kills its
+ * agent, waits for its lanes, and releases its claims, which takes longer than an agent's grace.
+ * Killed at the agent's pace it would leave a claim standing for up to half an hour.
+ */
+export const DRIVER_GRACE_MS = 60_000;
 
 /** Stops every agent this process is running on one issue: its lease is gone, so its work must stop with it. */
 export function killAgentsOn(repo: string, issue: number): number {
@@ -113,11 +120,21 @@ export async function shutdownAgents(graceMs = 10_000): Promise<number> {
   beginStop();
   const running = [...children];
   if (running.length === 0) return 0;
-  for (const proc of running) killAgent(proc);
-  const deadline = Date.now() + graceMs;
-  while (Date.now() < deadline && running.some((proc) => proc.exitCode === null)) await Bun.sleep(200);
+  // Watched, not polled: a child's `exitCode` is not updated unless something awaits its exit, so a
+  // loop that reads it alone learns nothing and waits out the whole grace.
+  const left = new Map(running.map((proc) => [proc, true]));
   for (const proc of running) {
-    if (proc.exitCode !== null) continue;
+    void Promise.resolve((proc as { exited?: Promise<number> }).exited).then(() => left.set(proc, false));
+    killAgent(proc);
+  }
+  // A driver of this collection gets the longer grace: it is unwinding its own lanes and releasing
+  // its claims, and a SIGKILL at an agent's pace would leave those standing until they expire.
+  const graceFor = (proc: { ownDriver?: true }) => (proc.ownDriver ? Math.max(graceMs, DRIVER_GRACE_MS) : graceMs);
+  const started = Date.now();
+  const waiting = () => running.filter((proc) => left.get(proc) === true && Date.now() - started < graceFor(proc));
+  while (waiting().length > 0) await Bun.sleep(100);
+  for (const proc of running) {
+    if (left.get(proc) === false) continue;
     try {
       process.kill(-proc.pid, 'SIGKILL');
     } catch {
@@ -130,7 +147,8 @@ export async function shutdownAgents(graceMs = 10_000): Promise<number> {
     }
   }
   await Bun.sleep(200);
-  return running.filter((proc) => proc.exitCode === null).length;
+  for (const proc of running) children.delete(proc);
+  return running.filter((proc) => left.get(proc) === true).length;
 }
 
 /**
