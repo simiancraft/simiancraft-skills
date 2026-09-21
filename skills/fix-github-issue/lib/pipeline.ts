@@ -1532,13 +1532,13 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
   // A lost lease is not a failure of the work: another run may hold the issue, so nothing is
   // written on it, and the lane is kept for whoever reads what happened.
   if (error instanceof LeaseLostError || leaseLost(ctx, issue.number)) {
-    say(`lost its lease; nothing is settled, and the lane is kept: ${error.message.split('\n')[0]}`);
+    say(`lost its lease; nothing is written on the issue, the lane is kept, and anything already pushed survives: ${error.message.split('\n')[0]}`);
     return { outcome: { outcome: 'lease-lost', reason: 'this run lost its lease on the issue' }, keepLane: true };
   }
   // Nor is a stop, which is the operator's: nothing is counted or queued, and the lane is kept,
   // since a worker stopped mid-change leaves its only record there.
   if (error instanceof RunStopping || isStopping()) {
-    say('stopped with the run; nothing is settled, and the lane is kept');
+    say('stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives');
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
   }
   say(reason);
