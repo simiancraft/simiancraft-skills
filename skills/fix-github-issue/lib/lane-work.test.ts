@@ -105,6 +105,16 @@ describe('what a finished lane leaves behind', () => {
     expect(git(repo, 'rev-parse', 'origin/main')).toBe(before);
   });
 
+  it('keeps a detached lane that committed before it made a branch: nothing else has that work', () => {
+    const lines: string[] = [];
+    const dir = lane(78, false);
+    writeFileSync(join(dir, 'detached.txt'), 'committed before branching\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'fix: before the branch');
+    expect(preserveLaneWork(ctxFor(lines), 78, (m) => lines.push(m))).toBe(false);
+    expect(lines.some((l) => /detached head/.test(l))).toBe(true);
+  });
+
   it('says a lane that is already gone holds nothing', () => {
     expect(preserveLaneWork(ctxFor([]), 75, () => {})).toBe(true);
   });

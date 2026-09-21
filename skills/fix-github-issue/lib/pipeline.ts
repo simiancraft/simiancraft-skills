@@ -1481,9 +1481,16 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
   const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (!existsSync(cwd)) return true;
   try {
+    // Nothing here that no remote has: the lane holds no work of its own, whatever it is on.
+    if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0) return true;
     const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-    // Detached, or nothing here that no remote has: the lane holds no work of its own.
-    if (branch === 'HEAD' || Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0) return true;
+    // A lane starts detached, so a worker that committed before it made its branch has its only
+    // copy here, reachable by nothing but this worktree's HEAD. There is no branch to push it to;
+    // the lane is kept, and a person reads it.
+    if (branch === 'HEAD') {
+      say('keeping the lane: it holds commits on a detached head, which no branch and no remote has');
+      return false;
+    }
     // Only this issue's own branch is published, by the coder's naming rule. A lane that ended up on
     // some other branch, the base most of all, is kept for a person rather than pushed anywhere: a
     // cleanup step is no place to publish a change nobody reviewed.
