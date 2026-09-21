@@ -153,6 +153,12 @@ size callback) is given a minute rather than an agent's ten seconds, since it ha
 kill and its own claims to release. Its card moves while it runs: a standalone `carve.ts` finds the
 same board pointer `card.ts` reads, so a carve nobody dispatched from the loop is still visible.
 
+A failed turn is not lost work. An agent killed at its cap, one that exited badly, one a stop ended,
+and one whose lease ran out all say the same thing on the issue: what the lane holds is not trusted,
+and anything already pushed survives. Read the issue's pull requests before deciding what to do with
+such a card: a redrive continues from the pushed head, and carving or re-working it starts again from
+nothing. `gh pr list --search <issue>` answers that in one line.
+
 A lane that finishes with commits no remote holds is not simply removed: they are pushed to the
 issue's own branch when it has one, and otherwise the lane is kept, with any detached commits saved
 under `refs/loop/rescued/issue-<n>/<sha>`, one ref per rescue, so nothing can make them unreachable. Neither the base branch nor

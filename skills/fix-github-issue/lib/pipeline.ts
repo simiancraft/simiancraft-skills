@@ -201,8 +201,8 @@ async function runWorker(
       issue: issue.number,
       verdict: 'failed',
       reason: timedOut
-        ? `worker timed out at ${agentCapMs(ctx, 'worker') / 60000} minutes and was killed, so nothing it left is trusted; log ends: ${logTail(logPath)}`
-        : `worker exited ${exitCode}, so its verdict is not trusted; log ends: ${logTail(logPath)}`,
+        ? `worker timed out at ${agentCapMs(ctx, 'worker') / 60000} minutes and was killed, so nothing it left in its lane is trusted; anything it had already pushed survives, and a redrive continues from that head rather than starting again; log ends: ${logTail(logPath)}`
+        : `worker exited ${exitCode}, so its verdict is not trusted; anything it had already pushed survives, and a redrive continues from that head; log ends: ${logTail(logPath)}`,
     };
   }
 
