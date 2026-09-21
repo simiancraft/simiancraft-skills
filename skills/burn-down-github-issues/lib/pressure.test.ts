@@ -361,6 +361,33 @@ describe('runtime moves and settlement', () => {
     });
     await api.workIssue({}, { number: 1 }, '/fake', 2, 2, noop); expect(pr).toBe(7);
   });
+  it('a card says where its brief came from, so a redrive does not claim a review that never happened', () => {
+    const notes: string[] = [];
+    const api = loadFunctions(pipeline, ['runWorker'], {
+      move: (_ctx: unknown, _issue: unknown, _lane: string, note?: string) => notes.push(note ?? ''),
+      renderPrompt: () => 'prompt',
+      cardCommand: () => 'card',
+      runAgent: async () => ({ logPath: '', exitCode: 1 }),
+      holdLease: noop,
+      agentCapMs: () => 60_000,
+      logTail: () => '',
+      resetLane: noop,
+      attemptCount: () => 0,
+      ctx: {},
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1] }, dryRun: true } as never;
+    const issue = { number: 1, title: 't', labels: [] } as never;
+    const review = (confidence: string) => ({ pr: 1, decision: 'gather-more', adequacy: 'a', confidence, blocking: ['x'] }) as never;
+    return Promise.all([
+      api.runWorker(ctx, issue, '/tmp', 2, review('redrive')),
+      api.runWorker(ctx, issue, '/tmp', 2, review('resume')),
+      api.runWorker(ctx, issue, '/tmp', 2, review('round 1')),
+    ]).then(() => {
+      expect(notes[0]).toContain('a person asked for it to be continued');
+      expect(notes[1]).toContain('it lost its driver');
+      expect(notes[2]).toBe('revision after a review');
+    });
+  });
   it('a disputed worker close reports the human lane', () => {
     const lanes: string[] = [];
     const api = loadFunctions(pipeline, ['parkWithBothOpinions'], { mutate: noop, move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane) });

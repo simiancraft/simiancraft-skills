@@ -182,7 +182,17 @@ async function runWorker(
 
   // The closest lane that can correct the card: stale proof goes back to Proving, a rejection to
   // Sent back, and only a first attempt starts at Coding.
-  move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', reproof ? 'reacquiring proof after the base moved' : feedback ? 'revision after a review' : undefined);
+  // The note says where the brief came from. A redrive passes feedback too, and a person lifting a
+  // park or a dead letter is not a review; a card that says otherwise sends its reader to look for
+  // one that never happened.
+  const note = reproof
+    ? 'reacquiring proof after the base moved'
+    : feedback
+      ? feedback.confidence === 'redrive' || feedback.confidence === 'resume'
+        ? `continuing the existing pull request: ${feedback.confidence === 'resume' ? 'it lost its driver' : "a person asked for it to be continued"}`
+        : 'revision after a review'
+      : undefined;
+  move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', note);
   // A revision is the exception: its lane holds the branch and the pull request under review, so a
   // reset would throw away work the reviewer already read. Only a first attempt may be reset.
   const { logPath, exitCode, notRun, timedOut } = await runAgent(
