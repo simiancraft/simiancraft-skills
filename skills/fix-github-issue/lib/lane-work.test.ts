@@ -111,8 +111,14 @@ describe('what a finished lane leaves behind', () => {
     writeFileSync(join(dir, 'detached.txt'), 'committed before branching\n');
     git(dir, 'add', '.');
     git(dir, 'commit', '-q', '-m', 'fix: before the branch');
+    const head = git(dir, 'rev-parse', 'HEAD');
     expect(preserveLaneWork(ctxFor(lines), 78, (m) => lines.push(m))).toBe(false);
-    expect(lines.some((l) => /detached head/.test(l))).toBe(true);
+    // Saved under a ref the whole repository shares, so the work survives even the lane being
+    // removed later, by this run's cleanup or by the next run's reconcile.
+    expect(git(repo, 'rev-parse', 'refs/loop/rescued/issue-78')).toBe(head);
+    git(repo, 'worktree', 'remove', '--force', dir);
+    expect(git(repo, 'rev-parse', 'refs/loop/rescued/issue-78')).toBe(head);
+    expect(lines.some((l) => /saved its detached commits/.test(l))).toBe(true);
   });
 
   it('says a lane that is already gone holds nothing', () => {

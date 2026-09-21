@@ -153,6 +153,12 @@ size callback) is given a minute rather than an agent's ten seconds, since it ha
 kill and its own claims to release. Its card moves while it runs: a standalone `carve.ts` finds the
 same board pointer `card.ts` reads, so a carve nobody dispatched from the loop is still visible.
 
+A lane that finishes with commits no remote holds is not simply removed: they are pushed to the
+issue's own branch when it has one, and otherwise the lane is kept, with any detached commits saved
+under `refs/loop/rescued/issue-<n>` so nothing can make them unreachable. Neither the base branch nor
+another issue's branch is ever published by that cleanup. `git log refs/loop/rescued/issue-<n>` reads
+what a failed attempt left; deleting the ref throws it away.
+
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
 No merge begins after the signal, including one that arrives during the reads just before a merge. A
