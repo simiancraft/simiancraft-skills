@@ -450,7 +450,12 @@ async function runWorker(
       } else {
         say(`an earlier run pushed ${facts.branch} and never announced it finished; continuing Code from it`);
         revision = true;
-        codeBrief = `A branch for this issue already exists with commits, pushed by an earlier run that did not finish: you are on it. Read what is there, continue from it, and finish the step.`;
+        // An earlier turn got this far and stopped, often because it ran out of its cap. What that
+        // turn needed was to finish, so the brief says finish rather than improve.
+        codeBrief =
+          'A branch for this issue already exists with commits, pushed by an earlier run that did not finish: you are on it. ' +
+          'Read what is there and carry it to a finished step. That run may have been cut off at its time cap, so spend none of ' +
+          'yours re-reading what is already done or improving what already works: find what is missing, do that, gate it, and push.';
       }
     }
   }

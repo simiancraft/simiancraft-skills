@@ -19,6 +19,7 @@ const HERE = import.meta.dir;
 let scratch: string;
 let repo: string;
 let agentLog: string;
+let promptLog: string;
 const originalCommand = ENGINES.fixture.command;
 const spawnSync = Bun.spawnSync;
 
@@ -33,6 +34,7 @@ beforeAll(() => {
   const origin = join(scratch, 'origin.git');
   repo = join(scratch, 'repo');
   agentLog = join(scratch, 'agent.log');
+  promptLog = join(scratch, 'prompts.log');
   git(scratch, 'init', '-q', '--bare', '-b', 'main', origin);
   git(scratch, 'clone', '-q', origin, repo);
   git(repo, 'config', 'user.name', 't');
@@ -72,7 +74,8 @@ esac
   writeFileSync(
     agent,
     `import { appendFileSync, writeFileSync } from 'node:fs';
-const [cwd, issue] = process.argv.slice(2);
+const [cwd, issue, prompt] = process.argv.slice(2);
+appendFileSync(${JSON.stringify(promptLog)}, '#' + issue + ' ' + (process.env.LOOP_ROLE ?? '') + '\\n' + (prompt ?? '') + '\\n=====\\n');
 const role = process.env.LOOP_ROLE ?? '';
 const git = (...args: string[]) => { const r = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' }); if (r.exitCode !== 0) throw new Error(r.stderr.toString()); return r.stdout.toString().trim(); };
 appendFileSync(${JSON.stringify(agentLog)}, role + ' on ' + git('rev-parse', '--abbrev-ref', 'HEAD') + '\\n');
@@ -88,7 +91,7 @@ if (role.startsWith('worker')) {
 }
 `,
   );
-  (ENGINES.fixture as { command: typeof originalCommand }).command = (cwd, _prompt, model) => ['bun', agent, cwd, model ?? ''];
+  (ENGINES.fixture as { command: typeof originalCommand }).command = (cwd, prompt, model) => ['bun', agent, cwd, model ?? '', prompt];
 });
 
 afterAll(() => {
@@ -200,6 +203,31 @@ describe('the work turn against a real remote and a tracker', () => {
     expect(outcome.reason).toContain('the endpoint still returns 500 for an empty list');
     expect(io.view(64)!.labels.map((l) => l.name).filter((n) => n.startsWith('loop/attempts'))).toEqual(['loop/attempts: 3']);
   }, 60_000);
+
+  it('tells a coder continuing an unannounced branch to finish it, not to polish it', async () => {
+    // An earlier run pushed and never announced, the shape a cap inside Code leaves behind.
+    writeFileSync(agentLog, '');
+    writeFileSync(promptLog, '');
+    const io = new FakeTracker(BOT, [fakeIssue(66, { labels: [{ name: 'size: 1' }] })]);
+    const first = context(io, 66, 'host-1-1');
+    git(repo, 'worktree', 'add', '-q', '--detach', join(scratch, 'seed-66'), 'origin/main');
+    const seed = join(scratch, 'seed-66');
+    git(seed, 'switch', '-q', '-c', 'fix/change-66');
+    writeFileSync(join(seed, 'half.txt'), 'half a change\n');
+    git(seed, 'add', '.');
+    git(seed, 'commit', '-q', '-m', 'fix: half of it');
+    git(seed, 'push', '-q', '-u', 'origin', 'fix/change-66');
+    git(repo, 'worktree', 'remove', '--force', seed);
+    // The loop has worked this issue before, which is what lets an unannounced branch be adopted.
+    io.comment(66, BOT, '<!-- carve-claim kind=working run=host-0-0 at=2026-09-01T00:00:00Z expires=2999-01-01T00:00:00Z token=t -->');
+    io.comment(66, BOT, '<!-- carve-unclaim kind=working run=host-0-0 -->');
+    await fixIssue(first.ctx, ISSUE(66), { maxPoints: 2 });
+    // What the coder was actually handed, from the prompt the agent received.
+    const handed = readFileSync(promptLog, 'utf8').split('=====').filter((block) => block.startsWith('#66 '));
+    expect(handed.length).toBeGreaterThan(0);
+    expect(handed.join('\n')).toContain('cut off at its time cap');
+    expect(handed.join('\n')).toContain('find what is missing');
+  }, 90_000);
 
   it("runs Code first when a person redrives with an objection: it is about the change, not the evidence", async () => {
     writeFileSync(agentLog, '');
