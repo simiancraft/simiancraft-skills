@@ -1022,7 +1022,8 @@ async function land(
     // The person watching the main checkout sees the fix land, when the config asks for that.
     followBase(ctx, paths);
 
-    // Read the branch name while the worktree still exists, then drop it.
+    // Read the branch name while the worktree still exists, then drop it. This is the one removal
+    // that keeps nothing back: the change is merged, so the base holds every commit the lane had.
     const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
     removeWorktree(ctx, issue.number);
     try {
@@ -1062,7 +1063,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     say(`refusing to close: ${gate.why}`);
     parkIssue(ctx, issue.number, `The loop reached a \`${result.verdict}\` verdict (${result.reason}) but did not close, because ${gate.why}.`);
     closePullRequest();
-    removeWorktree(ctx, issue.number);
+    retireLane(ctx, issue.number, say);
     return { outcome: 'parked', reason: gate.why };
   };
 
@@ -1073,7 +1074,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       if (!confirmation) return { outcome: 'failed', reason: 'no usable confirmation of the close' };
       if (!confirmation.agree) {
         closePullRequest();
-        removeWorktree(ctx, issue.number);
+        retireLane(ctx, issue.number, say);
         return parkWithBothOpinions(ctx, issue, result, confirmation, say);
       }
       const refused = gateBeforeClose();
@@ -1083,7 +1084,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       closePullRequest();
       await closeIssue(ctx, issue.number, `${result.closeComment ?? result.reason}\n\nIndependently re-checked: ${confirmation.reason}`, { kind: 'closed', reason: result.verdict, by: 'worker' });
       move(ctx, issue, 'T2', result.verdict);
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'closed', reason: result.reason };
     }
 
@@ -1092,7 +1093,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       if (!confirmation) return { outcome: 'failed', reason: 'no usable confirmation of the answer' };
       if (!confirmation.agree) {
         closePullRequest();
-        removeWorktree(ctx, issue.number);
+        retireLane(ctx, issue.number, say);
         return parkWithBothOpinions(ctx, issue, result, confirmation, say);
       }
       const refused = gateBeforeClose();
@@ -1103,7 +1104,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       if (!already) mutate(ctx, `post the answer on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `${marker}\n${result.answer ?? ''}`]);
       await closeIssue(ctx, issue.number, `Answered; see the answer above. Independently re-checked: ${confirmation.reason}`, { kind: 'answered', reason: 'answered', by: 'worker' });
       move(ctx, issue, 'T2', 'answered');
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'closed', reason: result.reason };
     }
 
@@ -1121,7 +1122,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       ]);
       closePullRequest();
       move(ctx, issue, result.verdict === 'needs-decision' ? 'H1' : 'H2', result.reason.slice(0, 120));
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'handed-off', reason: result.reason };
 
     case 'out-of-band': {
@@ -1152,7 +1153,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       }
       closePullRequest();
       move(ctx, issue, 'C1', `out-of-band at ${result.points ?? 'unstated'} points`);
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'handed-off', reason: result.reason };
     }
 
@@ -1447,7 +1448,7 @@ export async function fixIssue(
     // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
     // so reconcile still owns that case on the next start. A throw that could not be recorded on
     // the issue keeps its lane too: the worktree is then the only record of what happened.
-    if (!ctx.dryRun && !keepLane && preserveLaneWork(ctx, issue.number, say)) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
   }
 }
 
@@ -1476,6 +1477,10 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * and for a person to look at. A lane that cannot be pushed is kept instead, since removing it
  * would be the only irreversible act here.
  */
+export function retireLane(ctx: Context, issue: number, say: (message: string) => void): void {
+  if (preserveLaneWork(ctx, issue, say)) removeWorktree(ctx, issue);
+}
+
 export function preserveLaneWork(ctx: Context, issue: number, say: (message: string) => void): boolean {
   // The lane's own directory, by the same rule that made it; a lane already gone holds nothing.
   const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
@@ -1652,6 +1657,6 @@ export async function redriveIssue(
       say(`could not release the claim: ${(error as Error).message}`);
     }
     inFlight.delete(issue.number);
-    if (!ctx.dryRun && !keepLane && preserveLaneWork(ctx, issue.number, say)) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
   }
 }

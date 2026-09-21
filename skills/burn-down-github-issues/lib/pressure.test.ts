@@ -206,7 +206,7 @@ describe('tracker and checks pressure', () => {
 // of loop.ts, subprocess, source edit, or live tracker is involved.
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping and whether its lease stands; here neither is in doubt.
-  deps = { preserveLaneWork: () => true, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), ...deps };
+  deps = { preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);

@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from './config.ts';
 import type { Context } from './context.ts';
-import { preserveLaneWork } from './pipeline.ts';
+import { preserveLaneWork, retireLane } from './pipeline.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -28,6 +28,7 @@ beforeAll(() => {
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 const PROJECT = { remote: 'origin', baseBranch: 'main', worktreeRoot: 'wt' } as ProjectConfig;
+const say = (lines: string[]) => (m: string) => lines.push(m);
 const ctxFor = (lines: string[]) => ({ project: PROJECT, repoRoot: repo, dryRun: false, log: (m: string) => lines.push(m) }) as unknown as Context;
 
 /** A lane as the pipeline makes one, at `<worktreeRoot>/issue-<n>`. */
@@ -135,5 +136,25 @@ describe('what a finished lane leaves behind', () => {
 
   it('says a lane that is already gone holds nothing', () => {
     expect(preserveLaneWork(ctxFor([]), 75, () => {})).toBe(true);
+  });
+
+  it('retires a lane by keeping its work first: a hand-off removes nothing it cannot replace', () => {
+    const lines: string[] = [];
+    const dir = lane(79, false);
+    writeFileSync(join(dir, 'handed-off.txt'), 'committed, then needs-human\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'fix: before asking for a person');
+    const head = git(dir, 'rev-parse', 'HEAD');
+    retireLane(ctxFor(lines), 79, say(lines));
+    // The lane stayed, and the commits are referenced whatever happens to it next.
+    expect(existsSync(dir)).toBe(true);
+    expect(git(repo, 'for-each-ref', '--format=%(objectname)', 'refs/loop/rescued/issue-79/')).toBe(head);
+  });
+
+  it('retires a lane that holds nothing by simply removing it', () => {
+    const lines: string[] = [];
+    const dir = lane(80, false);
+    retireLane(ctxFor(lines), 80, say(lines));
+    expect(existsSync(dir)).toBe(false);
   });
 });
