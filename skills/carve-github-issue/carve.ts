@@ -172,10 +172,10 @@ log(`issue #${ISSUE_NUMBER} | ceiling ${KNOBS.ceiling} | scale ${ctx.knobs.point
 log(`carver ${seatLabel(SEATS.carver)} | confirmer ${seatLabel(SEATS.confirmer)} | callbacks ${KNOBS.callbacksDir}`);
 if (DRY_RUN) log('DRY RUN: no lock, no claim, no journal file; only fixture seats run; only this log is written');
 
+// Not refused here: finishing an announced generation runs no seat, so a dry run can rehearse a
+// resume without one. The knife stops at the first seat it would actually have to run and says so.
 if (DRY_RUN && !(isFixture(SEATS.carver) && isFixture(SEATS.confirmer))) {
-  log('left-alone: dry run needs fixture seats (--carver fixture:<answer.json> --confirmer fixture2:<answer.json>)');
-  step('left-alone');
-  process.exit(0);
+  log('DRY RUN: no fixture seats, so anything that needs the carver or the confirmer stops there; an announced generation is still rehearsed to its end');
 }
 
 installStopHandler(log);

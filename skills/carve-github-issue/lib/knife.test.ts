@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Context, createContext } from '../../fix-github-issue/lib/context.ts';
@@ -316,6 +316,11 @@ function ctxFor(io: FakeTracker, runId = 'host-1-1'): Context {
   return ctx;
 }
 
+/** Knobs whose seats are real engines, which a dry run does not run. */
+function realSeats(): CarveKnobs {
+  return { ceiling: 2, ...CARVE_DEFAULTS, callbacksDir: join(scratch, 'callbacks'), seats: { carver: { engine: 'claude' }, confirmer: { engine: 'codex' } } };
+}
+
 function knobs(carver: string, confirmer: string, partial: Partial<CarveKnobs> = {}): CarveKnobs {
   return { ceiling: 2, ...CARVE_DEFAULTS, callbacksDir: join(scratch, 'callbacks'), seats: { carver: { engine: 'fixture', model: carver }, confirmer: { engine: 'fixture2', model: confirmer } }, ...partial };
 }
@@ -369,6 +374,18 @@ function trunk(): FakeTracker {
 const issue10 = { number: 10, title: '[t] big', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 8' }] };
 const records = (io: FakeTracker, n: number) => io.view(n)!.comments.filter((c) => c.body.startsWith('<!-- carve-record')).map((c) => /state=(\w+)/.exec(c.body)?.[1]);
 const labels = (io: FakeTracker, n: number) => io.view(n)!.labels.map((l) => l.name).sort();
+
+describe('the knife writes nothing without the lease', () => {
+  test('asks for it before it creates a label, which is a write like any other', () => {
+    const source = readFileSync(new URL('./knife.ts', import.meta.url), 'utf8');
+    const funnel = source.slice(source.indexOf('function addLabel('), source.indexOf('function removeLabel('));
+    const lease = funnel.indexOf('holdLease(k,');
+    const ensure = funnel.indexOf('ensureLabel(k.ctx,');
+    expect(lease).toBeGreaterThan(-1);
+    expect(ensure).toBeGreaterThan(-1);
+    expect(lease).toBeLessThan(ensure);
+  });
+});
 
 describe('carveIssue', () => {
   test('a carver stopped with the run settles nothing: no count, no record, and the claim released by the lane itself', async () => {
@@ -435,6 +452,42 @@ describe('carveIssue', () => {
     expect(await awaitReleases(0)).toEqual(['o/r#10']);
     if (handle !== 'busy') handle.release();
     expect(await awaitReleases(0)).toEqual([]);
+  });
+
+  test('a dry run rehearses finishing an announced generation, and stops at the first seat it does not run', async () => {
+    // A real run is interrupted after the applying record and one child, the way roster's carves were.
+    const io = trunk();
+    const ctx = ctxFor(io);
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    io.beforeWrite = (op) => {
+      if (op.argv[1] === 'issue' && op.argv[2] === 'create' && io.view(10)!.subIssues.length > 0) throw new Error('interrupted');
+    };
+    await expect(carveIssue(ctx, issue10, k, io)).rejects.toThrow();
+    io.beforeWrite = null;
+    const announced = records(io, 10);
+    const children = io.view(10)!.subIssues.length;
+    expect(announced).toEqual(['applying']);
+    expect(children).toBe(1);
+
+    // Now a dry run with REAL seats: it has no carver to run, and does not need one to finish this.
+    const dry = ctxFor(io);
+    dry.dryRun = true;
+    const out = await carveIssue(dry, issue10, realSeats(), io);
+    expect(out.outcome).toBe('resumed');
+    expect(dry.dryRunLog.some((d) => /^create child/.test(d))).toBe(true);
+    // Rehearsed, not done: the tracker is as the interrupted run left it.
+    expect(records(io, 10)).toEqual(announced);
+    expect(io.view(10)!.subIssues.length).toBe(children);
+  });
+
+  test('a dry run with no fixture seat stops at the carver, and calls it nothing that failed', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    ctx.dryRun = true;
+    const out = await carveIssue(ctx, issue10, realSeats(), io);
+    expect(out).toEqual({ outcome: 'not-run', reason: 'dry run: the carver was not run' });
+    expect(io.writes).toEqual([]);
+    expect(ctx.dryRunLog.some((d) => /loop\/carves/.test(d))).toBe(false);
   });
 
   test('a first carve on a repository that has never been carved: the generation label does not exist yet', async () => {

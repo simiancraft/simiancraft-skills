@@ -148,7 +148,8 @@ export const CARVE_DEFAULTS = {
 export type CarveOutcome = {
   /** `dlq`: the machine gave up and the trunk is in the carve dead-letter queue. */
   /** `lease-lost`: this run's own lease on the trunk ran out mid-carve; unlike `busy`, nobody else's claim was seen, and the card is not this run's to place. */
-  outcome: CarveVerdict | RevisitVerdict | 'busy' | 'lease-lost' | 'resumed' | 'left-alone' | 'failed' | 'dlq';
+  /** `not-run`: a dry run reached a seat it does not run; nothing was tried, so nothing failed. */
+  outcome: CarveVerdict | RevisitVerdict | 'busy' | 'lease-lost' | 'not-run' | 'resumed' | 'left-alone' | 'failed' | 'dlq';
   reason: string;
   generation?: number;
   children?: number[];
