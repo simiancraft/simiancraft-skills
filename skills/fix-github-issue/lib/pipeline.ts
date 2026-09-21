@@ -90,7 +90,15 @@ export type ReviewResult = {
   pr: number;
   decision: 'merge' | 'gather-more' | 'block';
   adequacy: string;
+  /** The reviewer's own prose about what it could not check. Never read as a control. */
   confidence: string;
+  /**
+   * Who wrote this brief. A reviewer's is a review; the driver writes the other three itself, for a
+   * pull request a person redrove, one that lost its driver, and one whose proof went stale. The
+   * card's note and the step dispatched depend on it, so it is a field of its own rather than a
+   * word read out of prose the reviewer is told to write freely.
+   */
+  origin?: 'review' | 'redrive' | 'resume' | 'freshness';
   blocking: string[];
   /** The reviewer's own classification of the diff, unioned with the worker's before merging. */
   touches?: WorkerResult['touches'];
@@ -462,7 +470,19 @@ async function runWorker(
 
   for (;;) {
     if (!proveOnly) {
-      move(ctx, issue, hasPull ? 'D4' : 'D1', revision ? 'continuing on the existing branch' : undefined);
+      // The note says where the brief came from. Only a reviewer's is a review; a redrive, a resume,
+      // and a stale proof are the driver's own briefs, and a card that calls them a review sends its
+      // reader looking for one that never happened.
+      const note = !revision
+        ? undefined
+        : feedback?.origin === 'redrive'
+          ? 'continuing the existing pull request: a person asked for it to be continued'
+          : feedback?.origin === 'resume'
+            ? 'continuing the existing pull request: it lost its driver'
+            : feedback
+              ? 'revision after a review'
+              : 'continuing the existing branch';
+      move(ctx, issue, hasPull ? 'D4' : 'D1', note);
       // Code on a branch that already exists starts on the current base like everything else: the
       // prompt forbids the coder to merge it, so the driver does, before the agent and not after.
       if (revision && !ctx.dryRun) {
@@ -1572,6 +1592,7 @@ export async function reviewAndLand(
         decision: 'gather-more',
         adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
         confidence: 'freshness',
+        origin: 'freshness',
         blocking: [
           `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
         ],
@@ -1907,6 +1928,7 @@ export async function redriveIssue(
             decision: 'gather-more',
             adequacy: 'This pull request lost its driver before it was reviewed. Nobody has objected to the change; its proof has to be current before a review can start.',
             confidence: 'resume',
+            origin: 'resume',
             blocking: [
               `The branch has been caught up with ${ctx.project.baseBranch}. Re-run the checks on the current head, confirm the fix still holds, reacquire any receipt that no longer describes this head, and update the proof. Change code only if something fails.`,
             ],
@@ -1919,6 +1941,7 @@ export async function redriveIssue(
             decision: 'block',
             adequacy: 'This pull request was stopped by the objection below; a person has asked for it to be continued.',
             confidence: 'redrive',
+            origin: 'redrive',
             blocking: [objection],
           };
     let result = await runWorker(ctx, issue, cwd, maxPoints, say, feedback, objection === null);

@@ -105,6 +105,7 @@ const PROJECT = { name: 'Test', repo: 'o/e2e', remote: 'origin', baseBranch: 'ma
 function context(io: FakeTracker, issue: number, runId: string) {
   const lines: string[] = [];
   const lanes: string[] = [];
+  const notes: string[] = [];
   const ctx = createContext({
     project: PROJECT,
     knobs: { autoMerge: 'never', maxReviewRounds: 3, checksTimeoutMinutes: 1, smokeTimeoutMinutes: 1 },
@@ -120,8 +121,11 @@ function context(io: FakeTracker, issue: number, runId: string) {
     step: () => {},
   });
   ctx.runId = runId;
-  ctx.onLane = (e) => lanes.push(e.lane);
-  return { ctx, lines, lanes };
+  ctx.onLane = (e) => {
+    lanes.push(e.lane);
+    if (e.note) notes.push(e.note);
+  };
+  return { ctx, lines, lanes, notes };
 }
 
 const ISSUE = (n: number) => ({ number: n, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] });
@@ -249,6 +253,10 @@ describe('the work turn against a real remote and a tracker', () => {
     );
     // Code runs before any prover: the prover may not change what the code does.
     expect(roles()[0]).toBe('worker-revise on fix/change-65');
+    // And the card says a person asked for this, not that a reviewer rejected it.
+    expect(second.lanes).toContain('D4');
+    expect(second.notes.some((n) => /a person asked for it to be continued/.test(n))).toBe(true);
+    expect(second.notes.some((n) => /revision after a review/.test(n))).toBe(false);
     expect(redriven.outcome).not.toBe('failed');
   }, 90_000);
 });
