@@ -1484,6 +1484,13 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
     const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
     // Detached, or nothing here that no remote has: the lane holds no work of its own.
     if (branch === 'HEAD' || Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0) return true;
+    // Only this issue's own branch is published, by the coder's naming rule. A lane that ended up on
+    // some other branch, the base most of all, is kept for a person rather than pushed anywhere: a
+    // cleanup step is no place to publish a change nobody reviewed.
+    if (branch === ctx.project.baseBranch || !branch.endsWith(`-${issue}`)) {
+      say(`keeping the lane: it holds commits that are on no remote, on ${branch}, which is not this issue's branch`);
+      return false;
+    }
     sh(ctx, ['git', 'push', ctx.project.remote, `HEAD:refs/heads/${branch}`], cwd);
     say(`pushed ${branch}: this lane held commits that were on no remote, and the lane is about to go`);
     return true;

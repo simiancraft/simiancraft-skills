@@ -91,7 +91,7 @@ export const SETSID = Bun.which('setsid');
  * the next lane. With setsid the agent leads its own group, so `-pid` addresses the whole tree;
  * without it the group kill is a no-op ESRCH and the plain kill still lands.
  */
-export function killAgent(proc: { pid: number; kill: () => void }): void {
+export function killAgent(proc: { pid: number; kill: () => void }, escalateMs = 10_000): void {
   const signal = (sig: 'SIGTERM' | 'SIGKILL') => {
     try {
       process.kill(-proc.pid, sig);
@@ -106,8 +106,9 @@ export function killAgent(proc: { pid: number; kill: () => void }): void {
   };
   signal('SIGTERM');
   // An agent that ignores SIGTERM must not keep holding its lane; escalate once, unref'd so the
-  // timer never keeps the loop process alive on its own.
-  setTimeout(() => signal('SIGKILL'), 10_000).unref();
+  // timer never keeps the loop process alive on its own. A child that is itself a driver is given
+  // its own longer grace, or this timer would kill it in the middle of releasing its claims.
+  setTimeout(() => signal('SIGKILL'), escalateMs).unref();
 }
 
 /**
@@ -123,13 +124,14 @@ export async function shutdownAgents(graceMs = 10_000): Promise<number> {
   // Watched, not polled: a child's `exitCode` is not updated unless something awaits its exit, so a
   // loop that reads it alone learns nothing and waits out the whole grace.
   const left = new Map(running.map((proc) => [proc, true]));
+  // A driver of this collection gets the longer grace: it is unwinding its own lanes and releasing
+  // its claims, and a SIGKILL at an agent's pace would leave those standing until they expire. The
+  // escalation inside killAgent runs on the same clock, or it would cut that short.
+  const graceFor = (proc: { ownDriver?: true }) => (proc.ownDriver ? Math.max(graceMs, DRIVER_GRACE_MS) : graceMs);
   for (const proc of running) {
     void Promise.resolve((proc as { exited?: Promise<number> }).exited).then(() => left.set(proc, false));
-    killAgent(proc);
+    killAgent(proc, graceFor(proc));
   }
-  // A driver of this collection gets the longer grace: it is unwinding its own lanes and releasing
-  // its claims, and a SIGKILL at an agent's pace would leave those standing until they expire.
-  const graceFor = (proc: { ownDriver?: true }) => (proc.ownDriver ? Math.max(graceMs, DRIVER_GRACE_MS) : graceMs);
   const started = Date.now();
   const waiting = () => running.filter((proc) => left.get(proc) === true && Date.now() - started < graceFor(proc));
   while (waiting().length > 0) await Bun.sleep(100);

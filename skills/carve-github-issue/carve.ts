@@ -189,12 +189,17 @@ if (!DRY_RUN) ensureLabels(ctx);
 // wherever the driver that dispatched it last left it. The pointer is the one card.ts reads.
 if (!DRY_RUN) {
   const pointer = join(resolve(REPO_ROOT, CONFIG.project.worktreeRoot, 'runs'), 'board.json');
-  if (existsSync(pointer)) {
-    const writer = createBoardWriter(JSON.parse(readFileSync(pointer, 'utf8')) as Board, CONFIG.project.repo, log);
-    ctx.onLane = (event) => {
-      writer.onLane(event);
-    };
-    log(`board: moving #${ISSUE_NUMBER}'s card on ${pointer}`);
+  try {
+    if (existsSync(pointer)) {
+      const writer = createBoardWriter(JSON.parse(readFileSync(pointer, 'utf8')) as Board, CONFIG.project.repo, log);
+      ctx.onLane = (event) => {
+        writer.onLane(event);
+      };
+      log(`board: moving #${ISSUE_NUMBER}'s card on ${pointer}`);
+    }
+  } catch (error) {
+    // A board is a projection. An unreadable one costs the operator a moving card, never the carve.
+    log(`board: ${pointer} could not be read (${(error as Error).message.split('\n')[0]}); carving without it`);
   }
 }
 

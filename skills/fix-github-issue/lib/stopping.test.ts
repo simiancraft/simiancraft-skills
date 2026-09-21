@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ClaimHandle, keepClaimed, LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
-import { children, DRIVER_GRACE_MS, runAgent, shutdownAgents } from './agent.ts';
+import { children, DRIVER_GRACE_MS, killAgent, runAgent, shutdownAgents } from './agent.ts';
 import type { ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { fixIssue, move } from './pipeline.ts';
@@ -215,6 +215,23 @@ describe('a stop and a child that is itself a driver', () => {
     expect(driver.finished()).toBe(true);
     expect(Date.now() - started).toBeGreaterThan(1000);
     expect(DRIVER_GRACE_MS).toBeGreaterThanOrEqual(60_000);
+  }, 20_000);
+
+  it('escalates to SIGKILL on the grace it was given, not on a fixed ten seconds', async () => {
+    // The conflict this guards: a driver given a minute to unwind, with a kill timer set at ten
+    // seconds, is cut off in the middle of releasing its claims.
+    const short = await lingering(30_000, false);
+    killAgent(short.proc, 200);
+    const died = await Promise.race([short.proc.exited.then(() => 'exited'), Bun.sleep(3000).then(() => 'alive')]);
+    expect(died).toBe('exited');
+    expect(short.proc.signalCode).toBe('SIGKILL');
+    children.delete(short.proc);
+
+    const patient = await lingering(1200, false);
+    killAgent(patient.proc, 30_000);
+    await patient.proc.exited;
+    expect(patient.finished()).toBe(true);
+    children.delete(patient.proc);
   }, 20_000);
 
   it("still takes an agent down at the agent's pace, which is the shorter one", async () => {

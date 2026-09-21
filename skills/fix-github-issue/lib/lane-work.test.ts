@@ -85,6 +85,26 @@ describe('what a finished lane leaves behind', () => {
     rmSync(join(scratch, 'origin.git', 'hooks', 'pre-receive'));
   });
 
+  it("keeps the lane, and pushes nothing, when its commits sit on a branch that is not this issue's", () => {
+    const lines: string[] = [];
+    lane(76, true, 'fix/someone-elses-99');
+    expect(preserveLaneWork(ctxFor(lines), 76, (m) => lines.push(m))).toBe(false);
+    expect(onRemote('fix/someone-elses-99')).toBe(false);
+    expect(lines.some((l) => /not this issue's branch/.test(l))).toBe(true);
+  });
+
+  it('never publishes the base branch from a cleanup step', () => {
+    const lines: string[] = [];
+    const dir = lane(77, false);
+    git(dir, 'switch', '-q', '--ignore-other-worktrees', 'main');
+    writeFileSync(join(dir, 'sneaky.txt'), 'never reviewed\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'fix: straight onto the base');
+    const before = git(repo, 'rev-parse', 'origin/main');
+    expect(preserveLaneWork(ctxFor(lines), 77, (m) => lines.push(m))).toBe(false);
+    expect(git(repo, 'rev-parse', 'origin/main')).toBe(before);
+  });
+
   it('says a lane that is already gone holds nothing', () => {
     expect(preserveLaneWork(ctxFor([]), 75, () => {})).toBe(true);
   });
