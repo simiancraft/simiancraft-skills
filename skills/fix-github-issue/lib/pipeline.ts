@@ -9,7 +9,7 @@
  * against two configurations without sharing a queue, a seat, or a run directory.
  */
 
-import { mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
@@ -1447,7 +1447,7 @@ export async function fixIssue(
     // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
     // so reconcile still owns that case on the next start. A throw that could not be recorded on
     // the issue keeps its lane too: the worktree is then the only record of what happened.
-    if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane && preserveLaneWork(ctx, issue.number, say)) removeWorktree(ctx, issue.number);
   }
 }
 
@@ -1470,6 +1470,29 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * back to Ready until the cap. When the recording itself fails, or the pull request list cannot be
  * read, the lane is kept: the worktree is then the only record of what happened.
  */
+/**
+ * Before a finished lane is removed: work it committed and never pushed exists nowhere else, and a
+ * failed attempt is exactly when there is some. Pushed, it survives for the next attempt to read
+ * and for a person to look at. A lane that cannot be pushed is kept instead, since removing it
+ * would be the only irreversible act here.
+ */
+export function preserveLaneWork(ctx: Context, issue: number, say: (message: string) => void): boolean {
+  // The lane's own directory, by the same rule that made it; a lane already gone holds nothing.
+  const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(cwd)) return true;
+  try {
+    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    // Detached, or nothing here that no remote has: the lane holds no work of its own.
+    if (branch === 'HEAD' || Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0) return true;
+    sh(ctx, ['git', 'push', ctx.project.remote, `HEAD:refs/heads/${branch}`], cwd);
+    say(`pushed ${branch}: this lane held commits that were on no remote, and the lane is about to go`);
+    return true;
+  } catch (error) {
+    say(`keeping the lane: it holds commits that are on no remote and could not be pushed (${(error as Error).message.split('\n')[0]})`);
+    return false;
+  }
+}
+
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
@@ -1607,6 +1630,6 @@ export async function redriveIssue(
       say(`could not release the claim: ${(error as Error).message}`);
     }
     inFlight.delete(issue.number);
-    if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane && preserveLaneWork(ctx, issue.number, say)) removeWorktree(ctx, issue.number);
   }
 }
