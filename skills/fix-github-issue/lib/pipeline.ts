@@ -1491,8 +1491,11 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
       // A branch ref would survive the worktree; a detached head does not, and the next run's
       // reconcile removes a clean lane. The commits are given a ref of their own first, in the
       // repository all worktrees share, so removing this directory can never make them unreachable.
-      const rescued = `refs/loop/rescued/issue-${issue}`;
-      sh(ctx, ['git', 'update-ref', rescued, 'HEAD'], cwd);
+      // One ref per rescue, named for the commit it saves: a later attempt on the same issue must
+      // not take the name of an earlier one and leave its history unreachable.
+      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
+      sh(ctx, ['git', 'update-ref', rescued, head], cwd);
       say(`keeping the lane, and saved its detached commits as ${rescued}: no branch and no remote has them`);
       return false;
     }

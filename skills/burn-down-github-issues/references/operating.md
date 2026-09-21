@@ -155,9 +155,9 @@ same board pointer `card.ts` reads, so a carve nobody dispatched from the loop i
 
 A lane that finishes with commits no remote holds is not simply removed: they are pushed to the
 issue's own branch when it has one, and otherwise the lane is kept, with any detached commits saved
-under `refs/loop/rescued/issue-<n>` so nothing can make them unreachable. Neither the base branch nor
-another issue's branch is ever published by that cleanup. `git log refs/loop/rescued/issue-<n>` reads
-what a failed attempt left; deleting the ref throws it away.
+under `refs/loop/rescued/issue-<n>/<sha>`, one ref per rescue, so nothing can make them unreachable. Neither the base branch nor
+another issue's branch is ever published by that cleanup. `git for-each-ref refs/loop/rescued/` lists what
+failed attempts left, and `git log <ref>` reads one; deleting a ref throws that attempt away.
 
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.

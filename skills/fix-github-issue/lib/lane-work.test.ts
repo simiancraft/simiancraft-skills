@@ -33,6 +33,7 @@ const ctxFor = (lines: string[]) => ({ project: PROJECT, repoRoot: repo, dryRun:
 /** A lane as the pipeline makes one, at `<worktreeRoot>/issue-<n>`. */
 function lane(issue: number, commit: boolean, branch = `fix/work-${issue}`) {
   const dir = join(repo, 'wt', `issue-${issue}`);
+  rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(repo, 'wt'), { recursive: true });
   git(repo, 'worktree', 'add', '-q', '--detach', dir, 'origin/main');
   if (commit) {
@@ -115,10 +116,21 @@ describe('what a finished lane leaves behind', () => {
     expect(preserveLaneWork(ctxFor(lines), 78, (m) => lines.push(m))).toBe(false);
     // Saved under a ref the whole repository shares, so the work survives even the lane being
     // removed later, by this run's cleanup or by the next run's reconcile.
-    expect(git(repo, 'rev-parse', 'refs/loop/rescued/issue-78')).toBe(head);
+    const rescues = () => git(repo, 'for-each-ref', '--format=%(objectname)', 'refs/loop/rescued/issue-78/').split('\n').filter(Boolean);
+    expect(rescues()).toEqual([head]);
     git(repo, 'worktree', 'remove', '--force', dir);
-    expect(git(repo, 'rev-parse', 'refs/loop/rescued/issue-78')).toBe(head);
+    expect(rescues()).toEqual([head]);
     expect(lines.some((l) => /saved its detached commits/.test(l))).toBe(true);
+
+    // A second attempt on the same issue, its own unrelated history: it takes no name the first one holds.
+    const again = lane(78, false);
+    writeFileSync(join(again, 'second-try.txt'), 'another attempt\n');
+    git(again, 'add', '.');
+    git(again, 'commit', '-q', '-m', 'fix: the second attempt');
+    const second = git(again, 'rev-parse', 'HEAD');
+    expect(preserveLaneWork(ctxFor(lines), 78, (m) => lines.push(m))).toBe(false);
+    git(repo, 'worktree', 'remove', '--force', again);
+    expect(rescues().sort()).toEqual([head, second].sort());
   });
 
   it('says a lane that is already gone holds nothing', () => {
