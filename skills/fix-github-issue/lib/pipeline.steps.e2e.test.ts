@@ -6,7 +6,7 @@ import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracke
 import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
 import { ENGINES } from './engines.ts';
-import { fixIssue } from './pipeline.ts';
+import { fixIssue, redriveIssue } from './pipeline.ts';
 import { newestStep } from './steps.ts';
 
 /**
@@ -47,7 +47,19 @@ beforeAll(() => {
   // refuses every real `gh` process, and stays in force: for this file alone a `gh` call is sent to
   // a stub under its own name, which answers `pr list` and fails loudly on anything else.
   const stub = join(scratch, 'gh-stub');
-  writeFileSync(stub, '#!/bin/sh\ncase "$1 $2" in "pr list") echo "[]";; *) echo "gh-stub: unexpected $*" >&2; exit 1;; esac\n');
+  // Enough of gh for these flows: no pull request is listed, one can be viewed as a draft, and the
+  // edits a redrive makes are accepted. Anything else fails loudly rather than passing silently.
+  writeFileSync(
+    stub,
+    `#!/bin/sh
+case "$1 $2" in
+  "pr list") echo "[]" ;;
+  "pr view") echo '{"isDraft":true,"state":"OPEN","headRefOid":"none","mergedAt":null,"labels":[],"comments":[]}' ;;
+  "pr ready"|"pr edit"|"pr comment") : ;;
+  *) echo "gh-stub: unexpected $*" >&2; exit 1 ;;
+esac
+`,
+  );
   chmodSync(stub, 0o755);
   Bun.spawnSync = ((first: string[] | { cmd: string[] }, ...rest: unknown[]) => {
     const argv = Array.isArray(first) ? first : first.cmd;
@@ -188,4 +200,27 @@ describe('the work turn against a real remote and a tracker', () => {
     expect(outcome.reason).toContain('the endpoint still returns 500 for an empty list');
     expect(io.view(64)!.labels.map((l) => l.name).filter((n) => n.startsWith('loop/attempts'))).toEqual(['loop/attempts: 3']);
   }, 60_000);
+
+  it("runs Code first when a person redrives with an objection: it is about the change, not the evidence", async () => {
+    writeFileSync(agentLog, '');
+    const io = new FakeTracker(BOT, [fakeIssue(65, { labels: [{ name: 'size: 1' }] })]);
+    const { ctx } = context(io, 65, 'host-1-1');
+    // The branch exists from an earlier run, announced; a person then parks it with an objection.
+    process.env.E2E_PROVER = 'failed';
+    await fixIssue(ctx, ISSUE(65), { maxPoints: 2 });
+    delete process.env.E2E_PROVER;
+    writeFileSync(agentLog, '');
+
+    const second = context(io, 65, 'host-2-2');
+    const redriven = await redriveIssue(
+      second.ctx,
+      { ...ISSUE(65), labels: io.view(65)!.labels },
+      { number: 0, branch: 'fix/change-65' },
+      'The empty-list case still returns 500; that is the defect this issue is about.',
+      { maxPoints: 2 },
+    );
+    // Code runs before any prover: the prover may not change what the code does.
+    expect(roles()[0]).toBe('worker-revise on fix/change-65');
+    expect(redriven.outcome).not.toBe('failed');
+  }, 90_000);
 });

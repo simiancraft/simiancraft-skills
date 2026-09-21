@@ -196,6 +196,9 @@ export class FakeTracker implements TrackerIo {
         return;
       }
     }
+    // Pull requests are not modelled here; the writes a driver makes on one are accepted and
+    // recorded, so a test can assert them without the fake pretending to be GitHub.
+    if (sub === 'pr' && ['ready', 'edit', 'comment', 'close'].includes(verb)) return;
     if (sub === 'label') {
       // Like gh: creating a label the repository already has is refused unless forced.
       if (verb === 'create' && !rest.includes('--force')) {

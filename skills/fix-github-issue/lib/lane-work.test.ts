@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from './config.ts';
 import type { Context } from './context.ts';
+import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
+import { findStranded } from './resume.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -156,5 +158,42 @@ describe('what a finished lane leaves behind', () => {
     const dir = lane(80, false);
     retireLane(ctxFor(lines), 80, say(lines));
     expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe('a lane an earlier run left behind', () => {
+  /** A lane on a pushed branch, with a coded marker on the issue naming `announced`. */
+  function stranded(issue: number, announced: 'head' | 'earlier') {
+    const dir = lane(issue, true, `fix/stranded-${issue}`);
+    git(dir, 'push', '-q', '-u', 'origin', `HEAD:refs/heads/fix/stranded-${issue}`);
+    const first = git(dir, 'rev-parse', 'HEAD');
+    if (announced === 'earlier') {
+      writeFileSync(join(dir, 'later.txt'), 'pushed, never announced\n');
+      git(dir, 'add', '.');
+      git(dir, 'commit', '-q', '-m', 'fix: an intermediate commit');
+      git(dir, 'push', '-q', 'origin', 'HEAD:refs/heads/fix/stranded-' + issue);
+    }
+    const io = new FakeTracker('loop-bot', [fakeIssue(issue, { labels: [{ name: 'size: 1' }] })]);
+    io.comment(issue, 'loop-bot', `<!-- loop-step step=coded run=host-0-0 sha=${first} gated=${first} touches=code -->\nExercise: cat the file.`);
+    const said: string[] = [];
+    const ctx = { project: { ...PROJECT, repo: 'o/r' }, repoRoot: repo, dryRun: false, botLogin: 'loop-bot', runId: 'host-9-9', dryRunLog: [], knobs: { maxReviewRounds: 3 }, io, log: (m: string) => said.push(m) } as unknown as Parameters<typeof findStranded>[0];
+    return { dir, ctx, io, said };
+  }
+
+  it('lets go of a lane whose announced head is the one it is on: the next dispatch resumes from the remote', () => {
+    const s = stranded(91, 'head');
+    findStranded(s.ctx, [{ number: 91, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] }], []);
+    expect(existsSync(s.dir)).toBe(false);
+  });
+
+  it('keeps a lane whose head is past what was announced: an unfinished push is not finished work', () => {
+    const s = stranded(92, 'earlier');
+    findStranded(s.ctx, [{ number: 92, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] }], []);
+    expect(existsSync(s.dir)).toBe(true);
+    // Left to a person rather than resumed as if the code were finished. (Whether the dead letter
+    // reaches the tracker is not this test's business: that read goes to the real gh, which the
+    // suite refuses, and the pipeline logs the refusal.)
+    expect(s.said.some((l) => /leaving it for a human/.test(l))).toBe(true);
+    expect(s.said.some((l) => /is announced on the issue/.test(l))).toBe(false);
   });
 });

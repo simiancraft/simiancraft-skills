@@ -1908,7 +1908,10 @@ export async function redriveIssue(
           }
         : {
             pr: pull.number,
-            decision: 'gather-more',
+            // A person's objection is about the change until it says otherwise: a park or a dead
+            // letter records what went wrong with the work, not a request for more evidence. Code
+            // runs first and the prover follows it; `gather-more` would forbid the one thing needed.
+            decision: 'block',
             adequacy: 'This pull request was stopped by the objection below; a person has asked for it to be continued.',
             confidence: 'redrive',
             blocking: [objection],

@@ -128,8 +128,11 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       // that holds nothing the remote lacks is let go: no uncommitted change, and a head some
       // remote branch contains. Anything else is still a person's to look at.
       const step = newestStep(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin);
+      // The marker has to speak for the head that is there: a coder can push an intermediate commit
+      // and die before announcing, and an older marker must not let that be proved as finished work.
+      const atAnnouncedHead = step !== null && sh(ctx, ['git', 'rev-parse', 'HEAD'], dir) === step.sha;
       const onRemote = () => sh(ctx, ['git', 'branch', '-r', '--contains', 'HEAD'], dir).trim() !== '';
-      if (step && dirtyPaths(ctx, dir).length === 0 && onRemote()) {
+      if (step && atAnnouncedHead && dirtyPaths(ctx, dir).length === 0 && onRemote()) {
         ctx.log(`#${num}  stranded lane, but ${step.step} at ${step.sha.slice(0, 10)} is announced on the issue; it resumes from the remote`);
         retireLane(ctx, issue.number, (m) => ctx.log(`#${num}  ${m}`));
         continue;
