@@ -1591,7 +1591,7 @@ export async function reviewAndLand(
         pr,
         decision: 'gather-more',
         adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
-        confidence: 'freshness',
+        confidence: 'Nothing here judges the change: the base moved after the proof was captured, and this brief says only that.',
         origin: 'freshness',
         blocking: [
           `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
@@ -1927,7 +1927,7 @@ export async function redriveIssue(
             pr: pull.number,
             decision: 'gather-more',
             adequacy: 'This pull request lost its driver before it was reviewed. Nobody has objected to the change; its proof has to be current before a review can start.',
-            confidence: 'resume',
+            confidence: 'Nothing here judges the change: nobody has reviewed it yet, and this brief says only that its driver is gone.',
             origin: 'resume',
             blocking: [
               `The branch has been caught up with ${ctx.project.baseBranch}. Re-run the checks on the current head, confirm the fix still holds, reacquire any receipt that no longer describes this head, and update the proof. Change code only if something fails.`,
@@ -1940,7 +1940,7 @@ export async function redriveIssue(
             // runs first and the prover follows it; `gather-more` would forbid the one thing needed.
             decision: 'block',
             adequacy: 'This pull request was stopped by the objection below; a person has asked for it to be continued.',
-            confidence: 'redrive',
+            confidence: "Nothing here judges the change: this brief carries a person's objection, in their words, and adds nothing to it.",
             origin: 'redrive',
             blocking: [objection],
           };
