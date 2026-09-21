@@ -46,11 +46,34 @@ import {
 } from './lib/appraise.ts';
 import { existsSync as dirExists } from 'node:fs';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
+import { guardCli } from '../fix-github-issue/lib/cli.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
 
 const args = process.argv.slice(2);
+
+/** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
+export const CLI = { flags: ['dry-run', 'all', 'include-sized', 'no-confirm'], options: ['issue', 'limit', 'age-days', 'every', 'appraiser', 'confirmer', 'callbacks', 'callback-seat'] } as const;
+export const USAGE = `appraise-github-issues: size the open issues nobody has sized, and hand off the ones that are not work.
+Run it from inside the target repository. With no flags it starts a REAL pass over the window.
+
+  bun run <skill-dir>/appraise.ts [flags]
+
+  --dry-run               select and print; no agent, no mutation
+  --issue <n>             one issue, whatever its age or size
+  --limit <n>             appraise at most n unsized issues in the window (default: the config's)
+  --age-days <n>          the window, in days (default: the config's)
+  --all                   the whole open backlog, not only the window
+  --include-sized         re-judge issues that already carry a size
+  --every <minutes>       a heartbeat: appraise whatever is new, on that cadence
+  --no-confirm            close on the appraiser's word alone
+  --appraiser, --confirmer, --callback-seat <seat>
+                          engine[:model] for that seat
+  --callbacks <dir>       where a producer's on-size-<N> callbacks live
+  --help, -h              print this and exit`;
+// Before anything else: an argument this command does not know must never fall through to a real run.
+guardCli(args, CLI, USAGE);
 const flag = (name: string) => args.includes(`--${name}`);
 /** The value after `--name`; a present flag with no value (end of argv, or another flag) is an error, not an absence. */
 const opt = (name: string) => {

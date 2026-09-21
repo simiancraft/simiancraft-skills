@@ -88,6 +88,17 @@ describe('the label a count is written as', () => {
     expect(r.on(1)).toContain('loop/carves: 1');
   });
 
+  it('is not ensured again for a failure that is not a missing label: that one is the caller\'s to know about', () => {
+    const r = rig('o/other-failure');
+    recordCount(r.ctx, 'reviews', 1, 0);
+    r.io.beforeWrite = (op) => {
+      if (op.argv.includes('--add-label')) throw new Error('HTTP 403: Resource not accessible by integration');
+    };
+    expect(() => recordCount(r.ctx, 'reviews', 2, 0)).toThrow(/403/);
+    // One label create in all, from the first count: the refusal bought no second create and no second mark.
+    expect(r.created()).toBe(1);
+  });
+
   it('that was deleted after it was ensured is ensured afresh, and the count is not lost', () => {
     const r = rig('o/deleted-mid-run');
     // Like gh: a label the repository does not have cannot be put on an issue.

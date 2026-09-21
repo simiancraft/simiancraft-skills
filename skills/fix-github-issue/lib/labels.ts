@@ -151,9 +151,11 @@ export function recordCount(ctx: Context, kind: Counter, issue: number, previous
   const mark = () => mutate(ctx, `mark #${issue} at ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
   try {
     mark();
-  } catch {
-    // The label was ensured earlier in this process and may have been deleted since. Ensure it
-    // afresh and try once more; a second refusal is the caller's to know about.
+  } catch (error) {
+    // The label was ensured earlier in this process and may have been deleted since: gh then says
+    // `'<label>' not found`. Ensure it afresh and try once more; a second refusal, and any other
+    // failure (the issue gone, access lost, a rate limit), is the caller's to know about.
+    if (!/not found/i.test((error as Error).message)) throw error;
     forgetLabel(ctx, label);
     ensureLabel(ctx, label, COUNTER_LABEL[kind].color, COUNTER_LABEL[kind].description);
     mark();

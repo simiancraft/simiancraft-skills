@@ -230,7 +230,8 @@ said so in the log.
   request by hand and confirm nothing queues. The Code step also pushes its branch before any pull
   request exists, and pushes early so a cut-short step loses minutes and not the work, so a workflow's
   `on: push` should be limited to the base branch, or every such push spends a run.
-- An issue tracker where issues carry `size: N` labels, or an appraiser run to create them. The
+- An issue tracker where issues carry `size: N` labels, or an appraiser run to create them; a fresh
+  repository has none of them, and the appraiser creates each size label the first time it uses it. The
   driver creates every label it uses (`size: N`, `needs-decision`, `needs-human`, `loop/*`) on
   start and applies the appraiser's verdict itself; nothing needs pre-creating.
 

@@ -12,9 +12,9 @@ import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issu
 import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
-import { dirtyPaths, inFlight, removeWorktree } from './lane.ts';
+import { dirtyPaths, inFlight } from './lane.ts';
+import { type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { newestStep } from './steps.ts';
-import { type Issue, recordThrow, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
 import { sh } from './shell.ts';
 
@@ -80,8 +80,9 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
         rmSync(dir, { recursive: true, force: true });
       }
     } else {
-      ctx.log(`reconcile: removing abandoned worktree for #${issue}`);
-      removeWorktree(ctx, Number(issue));
+      // Committed work is kept or pushed first; reconcile is a clean-up, not a place work is lost.
+      ctx.log(`reconcile: retiring the abandoned worktree for #${issue}`);
+      retireLane(ctx, Number(issue), (m) => ctx.log(`reconcile: ${m}`));
     }
     repaired++;
   }
@@ -130,7 +131,7 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       const onRemote = () => sh(ctx, ['git', 'branch', '-r', '--contains', 'HEAD'], dir).trim() !== '';
       if (step && dirtyPaths(ctx, dir).length === 0 && onRemote()) {
         ctx.log(`#${num}  stranded lane, but ${step.step} at ${step.sha.slice(0, 10)} is announced on the issue; it resumes from the remote`);
-        removeWorktree(ctx, issue.number);
+        retireLane(ctx, issue.number, (m) => ctx.log(`#${num}  ${m}`));
         continue;
       }
       ctx.log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
@@ -229,7 +230,9 @@ export async function resumeStranded(
           say(`could not release the claim: ${(error as Error).message}`);
         }
         inFlight.delete(issue.number);
-        if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
+        // The same rule as any other exit: a revision that committed and died before its push has
+        // its only copy in this lane, and a resume must not be where that goes.
+        if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
       }
     },
     (issue) => `#${issue.number}`,

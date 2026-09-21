@@ -21,8 +21,8 @@
  * the knife failed; 3 when another run holds the issue.
  */
 
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCallbacksDir } from '../appraise-github-issues/lib/appraise.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
@@ -35,11 +35,31 @@ import { ISSUE_LIST_FIELDS } from '../appraise-github-issues/lib/appraise.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, JOURNAL_STEPS, type JournalStep } from './lib/carve.ts';
 import { carveIssue } from './lib/knife.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
+import { guardCli } from '../fix-github-issue/lib/cli.ts';
+import type { Board } from '../burn-down-github-issues/board.ts';
+import { createBoardWriter } from '../burn-down-github-issues/lib/board-writer.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
 
 const args = process.argv.slice(2);
+
+/** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
+export const CLI = { flags: ['dry-run'], options: ['issue', 'ceiling', 'carver', 'confirmer', 'fail-after'] } as const;
+export const USAGE = `carve-github-issue: carve one oversized issue into sub-issues, or revisit one already carved.
+Run it from inside the target repository.
+
+  bun run <skill-dir>/carve.ts --issue <n> [flags]
+
+  --issue <n>             the issue to carve or revisit (required)
+  --dry-run               with fixture seats: log every write, land nothing
+  --ceiling <n>           a one-off ceiling, in points (default: the config's)
+  --carver, --confirmer <seat>
+                          engine[:model] for that seat
+  --fail-after <step>     testing only: exit hard after that journal step
+  --help, -h              print this and exit`;
+// Before anything else: an argument this command does not know must never fall through to a real run.
+guardCli(args, CLI, USAGE);
 const flag = (name: string) => args.includes(`--${name}`);
 const opt = (name: string) => {
   const i = args.indexOf(`--${name}`);
@@ -154,15 +174,34 @@ log(`issue #${ISSUE_NUMBER} | ceiling ${KNOBS.ceiling} | scale ${ctx.knobs.point
 log(`carver ${seatLabel(SEATS.carver)} | confirmer ${seatLabel(SEATS.confirmer)} | callbacks ${KNOBS.callbacksDir}`);
 if (DRY_RUN) log('DRY RUN: no lock, no claim, no journal file; only fixture seats run; only this log is written');
 
+// Not refused here: finishing an announced generation runs no seat, so a dry run can rehearse a
+// resume without one. The knife stops at the first seat it would actually have to run and says so.
 if (DRY_RUN && !(isFixture(SEATS.carver) && isFixture(SEATS.confirmer))) {
-  log('left-alone: dry run needs fixture seats (--carver fixture:<answer.json> --confirmer fixture2:<answer.json>)');
-  step('left-alone');
-  process.exit(0);
+  log('DRY RUN: no fixture seats, so anything that needs the carver or the confirmer stops there; an announced generation is still rehearsed to its end');
 }
 
 installStopHandler(log);
 
 if (!DRY_RUN) ensureLabels(ctx);
+
+// The knife moves its own cards (C2, C3, C4) when it knows where the board is. A carve started by
+// hand, or by a producer's size callback, is otherwise invisible for its whole run: the card sits
+// wherever the driver that dispatched it last left it. The pointer is the one card.ts reads.
+if (!DRY_RUN) {
+  const pointer = join(resolve(REPO_ROOT, CONFIG.project.worktreeRoot, 'runs'), 'board.json');
+  try {
+    if (existsSync(pointer)) {
+      const writer = createBoardWriter(JSON.parse(readFileSync(pointer, 'utf8')) as Board, CONFIG.project.repo, log);
+      ctx.onLane = (event) => {
+        writer.onLane(event);
+      };
+      log(`board: moving #${ISSUE_NUMBER}'s card on ${pointer}`);
+    }
+  } catch (error) {
+    // A board is a projection. An unreadable one costs the operator a moving card, never the carve.
+    log(`board: ${pointer} could not be read (${(error as Error).message.split('\n')[0]}); carving without it`);
+  }
+}
 
 const issue: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', ISSUE_LIST_FIELDS]));
 const result = await carveIssue(ctx, issue, KNOBS);

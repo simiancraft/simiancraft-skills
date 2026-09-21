@@ -9,7 +9,7 @@
  * against two configurations without sharing a queue, a seat, or a run directory.
  */
 
-import { mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
@@ -20,7 +20,7 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { attemptCount, closeIssue, type DlqPhase, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { announceStep, everyStep, newestStep, placeInWork, readWorkFacts, type WorkReads } from './steps.ts';
@@ -1292,7 +1292,8 @@ async function land(
     // The person watching the main checkout sees the fix land, when the config asks for that.
     followBase(ctx, paths);
 
-    // Read the branch name while the worktree still exists, then drop it.
+    // Read the branch name while the worktree still exists, then drop it. This is the one removal
+    // that keeps nothing back: the change is merged, so the base holds every commit the lane had.
     const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
     removeWorktree(ctx, issue.number);
     try {
@@ -1332,7 +1333,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     say(`refusing to close: ${gate.why}`);
     parkIssue(ctx, issue.number, `The loop reached a \`${result.verdict}\` verdict (${result.reason}) but did not close, because ${gate.why}.`);
     closePullRequest();
-    removeWorktree(ctx, issue.number);
+    retireLane(ctx, issue.number, say);
     return { outcome: 'parked', reason: gate.why };
   };
 
@@ -1343,7 +1344,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       if (!confirmation) return { outcome: 'failed', reason: 'no usable confirmation of the close' };
       if (!confirmation.agree) {
         closePullRequest();
-        removeWorktree(ctx, issue.number);
+        retireLane(ctx, issue.number, say);
         return parkWithBothOpinions(ctx, issue, result, confirmation, say);
       }
       const refused = gateBeforeClose();
@@ -1353,7 +1354,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       closePullRequest();
       await closeIssue(ctx, issue.number, `${result.closeComment ?? result.reason}\n\nIndependently re-checked: ${confirmation.reason}`, { kind: 'closed', reason: result.verdict, by: 'worker' });
       move(ctx, issue, 'T2', result.verdict);
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'closed', reason: result.reason };
     }
 
@@ -1362,7 +1363,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       if (!confirmation) return { outcome: 'failed', reason: 'no usable confirmation of the answer' };
       if (!confirmation.agree) {
         closePullRequest();
-        removeWorktree(ctx, issue.number);
+        retireLane(ctx, issue.number, say);
         return parkWithBothOpinions(ctx, issue, result, confirmation, say);
       }
       const refused = gateBeforeClose();
@@ -1373,7 +1374,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       if (!already) mutate(ctx, `post the answer on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `${marker}\n${result.answer ?? ''}`]);
       await closeIssue(ctx, issue.number, `Answered; see the answer above. Independently re-checked: ${confirmation.reason}`, { kind: 'answered', reason: 'answered', by: 'worker' });
       move(ctx, issue, 'T2', 'answered');
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'closed', reason: result.reason };
     }
 
@@ -1391,11 +1392,13 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       ]);
       closePullRequest();
       move(ctx, issue, result.verdict === 'needs-decision' ? 'H1' : 'H2', result.reason.slice(0, 120));
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'handed-off', reason: result.reason };
 
     case 'out-of-band': {
       if (result.points) {
+        // The worker's own size can be one the repository has never carried a label for.
+        ensureLabel(ctx, `size: ${result.points}`, 'c5def5', `Sized at ${result.points} by a worker that found the work larger than appraised`);
         mutate(ctx, `size #${issue.number} at ${result.points}`, [
           'gh',
           'issue',
@@ -1420,7 +1423,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       }
       closePullRequest();
       move(ctx, issue, 'C1', `out-of-band at ${result.points ?? 'unstated'} points`);
-      removeWorktree(ctx, issue.number);
+      retireLane(ctx, issue.number, say);
       return { outcome: 'handed-off', reason: result.reason };
     }
 
@@ -1723,7 +1726,7 @@ export async function fixIssue(
     // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
     // so reconcile still owns that case on the next start. A throw that could not be recorded on
     // the issue keeps its lane too: the worktree is then the only record of what happened.
-    if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
   }
 }
 
@@ -1746,6 +1749,55 @@ export function openPullFor(ctx: Context, issue: number): number | undefined {
  * back to Ready until the cap. When the recording itself fails, or the pull request list cannot be
  * read, the lane is kept: the worktree is then the only record of what happened.
  */
+/**
+ * Before a finished lane is removed: work it committed and never pushed exists nowhere else, and a
+ * failed attempt is exactly when there is some. Pushed, it survives for the next attempt to read
+ * and for a person to look at. A lane that cannot be pushed is kept instead, since removing it
+ * would be the only irreversible act here.
+ */
+export function retireLane(ctx: Context, issue: number, say: (message: string) => void): void {
+  if (preserveLaneWork(ctx, issue, say)) removeWorktree(ctx, issue);
+}
+
+export function preserveLaneWork(ctx: Context, issue: number, say: (message: string) => void): boolean {
+  // The lane's own directory, by the same rule that made it; a lane already gone holds nothing.
+  const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(cwd)) return true;
+  try {
+    // Nothing here that no remote has: the lane holds no work of its own, whatever it is on.
+    if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0) return true;
+    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    // A lane starts detached, so a worker that committed before it made its branch has its only
+    // copy here, reachable by nothing but this worktree's HEAD. There is no branch to push it to;
+    // the lane is kept, and a person reads it.
+    if (branch === 'HEAD') {
+      // A branch ref would survive the worktree; a detached head does not, and the next run's
+      // reconcile removes a clean lane. The commits are given a ref of their own first, in the
+      // repository all worktrees share, so removing this directory can never make them unreachable.
+      // One ref per rescue, named for the commit it saves: a later attempt on the same issue must
+      // not take the name of an earlier one and leave its history unreachable.
+      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
+      sh(ctx, ['git', 'update-ref', rescued, head], cwd);
+      say(`keeping the lane, and saved its detached commits as ${rescued}: no branch and no remote has them`);
+      return false;
+    }
+    // Only this issue's own branch is published, by the coder's naming rule. A lane that ended up on
+    // some other branch, the base most of all, is kept for a person rather than pushed anywhere: a
+    // cleanup step is no place to publish a change nobody reviewed.
+    if (branch === ctx.project.baseBranch || !branch.endsWith(`-${issue}`)) {
+      say(`keeping the lane: it holds commits that are on no remote, on ${branch}, which is not this issue's branch`);
+      return false;
+    }
+    sh(ctx, ['git', 'push', ctx.project.remote, `HEAD:refs/heads/${branch}`], cwd);
+    say(`pushed ${branch}: this lane held commits that were on no remote, and the lane is about to go`);
+    return true;
+  } catch (error) {
+    say(`keeping the lane: it holds commits that are on no remote and could not be pushed (${(error as Error).message.split('\n')[0]})`);
+    return false;
+  }
+}
+
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
@@ -1883,6 +1935,6 @@ export async function redriveIssue(
       say(`could not release the claim: ${(error as Error).message}`);
     }
     inFlight.delete(issue.number);
-    if (!ctx.dryRun && !keepLane) removeWorktree(ctx, issue.number);
+    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
   }
 }

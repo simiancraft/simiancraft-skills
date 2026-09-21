@@ -1,10 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ClaimHandle, keepClaimed, LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
-import { runAgent, shutdownAgents } from './agent.ts';
+import { children, DRIVER_GRACE_MS, killAgent, runAgent, shutdownAgents } from './agent.ts';
 import type { ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { fixIssue, move } from './pipeline.ts';
@@ -190,3 +190,55 @@ describe('a lane that lost its lease', () => {
   });
 });
 
+describe('a stop and a child that is itself a driver', () => {
+  /**
+   * A child that traps the signal and takes time to leave, as a driver does while it kills its own
+   * agent and releases its claims. It writes a file when it gets there, so the test asks the thing
+   * that matters: did the stop wait for that, or cut it off?
+   */
+  const lingering = async (ms: number, ownDriver: boolean) => {
+    const tag = Math.random().toString(36).slice(2);
+    const ready = join(scratch, `ready-${tag}`);
+    const done = join(scratch, `finished-${tag}`);
+    const proc = Bun.spawn(['sh', '-c', `trap 'sleep ${ms / 1000}; : > ${done}; exit 0' TERM; : > ${ready}; while :; do sleep 0.05; done`], { stdout: 'ignore', stderr: 'ignore' });
+    children.add(ownDriver ? Object.assign(proc, { ownDriver: true as const }) : proc);
+    // A signal that arrives before the shell has installed its trap kills it outright, which is a
+    // race in the test and not in a driver that has been running for minutes.
+    while (!existsSync(ready)) await Bun.sleep(10);
+    return { proc, finished: () => existsSync(done) };
+  };
+
+  it("waits for it well past an agent's grace, so its own claims are released", async () => {
+    const driver = await lingering(1200, true);
+    const started = Date.now();
+    await shutdownAgents(300);
+    expect(driver.finished()).toBe(true);
+    expect(Date.now() - started).toBeGreaterThan(1000);
+    expect(DRIVER_GRACE_MS).toBeGreaterThanOrEqual(60_000);
+  }, 20_000);
+
+  it('escalates to SIGKILL on the grace it was given, not on a fixed ten seconds', async () => {
+    // The conflict this guards: a driver given a minute to unwind, with a kill timer set at ten
+    // seconds, is cut off in the middle of releasing its claims.
+    const short = await lingering(30_000, false);
+    killAgent(short.proc, 200);
+    const died = await Promise.race([short.proc.exited.then(() => 'exited'), Bun.sleep(3000).then(() => 'alive')]);
+    expect(died).toBe('exited');
+    expect(short.proc.signalCode).toBe('SIGKILL');
+    children.delete(short.proc);
+
+    const patient = await lingering(1200, false);
+    killAgent(patient.proc, 30_000);
+    await patient.proc.exited;
+    expect(patient.finished()).toBe(true);
+    children.delete(patient.proc);
+  }, 20_000);
+
+  it("still takes an agent down at the agent's pace, which is the shorter one", async () => {
+    const agent = await lingering(5000, false);
+    const started = Date.now();
+    await shutdownAgents(300);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(agent.finished()).toBe(false);
+  }, 20_000);
+});

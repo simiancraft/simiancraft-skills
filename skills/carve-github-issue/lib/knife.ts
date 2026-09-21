@@ -17,7 +17,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import { CARVING_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { carveCount, clearCarves, closeIssue, dlqLabel, HOLD_LABELS, recordCarve } from '../../fix-github-issue/lib/labels.ts';
+import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
@@ -139,8 +139,17 @@ function labelsOf(node: { labels: Array<{ name: string }> }): string[] {
   return node.labels.map((l) => l.name);
 }
 
+/** The labels every driver creates at start; any other name the knife writes is computed, and may not exist yet. */
+const CREATED_AT_START = new Set(loopLabels().map(([name]) => name));
+
 function addLabel(k: Knife, step: JournalStep, issue: number, label: string, current: string[]): void {
   if (current.includes(label)) return;
+  // A label the repository lacks cannot be put on an issue, and a carve that threw here had already
+  // created its children. `loop/carve-gen: N` is a new name with every generation.
+  if (!CREATED_AT_START.has(label) && !k.ctx.dryRun) {
+    holdLease(k, `create the label ${label}`);
+    ensureLabel(k.ctx, label, '5319e7', 'Written by the knife; see the carving record on the issue');
+  }
   write(k, step, `label #${issue} ${label}`, ['gh', 'issue', 'edit', String(issue), '--add-label', label], issue);
 }
 
@@ -588,7 +597,7 @@ function describeChildren(tree: Tree): string {
   return tree.children.map((c) => `  - #${c.number} ${c.title} (${c.state.toLowerCase()}${c.stateReason ? `, ${c.stateReason.toLowerCase().replace('_', ' ')}` : ''}${pointsOf(c.labels) !== null ? `, ${pointsOf(c.labels)} points` : ''})`).join('\n');
 }
 
-async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger: Ledger | null, feedback: string | null, trigger: string): Promise<{ ok: true; carving: Carving } | { ok: false; why: string; logPath: string | null }> {
+async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger: Ledger | null, feedback: string | null, trigger: string): Promise<{ ok: true; carving: Carving } | { ok: false; why: string; logPath: string | null; notRun?: true }> {
   const cwd = join(k.ctx.runDir, `carve-${k.trunk}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
@@ -612,6 +621,8 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
   };
   const prompt = renderPrompt(k.ctx, mode === 'carve' ? 'carve.md' : 'revisit.md', vars);
   const run = await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, prompt);
+  // A dry run rehearses everything up to the first seat it does not run; that is not a failed turn.
+  if (run.notRun) return { ok: false, why: 'dry run: the carver was not run', logPath: null, notRun: true };
   if (run.exitCode !== 0) return { ok: false, why: `carver exited ${run.exitCode}`, logPath: run.logPath };
   const raw = readResult<unknown>(cwd, CARVING_FILE);
   if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no carver ran', logPath: null };
@@ -621,7 +632,7 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
   return { ok: true, carving: checked.carving };
 }
 
-async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', carving: Carving, ledger: Ledger | null, round: number, reply: string | null): Promise<{ ok: true; confirmation: Confirmation } | { ok: false; why: string; logPath: string | null }> {
+async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', carving: Carving, ledger: Ledger | null, round: number, reply: string | null): Promise<{ ok: true; confirmation: Confirmation } | { ok: false; why: string; logPath: string | null; notRun?: true }> {
   const cwd = join(k.ctx.runDir, `confirm-carve-${k.trunk}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
@@ -641,6 +652,7 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
     CONFIRMATION_FILE,
   });
   const run = await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, prompt);
+  if (run.notRun) return { ok: false, why: 'dry run: the confirmer was not run', logPath: null, notRun: true };
   if (run.exitCode !== 0) return { ok: false, why: `confirmer exited ${run.exitCode}`, logPath: run.logPath };
   const raw = readResult<unknown>(cwd, CONFIRMATION_FILE);
   if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no confirmer ran', logPath: null };
@@ -737,7 +749,10 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
   } finally {
     stopRenewing();
     try {
-      handle.release({ keepLabel: k.journal.journal.status === 'open' && k.journal.journal.steps.length > 0 });
+      const unfinished = k.journal.journal.status === 'open' && k.journal.journal.steps.length > 0;
+      // Said aloud, since an unclaim that leaves the label on reads as a defect in the log.
+      if (unfinished) say('keeping loop/carving: this generation is announced and unfinished, and the next visit finishes it');
+      handle.release({ keepLabel: unfinished });
     } catch (error) {
       say(`could not release the claim: ${(error as Error).message}`);
     }
@@ -803,7 +818,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     const visiting = mode === 'revisit' || tree.children.some((c) => c.state === 'OPEN');
     lane(k, tree.issue.title, visiting ? 'C6' : 'C2', round > 1 ? `round ${round}, after a dispute` : trigger);
     const carved = await runCarver(k, tree, mode, previousLedger, feedback, trigger);
-    if (!carved.ok) return countFailure(k, tree, carved.why, carved.logPath);
+    if (!carved.ok) return carved.notRun ? { outcome: 'not-run', reason: carved.why } : countFailure(k, tree, carved.why, carved.logPath);
     const carving = carved.carving;
     k.say(`carver (round ${round}): ${carving.verdict}; ${carving.reason}`);
 
@@ -826,7 +841,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
 
     if (!visiting) lane(k, tree.issue.title, 'C3', `round ${round}: ${carving.verdict}`);
     const confirmed = await runConfirmer(k, tree, mode, carving, previousLedger, round, reply);
-    if (!confirmed.ok) return countFailure(k, tree, confirmed.why, confirmed.logPath);
+    if (!confirmed.ok) return confirmed.notRun ? { outcome: 'not-run', reason: confirmed.why } : countFailure(k, tree, confirmed.why, confirmed.logPath);
     const confirmation = confirmed.confirmation;
     k.say(`confirmer (round ${round}): ${confirmation.finding}, seam ${confirmation.seam}; ${confirmation.reason}`);
     opinions.push({ carver: carving.reason, confirmer: confirmation.reason });

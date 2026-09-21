@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { readResult, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
-import { parkIssue } from '../../fix-github-issue/lib/labels.ts';
+import { ensureLabels, parkIssue } from '../../fix-github-issue/lib/labels.ts';
 import { fixIssue, type FixOutcome } from '../../fix-github-issue/lib/pipeline.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import { type LedgerEntry, lastClean, readLedger } from './floor.ts';
@@ -176,6 +176,11 @@ export async function handleIncident(
   } else {
     ctx.log(`incident #${issue} is already open for ${entry.itemId}; not filing again`);
   }
+
+  // An incident is parked, or handed to the fix pipeline, and both write the loop's own labels. On a
+  // repository no other driver has run against those do not exist yet, whether this incident was
+  // just filed or was already open.
+  if (!ctx.dryRun) ensureLabels(ctx);
 
   // A remedy outside the repository (a reindex, a config value, a vendor outage) is not code; a
   // worker would only spend a lane proving that. Park it for a person with the diagnosis attached.

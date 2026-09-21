@@ -69,14 +69,19 @@ export async function runCallback(
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      children.add(proc);
+      // A callback is often a driver of this collection (the knife, through carve.ts), with its own
+      // stop handler, agents, and claims; a stop gives it the time to finish that.
+      children.add(Object.assign(proc, { ownDriver: true as const }));
       const timer = timeoutMs > 0 ? setTimeout(() => killAgent(proc), timeoutMs) : null;
       // Both pipes at once: a callback that fills stderr while the driver waits on stdout would hang.
       const [out, err] = await Promise.all([drain(proc.stdout), drain(proc.stderr)]);
       const exitCode = await proc.exited;
       if (timer) clearTimeout(timer);
       children.delete(proc);
-      log(`${name} exited ${exitCode}${out ? `: ${out.split('\n')[0]}` : ''}${err ? ` (stderr: ${err.split('\n')[0]})` : ''}`);
+      // The last line, not the first: a callback that is itself a driver opens with a banner and
+      // ends with what it did.
+      const tail = (text: string) => text.split('\n').filter((line) => line.trim() !== '').at(-1) ?? '';
+      log(`${name} exited ${exitCode}${out ? `: ${tail(out)}` : ''}${err ? ` (stderr: ${tail(err)})` : ''}`);
       result.ran = true;
       result.exitCode = exitCode;
     } catch (error) {
