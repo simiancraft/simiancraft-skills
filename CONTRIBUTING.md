@@ -25,6 +25,13 @@ If a skill in here helps you and you want to upstream a fix or clarification:
 
 This filter is the contribution policy. It is not personal.
 
+## A convention worth knowing
+
+Shared code lives inside a skill directory, never at the repository root. Skills install one
+directory at a time, so a bare `lib/` beside `skills/` would not be present at runtime. A skill
+that needs another skill's code imports it by relative path and names it a hard dependency in its
+SKILL.md.
+
 ## Reporting a security issue
 
 See [`SECURITY.md`](SECURITY.md). Please report security issues privately rather than opening a public issue.

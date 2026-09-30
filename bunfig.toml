@@ -1,0 +1,2 @@
+[test]
+preload = ["./test/no-real-gh.preload.ts"]
