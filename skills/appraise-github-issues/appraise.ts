@@ -25,6 +25,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enrichBlockers } from '../fix-github-issue/lib/blockers.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
@@ -207,6 +208,7 @@ async function once(): Promise<void> {
   if (ISSUE_NUMBER) {
     // Bypasses the window and the size filter, never the labels a person set to hold an issue.
     const one: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', ISSUE_LIST_FIELDS]));
+    enrichBlockers(ctx, [one]);
     if (isHeld(one.labels, CONFIG.skipLabels)) {
       log(`#${one.number} carries a hold label; a person holds it, so it is not appraised. Remove the label to put it back in reach.`);
       return;

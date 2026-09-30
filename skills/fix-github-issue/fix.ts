@@ -25,6 +25,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enrichBlockers } from './lib/blockers.ts';
 import {
   invokeRootFrom,
   loadProjectConfig,
@@ -172,6 +173,8 @@ log(BOARD ? `board #${BOARD.board.number} ${BOARD.board.url}` : 'no board pointe
 const issue: Issue & { state: 'OPEN' | 'CLOSED' } = JSON.parse(
   sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy,state']),
 );
+
+enrichBlockers(ctx, [issue]);
 
 /** The pull requests that reference this issue, newest first; the head branch is what a redrive checks out. */
 const PULLS: Array<{ number: number; isDraft: boolean; merged: boolean; headRefName: string; state: string }> = (() => {

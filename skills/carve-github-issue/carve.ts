@@ -24,6 +24,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enrichBlockers } from '../fix-github-issue/lib/blockers.ts';
 import { resolveCallbacksDir } from '../appraise-github-issues/lib/appraise.ts';
 import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, type PipelineKnobs, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
@@ -204,6 +205,7 @@ if (!DRY_RUN) {
 }
 
 const issue: Issue = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', ISSUE_LIST_FIELDS]));
+enrichBlockers(ctx, [issue]);
 const result = await carveIssue(ctx, issue, KNOBS);
 log(`${result.outcome}: ${result.reason}${result.generation !== undefined ? ` (generation ${result.generation})` : ''}${result.children?.length ? ` children ${result.children.map((n) => `#${n}`).join(', ')}` : ''}`);
 step(result.outcome);

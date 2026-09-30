@@ -9,6 +9,7 @@ import { hostname } from 'node:os';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
+import { enrichBlockers, type Blocker } from '../../fix-github-issue/lib/blockers.ts';
 import { api, sh } from '../../fix-github-issue/lib/shell.ts';
 import { parseRecord, type Record } from './record.ts';
 
@@ -153,13 +154,13 @@ type RawView = {
   parent: { number: number } | null;
   subIssues: { nodes: Array<{ number: number }>; totalCount: number } | Array<{ number: number }>;
   subIssuesSummary: { total: number; completed: number };
-  blockedBy: { nodes: Array<{ number: number; state: string; stateReason: string | null }> } | Array<{ number: number; state: string; stateReason: string | null }>;
+  blockedBy: { nodes: Blocker[] } | Blocker[];
   comments: Array<{ id: string; author: { login: string } | null; body: string; createdAt: string }>;
 };
 
 type RawRestComment = { id: number; node_id: string; user: { login: string } | null };
 
-/** The production tracker. Every read is one `gh` call; a 404 is a deleted issue, not an error. */
+/** The production tracker. A 404 is a deleted issue, not an error. */
 export function ghIo(ctx: Context): TrackerIo {
   return {
     view(n) {
@@ -177,10 +178,10 @@ export function ghIo(ctx: Context): TrackerIo {
       } catch (error) {
         ctx.log(`  #${n}  could not list comments through the REST api: ${(error as Error).message}`);
       }
-      return toNode(raw, rest, ctx.botLogin, ctx.log);
+      return enrichBlockers(ctx, [toNode(raw, rest, ctx.botLogin, ctx.log)])[0];
     },
     search(q) {
-      return JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--search', q, '--state', 'all', '--limit', '5000', '--json', LIST_FIELDS])) as Issue[];
+      return enrichBlockers(ctx, JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--search', q, '--state', 'all', '--limit', '5000', '--json', LIST_FIELDS])) as Issue[]);
     },
     write(op) {
       sh(ctx, op.argv);

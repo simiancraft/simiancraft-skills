@@ -1,5 +1,5 @@
 import '../../../test/no-real-gh.preload.ts';
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,8 @@ import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { readTree } from '../../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS } from '../../carve-github-issue/lib/carve.ts';
+import { allOpenIssues } from '../../appraise-github-issues/lib/appraise.ts';
+import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
@@ -520,4 +522,56 @@ describe('safety pressure', () => {
     try { expect(second === 'busy' || lossReported).toBe(true); }
     finally { if (second !== 'busy') second.release(); first.release(); }
   });
+});
+
+
+describe('blocker close reasons', () => {
+  for (const reason of ['COMPLETED', 'NOT_PLANNED', 'DUPLICATE']) {
+    it(`enriches gh blockers before placement and the ${reason} sweep`, async () => {
+      const leaf = fakeIssue(3698, { labels: [{ name: 'size: 1' }] });
+      const io = new FakeTracker(bot, [leaf]);
+      const ctx = context(io);
+      const blocker = { id: 'I_blocker', number: 3697, state: 'CLOSED', title: 'blocker', url: 'https://github.com/o/r/issues/3697' };
+      const calls: string[][] = [];
+      const spawn = spyOn(Bun, 'spawnSync').mockImplementation(((argv: string[]) => {
+        calls.push(argv);
+        let answer: unknown;
+        if (argv[1] === 'issue' && argv[2] === 'list') {
+          answer = [{ ...leaf, blockedBy: { nodes: [blocker] } }, { ...leaf, number: 3699, blockedBy: [blocker] }];
+        } else {
+          expect(argv.slice(0, 3)).toEqual(['gh', 'api', 'graphql']);
+          expect(argv).toContain('owner=o');
+          expect(argv).toContain('name=r');
+          expect(argv.find((a) => a.startsWith('query='))?.match(/issue\(number: 3697\)/g)).toHaveLength(1);
+          answer = { data: { repository: { i3697: { number: 3697, state: 'CLOSED', stateReason: reason } } } };
+        }
+        return { exitCode: 0, stdout: Buffer.from(JSON.stringify(answer)), stderr: Buffer.from('') };
+      }) as typeof Bun.spawnSync);
+      let issues: Issue[];
+      try {
+        issues = allOpenIssues(ctx);
+      } finally {
+        spawn.mockRestore();
+      }
+      expect(calls).toHaveLength(2);
+      expect(issues[1].blockedBy?.nodes[0].stateReason).toBe(reason);
+      const blocked = (issues[0].blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED'));
+      expect(placeByFacts({ state: 'OPEN', labels: ['size: 1'], pulls: [], points: 1, ceiling: 2, blocked }).lane).toBe(reason === 'COMPLETED' ? 'B1' : 'W1');
+      await driver(io, []).sweep([issues[0]]);
+      if (reason === 'COMPLETED') expect(io.writes).toHaveLength(0);
+      else {
+        expect(io.view(3698)?.labels.map((l) => l.name)).toContain('needs-human');
+        expect(io.view(3698)?.comments.some((c) => c.body.includes('Blocked by #3697, which is closed not planned'))).toBe(true);
+      }
+    });
+  }
+
+  for (const reason of [undefined, null]) {
+    it(`does not hand off an unknown close reason (${reason})`, async () => {
+      const leaf = fakeIssue(3698, { labels: [{ name: 'size: 1' }], blockedBy: { nodes: [{ number: 3697, state: 'CLOSED', stateReason: reason }] } });
+      const io = new FakeTracker(bot, [leaf]);
+      await driver(io, []).sweep([leaf]);
+      expect(io.writes).toHaveLength(0);
+    });
+  }
 });

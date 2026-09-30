@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { agentCapMs, children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
@@ -92,7 +93,7 @@ export type Issue = {
   /** The tree fields; optional until every listing requests them. */
   parent?: { number: number } | null;
   subIssuesSummary?: { total: number; completed: number };
-  blockedBy?: { nodes: Array<{ number: number; state: string; stateReason: string | null }> };
+  blockedBy?: { nodes: Blocker[] };
 };
 
 /**

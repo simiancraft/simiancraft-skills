@@ -349,7 +349,7 @@ export class Carving {
     for (const issue of all) {
       if (!inScope(issue)) continue;
       const blockers = issue.blockedBy?.nodes ?? [];
-      const invalid = blockers.find((b) => b.state === 'DELETED' || (b.state === 'CLOSED' && b.stateReason !== 'COMPLETED'));
+      const invalid = blockers.find((b) => b.state === 'DELETED' || (b.state === 'CLOSED' && (b.stateReason === 'NOT_PLANNED' || b.stateReason === 'DUPLICATE')));
       if (invalid) {
         const parent = issue.parent?.number ?? null;
         const parentNode = parent === null ? null : io.view(parent);

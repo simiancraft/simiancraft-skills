@@ -37,7 +37,7 @@ import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, ISSUE_LIST_FIELDS, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
+import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
@@ -692,7 +692,7 @@ const CARVING = new Carving({
 // ---------------------------------------------------------------------------
 
 function allIssues(): Issue[] {
-  return JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '5000', '--json', ISSUE_LIST_FIELDS]));
+  return allOpenIssues(ctx);
 }
 
 /** Labels under which an issue is a trunk, a claimed issue, or a paused leaf: never a worker's. */

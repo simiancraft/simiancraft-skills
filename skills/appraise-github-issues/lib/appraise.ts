@@ -19,6 +19,7 @@
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { enrichBlockers } from '../../fix-github-issue/lib/blockers.ts';
 import { isTrunk, leaseLost, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
@@ -139,7 +140,7 @@ function sizeLabels(labels: Array<{ name: string }>): string[] {
 export const ISSUE_LIST_FIELDS = 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy';
 
 export function allOpenIssues(ctx: Context): Issue[] {
-  return JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '5000', '--json', ISSUE_LIST_FIELDS]));
+  return enrichBlockers(ctx, JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--state', 'open', '--limit', '5000', '--json', ISSUE_LIST_FIELDS])) as Issue[]);
 }
 
 /** The labels that mark a trunk or a claimed issue without reading its thread. */
