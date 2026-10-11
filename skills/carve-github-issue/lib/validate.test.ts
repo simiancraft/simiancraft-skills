@@ -166,4 +166,16 @@ describe('normalize', () => {
     expect(bad.faults.join('\n')).toMatch(/blocked by #10/);
     expect(bad.faults.join('\n')).toMatch(/does not exist/);
   });
+
+  test('refuses a pull request as a reference or a child, merged or open', () => {
+    const { io, tree } = trunk();
+    io.issues.set(50, fakeIssue(50, { title: 'a merged pull request', state: 'CLOSED', stateReason: 'COMPLETED', pullRequest: 'merged' }));
+    io.issues.set(51, fakeIssue(51, { title: 'an open pull request', pullRequest: 'open' }));
+    const bad = normalize(cut({ pieces: [piece({ kind: 'reference', number: 50 }), piece({ kind: 'child', number: 51, order: 2 })] }), tree, io);
+    expect(bad.ok).toBe(false);
+    if (bad.ok) return;
+    expect(bad.faults).toHaveLength(2);
+    expect(bad.faults[0]).toMatch(/#50, which is a pull request \(merged\)/);
+    expect(bad.faults[1]).toMatch(/#51, which is a pull request \(open\)/);
+  });
 });

@@ -36,6 +36,11 @@ export type Node = Issue & {
   bodyHash: string;
   /** The newest valid record on this issue's thread, by the bot. */
   record: Record | null;
+  /**
+   * Set only when the number names a pull request. An issue read answers for one too, with a
+   * state an issue never has (MERGED), and a pull request can be neither a sub-issue nor a blocker.
+   */
+  pullRequest?: 'open' | 'closed' | 'merged';
 };
 
 /** `token` names one acquisition: a run claims an issue more than once, and only the token tells its claims apart. */
@@ -138,7 +143,7 @@ export function isBotMarker(comment: Comment, botLogin: string): boolean {
 // GitHub
 // ---------------------------------------------------------------------------
 
-const VIEW_FIELDS = 'number,title,author,body,state,stateReason,labels,createdAt,closedAt,parent,subIssues,subIssuesSummary,blockedBy,comments';
+const VIEW_FIELDS = 'number,title,author,body,state,stateReason,labels,createdAt,closedAt,parent,subIssues,subIssuesSummary,blockedBy,comments,url';
 const LIST_FIELDS = 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy';
 
 type RawView = {
@@ -156,6 +161,8 @@ type RawView = {
   subIssuesSummary: { total: number; completed: number };
   blockedBy: { nodes: Blocker[] } | Blocker[];
   comments: Array<{ id: string; author: { login: string } | null; body: string; createdAt: string }>;
+  /** `.../pull/<n>` for a pull request; absent from recorded answers that predate the field. */
+  url?: string;
 };
 
 type RawRestComment = { id: number; node_id: string; user: { login: string } | null };
@@ -196,6 +203,11 @@ export function ghIo(ctx: Context): TrackerIo {
 }
 
 /** Maps one `gh issue view` answer plus its REST comment listing onto a Node. Exported for the recorded-output tests. */
+/** True when an issue read answered for a pull request. */
+function isPullRequest(raw: RawView): boolean {
+  return /\/pull\/\d+$/.test(raw.url ?? '');
+}
+
 export function toNode(raw: RawView, rest: RawRestComment[], botLogin: string, log: (m: string) => void = () => {}): Node {
   const byNodeId = new Map(rest.map((c) => [c.node_id, c]));
   const comments: Comment[] = [];
@@ -220,14 +232,17 @@ export function toNode(raw: RawView, rest: RawRestComment[], botLogin: string, l
     blockedBy,
     author: raw.author?.login ?? 'ghost',
     body: raw.body ?? '',
-    state: raw.state === 'CLOSED' ? 'CLOSED' : 'OPEN',
-    stateReason: raw.stateReason ?? null,
+    // A pull request's MERGED reads as finished work and an unmerged close as dropped work, so
+    // every later read of it agrees with how the record settled it.
+    state: raw.state === 'CLOSED' || raw.state === 'MERGED' ? 'CLOSED' : 'OPEN',
+    stateReason: raw.state === 'MERGED' ? 'COMPLETED' : isPullRequest(raw) && raw.state === 'CLOSED' ? 'NOT_PLANNED' : (raw.stateReason ?? null),
     closedAt: raw.closedAt ?? null,
     subIssues: subIssues.map((s) => s.number),
     comments,
     bodyHash: hashText(raw.body ?? ''),
     record: null,
   };
+  if (isPullRequest(raw)) node.pullRequest = raw.state === 'MERGED' ? 'merged' : raw.state === 'CLOSED' ? 'closed' : 'open';
   node.record = latestRecord(node, botLogin, log);
   return node;
 }

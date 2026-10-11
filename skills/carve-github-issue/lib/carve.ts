@@ -439,8 +439,9 @@ export type PiecePlan =
 /**
  * Turns the chosen cut's pieces into tracker actions. An adopted child is what it is; a reference
  * outside the tree is attached when it has no parent, depended on when it has one, recorded as
- * completed when it is closed COMPLETED, and refused when it is closed NOT_PLANNED, deleted, or
- * would close a blocked-by cycle. Refusals are faults the carver must answer on its next round.
+ * completed when it is closed COMPLETED, and refused when it is closed NOT_PLANNED, deleted, a
+ * pull request, or would close a blocked-by cycle. Refusals are faults the carver must answer on
+ * its next round.
  */
 export function normalize(cut: Cut, tree: Tree, io: TrackerIo): { ok: true; plan: PiecePlan[] } | { ok: false; faults: string[] } {
   const faults: string[] = [];
@@ -454,6 +455,11 @@ export function normalize(cut: Cut, tree: Tree, io: TrackerIo): { ok: true; plan
     const node = io.view(number);
     if (!node || node.state === 'DELETED') {
       faults.push(`piece ${index} names #${number}, which does not exist`);
+      return;
+    }
+    // A pull request cannot be a sub-issue or a blocker; the issue it resolved can.
+    if (node.pullRequest) {
+      faults.push(`piece ${index} names #${number}, which is a pull request (${node.pullRequest}); reference the issue it resolves, or author the piece`);
       return;
     }
     if (piece.kind === 'child') {

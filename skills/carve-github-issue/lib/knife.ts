@@ -331,6 +331,18 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
       child.status = 'deleted';
       continue;
     }
+    // A record announced before the cut refused pull requests: a merged one stands as the finished
+    // work it is, and any other leaves its criteria unowned for the next visit. Never attached.
+    if (node.pullRequest) {
+      if (node.pullRequest === 'merged') {
+        child.status = 'closed-completed';
+        k.journal.done('reference', child.number);
+      } else {
+        child.status = node.pullRequest === 'closed' ? 'closed-not-planned' : 'deleted';
+        k.journal.abandoned('reference', `#${child.number} is a pull request (${node.pullRequest}), not an issue`, child.number);
+      }
+      continue;
+    }
     if (node.state === 'CLOSED') {
       child.status = node.stateReason === 'NOT_PLANNED' ? 'closed-not-planned' : 'closed-completed';
       k.journal.done('reference', child.number);

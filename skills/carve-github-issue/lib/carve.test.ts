@@ -282,6 +282,20 @@ describe('toNode', () => {
       ['IC_b', 20, 'ghost'],
     ]);
     expect(logs.some((l) => l.includes('IC_c'))).toBe(true);
+    expect(node.pullRequest).toBeUndefined();
+  });
+
+  test('marks a pull request read through the issue view, and settles its state as an issue would', () => {
+    const at = (state: string, url: string) => toNode({ ...raw, state, stateReason: '', url }, rest, BOT);
+    const merged = at('MERGED', 'https://github.com/o/r/pull/5');
+    expect([merged.pullRequest, merged.state, merged.stateReason]).toEqual(['merged', 'CLOSED', 'COMPLETED']);
+    const dropped = at('CLOSED', 'https://github.com/o/r/pull/5');
+    expect([dropped.pullRequest, dropped.state, dropped.stateReason]).toEqual(['closed', 'CLOSED', 'NOT_PLANNED']);
+    const open = at('OPEN', 'https://github.com/o/r/pull/5');
+    expect([open.pullRequest, open.state]).toEqual(['open', 'OPEN']);
+    // An issue keeps its own state and reason, empty reason included.
+    const issue = at('CLOSED', 'https://github.com/o/r/issues/5');
+    expect([issue.pullRequest, issue.state, issue.stateReason]).toEqual([undefined, 'CLOSED', '']);
   });
 });
 
