@@ -16,7 +16,7 @@ import { descendants, liveClaim, needsRevisit, parseMarker, pointsOf, readTree, 
 import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts';
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
-import { mutate } from '../../fix-github-issue/lib/shell.ts';
+import { isStopping, mutate, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 
 export type CarvingDeps = {
   ctx: Context;
@@ -115,6 +115,20 @@ export class Carving {
       mutate(ctx, `roll up #${event.issue} on #${parent}`, ['gh', 'issue', 'comment', String(parent), '--body', `${marker}\nLeaf #${event.issue} (${closed?.title ?? ''}) ${how} at ${event.closedAt}.`]);
     }
     await this.revisit(parent, `#${event.issue} closed`);
+  }
+
+  /**
+   * One trunk's visit inside the sweep. A knife that throws has already counted the failed carve on
+   * the trunk (a dead letter at the cap) and rested its card, so the sweep goes on to the next trunk
+   * rather than ending the run on the first bad one; a stop is the operator's and still ends it.
+   */
+  private async guard(number: number, visit: () => Promise<void>): Promise<void> {
+    try {
+      await visit();
+    } catch (error) {
+      if (error instanceof RunStopping || isStopping()) throw error;
+      this.deps.log(`  #${number}  sweep: ${(error as Error).message.split('\n')[0]}; on to the next trunk`);
+    }
   }
 
   /** Hands a trunk to the knife once per run, and finishes a release when the knife exhausts it. */
@@ -309,25 +323,25 @@ export class Carving {
       const held = labels.some((l) => HOLD_LABELS.includes(l) && l !== 'loop/paused');
       const pending = tree.intents.some((i) => !i.finished && (i.kind === 'applying' || i.kind === 'released' || i.kind === 'carve-handoff'));
       if (pending) {
-        await this.revisit(issue.number, 'an unfinished announcement');
+        await this.guard(issue.number, () => this.revisit(issue.number, 'an unfinished announcement'));
         continue;
       }
       if (labels.includes('loop/released')) {
-        if (!held) await this.releaseAppraisal(issue.number);
+        if (!held) await this.guard(issue.number, () => this.releaseAppraisal(issue.number));
         continue;
       }
       const redrive = Boolean(tree.record && tree.record.seen.holds.some((h) => !labels.includes(h)));
       if (held) {
         // The knife snapshots a hold it has not recorded, then leaves the trunk to its person.
-        if (tree.record && !tree.record.seen.holds.some((h) => labels.includes(h))) await this.revisit(issue.number, 'a hold to snapshot');
+        if (tree.record && !tree.record.seen.holds.some((h) => labels.includes(h))) await this.guard(issue.number, () => this.revisit(issue.number, 'a hold to snapshot'));
         continue;
       }
       if (redrive) {
-        await this.revisit(issue.number, 'a hold was removed');
+        await this.guard(issue.number, () => this.revisit(issue.number, 'a hold was removed'));
         continue;
       }
       const why = needsRevisit(tree.record, tree, ctx.botLogin);
-      if (why) await this.revisit(issue.number, why === 'no-record' ? 'no record' : `${why} changed`);
+      if (why) await this.guard(issue.number, () => this.revisit(issue.number, why === 'no-record' ? 'no record' : `${why} changed`));
     }
 
     // Second pass: oversized in the window, or an open child at any age.
@@ -342,7 +356,7 @@ export class Carving {
       if (!openChild && !oversized) continue;
       const tree = readTree(ctx, issue.number, io);
       if (liveClaim(tree, new Date().toISOString(), ctx.runId)) continue;
-      await this.revisit(issue.number, openChild ? 'an open child with no record' : `sized ${points}, over the ceiling`);
+      await this.guard(issue.number, () => this.revisit(issue.number, openChild ? 'an open child with no record' : `sized ${points}, over the ceiling`));
     }
 
     // Third pass: invalid blockers, and pauses left by closed trunks.
@@ -354,7 +368,7 @@ export class Carving {
         const parent = issue.parent?.number ?? null;
         const parentNode = parent === null ? null : io.view(parent);
         if (parent !== null && parentNode && parentNode.state === 'OPEN') {
-          await this.revisit(parent, `#${issue.number} has an invalid blocker #${invalid.number}`);
+          await this.guard(parent, () => this.revisit(parent, `#${issue.number} has an invalid blocker #${invalid.number}`));
         } else if (!issue.labels.some((l) => l.name === 'needs-human')) {
           if (ctx.dryRun) log(`DRY RUN  would hand #${issue.number} to a person for its invalid blocker #${invalid.number}`);
           else {

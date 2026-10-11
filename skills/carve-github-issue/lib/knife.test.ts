@@ -47,6 +47,27 @@ describe('the carving driver makes only moves the chart allows', () => {
       expect(illegal(lanes)).toEqual([]);
     });
   }
+  test('a trunk whose knife throws in the sweep is rested, and the sweep goes on to the next trunk', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'size: 8' }] }), fakeIssue(20, { labels: [{ name: 'size: 8' }] })]);
+    const ctx = ctxFor(io);
+    // No prompts: the knife throws for every trunk it is handed.
+    ctx.promptsDirs = [];
+    const visited: number[] = [];
+    const d = new CarvingDriver({ ctx, knobs: knobs(fixture('carver', carving(10)), fixture('confirmer', confirmation(10, 'carve', 'cover', true))), appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (n) => visited.push(n), log: () => {} });
+    await d.sweep([10, 20].map((n) => io.view(n)!));
+    expect([...new Set(visited)].sort()).toEqual([10, 20]);
+  });
+
+  test('a stop during the sweep still ends it', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'size: 8' }] }), fakeIssue(20, { labels: [{ name: 'size: 8' }] })]);
+    const ctx = ctxFor(io);
+    ctx.promptsDirs = [];
+    const visited: number[] = [];
+    const d = new CarvingDriver({ ctx, knobs: knobs(fixture('carver', carving(10)), fixture('confirmer', confirmation(10, 'carve', 'cover', true))), appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (n) => { visited.push(n); beginStop(); }, log: () => {} });
+    await expect(d.sweep([10, 20].map((n) => io.view(n)!))).rejects.toThrow();
+    expect([...new Set(visited)]).toEqual([10]);
+  });
+
   for (const points of [1, 8]) {
     test(`release resumed after size ${points} was written follows chart edges`, async () => {
       const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }, { name: `size: ${points}` }] })]);
