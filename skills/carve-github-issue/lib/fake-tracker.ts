@@ -154,6 +154,11 @@ export class FakeTracker implements TrackerIo {
     }
     if (sub === 'issue' && verb === 'edit') {
       const n = Number(rest[0]);
+      // Like GitHub: a pull request is no issue node, so it cannot be a parent, a sub-issue, or a blocker.
+      const related = [String(n), flag('--parent'), ...flags('--add-blocked-by')].filter((x): x is string => x !== undefined);
+      const relating = flag('--parent') !== undefined || flags('--add-blocked-by').length > 0;
+      const pr = related.map(Number).find((x) => this.issues.get(x)?.pullRequest);
+      if (relating && pr !== undefined) throw new Error(`fake tracker: Could not resolve to Issue node for #${pr}, a pull request`);
       for (const name of flags('--add-label')) this.addLabel(n, name);
       for (const name of flags('--remove-label')) this.removeLabel(n, name);
       const parent = flag('--parent');

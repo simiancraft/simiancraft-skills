@@ -299,6 +299,14 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
   const children = applying.children.map((c) => ({ ...c }));
   const cut = applying.cut;
   if (!cut) return { ok: false, why: 'an applying record with no cut' };
+  // A record announced before the cut refused pull requests can name one, and a pull request can
+  // be neither a sub-issue nor a blocker. Finishing it would leave edges and a ledger that no
+  // later read agrees with, so it is refused whole, before any write, and goes to a person.
+  for (const child of applying.children) {
+    if (child.kind === 'author' || child.number === null) continue;
+    const pr = k.io.view(child.number)?.pullRequest;
+    if (pr) return { ok: false, why: `piece ${child.piece} names #${child.number}, which is a pull request (${pr}); the announced cut cannot be finished as written` };
+  }
   const previous = tree.record && tree.record.state === 'live' && tree.record.generation < applying.generation ? tree.record : null;
 
   // Pieces, in delivery order.
@@ -329,18 +337,6 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
     if (!node || node.state === 'DELETED') {
       k.journal.abandoned('reference', `#${child.number} no longer exists`, child.number);
       child.status = 'deleted';
-      continue;
-    }
-    // A record announced before the cut refused pull requests: a merged one stands as the finished
-    // work it is, and any other leaves its criteria unowned for the next visit. Never attached.
-    if (node.pullRequest) {
-      if (node.pullRequest === 'merged') {
-        child.status = 'closed-completed';
-        k.journal.done('reference', child.number);
-      } else {
-        child.status = node.pullRequest === 'closed' ? 'closed-not-planned' : 'deleted';
-        k.journal.abandoned('reference', `#${child.number} is a pull request (${node.pullRequest}), not an issue`, child.number);
-      }
       continue;
     }
     if (node.state === 'CLOSED') {

@@ -501,16 +501,17 @@ describe('carveIssue', () => {
     expect(io.view(10)!.subIssues.length).toBe(children);
   });
 
-  for (const pr of ['merged', 'open'] as const) test(`an announced generation whose reference turned out to be ${pr === 'open' ? 'an' : 'a'} ${pr} pull request finishes without attaching it`, async () => {
+  for (const pr of ['merged', 'open'] as const) test(`an announced generation whose reference turned out to be ${pr === 'open' ? 'an' : 'a'} ${pr} pull request goes to a person whole, with no edge to it`, async () => {
     // A cut that named #50 was announced before references were checked for pull requests, and
-    // the attach of #50 was where the run stopped. GitHub answers an issue read for a pull request,
-    // and refuses one as a sub-issue; the next visit must finish the generation without trying.
+    // the attach of #50 was where the run stopped. GitHub answers an issue read for a pull request
+    // and refuses one as a sub-issue or a blocker, so the next visit must not try either; finishing
+    // part of the cut would leave edges and a ledger no later read agrees with.
     const io = trunk();
     io.issues.set(50, fakeIssue(50, { title: 'the work, already merged' }));
     const ctx = ctxFor(io);
     const pieces = [
       { kind: 'reference' as const, number: 50, points: null, role: 'work' as const, criteria: ['A1', 'A2'], dependsOn: [], order: 1, orderRung: 'source-of-truth' as const },
-      { kind: 'author' as const, title: '[t] authors', body, points: 2, role: 'work' as const, criteria: ['A3'], dependsOn: [], order: 2, orderRung: 'risk' as const },
+      { kind: 'author' as const, title: '[t] authors', body, points: 2, role: 'work' as const, criteria: ['A3'], dependsOn: [0], order: 2, orderRung: 'dependency' as const },
     ];
     const [base] = carving(10).cuts as [Cut];
     const cut: Cut = { ...base, relation: 'mixed', pieces };
@@ -526,10 +527,12 @@ describe('carveIssue', () => {
     io.issues.set(50, fakeIssue(50, pr === 'merged' ? { title: 'the work', state: 'CLOSED', stateReason: 'COMPLETED', pullRequest: 'merged' } : { title: 'the work', pullRequest: 'open' }));
     const writes = io.writes.length;
     const out = await carveIssue(ctx, issue10, k, io);
-    expect(out.outcome).toBe('resumed');
-    expect(io.writes.slice(writes).some((w) => w.argv[3] === '50' && w.argv.includes('--parent'))).toBe(false);
+    expect(out.reason).toMatch(/#50, which is a pull request/);
+    const after = io.writes.slice(writes);
+    expect(after.some((w) => w.argv.includes('--parent') || w.argv.includes('--add-blocked-by'))).toBe(false);
     expect(io.view(50)!.parent).toBeNull();
-    expect(records(io, 10)).toEqual(['applying', 'live']);
+    expect(out.outcome).toBe('dlq');
+    expect(labels(io, 10)).toContain('loop/dlq: carve');
   });
 
   test('a dry run with no fixture seat stops at the carver, and calls it nothing that failed', async () => {
