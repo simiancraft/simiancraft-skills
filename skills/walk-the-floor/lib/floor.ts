@@ -4,8 +4,9 @@
  * Nothing here knows about GitHub, agents, or the burndown; see references/the-floor.md.
  */
 
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { acquirePidLock } from '../../fix-github-issue/lib/pid-lock.ts';
 
 export const FILES = {
   list: 'list.jsonl',
@@ -168,37 +169,6 @@ export function safeName(id: string): string {
 export function claimFloorLock(dir: string): () => void {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, FILES.lock);
-  const holder = () => {
-    const pid = Number(readFileSync(path, 'utf8').trim());
-    return Number.isInteger(pid) && pid > 0 && alive(pid) ? pid : null;
-  };
-  // Exclusive create, not check-then-write: two walkers started together would both pass an
-  // existence check and both believe they hold the floor.
-  try {
-    writeFileSync(path, `${process.pid}\n`, { flag: 'wx' });
-  } catch {
-    const pid = holder();
-    if (pid !== null) throw new Error(`another walker (pid ${pid}) holds ${path}`);
-    rmSync(path, { force: true });
-    writeFileSync(path, `${process.pid}\n`, { flag: 'wx' });
-  }
-  if (readFileSync(path, 'utf8').trim() !== String(process.pid)) {
-    throw new Error(`another walker claimed ${path} first`);
-  }
-  return () => {
-    try {
-      if (readFileSync(path, 'utf8').trim() === String(process.pid)) rmSync(path);
-    } catch {
-      // already gone
-    }
-  };
+  return acquirePidLock(path, { held: (pid) => `another walker (pid ${pid}) holds ${path}`, lost: `another walker claimed ${path} first` });
 }
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}

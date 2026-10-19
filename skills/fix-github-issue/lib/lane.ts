@@ -6,10 +6,11 @@
  * it. The main checkout is never one.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Context } from './context.ts';
 import { CONTROL_FILES } from './control-files.ts';
+import { acquirePidLock } from './pid-lock.ts';
 import { sh } from './shell.ts';
 
 /** Porcelain status of a worktree, minus the loop's own control files. */
@@ -162,44 +163,14 @@ export const inFlight = new Map<number, { dir: string; busy: boolean }>();
 export function claimLock(ctx: Context, name: string): () => void {
   mkdirSync(ctx.runDir, { recursive: true });
   const lockPath = join(ctx.runDir, name);
-
-  const held = () => {
-    const holder = Number(readFileSync(lockPath, 'utf8').trim());
-    try {
-      process.kill(holder, 0);
-      return holder;
-    } catch {
-      return null;
-    }
-  };
-
-  // Exclusive create rather than check-then-write: two loops started in the same instant would both
-  // pass an existsSync check and both believe they hold the lock.
-  try {
-    writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-  } catch {
-    const holder = held();
-    if (holder !== null) throw new Error(`another burn-down loop is running (pid ${holder}); wait for it or kill it`);
-    ctx.log('clearing a stale lock from a dead process');
-    rmSync(lockPath, { force: true });
-    writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-  }
-
-  // Read the lock back: two starters can both observe the same dead pid, both clear it, and race
-  // the rewrite. Whoever's pid is not in the file lost, and must not run believing it holds it.
-  if (readFileSync(lockPath, 'utf8').trim() !== String(process.pid)) {
-    throw new Error('another burn-down loop claimed the lock first; run again once it finishes');
-  }
-
-  // Release only a lock this process still owns; deleting unconditionally could take out the lock
-  // a competing starter just legitimately claimed.
-  return () => {
-    try {
-      if (readFileSync(lockPath, 'utf8').trim() === String(process.pid)) rmSync(lockPath, { force: true });
-    } catch {
-      // already gone
-    }
-  };
+  return acquirePidLock(
+    lockPath,
+    {
+      held: (pid) => `another burn-down loop is running (pid ${pid}); wait for it or kill it`,
+      lost: 'another burn-down loop claimed the lock first; run again once it finishes',
+    },
+    ctx.log,
+  );
 }
 
 /**
