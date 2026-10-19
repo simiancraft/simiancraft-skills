@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Context, createContext } from '../../fix-github-issue/lib/context.ts';
@@ -767,5 +767,21 @@ describe('carveIssue', () => {
     expect(io.view(10)!.subIssues).toEqual([]);
     expect(ctx.dryRunLog.some((l) => l.includes('create child'))).toBe(true);
     expect(ctx.dryRunLog.some((l) => l.includes('post the live record'))).toBe(true);
+  });
+});
+
+describe('the local carve lock', () => {
+  test('is released when the journal cannot be read, so the issue is not busy for the rest of the run', async () => {
+    const io = trunk();
+    // A live tracker run: no fake io on the context, so the knife takes its local lock.
+    const ctx = ctxFor(io);
+    ctx.io = undefined;
+    mkdirSync(ctx.runDir, { recursive: true });
+    const generation = readTree(ctx, 10, io).generation;
+    writeFileSync(join(ctx.runDir, `carve-10-gen${generation}.json`), '{ not json');
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    await expect(carveIssue(ctx, issue10, k, io)).rejects.toThrow();
+    expect(existsSync(join(ctx.runDir, 'carve-10.lock'))).toBe(false);
+    rmSync(join(ctx.runDir, `carve-10-gen${generation}.json`));
   });
 });

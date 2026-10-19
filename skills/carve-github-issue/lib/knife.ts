@@ -716,9 +716,17 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     return { outcome: 'left-alone', reason: `#${issue.number} is ${tree.issue.state.toLowerCase()}` };
   }
   const journalPath = ctx.dryRun || ctx.io ? null : join(ctx.runDir, `carve-${issue.number}-gen${tree.generation}.json`);
-  const k: Knife = { ctx, io, knobs, trunk: issue.number, say, journal: new JournalFile(ctx, knobs, issue.number, tree.generation, journalPath) };
-
-  const handle = await claim(ctx, io, issue.number, 'carving');
+  // Reading the journal and taking the claim can both throw; the local lock must not outlive them,
+  // or every later visit in this process reads its own live pid and calls the issue busy.
+  let k: Knife;
+  let handle: Awaited<ReturnType<typeof claim>>;
+  try {
+    k = { ctx, io, knobs, trunk: issue.number, say, journal: new JournalFile(ctx, knobs, issue.number, tree.generation, journalPath) };
+    handle = await claim(ctx, io, issue.number, 'carving');
+  } catch (error) {
+    unlock();
+    throw error;
+  }
   if (handle === 'busy') {
     unlock();
     return { outcome: 'busy', reason: 'another run holds this issue' };
