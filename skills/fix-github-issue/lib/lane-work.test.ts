@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectConfig } from './config.ts';
 import type { Context } from './context.ts';
+import { claim } from '../../carve-github-issue/lib/claims.ts';
+import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
+import { reconcile } from './resume.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -164,6 +167,30 @@ describe('what a finished lane leaves behind', () => {
     const lines: string[] = [];
     const dir = lane(80, false);
     retireLane(ctxFor(lines), 80, say(lines));
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe('reconcile at a loop start', () => {
+  const ctxWith = (io: FakeTracker, runId: string) =>
+    ({ project: { ...PROJECT, repo: 'o/r' }, repoRoot: repo, dryRun: false, dryRunLog: [], botLogin: 'loop-bot', runId, io, log: () => {} }) as unknown as Context;
+
+  it('leaves a lane alone while another live run claims its issue, as a hand-run fix does', async () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(81)]);
+    const dir = lane(81, false);
+    // The hand-run fix: same host, a live pid (this one), a different run.
+    const handRun = ctxWith(io, `${hostname()}-${process.pid}-1`);
+    const held = await claim(handRun, io, 81, 'working');
+    expect(held).not.toBe('busy');
+    reconcile(ctxWith(io, `${hostname()}-${process.pid}-2`), new Set());
+    expect(existsSync(dir)).toBe(true);
+    if (held !== 'busy') held.release();
+  });
+
+  it('retires a clean lane nobody claims', () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(82)]);
+    const dir = lane(82, false);
+    reconcile(ctxWith(io, `${hostname()}-${process.pid}-3`), new Set());
     expect(existsSync(dir)).toBe(false);
   });
 });

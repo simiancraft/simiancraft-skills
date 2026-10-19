@@ -9,6 +9,7 @@
 import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
 import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
@@ -31,6 +32,7 @@ export type Stranded = { issue: Issue; cwd: string; result: WorkerResult };
  */
 export function reconcile(ctx: Context, claimed: Set<number>): void {
   const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
+  const holders = new Map<number, string | null>();
   let repaired = 0;
 
   for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
@@ -55,6 +57,15 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     // treats the issue as claimed, so leave both alone and let a human or a later round finish it.
     if (claimed.has(Number(issue))) {
       ctx.log(`reconcile: #${issue} has an open pull request; leaving its worktree in place`);
+      continue;
+    }
+
+    // `fix.ts` holds no instance lock, so a loop can start while a hand-run fix's worker is still in
+    // this lane, before its pull request exists. A live claim by another run means the lane is not
+    // abandoned; a claim that cannot be read is treated the same, since removing is the irreversible act.
+    const holder = claimHolder(ctx, Number(issue), holders);
+    if (holder) {
+      ctx.log(`reconcile: #${issue} is claimed by ${holder}; leaving its worktree in place`);
       continue;
     }
 
@@ -87,6 +98,20 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
   }
 
   if (repaired > 0) ctx.log(`reconcile: cleared ${repaired} abandoned worktree(s) from an earlier run`);
+}
+
+/** Who else holds a live claim on an issue, if anyone; read once per issue, and fail closed. */
+function claimHolder(ctx: Context, issue: number, cache: Map<number, string | null>): string | null {
+  if (!cache.has(issue)) {
+    let holder: string | null;
+    try {
+      holder = liveClaim(readTree(ctx, issue, trackerIo(ctx)), new Date().toISOString(), ctx.runId)?.runId ?? null;
+    } catch (error) {
+      holder = `an unreadable claim (${(error as Error).message.split('\n')[0]})`;
+    }
+    cache.set(issue, holder);
+  }
+  return cache.get(issue) ?? null;
 }
 
 /**
