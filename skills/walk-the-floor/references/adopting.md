@@ -100,14 +100,16 @@ Adopting a fourth kind is a new row here and a new driver skill, not a change to
 
 ## Authoring a standing walk
 
-A walk is a paragraph of prose an agent can follow, keyed to path globs. Write it the way you
+A walk is a paragraph of prose an agent can follow, keyed to paths. Write it the way you
 would tell a new hire to check that something still works:
 
 - Name what to open, what to do, and what "working" looks like ("at least one row renders", "the
   form refuses an empty postal code").
 - Keep it to the ordinary user action. A walk is the `exercise` rung, not a test plan.
-- Key it to the directories whose changes should trigger it. An item touching any of those paths
-  gets the walk performed whatever else the walker does.
+- Key it to the directories whose changes should trigger it. A path is a prefix from the
+  repository root (`src/search/`), or a bare suffix such as `.schema.ts`; globs are not read, and
+  the config refuses one. An item touching any of those paths gets the walk performed whatever
+  else the walker does.
 - Prefer a handful of walks covering the surfaces a user touches daily over dozens covering
   everything. Sign in, the main list, one record, one search, one print or export is a good floor.
 

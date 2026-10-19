@@ -130,6 +130,19 @@ export function inQuietWindow(windows: Array<{ start: string; end: string }>, no
 /** A variable name, not a value: upper-case identifier characters only. */
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 
+/** Walk paths match as prefixes or bare suffixes (`matchesPath`); a glob would silently never match. */
+export function walkPathFaults(walks: Array<{ name: string; paths: unknown[] }>): string[] {
+  const faults: string[] = [];
+  for (const walk of walks) {
+    for (const path of walk.paths) {
+      if (typeof path !== 'string' || /[*?[\]{}]/.test(path)) {
+        faults.push(`walks '${walk.name}': path '${String(path)}' is not a prefix or suffix; use one such as 'src/search/' or '.schema.ts', not a glob`);
+      }
+    }
+  }
+  return faults;
+}
+
 export async function loadWalkConfig(invokeRoot: string, repoRoot: string): Promise<WalkKnobs & { project: ProjectConfig }> {
   const loaded = await loadProjectConfig<WalkKnobs>({
     invokeRoot,
@@ -183,6 +196,8 @@ export async function loadWalkConfig(invokeRoot: string, repoRoot: string): Prom
   }
   if (!Array.isArray(loaded.walks) || loaded.walks.some((w) => !w?.name || !Array.isArray(w.paths) || !w.steps)) {
     faults.push('walks must be an array of { name, paths, steps }');
+  } else {
+    faults.push(...walkPathFaults(loaded.walks));
   }
   if (faults.length > 0) {
     console.error([`config ${CONFIG_FILE} is invalid:`, ...faults.map((f) => `  - ${f}`)].join('\n'));
