@@ -77,6 +77,9 @@ export default {
   autoMerge: 'code-only', // what a repair may merge on its own; 'never' parks every fix for a person
   maxReviewRounds: 3, // review rounds an incident's fix gets before the dead-letter queue
   checksTimeoutMinutes: 45, // how long a repair waits on its pull request's checks
+  checks: 'required', // or 'none' for a repository that runs no checks on a pull request
+  // requiredChecks: ['build', 'test'], // needed unless the base branch's protection requires status checks
+  // idleCheckSuiteApps: ['some-app'], // apps that open a check suite on every push and may run nothing in it
   smokeTimeoutMinutes: 10, // how long project.smokeCommand may run before the repair parks
   seats: { walker: 'claude:claude-opus-5', worker: 'codex:gpt-5.6-sol', reviewer: 'claude:claude-opus-5' },
 } satisfies WalkConfig;

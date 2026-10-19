@@ -50,3 +50,9 @@ describe('an incident handed to the fix pipeline', () => {
     expect(incident).toMatch(/fixIssue\(ctx, live,/);
   });
 });
+
+describe('a repair landing', () => {
+  it('passes the checks knobs to the fix pipeline, so a repository without branch protection can land', () => {
+    for (const knob of ['checks: CONFIG.checks', 'requiredChecks: CONFIG.requiredChecks', 'idleCheckSuiteApps: CONFIG.idleCheckSuiteApps']) expect(source).toContain(knob);
+  });
+});

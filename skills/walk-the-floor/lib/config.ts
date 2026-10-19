@@ -63,6 +63,10 @@ export type WalkKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
   checksTimeoutMinutes: number;
+  /** The checks a repair's landing must pass, as the fix pipeline reads them; see its `PipelineKnobs`. */
+  checks: 'required' | 'none';
+  requiredChecks?: string[];
+  idleCheckSuiteApps?: string[];
   /** The cap on the walker's own agent (`diagnose`); the same shape as the pipeline's knob. */
   agentTimeoutMinutes?: number | Partial<Record<string, number>>;
   smokeTimeoutMinutes: number;
@@ -101,6 +105,7 @@ export const DEFAULTS: WalkKnobs = {
   autoMerge: 'code-only',
   maxReviewRounds: 3,
   checksTimeoutMinutes: 45,
+  checks: 'required',
   smokeTimeoutMinutes: 10,
   maxPoints: 5,
   cadenceMinutes: 10,
