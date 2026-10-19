@@ -51,6 +51,8 @@ import { guardCli } from '../fix-github-issue/lib/cli.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX_PROMPTS = join(HERE, '..', 'fix-github-issue', 'prompts');
+// A worker that answers already-fixed or obsolete is confirmed by the appraiser's close prompt.
+const APPRAISE_PROMPTS = join(HERE, '..', 'appraise-github-issues', 'prompts');
 const VERDICT_FILE = 'walk-verdict.json';
 
 // ---------------------------------------------------------------------------
@@ -134,7 +136,7 @@ const ctx = createContext({
   seats: { worker: parseSeat(CONFIG.seats.worker, 'seats.worker'), reviewer: parseSeat(CONFIG.seats.reviewer, 'seats.reviewer') },
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
-  promptsDirs: [FIX_PROMPTS],
+  promptsDirs: [FIX_PROMPTS, APPRAISE_PROMPTS],
   dryRun: DRY_RUN,
 });
 
