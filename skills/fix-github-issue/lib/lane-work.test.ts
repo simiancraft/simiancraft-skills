@@ -49,6 +49,15 @@ function lane(issue: number, commit: boolean, branch = `fix/work-${issue}`) {
 const onRemote = (branch: string) => git(repo, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`) !== '';
 
 describe('what a finished lane leaves behind', () => {
+  it('keeps a lane holding uncommitted edits: a forced removal would delete the only copy', () => {
+    const lines: string[] = [];
+    const dir = lane(70, false);
+    writeFileSync(join(dir, 'half-done.txt'), 'edits nobody committed\n');
+    retireLane(ctxFor(lines), 70, (m) => lines.push(m));
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(lines.some((l) => /keeping the lane: it holds uncommitted changes \(half-done\.txt\)/.test(l))).toBe(true);
+  });
+
   it('pushes commits that are on no remote, so a failed attempt does not throw its work away', () => {
     const lines: string[] = [];
     const dir = lane(71, true);

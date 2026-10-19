@@ -1497,6 +1497,13 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
   const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (!existsSync(cwd)) return true;
   try {
+    // Edits nobody committed live only in this directory, and a forced removal deletes them; a lane
+    // a review refused for its dirty tree is exactly where they are. It is kept for a person.
+    const dirty = dirtyPaths(ctx, cwd);
+    if (dirty.length > 0) {
+      say(`keeping the lane: it holds uncommitted changes (${dirty.slice(0, 3).map((line) => line.slice(3)).join(', ')}${dirty.length > 3 ? ', ...' : ''})`);
+      return false;
+    }
     // Nothing here that no remote has: the lane holds no work of its own, whatever it is on.
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0) return true;
     const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
