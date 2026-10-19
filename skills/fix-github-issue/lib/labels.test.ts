@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import type { Context } from './context.ts';
-import { countOf, DLQ_PHASES, dlqLabel, dlqPhase, HOLD_LABELS, isDlqLabel, isHeldBy, loopLabels, recordCount } from './labels.ts';
+import { countOf, DLQ_PHASES, dlqLabel, dlqPhase, HOLD_LABELS, isDlqLabel, isHeldBy, loopLabels, recordCount, sendToDlq } from './labels.ts';
 
 const labels = (...names: string[]) => names.map((name) => ({ name }));
 
@@ -111,5 +111,16 @@ describe('the label a count is written as', () => {
     expect(recordCount(r.ctx, 'redrives', 2, 0)).toBe(1);
     expect(r.created()).toBe(2);
     expect(r.on(2)).toContain('loop/redrives: 1');
+  });
+});
+
+describe('a dead letter', () => {
+  it('takes its phase counter off, so lifting the label is the fresh budget its comment promises', () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(1, { labels: [{ name: 'loop/attempts: 3' }] }), fakeIssue(2)]);
+    const ctx = { botLogin: 'loop-bot', runId: 'host-1-1', dryRun: false, dryRunLog: [], project: { repo: 'o/dlq-budget' }, log: () => {}, io } as unknown as Context;
+    sendToDlq(ctx, 1, 'work', 'the worker failed three times');
+    const on = io.view(1)!.labels.map((l) => l.name);
+    expect(on).toContain('loop/dlq: work');
+    expect(on.some((name) => name.startsWith('loop/attempts:'))).toBe(false);
   });
 });

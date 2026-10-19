@@ -202,10 +202,13 @@ export const clearAttempts = (ctx: Context, issue: number) => clearCount(ctx, 'a
 export const redriveCount = (labels: Array<{ name: string }>) => countOf('redrives', labels);
 export const recordRedrive = (ctx: Context, issue: number, previous: number) => recordCount(ctx, 'redrives', issue, previous);
 
+/** The counter whose spent budget a phase's dead letter takes off; landing spends none. */
+const DLQ_COUNTER: Partial<Record<DlqPhase, Counter>> = { review: 'reviews', work: 'attempts', appraisal: 'appraisals', carve: 'carves' };
+
 /**
  * Ejects an issue to one phase's dead-letter queue, retained with the reason that put it there.
- * The review queue also takes the spent rounds off, or the redrive would be a lie: with any
- * `loop/reviews: N` surviving, lifting the letter would hand the issue back with a short budget.
+ * The phase's counter comes off too, or the redrive would be a lie: with `loop/attempts: 3`
+ * surviving, lifting the letter would hand the issue back with no budget at all.
  */
 export function sendToDlq(ctx: Context, issue: number, phase: DlqPhase, reason: string): void {
   const label = dlqLabel(phase);
@@ -220,7 +223,8 @@ export function sendToDlq(ctx: Context, issue: number, phase: DlqPhase, reason: 
     `Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`,
   ]);
   mutate(ctx, `send #${issue} to the ${phase} DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
-  if (phase === 'review') clearCount(ctx, 'reviews', issue);
+  const counter = DLQ_COUNTER[phase];
+  if (counter) clearCount(ctx, counter, issue);
 }
 
 /** Lifts every dead-letter label an issue carries, the bare legacy one included. Returns what came off. */

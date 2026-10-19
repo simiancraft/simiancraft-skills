@@ -1196,7 +1196,12 @@ async function main(): Promise<void> {
 
     // Half-written label transitions are repaired before anything reads them, so a crash mid-DLQ
     // or mid-count-swap costs one repair pass rather than a permanently wedged issue.
-    repairDurableState(ctx, allIssues(), CONFIG.skipLabels, { reviews: CONFIG.maxReviewRounds });
+    repairDurableState(ctx, allIssues(), CONFIG.skipLabels, {
+      reviews: CONFIG.maxReviewRounds,
+      attempts: CONFIG.maxWorkerAttempts,
+      appraisals: CONFIG.maxAppraiseAttempts,
+      carves: CONFIG.carve.maxCarveAttempts,
+    });
     await reconcileMergedPullRequests(allIssues());
 
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
