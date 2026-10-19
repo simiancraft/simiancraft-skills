@@ -37,9 +37,10 @@ reviewer on `claude -p`; both are seats you can reassign. Splitting the engines 
 model as the author shares its blind spots by construction, and the merge gate exists precisely to
 have blind spots the author does not.
 
-Each role is a seat filled by an `engine:model` spec, resolved against an engine registry in
-`loop.ts`. The configured defaults are overridable at invocation (`--appraiser`, `--worker`,
-`--reviewer`), so trying a new model is a flag rather than an edit, and supporting a new CLI is one
+Each role is a seat filled by an `engine:model` spec, resolved against the engine registry in
+`fix-github-issue/lib/engines.ts`. The configured defaults are overridable at invocation (one flag
+per seat: `--worker`, `--reviewer`, `--confirmer`, `--appraiser`, `--carver`, `--carve-confirmer`,
+and `--callback-seat`), so trying a new model is a flag rather than an edit, and supporting a new CLI is one
 registry entry rather than a refactor. The driver warns when worker and reviewer resolve to the
 same engine, because that configuration gives the merge gate the author's blind spots back.
 
@@ -155,10 +156,9 @@ never the run its state.
 
 ## The line
 
-A file switch, `<worktreeRoot>/runs/line-switch`, stops the loop at its three seams: before the
-appraisal batch, before each dispatch, and inside the pull master before every merge. The pull
-master reaches it through the fix pipeline's `mayMerge` hook, which the loop answers by waiting
-until the switch says go; nothing in the pipeline knows a switch exists. The seam holds rather
+A file switch, `<worktreeRoot>/runs/line-switch`, stops the loop at its seams; `operating.md`,
+"When the line is paused", lists them once. The pull master's seam, before every merge, is the
+fix pipeline's `mayMerge` hook, which the loop answers by waiting until the switch says go; nothing in the pipeline knows a switch exists. The seam holds rather
 than parks, because a pause is temporary and a parked pull request needs a human.
 
 The switch is how the loop composes with `walk-the-floor` without either knowing the other's

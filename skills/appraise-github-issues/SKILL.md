@@ -45,9 +45,9 @@ Sizing and hand-offs stay single-opinion. They are labels a person can change.
 A producer puts files named `on-size-<N>`, `on-size-over-<M>`, or `on-size` into a callbacks
 directory, and the appraiser looks one up for the points it just applied and runs it: an
 executable with the appraisal as JSON on stdin, a `.md` prompt as one agent turn on the callback
-seat, or both. The burndown writes the callbacks it ships there on every start, and that is how a
-larger skill (breaking an oversized issue into smaller ones, say) is reached without the appraiser
-knowing it exists. The ladder, the two forms, and the payload are in `references/callbacks.md`.
+seat (a seat is a role an agent fills; this one runs callback prompts), or both. The burndown
+writes the callbacks it ships there on every start, and that is how `carve-github-issue`, which
+breaks an oversized issue into smaller ones, is reached without the appraiser knowing it exists. The ladder, the two forms, and the payload are in `references/callbacks.md`.
 
 Keep the appraiser and the confirmer on different engines; the driver refuses to start when they
 match. `--no-confirm` (or `confirmCloses: false`) closes on the appraiser alone, for a tracker whose
@@ -60,6 +60,7 @@ From inside the target repository:
 ```bash
 bun run <this-skill-dir>/appraise.ts --dry-run             # select and print; no lock, no agent, no GitHub write (only runs/appraise.log)
 bun run <this-skill-dir>/appraise.ts --limit 12            # up to 12 unsized issues in the window
+bun run <this-skill-dir>/appraise.ts --age-days 90         # widen the window to 90 days for this run
 bun run <this-skill-dir>/appraise.ts --issue <n>           # one issue, whatever its age or size
 bun run <this-skill-dir>/appraise.ts --all                 # the whole open backlog, not only the window
 bun run <this-skill-dir>/appraise.ts --all --include-sized # re-judge everything, sized or not

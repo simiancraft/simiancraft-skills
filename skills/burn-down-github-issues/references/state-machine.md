@@ -36,10 +36,12 @@ burndown (parallel)
 ```
 
 `line` is the file switch `<worktreeRoot>/runs/line-switch`. It is a region of its own rather than
-a state of the ticket so that a pause moves no card: the three seams the loop holds at (appraiser
-dispatch, worker dispatch, and the knife's dispatch and revisit) are guards named `lineActive` on
-those events, and a card waiting on a paused line stays in its lane while the board's banner says
-why. `lib/machine.test.ts` asserts that `lineActive` guards exactly those events and no others.
+a state of the ticket so that a pause moves no card: in the machine, appraiser dispatch, worker
+dispatch, and the knife's dispatch and revisit are guarded by `lineActive`, and a card waiting on a
+paused line stays in its lane while the board's banner says why. `lib/machine.test.ts` asserts that
+`lineActive` guards exactly those events and no others. Where the running loop actually holds,
+which includes the merge and does not yet include the knife's sweep, is listed once in
+`operating.md`, "When the line is paused".
 
 ## Ticket-wide events
 
@@ -123,7 +125,7 @@ so any run can finish a spawn another run started.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| D4 Sent back | PR to draft, run worker revision | `DRAFT_PUSHED` to D3; `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision parks at once; the attempt counts) |
+| D4 Sent back | PR to draft, run worker revision | `DRAFT_PUSHED` to D3; `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
 | D1 Coding | run worker | `WORKER_STARTED_PROOF` to D2; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
 | D2 Proving | move card (the worker moves its own card at step 3) | `DRAFT_OPENED` to D3; `AGENT_FAILED` to Q3 |
 | D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
@@ -170,14 +172,18 @@ the queue, and F5 re-checks freshness on re-entry.
 ### Dead letters (a machine gave up; its triage may retry)
 
 Each DLQ's entry action runs a triage seat for its phase, which reads the reason and answers
-`TRIAGED` with a decision; redrives are counted per epoch and capped. Redrive re-enters the
+`TRIAGED` with a decision; redrives are counted per epoch (for a trunk, the span between two of a
+person's hold removals; see the carve skill's
+[`references/the-record.md`](../../carve-github-issue/references/the-record.md)) and capped. The
+ejection itself clears the phase's counter (`loop/appraisals`, `loop/carves`, `loop/attempts`, or
+`loop/reviews`; landing spends none), so whatever lifts the letter hands back a fresh budget. Redrive re-enters the
 phase, never Ready.
 
 | Lane | Lands here | Triage decisions and targets |
 |---|---|---|
 | Q1 Appraisal DLQ | appraiser or confirmer failed past the cap | retry [redrives under cap] to A2 with a strategy (other seat, thread changed, cooling period); else H2 |
 | Q2 Carve DLQ | carve failed past the cap; disputed past the round cap; depth, generation, or revisit cap; a spawn that could not finish; a malformed revisit | retry with an `applying` record to C4 (finish, do not redo); retry to C2 (other seat, ceiling raised one rung, ladder started one rung lower, objections as the brief); else H2 with both opinions |
-| Q3 Work DLQ | worker failed past the cap; failed on a revision; run died with a dirty worktree or an undeclared draft | oversize to C1; retry with a draft to D3 (reclaim); retry to D1 (other engine, appraisal re-checked, dirty diff attached; attempts cleared); else H3 when a PR exists, H2 otherwise |
+| Q3 Work DLQ | worker failed past the cap; failed on a revision; run died with a dirty worktree or an undeclared draft | oversize to C1; retry with a draft to D3 (reclaim); retry to D1 (other engine, appraisal re-checked, dirty diff attached; attempts already cleared by the ejection); else H3 when a PR exists, H2 otherwise |
 | Q4 Review DLQ | review rounds exhausted; no trusted verdict | rerun a crashed reviewer to E1; retry to D4 (reviewer's words as the brief, other engine); a design objection to H1 with the question extracted; else H3 |
 | Q5 Landing DLQ | conflicts; red or unfinished checks; smoke failure; refresh cap; unreported merge | resolve conflict to F2 (one bounded catch-up turn); retry to F1 (rerun red checks once, wait for a quiet base, smoke retried once); else H3 |
 
@@ -364,8 +370,8 @@ than to this file:
 
 - no triage seat: every dead-letter lane waits for a person, and `redrivesUnderCap` is counted
   (`loop/redrives: N`) but not enforced, since only a person redrives today;
-- the appraisal and carve queues (Q1, Q2) are labels the placement reads, but the appraiser and
-  the knife still hand their capped failures to `needs-human` rather than write them;
+- the running loop does not hold the knife's sweep on a paused line, though the machine guards
+  the knife's dispatch and revisit with `lineActive` (`operating.md`, "When the line is paused");
 - the pipeline runs Coding through Merged in one process, so the Review and Landing phases
   cannot be staffed by a different seat than Work, and there is one WIP limit rather than one
   per phase;

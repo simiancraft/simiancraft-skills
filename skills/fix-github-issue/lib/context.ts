@@ -31,7 +31,7 @@ export type MergeEvent = {
 /**
  * A driver's answer to "may this merge now". Resolving `ok` lets the merge proceed; a driver that
  * wants to hold the line waits before resolving, and one that gives up resolves a refusal, which
- * parks the pull request with the reason and spends no review round.
+ * dead-letters the landing (`loop/dlq: landing`) with the reason and spends no review round.
  */
 export type MergePermission = { ok: true } | { ok: false; reason: string };
 

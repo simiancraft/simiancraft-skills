@@ -55,9 +55,9 @@ export type ProjectConfig = {
   releaseArtifacts?: string[];
   /**
    * Run in the lane after the pull request's checks are green and before the merge. A non-zero
-   * exit parks the pull request with the command's tail as the reason. Boot the thing here; a
-   * build is not a boot, and a change that compiles, type-checks, and passes its tests can still
-   * fail the moment the result starts. Optional.
+   * exit or a timeout sends the landing to `loop/dlq: landing` with the command's tail as the
+   * reason. Boot the thing here; a build is not a boot, and a change that compiles, type-checks,
+   * and passes its tests can still fail the moment the result starts. Optional.
    */
   smokeCommand?: string;
   /**
@@ -92,7 +92,7 @@ export function agentCapFault(cap: unknown): string | null {
 export type PipelineKnobs = {
   autoMerge: 'always' | 'code-only' | 'never';
   maxReviewRounds: number;
-  /** How long the pull master waits for a pull request's checks before parking instead of merging. */
+  /** How long the pull master waits for a pull request's checks before the landing goes to `loop/dlq: landing` instead of merging. */
   checksTimeoutMinutes: number;
   /**
    * How long an agent may run before the driver kills it: one number for every seat, or a map by
@@ -121,11 +121,11 @@ export type PipelineKnobs = {
    * is the adopter's statement that the app runs nothing here; a later first run is not detected.
    */
   idleCheckSuiteApps?: string[];
-  /** How long `project.smokeCommand` may run before the pull request parks. */
+  /** How long `project.smokeCommand` may run before the landing goes to `loop/dlq: landing`. */
   smokeTimeoutMinutes: number;
   /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
   pointScale: number[];
-  /** Worker or confirmer failures an issue may absorb before it parks; kept on the issue as `loop/attempts: N`. */
+  /** Worker or confirmer failures an issue may absorb before it goes to `loop/dlq: work`; kept on the issue as `loop/attempts: N`. */
   maxWorkerAttempts: number;
   /**
    * `confirmer` re-checks a worker's close; `carver` and `carveConfirmer` are the knife's, resolved
@@ -155,7 +155,7 @@ export const PIPELINE_DEFAULTS: PipelineKnobs = {
 
   /**
    * Size this to the repository's slowest required check; some builds legitimately take a long
-   * time on a fresh head, and a merge that parks on a slow check is not a defect in the change.
+   * time on a fresh head, and a landing dead-lettered on a slow check is not a defect in the change.
    */
   checksTimeoutMinutes: 45,
   checks: 'required',

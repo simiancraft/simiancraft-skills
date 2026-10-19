@@ -93,7 +93,8 @@ The counters worth watching, and what a stall in each means:
 | `to the <phase> DLQ` | a machine gave up: the worker past its attempts, the review budget spent, or a landing that could not complete; the issue carries `loop/dlq: <phase>` |
 
 **Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** A
-dirty-worktree bug looks like this: every worker parks and no reviewer ever runs.
+dirty-worktree bug looks like this: every worker's pull request goes to `loop/dlq: work` and no
+reviewer ever runs.
 
 When watching for failure, match every terminal state rather than the happy path. Silence from a
 filter that only greps for success is indistinguishable from a healthy run:
@@ -104,6 +105,20 @@ worker failed|reviewer wrote no verdict|exceeded [0-9]+ minutes|refusing to merg
 ```
 
 ## When the line is paused
+
+The line is the file switch `<worktreeRoot>/runs/line-switch`; this is the one list of where the
+running loop reads it, and the other references point here. A paused line holds:
+
+- the appraisal stage, once, before it starts (the knife a size callback starts inside that stage
+  runs under the same check, not one of its own);
+- every Ready card before its dispatch, and every pull request with no driver before its resume;
+- every merge, through the fix pipeline's `mayMerge` hook, which the loop answers by waiting for
+  `go`; a stranded pull request resumed at the run's start reaches it here too.
+
+The start-of-run work before those seams is not held: the repair, the stranded-lane resume up to
+its merge, and the knife's sweep (its revisits and redrives included) run on a paused line. The
+statechart guards the knife's dispatch and revisit with `lineActive` as well
+(`state-machine.md`); the loop does not yet hold there.
 
 A paused seam logs one line, `line is paused (<reason>); holding <where> until <path> says go`,
 and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
@@ -122,9 +137,10 @@ by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-sw
 - **`repair: #N is open but PR #M merged ... closing with a pointer` at startup.** An earlier run
   merged the pull request and died before recording the close. The repair closes the issue, puts
   the merge on the floor, and prevents the issue being fixed a second time.
-- **A worker exits non-zero and the issue is left untouched.** The driver refuses to trust the
-  answer of a process that failed. The issue keeps no label and gets no pull request, so a later
-  run picks it up normally. This is the fail-closed path working.
+- **A worker exits non-zero and the issue goes back to Ready.** The driver refuses to trust the
+  answer of a process that failed. The attempt is counted on the issue as `loop/attempts: N`, and
+  a later run picks it up normally until `maxWorkerAttempts` sends it to `loop/dlq: work`. This
+  is the fail-closed path working.
 - **An issue is parked.** Parking is a handoff, not an error. The work is on the pull request.
 - **An issue is a dead letter.** `to the landing DLQ: the checks are red` is the machine giving up
   on a landing, not on the work; the card sits in that phase's queue with the reason on the
@@ -232,7 +248,8 @@ and any `issue-N-<scratch>` sibling whatever the outcome. Two things it does not
 
 - A killed run skips it entirely, by design. `reconcile` sorts it out next start, keeping any
   worktree whose issue has an open pull request, and keeping a dirty pull-request-less worktree for
-  inspection.
+  inspection while it sends the issue to `loop/dlq: work`. A worktree whose issue another live run
+  claims is left alone entirely; that run owns it.
 - Local branches from lanes that never merged are left behind. They are cheap refs rather than
   checkouts, so they cost little, but they accumulate. Prune the ones whose upstream is gone:
 
@@ -256,8 +273,10 @@ git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -D
 
 A carved issue (a trunk, `loop/carved`) is revisited by the knife after every child close and
 whenever its tree moves; each revisit is counted in its carving record. At
-`carve.maxRevisitsPerGeneration` (default 10) in one epoch the trunk goes to a person with
-`needs-human`, and removing the label starts a new epoch with the count at zero. How often a
-healthy trunk is revisited is unmeasured: the record makes it measurable. If trunks reach the cap
+`carve.maxRevisitsPerGeneration` (default 10) in one epoch (the span between two of a person's
+hold removals; see the carve skill's
+[`references/the-record.md`](../../carve-github-issue/references/the-record.md)) the trunk goes to
+the carve dead-letter queue, `loop/dlq: carve`, and removing the label is a redrive that starts a
+new epoch with the count at zero. How often a healthy trunk is revisited is unmeasured: the record makes it measurable. If trunks reach the cap
 routinely, raise it in the config, or rethink the trigger (a fingerprint change that is not a leaf
 close is the usual cause: a person editing children's bodies one at a time, say).

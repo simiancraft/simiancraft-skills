@@ -31,10 +31,12 @@ export default {
     alwaysInvalidates: [],
     touchPaths: { migration: [], ci: [] },
   },
-  ageDays: 30,                 // only issues opened this recently, unless --all
+  ageDays: 30,                 // only issues opened this recently, unless --all; --age-days <n> overrides it for one run
   appraiseLimit: 12,           // per run, unless --limit
   appraiserConcurrency: 3,
   confirmCloses: true,         // a second engine must agree before an issue closes
+  maxAppraiseAttempts: 3,      // failed appraisals an issue absorbs before loop/dlq: appraisal
+  sizeCallbackTimeoutMinutes: 0, // how long a size callback may run; 0 means no timer
   skipLabels: ['needs-decision', 'needs-human', 'loop/skip', 'loop/parked'],
   callbacksDir: '<worktreeRoot>/appraisal-callbacks', // where on-size-<N> callbacks live; see references/callbacks.md
   seats: { appraiser: 'codex:gpt-5.6-sol', confirmer: 'claude:claude-opus-5', callback: 'codex:gpt-5.6-sol' },

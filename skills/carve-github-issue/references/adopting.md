@@ -18,9 +18,9 @@ export default {
     maxDepth: 3,                      // the root is 0; an issue at depth d is carvable iff d < maxDepth
     maxChildren: 8,                   // pieces per cut
     maxCarveRounds: 5,                // carver-confirmer pairs before a dispute hands off
-    maxCarveAttempts: 3,              // failed carves before the issue goes to a person
-    maxGenerations: 5,                // amends per epoch before the trunk goes to a person
-    maxRevisitsPerGeneration: 10,     // still-good revisits per epoch before the trunk goes to a person
+    maxCarveAttempts: 3,              // failed carves before the issue goes to loop/dlq: carve
+    maxGenerations: 5,                // amends per epoch before the trunk goes to loop/dlq: carve
+    maxRevisitsPerGeneration: 10,     // still-good revisits per epoch before the trunk goes to loop/dlq: carve
   },
   seats: {
     worker: 'codex:gpt-5.6-sol',
@@ -37,6 +37,17 @@ engines. `pointScale` (the burndown's, default the Fibonacci rungs) is the scale
 **One account per tracker.** Every machine that runs the knife, the worker, or the appraiser
 against one tracker authenticates as the same GitHub account, and their clocks agree to within a
 minute. Claims and markers are meaningful only under that assumption.
+
+## Preconditions
+
+- `gh` 2.60 or later, authenticated as the tracker's one account, on a repository with sub-issues
+  and issue dependencies enabled; the knife creates sub-issues and `blocked-by` edges, so check
+  both before the first real run.
+- Bun, which runs `carve.ts`.
+- The CLIs the carver and carve-confirmer seats name (by default `codex` and `claude`) on `PATH`.
+- `callbacksDir` (by default `<worktreeRoot>/appraisal-callbacks`) writable, if a producer is to
+  receive `on-carve-pass` and `on-carve-fail` (`callbacks.md`); with none there, the knife logs that
+  it found no callback and carries on.
 
 ## The labels
 
@@ -70,6 +81,20 @@ touches, a `live` record with the verdict.
 
 On `exhausted`: a `released` record, the size and trunk labels off, `loop/released` on; the
 burndown then appraises the remainder.
+
+## First run
+
+1. `carve.ts --issue <n> --dry-run --carver fixture:<carving.json> --confirmer fixture2:<confirmation.json>`
+   on one issue you already know is oversized. The fixtures are answers in the shapes
+   `prompts/carve.md` and `prompts/confirm-carve.md` ask for, so the rehearsal reaches an exact
+   verdict. Nothing lands: no lock, no claim, no journal file, and only
+   `<worktreeRoot>/runs/carve.log` is written, listing every write the carve would make. Without
+   fixture seats a dry run stops at the first seat it would have to run, after printing the
+   ceiling, the scale, the seats, and the callbacks directory it resolved.
+2. `carve.ts --issue <n>` on the same issue, for real. Read the carving record on the trunk's
+   thread: every acceptance criterion should be in the ledger, and every child should have its
+   own acceptance and proof.
+3. Only then let the burndown reach the knife through its size callback.
 
 ## Guards
 

@@ -158,7 +158,7 @@ const DEFAULTS: LoopKnobs = {
   /** Issues to appraise in one run. */
   appraiseLimit: 12,
 
-  /** Failed appraisals an issue may absorb before it goes to a person. */
+  /** Failed appraisals an issue may absorb before it goes to `loop/dlq: appraisal`. */
   maxAppraiseAttempts: 3,
 
   /** How long a size callback may run; 0 means no timer, since the knife runs agents. */

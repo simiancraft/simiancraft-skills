@@ -10,7 +10,8 @@ one issue passes through.
 worker ──▶ draft PR ──▶ review ──────────────────▶ pull master ──▶ merge
                         (concurrent, no writes)    (one at a time)  ├▶ stale  ──▶ catch up, review again
                                                                     ├▶ revise ──▶ worker revises
-                                                                    └▶ park   ──▶ leave for a human
+                                                                    ├▶ park   ──▶ leave for a human
+                                                                    └▶ dlq    ──▶ the landing dead-letter queue
 ```
 
 Coding and reviewing are concurrent; merging is not. The **pull master** is the only serial stage,
@@ -37,7 +38,12 @@ commands rather than trusting a claim of green, and returns a verdict.
 | `handed-off` | a person is needed: a product decision, or access an agent lacks. Work the worker finds larger than its appraisal is `out-of-band`, which a driver hands to carving, not to a person |
 | `parked` | a pull request exists and a person owns the next call: the merge boundary refused it, or the issue changed under the review; the issue carries the reason |
 | `dlq` | a machine gave up: the issue carries `loop/dlq: <phase>` (work, review, or landing from this pipeline) and the reason that put it there |
-| `failed` | the worker process failed, so its answer is not trusted and nothing durable was written |
+| `failed` | the worker or its confirmer failed with attempts remaining: the attempt is counted on the issue (`loop/attempts: N`) and the card goes back to Ready |
+| `left-alone` | the live gate refused the issue before a claim (a hold, a closed issue, a size over the ceiling); nothing was written |
+| `busy` | another run's claim on the issue stands; nothing was written, and the driver places the card for it |
+| `not-run` | a dry run reached a seat it does not run; nothing was tried, so nothing failed |
+| `stopped` | the operator's stop unwound the lane; nothing was settled, and the lane is kept for the next run |
+| `lease-lost` | this run's lease on the issue ran out unrenewed; its agents were stopped and nothing more was written |
 
 ## The verdict-file contract
 
@@ -46,8 +52,9 @@ reads that file; the agent's last message is a fallback channel, parsed for the 
 it contains, because an agent that answered in chat has still done the thinking.
 
 The worker writes a verdict naming its issue, one of `already-fixed`, `obsolete`, `needs-decision`,
-`needs-human`, `out-of-band`, `fixed`, or `failed`, a reason, and for a fix the pull request number,
-the branch, and what the change touches. A verdict outside that set reads as no verdict at all.
+`needs-human`, `out-of-band`, `fixed`, `answered` (a `spike` issue's questions, answered with
+evidence and no pull request), or `failed`, a reason, and for a fix the pull request number, the
+branch, and what the change touches. A verdict outside that set reads as no verdict at all.
 
 The reviewer writes a decision of `merge`, `gather-more`, or `block`, its adequacy judgement, its
 confidence, the blocking items, and its own classification of the diff. A decision outside that
@@ -62,8 +69,9 @@ how a crashed reviewer's parting words could approve a merge.
 `maxReviewRounds` is a **per-issue high-water mark, not a per-run allowance**. The count lives on
 the issue as a label, so rounds spent in an earlier run are already spent. At the cap the issue is
 ejected to the **review dead-letter queue** (`loop/dlq: review`): retained with the objection that
-outlived the budget, and invisible to selection. Removing the label, or `fix.ts --redrive`, is the
-redrive, and each redrive is counted on the issue as `loop/redrives: N`. This is what stops an
+outlived the budget, and invisible to selection. The ejection clears `loop/reviews: N` (every
+phase's dead letter clears its own counter), so removing the label, or `fix.ts --redrive`, is a
+redrive with a fresh budget, and each redrive is counted on the issue as `loop/redrives: N`. This is what stops an
 issue nobody can get right from cycling between worker and reviewer forever, one restart at a
 time.
 
@@ -122,8 +130,8 @@ agents it has on that issue, and its live gate refuses every merge and close fro
 another run may hold the issue by then.
 
 A failing or unfinished build never merges. The pull master waits on the pull request's checks at
-the last moment before merging and parks instead when they fail or never finish; a green local gate
-is not a substitute. The merge pins the head it read and confirms afterwards that the pull request
+the last moment before merging, and when they fail or never finish the landing is a dead letter
+(`loop/dlq: landing`) instead; a green local gate is not a substitute. The merge pins the head it read and confirms afterwards that the pull request
 actually reports a merge, cancelling anything a merge queue scheduled instead.
 
 The merge pins the head that lands, not the base it lands on. One driver's queue is single file,
@@ -273,13 +281,14 @@ A driver hands the pipeline a context and gets one outcome per issue back. Three
 let a driver shape the merge without the pipeline learning why:
 
 - **`project.smokeCommand`** runs in the lane after the pull request's checks are green and before
-  the merge, against the exact head that would land. A non-zero exit or a ten-minute timeout parks
-  the pull request with the command's last lines as the reason. A build is not a boot: a change can
+  the merge, against the exact head that would land. A non-zero exit or a timeout
+  (`smokeTimeoutMinutes`, ten by default) sends the landing to `loop/dlq: landing` with the
+  command's last lines as the reason. A build is not a boot: a change can
   compile, type-check, and pass every test and still fail the moment the result starts, and this
   is the only gate that starts it.
 - **`ctx.mayMerge`** is asked once, just before every merge. A driver holding its line waits before
-  answering; one that gives up answers with a reason, and the pull request parks without spending
-  a review round. Absent means always allowed.
+  answering; one that gives up answers with a reason, and the landing is a dead letter
+  (`loop/dlq: landing`) without spending a review round. Absent means always allowed.
 - **`ctx.afterMerge`** is told once after every confirmed merge, with the issue, the pull request,
   the merged SHA, the time, and the paths that landed, while the lane still exists.
 - **`project.followBase`** fast-forwards the main checkout to the remote base after every confirmed
@@ -309,7 +318,8 @@ are bypassed; the worktree and read-only contracts are prompts, not sandboxes. T
 today is scope (small sized issues, code-only merges, a second-engine gate) and trust in the
 tracker's authors, not enforcement.
 
-Dead-letter-queue ejection has not been exercised end to end. It is written; it is not proven.
+Of the five dead-letter queues only the review queue has been exercised end to end, by a redrive
+that continued a parked pull request to a merge; the others are written, not proven.
 
 ## What a killed agent leaves behind
 

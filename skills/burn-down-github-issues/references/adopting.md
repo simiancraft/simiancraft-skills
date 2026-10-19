@@ -48,6 +48,8 @@ export default {
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
     releaseArtifacts: [] /* optional string[]; same pattern rules as alwaysInvalidates; see below */,
+    smokeCommand: 'bun run smoke' /* optional; boots the landing head before the merge; see "The line" below */,
+    followBase: false /* optional; true fast-forwards the main checkout after every merge; see "The line" below */,
     touchPaths: {
       migration: ['db/migrations/'],
       ci: ['.github/workflows/'],
@@ -69,7 +71,13 @@ export default {
   // seat; 45 by default. Hitting the cap means the turn is doing too much, and the answer is a
   // smaller turn, not a longer cap; raise this only where one run of your own gate honestly
   // exceeds the default),
-  // smokeTimeoutMinutes,
+  // smokeTimeoutMinutes (how long smokeCommand may run; 10 by default),
+  // pointScale (your point scale, ascending; the Fibonacci rungs [1, 2, 3, 5, 8, 13, 21, 34] by
+  // default; every size the appraiser or the knife writes is on it),
+  // maxWorkerAttempts (worker or confirmer failures an issue absorbs before loop/dlq: work; 3),
+  // maxAppraiseAttempts (failed appraisals before loop/dlq: appraisal; 3),
+  // sizeCallbackTimeoutMinutes (how long a size callback may run; 0, the default, means no timer,
+  // since the knife it starts runs agents of its own),
   // reconciliationDays (how far back merged pull requests are checked against open issues on
   // start), limit, concurrency, appraiserConcurrency, appraiseLimit, skipLabels, and
   // callbacksDir (where the loop writes its size callbacks for the appraiser; see the appraise skill's
@@ -89,7 +97,7 @@ export default {
 and the change belongs in this skill.** Say so rather than working around it.
 
 The prompts never name a repository. They are rendered with the `project` vocabulary at each
-invocation, so `{{REPO}}`, `{{CHECK_COMMAND}}`, `{{EVIDENCE_BRANCH}}` and the rest resolve from
+invocation, so `{{REPO}}`, `{{CHECK_COMMAND}}`, `{{EVIDENCE_BRANCH}}`, and the rest resolve from
 config. Do not hand-edit prose in `prompts/` to say your project's name.
 
 ## Fill this in
@@ -169,8 +177,9 @@ its approval and is re-reviewed for noise the machine produced.
 
 ## The line: a switch, and a walker that flips it
 
-The loop reads `<worktreeRoot>/runs/line-switch` at three seams: before the appraisal batch, before
-each issue is dispatched, and inside the pull master before every merge. The file's first line is
+The loop reads `<worktreeRoot>/runs/line-switch` at a few seams, the merge among them; which ones,
+and what runs on a paused line regardless, is listed once in `operating.md`, "When the line is
+paused". The file's first line is
 `go` or `pause`; anything after it is the reason; an absent file means go, and an unknown word
 means pause. A paused seam holds and polls every thirty seconds, logging once, until the file says
 go. Anyone can flip it:
@@ -197,7 +206,8 @@ stops the walker, names the count, and prints the `walk.ts --once` command that 
 Ctrl+C still stops the walker outright.
 
 `project.smokeCommand` is the other half: it runs in the lane after the checks are green and
-before the merge, so a change that builds but does not boot parks instead of landing. See the
+before the merge, so a change that builds but does not boot is a landing dead letter
+(`loop/dlq: landing`) instead of a merge. See the
 `fix-github-issue` skill's `references/pipeline.md`.
 
 `project.followBase: true` keeps the main checkout on the merged base: after each merge the loop
@@ -211,10 +221,11 @@ said so in the log.
   (`gh auth refresh -h github.com -s project`), which `board.ts` needs to create the run board.
   `gh auth status` lists the scopes; `read:project` is not enough.
 - The agent CLIs you intend to seat, on `PATH`. Each role is an `engine:model` spec: defaults live
-  in `CONFIG.seats`, and any run can override them with `--appraiser`, `--worker`, and `--reviewer`.
-  The known engines are the `ENGINES` registry in `loop.ts`; a CLI the loop does not yet know is
-  one registry entry (how to run one prompt to completion, non-interactively, with its approval
-  gate bypassed), not a refactor. **Keep the worker and reviewer on different engines** (why: `architecture.md`). The driver
+  in `CONFIG.seats`, and any run can override them with `--worker`, `--reviewer`, `--confirmer`,
+  `--appraiser`, `--carver`, `--carve-confirmer`, and `--callback-seat`.
+  The known engines are the `ENGINES` registry in `fix-github-issue/lib/engines.ts`; a CLI the
+  loop does not yet know is one registry entry (how to run one prompt to completion,
+  non-interactively, with its approval gate bypassed), not a refactor. **Keep the worker and reviewer on different engines** (why: `architecture.md`). The driver
   warns, but does not refuse, when they match.
 - The sibling `prove-work-on-github` skill available to both worker and reviewer. This is a hard
   dependency: both prompts load it by name, and the merge gate's freshness rule implements its
@@ -325,7 +336,7 @@ the allowlist.
 ## Boundaries to set deliberately
 
 `autoMerge` defaults to `code-only`: merge code, park anything touching production data, a
-migration, or a stored string. `maxPoints: 2` keeps the loop to work small enough that a bad merge
+migration, a stored string, or CI. `maxPoints: 2` keeps the loop to work small enough that a bad merge
 is cheap. `ageDays: 30` keeps it to issues whose context is still true. Widen after a run has gone
 well, not before.
 

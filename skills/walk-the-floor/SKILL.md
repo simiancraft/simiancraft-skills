@@ -25,8 +25,9 @@ found to a ledger, and when the environment is wrong it files an incident and ha
 Three things make it composable rather than a monitor:
 
 - **The floor is a directory.** `list.jsonl` in, `ledger.jsonl` out, both append only. A person, a
-  loop, another skill, or the walker's own forge producer can all put items on the floor; the
-  contract is in `references/the-floor.md`.
+  loop, another skill, or the walker's own forge producer (it reads the code host, GitHub here, for
+  merged pull requests) can all put items on the floor; the contract is in
+  `references/the-floor.md`.
 - **Two callback slots.** `on-pass` and `on-fail`, each an executable the driver runs or a prompt the
   agent reads. Whoever starts the walker decides what a failure means to them; the walker does not.
   The issue burndown uses `on-fail` to stop its own merge queue.
@@ -52,6 +53,8 @@ bun run <this-skill-dir>/walk.ts --dir <floor> --once                    # one f
 bun run <this-skill-dir>/walk.ts --dir <floor> --every 10                # forever, every ten minutes
 bun run <this-skill-dir>/walk.ts --dir <floor> --once --dry-run          # probe and classify; no agent, no checkout, no list or ledger write, no callback, nothing filed
 bun run <this-skill-dir>/walk.ts --dir <floor> --once --walker claude:claude-opus-5
+bun run <this-skill-dir>/walk.ts --dir <floor> --once --base-url https://preview.example.com   # walk this URL instead of the configured one
+bun run <this-skill-dir>/walk.ts --dir <floor> --once --max-points 3   # cap the incident fix handed to a worker for this run
 ```
 
 `<floor>` is any directory; the walker creates it. By default the walker appends an item for every

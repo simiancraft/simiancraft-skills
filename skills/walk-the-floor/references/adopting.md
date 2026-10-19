@@ -80,7 +80,8 @@ export default {
   checks: 'required', // or 'none' for a repository that runs no checks on a pull request
   // requiredChecks: ['build', 'test'], // needed unless the base branch's protection requires status checks
   // idleCheckSuiteApps: ['some-app'], // apps that open a check suite on every push and may run nothing in it
-  smokeTimeoutMinutes: 10, // how long project.smokeCommand may run before the repair parks
+  smokeTimeoutMinutes: 10, // how long project.smokeCommand may run before the repair's landing is a dead letter
+  // agentTimeoutMinutes: 45, // how long an agent may run before it is killed: one number, or a map by seat (walker, diagnose, worker, ...)
   seats: { walker: 'claude:claude-opus-5', worker: 'codex:gpt-5.6-sol', reviewer: 'claude:claude-opus-5' },
 } satisfies WalkConfig;
 ```
@@ -159,6 +160,11 @@ honest but blunter.
 3. `walk.ts --dir <floor> --once` with the forge producer on, against the real merge history.
 4. `walk.ts --dir <floor> --every 10` in a terminal you can watch, for an hour.
 5. Only then let something else start it for you.
+
+Two flags change one run without touching the config: `--base-url <url>` walks that URL in place of
+`environment.baseUrl` (a preview deploy, or a dead port to prove the down path), and
+`--max-points <n>` sets the largest incident fix the walker may hand to a worker in place of
+`maxPoints`.
 
 ## Stopping
 

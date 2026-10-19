@@ -81,7 +81,8 @@ slots it offers producers are `references/callbacks.md`.
 
 - `fix-github-issue/lib` (the context, engines, labels, shell, and the close hook) and
   `appraise-github-issues/lib` (the confirmer prompt, the callbacks directory).
-- The `gh` CLI, 2.60 or later, on a repository with sub-issues and issue dependencies enabled.
+- The `gh` CLI on a repository with sub-issues and issue dependencies enabled; the version and the
+  rest of the preconditions are in `references/adopting.md`.
 - The `codex` and `claude` CLIs for the default seats; any engine in the registry for a seat.
 
 ## The ceiling of this skill

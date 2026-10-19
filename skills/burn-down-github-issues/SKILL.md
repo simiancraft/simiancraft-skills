@@ -17,8 +17,8 @@ description: >-
 
 # Burn Down GitHub Issues
 
-A burndown is a board. Every issue the loop touches is a card, every card is in exactly one lane,
-and the lanes are the leaf states of a statechart (`lib/machine.ts`, in XState's vocabulary) that
+A burndown is a board. Every issue the loop touches is a card, every card is in exactly one lane
+(a column of the board; the fix pipeline also calls an issue's worktree its lane), and the lanes are the leaf states of a statechart (`lib/machine.ts`, in XState's vocabulary) that
 says which seat runs on a card in that lane, what it may decide, and where each decision moves the
 card. The board is a GitHub Projects board per operator per repository, so a person who starts a
 burndown comes back to their own board and the loop resumes from it; the console prints the same
@@ -89,12 +89,18 @@ bun run <this-skill-dir>/claim-race.ts --issue <n> --contenders 3 --rounds 3   #
 bun run <fix-skill-dir>/fix.ts --issue <n> --redrive   # lift a dead letter or a park and continue its pull request
 ```
 
+`claim-race.ts` also reads `--contend` and `--start <ms>`, which the parent passes to each
+contender process it spawns (the shared release instant, in Unix milliseconds); they are not for
+direct use.
+
 Everything an operator or agent does to a run is one of these commands. Watching in particular is
 `watch.ts`, never a `tail`/`kill`/`pgrep` pipeline; `references/operating.md` says why.
 
 `<this-skill-dir>` is the filesystem path of this directory wherever the collection is checked out
-or installed; it is a path, not a skill name. `--appraiser`, `--worker`, and `--reviewer` take
-`engine[:model]` specs resolved against the engine registry in `loop.ts`. The config file sets the
+or installed; it is a path, not a skill name. The seat flags (`--worker`, `--reviewer`,
+`--confirmer`, `--appraiser`, `--carver`, `--carve-confirmer`, and `--callback-seat`) take
+`engine[:model]` specs resolved against the engine registry in
+`../fix-github-issue/lib/engines.ts`. The config file sets the
 same seats and every loop knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and
 the rest); a flag beats the config for the run it is given on.
 

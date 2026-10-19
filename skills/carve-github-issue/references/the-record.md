@@ -20,7 +20,7 @@ All are trusted only in a comment (or, for the child marker, an issue body) auth
 |---|---|---|
 | `<!-- carve-record gen=N epoch=E state=S -->` | the trunk | a record |
 | `<!-- carve-rollup child=N event=E at=T -->` | the trunk | a leaf closed; one per child, event, and close time |
-| `<!-- carve-claim kind=K run=R at=T expires=T2 -->` | any issue | a run holds it (`carving` or `working`); the holder renews `expires` in place |
+| `<!-- carve-claim kind=K run=R at=T expires=T2 token=X -->` | any issue | a run holds it (`carving` or `working`); the holder renews `expires` in place; `token` is a fresh UUID per claim, so a run that released and claims again finds its new comment and not the old one |
 | `<!-- carve-unclaim kind=K run=R -->` | any issue | the claim is released |
 | `<!-- carve-handoff verdict=V gen=G -->` | the trunk | the knife handed off; a `json` block carries reason, affected criteria, pause set, both opinions |
 | `<!-- appraise-handoff verdict=V -->` | any issue | the appraiser handed off; a `json` block carries the reason |

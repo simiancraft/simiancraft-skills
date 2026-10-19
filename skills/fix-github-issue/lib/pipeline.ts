@@ -715,7 +715,7 @@ export type DeadLetter = { dlq: DlqPhase; reason: string };
  */
 export type Landing = 'merged' | 'revise' | 'stale' | { reproof: CaughtUp } | { park: string } | { dlq: string };
 
-/** How long the smoke command may run before the pull request parks as unbootable. */
+/** How long the smoke command may run before the landing is a dead letter as unbootable. */
 
 /**
  * Judge one branch. Runs outside the queue, so reviews overlap.
