@@ -123,7 +123,7 @@ the rest); a flag beats the config for the run it is given on.
 ## The board
 
 Every burndown is resumed from a GitHub Projects board named `<project>_burndown_<operator>`
-(`ultrathin_burndown_the-simian`, say), owned by the repository's owner and linked to the
+(`acme-app_burndown_the-simian`, say), owned by the repository's owner and linked to the
 repository. One board per operator per repository: the person who starts a burndown comes back to
 their own board and picks up where they left off, and two operators on one repository never share
 one. `board.ts` finds it or creates it, reads it back to verify, and writes the pointer to

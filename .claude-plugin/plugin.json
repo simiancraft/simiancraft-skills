@@ -1,7 +1,7 @@
 {
   "name": "simiancraft-skills",
   "description": "Claude Code skills for the full arc of a change: farm to table, with receipts. Only what we run in production.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": {
     "name": "simiancraft",
     "email": "info@simiancraft.com",
@@ -27,6 +27,8 @@
     "testing",
     "react",
     "playwright",
-    "web"
+    "web",
+    "github",
+    "issues"
   ]
 }

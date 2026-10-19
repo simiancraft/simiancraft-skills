@@ -10,7 +10,7 @@ Things that look like a plan but are not a plan. If the draft has any of these, 
 
 **Fix:** Name the concrete failure mode the refactor addresses, the shape of the intervention, and a checkable end state.
 
-> Replace the implicit `Achievement` + `LifeEvent` split (data duplicated across two tables, kept in sync by hand) with a unified `LifeEvent` model whose visual is driven by a client-side glyph registry of JSON configs. Done = no `Achievement` surface remains; every existing badge renders from a registry entry; no S3-URL paths in the rendering path.
+> Replace the implicit `Task` + `Reminder` split (data duplicated across two tables, kept in sync by hand) with a unified `Task` model whose schedule is driven by a client-side recurrence registry of JSON configs. Done = no `Reminder` surface remains; every existing reminder fires from a registry entry; no cron strings in the scheduling path.
 
 ### A five-paragraph essay
 
@@ -73,13 +73,13 @@ The dependent plan starts with a `Depends on:` line in front matter.
 
 ### Abstract steps
 
-> "Refactor the achievement logic."
+> "Refactor the reminder logic."
 
 That is not a step. The executor cannot tell when it is done.
 
 **Fix:** Name the file, the operation, and the outcome.
 
-> "Delete `components/achievement/edit-list.tsx` and remove its import from `app/(root)/admin/records/(lists)/achievements.tsx`. Verify with `grep` finds zero references to `EditList` outside `__generated__/`."
+> "Delete `components/reminder/edit-list.tsx` and remove its import from `app/(root)/settings/(lists)/reminders.tsx`. Verify with `grep` finds zero references to `EditList` outside `__generated__/`."
 
 ### No before/after file trees
 

@@ -2,7 +2,7 @@
 
 > Claude Code skills for the full arc of a change: farm to table, with receipts.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-19-4c1) ![Agents](https://img.shields.io/badge/agents-4-4c1)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Skills](https://img.shields.io/badge/skills-21-4c1) ![Agents](https://img.shields.io/badge/agents-4-4c1)
 
 Curated Claude Code skills and agents from [simiancraft](https://github.com/simiancraft). Most skill collections are grab bags. This one has a spine: it carries a change through its whole life. Plan it, structure it, run it and watch it behave, and prove it on the pull request. No stage advances on narrative. Every gate is something you observed: a screenshot that came back from the emulator, a logcat line, a byte count that got smaller, a plan file that deleted itself when the work shipped.
 
