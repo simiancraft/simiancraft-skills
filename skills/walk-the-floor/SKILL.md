@@ -50,13 +50,13 @@ From inside the target repository:
 bun run <this-skill-dir>/walk.ts --dir <floor> --liveness-only --once   # probe the base URL and stop
 bun run <this-skill-dir>/walk.ts --dir <floor> --once                    # one full wake
 bun run <this-skill-dir>/walk.ts --dir <floor> --every 10                # forever, every ten minutes
-bun run <this-skill-dir>/walk.ts --dir <floor> --once --dry-run          # probe and classify; no agent, no ledger entry, no callback, nothing filed
+bun run <this-skill-dir>/walk.ts --dir <floor> --once --dry-run          # probe and classify; no agent, no checkout, no list or ledger write, no callback, nothing filed
 bun run <this-skill-dir>/walk.ts --dir <floor> --once --walker claude:claude-opus-5
 ```
 
-`<floor>` is any directory; the walker creates it. `--from-forge` is on by default and appends an
-item for every pull request merged into the base since the walker last looked; `--no-forge` turns
-it off for a hand-written list.
+`<floor>` is any directory; the walker creates it. By default the walker appends an item for every
+pull request merged into the base since it last looked; `--no-forge` turns that off for a
+hand-written list, and still files incidents.
 
 ## Read next
 

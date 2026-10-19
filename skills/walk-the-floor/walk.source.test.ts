@@ -19,3 +19,26 @@ describe('two floors on one repository', () => {
     expect(line).toContain('update(DIR)');
   });
 });
+
+describe('a dry run writes nothing it promises not to', () => {
+  it('puts no forge items on the list', () => {
+    expect(source).toContain('if (!NO_FORGE && !DRY_RUN) {');
+  });
+  it('returns before the walk makes a checkout', () => {
+    const dryReturn = source.indexOf('dry run: would walk');
+    const walk = source.indexOf('// 4. Walk, one agent turn');
+    expect(dryReturn).toBeGreaterThan(-1);
+    expect(dryReturn).toBeLessThan(walk);
+  });
+  it('makes no checkout for a repair', () => {
+    expect(source).toMatch(/checkout \?\? \(DRY_RUN \? REPO_ROOT : makeCheckout/);
+  });
+});
+
+describe('the docs name only flags the walker accepts', () => {
+  it('never mentions --from-forge', () => {
+    for (const doc of ['SKILL.md', 'references/operating.md', 'references/adopting.md']) {
+      expect(readFileSync(join(HERE, doc), 'utf8')).not.toContain('--from-forge');
+    }
+  });
+});

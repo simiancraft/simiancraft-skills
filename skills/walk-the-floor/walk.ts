@@ -73,8 +73,8 @@ Run it from inside the target repository.
   --once                  one walk, then exit
   --every [minutes]       walk on a cadence; with no value, the config's cadenceMinutes
   --liveness-only         the liveness checks alone; no agent
-  --no-forge              file nothing on the tracker
-  --dry-run               rehearse: no agent is run and nothing is written
+  --no-forge              put no merged pull requests on the list; incidents are still filed
+  --dry-run               rehearse: no agent, no checkout, no list or ledger write, nothing filed
   --base-url <url>        walk this URL in place of the configured environment's
   --max-points <n>        the largest incident fix the walker may hand to a worker
   --walker <seat>         engine[:model] for the walker's seat
@@ -308,7 +308,8 @@ async function wake(): Promise<boolean> {
   if (LIVENESS_ONLY) return wrong;
 
   // 2. Produce items from the forge for merges nobody else put on the floor.
-  if (!NO_FORGE) {
+  if (!NO_FORGE && DRY_RUN) log('dry run: merged pull requests are not put on the floor');
+  if (!NO_FORGE && !DRY_RUN) {
     const list = readList(DIR);
     // Since the newest merge already on the floor; on a fresh floor, since the first time the
     // walker looked, so nothing merged after the floor opened is missed.
@@ -358,6 +359,11 @@ async function wake(): Promise<boolean> {
   }
   if (!ENV.baseUrl) {
     log(`${walkable.length} item(s) are walkable but there is no environment.baseUrl to walk`);
+    return wrong;
+  }
+
+  if (DRY_RUN) {
+    log(`dry run: would walk ${walkable.map((item) => item.id).join(', ')}; no checkout, no agent`);
     return wrong;
   }
 
@@ -434,7 +440,8 @@ async function wake(): Promise<boolean> {
 const withAPerson = new Set<string>();
 
 async function repair(entry: LedgerEntry, deployed: string | null, checkout?: string): Promise<void> {
-  const cwd = checkout ?? makeCheckout(deployed ?? `${PROJECT.remote}/${PROJECT.baseBranch}`);
+  // A dry run files nothing and runs no agent, so it needs no checkout of its own to read from.
+  const cwd = checkout ?? (DRY_RUN ? REPO_ROOT : makeCheckout(deployed ?? `${PROJECT.remote}/${PROJECT.baseBranch}`));
   try {
     const result = await handleIncident(ctx, {
       dir: DIR,
@@ -462,7 +469,7 @@ async function repair(entry: LedgerEntry, deployed: string | null, checkout?: st
       log(`after incident #${result.issue}: ${again.up ? 'up' : 'still down'}`);
     }
   } finally {
-    if (!checkout) removeCheckout();
+    if (!checkout && !DRY_RUN) removeCheckout();
   }
 }
 

@@ -10,7 +10,7 @@ left behind, and what to do when it pauses something.
 2. **Liveness.** The driver fetches the base URL and every health path itself. A non-2xx writes a
    `down` entry against the synthetic item `liveness`, runs `on-fail`, and goes straight to
    diagnosis; nothing else is walked on a wake that found the environment down.
-3. **Produce.** With `--from-forge` (the default), every pull request merged into the base since
+3. **Produce.** Unless `--no-forge` is given, every pull request merged into the base since
    the newest forge-sourced item becomes a list item.
 4. **Classify.** Each pending item with a merge SHA is checked against the deployed revision.
    `not-yet-deployed` and `unverified` are written without an agent and walked again next wake.
