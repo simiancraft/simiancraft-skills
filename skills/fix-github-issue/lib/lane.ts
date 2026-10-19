@@ -91,6 +91,24 @@ export function worktreeAtPullRequest(ctx: Context, issue: number, branch: strin
     if (dirtyPaths(ctx, dir).length > 0) {
       throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
     }
+    // A run stopped mid-revision can leave commits here that never reached the remote; the reset
+    // below would orphan them. On the pull request's own branch they are pushed, and the review that
+    // follows reads them; anywhere else they get a ref of their own and the lane is left for a person.
+    if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], dir)) > 0) {
+      const head = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir);
+      if (head !== branch) {
+        const sha = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
+        const rescued = `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`;
+        sh(ctx, ['git', 'update-ref', rescued, sha], dir);
+        throw new Error(`worktree for #${issue} holds commits no remote has, on ${head} rather than ${branch}; saved as ${rescued}, inspect or remove ${dir}`);
+      }
+      try {
+        sh(ctx, ['git', 'push', ctx.project.remote, `HEAD:refs/heads/${branch}`], dir);
+        ctx.log(`#${issue}  pushed ${branch}: the lane held commits from an earlier run that were on no remote`);
+      } catch (error) {
+        throw new Error(`worktree for #${issue} holds commits no remote has and ${branch} would not take them (${(error as Error).message.split('\n')[0]}); inspect or remove ${dir}`);
+      }
+    }
     removeWorktree(ctx, issue);
   }
   mkdirSync(dirname(dir), { recursive: true });

@@ -8,6 +8,7 @@ import { claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
 import { reconcile } from './resume.ts';
+import { worktreeAtPullRequest } from './lane.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -192,5 +193,32 @@ describe('reconcile at a loop start', () => {
     const dir = lane(82, false);
     reconcile(ctxWith(io, `${hostname()}-${process.pid}-3`), new Set());
     expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe('resuming a pull request in its lane', () => {
+  it('pushes commits an earlier run left unpushed on the branch, rather than resetting them away', () => {
+    const lines: string[] = [];
+    const dir = lane(83, true, 'fix/resume-83');
+    git(dir, 'push', '-q', 'origin', 'HEAD:refs/heads/fix/resume-83');
+    git(dir, 'branch', '-q', '--set-upstream-to=origin/fix/resume-83');
+    // The revision a stopped run committed and never pushed.
+    writeFileSync(join(dir, 'revision.txt'), 'the reviewer asked for this\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'fix: the revision');
+    const revision = git(dir, 'rev-parse', 'HEAD');
+    const out = worktreeAtPullRequest(ctxFor(lines), 83, 'fix/resume-83');
+    expect(git(out, 'rev-parse', 'HEAD')).toBe(revision);
+    expect(git(repo, 'ls-remote', 'origin', 'refs/heads/fix/resume-83').split('\t')[0]).toBe(revision);
+  });
+
+  it('keeps commits on another branch under a ref and refuses, rather than resetting them away', () => {
+    const lines: string[] = [];
+    const dir = lane(84, true, 'fix/elsewhere-84');
+    const sha = git(dir, 'rev-parse', 'HEAD');
+    git(repo, 'push', '-q', 'origin', 'origin/main:refs/heads/fix/resume-84');
+    expect(() => worktreeAtPullRequest(ctxFor(lines), 84, 'fix/resume-84')).toThrow(/holds commits no remote has/);
+    expect(existsSync(dir)).toBe(true);
+    expect(git(repo, 'rev-parse', `refs/loop/rescued/issue-84/${sha.slice(0, 12)}`)).toBe(sha);
   });
 });
