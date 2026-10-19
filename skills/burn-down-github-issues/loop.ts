@@ -1138,6 +1138,16 @@ async function main(): Promise<void> {
   if (SEATS.worker.engine === SEATS.reviewer.engine) {
     log('WARNING: worker and reviewer share an engine, so the merge gate shares the author\'s blind spots');
   }
+  // Pairs the stages refuse issue by issue, refused once here instead of failing every issue.
+  const sharedEngines = [
+    CONFIG.confirmCloses && SEATS.appraiser.engine === SEATS.confirmer.engine ? 'appraiser and confirmer' : null,
+    SEATS.carver.engine === SEATS.carveConfirmer.engine ? 'carver and carve confirmer' : null,
+    SEATS.worker.engine === SEATS.confirmer.engine ? 'worker and confirmer' : null,
+  ].filter(Boolean);
+  if (sharedEngines.length > 0) {
+    console.error(`these seats must be different engines: ${sharedEngines.join('; ')}`);
+    process.exit(2);
+  }
   if (DRY_RUN) log('DRY RUN: no GitHub mutation and no agent will run');
 
   let releaseLock: () => void;

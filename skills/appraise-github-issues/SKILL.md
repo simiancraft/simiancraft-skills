@@ -49,9 +49,9 @@ seat, or both. The burndown writes the callbacks it ships there on every start, 
 larger skill (breaking an oversized issue into smaller ones, say) is reached without the appraiser
 knowing it exists. The ladder, the two forms, and the payload are in `references/callbacks.md`.
 
-Keep the appraiser and the confirmer on different engines; the driver warns when they match.
-`--no-confirm` (or `confirmCloses: false`) closes on the appraiser alone, for a tracker whose
-authors you trust to that degree.
+Keep the appraiser and the confirmer on different engines; the driver refuses to start when they
+match. `--no-confirm` (or `confirmCloses: false`) closes on the appraiser alone, for a tracker whose
+authors you trust to that degree, and then the confirmer's engine does not matter.
 
 ## Run it
 

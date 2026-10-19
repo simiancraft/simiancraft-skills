@@ -342,7 +342,8 @@ export async function appraiseIssue(
 ): Promise<AppraisalOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   const cap = options.maxAppraiseAttempts ?? APPRAISE_DEFAULTS.maxAppraiseAttempts;
-  assertDistinctEngines(options.seats.appraiser, options.seats.confirmer, 'appraiser and confirmer');
+  // The confirmer is the second opinion on a close; with closes on the appraiser alone it never runs.
+  if (options.confirmCloses) assertDistinctEngines(options.seats.appraiser, options.seats.confirmer, 'appraiser and confirmer');
 
   // A trunk is worked by closing its children, never re-sized while they are open; the one
   // exception is a released trunk the burndown asks this to finish.

@@ -168,8 +168,10 @@ log(`run pid ${process.pid} started ${new Date().toISOString()}`);
 log(`base ${ctx.project.baseBranch} | ${ALL_AGES ? 'all ages' : `last ${AGE_DAYS} days`} | ${INCLUDE_SIZED ? 'sized and unsized' : 'unsized only'} | config ${CONFIG_FILE}`);
 log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | closes ${NO_CONFIRM || CONFIG.confirmCloses === false ? 'on the appraiser alone' : 'confirmed by the second engine'}`);
 log(`size callbacks: ${CALLBACKS_DIR}${dirExists(CALLBACKS_DIR) ? '' : ' (absent; none will run)'} | callback seat ${seatLabel(SEATS.callback)}`);
-if (SEATS.appraiser.engine === SEATS.confirmer.engine) {
-  log("WARNING: appraiser and confirmer share an engine, so the close check shares the appraiser's blind spots");
+// Refused before any issue is read: every appraisal would otherwise throw on its own.
+if (!(NO_CONFIRM || CONFIG.confirmCloses === false) && SEATS.appraiser.engine === SEATS.confirmer.engine) {
+  console.error(`appraiser and confirmer must be different engines; both are ${SEATS.appraiser.engine}. Pick another --confirmer, or pass --no-confirm.`);
+  process.exit(2);
 }
 if (DRY_RUN) log('DRY RUN: selection only; no lock, no agent, no GitHub mutation; only this log is written');
 
