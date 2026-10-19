@@ -17,6 +17,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readResult, runAgent } from '../fix-github-issue/lib/agent.ts';
@@ -140,7 +141,9 @@ const ctx = createContext({
   dryRun: DRY_RUN,
 });
 
-const CHECKOUT = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor-checkout');
+// One checkout per floor: the floor lock makes it exclusive, where a shared one would let a second
+// floor's walker force-remove it under the first's agent.
+const CHECKOUT = resolve(REPO_ROOT, PROJECT.worktreeRoot, `floor-checkout-${createHash('sha1').update(DIR).digest('hex').slice(0, 8)}`);
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -12,3 +12,10 @@ describe('the walker hands incidents to the fix pipeline with every prompt it re
     expect(source).toContain("join(HERE, '..', 'appraise-github-issues', 'prompts')");
   });
 });
+
+describe('two floors on one repository', () => {
+  it('give each walker a checkout of its own, named for its floor', () => {
+    const line = source.split('\n').find((l) => l.startsWith('const CHECKOUT ='));
+    expect(line).toContain('update(DIR)');
+  });
+});
