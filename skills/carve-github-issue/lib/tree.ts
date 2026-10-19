@@ -271,11 +271,16 @@ export function deletedNode(number: number): Node {
 
 /** The newest comment by the bot carrying a valid record marker and JSON; anything else is not a record. */
 export function latestRecord(node: Node, botLogin: string, log: (m: string) => void = () => {}): Record | null {
+  return latestRecordWhere(node, botLogin, () => true, log);
+}
+
+/** The newest valid record by the bot that also satisfies `test`. */
+export function latestRecordWhere(node: Node, botLogin: string, test: (record: Record) => boolean, log: (m: string) => void = () => {}): Record | null {
   for (let i = node.comments.length - 1; i >= 0; i--) {
     const c = node.comments[i];
     if (c.author !== botLogin || !c.body.includes('<!-- carve-record')) continue;
     const record = parseRecord(c, botLogin, log);
-    if (record) return record;
+    if (record && test(record)) return record;
   }
   return null;
 }

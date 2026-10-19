@@ -39,7 +39,7 @@ import { claim, keepClaimed, LeaseLostError, leaseLost, trackerIo } from './clai
 
 export { LeaseLostError };
 import { buildLedger, carryIds, childMarker, type Ledger, pauseSet, type Record, type RecordChild, renderChildBody, renderRecord, sameBody } from './record.ts';
-import { descendants, type Fingerprint, fingerprint, type Intent, parseMarker, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
+import { descendants, type Fingerprint, fingerprint, type Intent, latestRecordWhere, parseMarker, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
 
 const SEAMS_PATH = join(import.meta.dir, '..', 'references', 'seams.md');
 
@@ -307,7 +307,9 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
     const pr = k.io.view(child.number)?.pullRequest;
     if (pr) return { ok: false, why: `piece ${child.piece} names #${child.number}, which is a pull request (${pr}); the announced cut cannot be finished as written` };
   }
-  const previous = tree.record && tree.record.state === 'live' && tree.record.generation < applying.generation ? tree.record : null;
+  // The generation this one replaces, read past the `applying` record that announced it: by the time
+  // it is finished that announcement is the newest record, and the edges to undo are in the last live one.
+  const previous = latestRecordWhere(tree.issue, k.ctx.botLogin, (r) => r.state === 'live' && r.generation < applying.generation);
 
   // Pieces, in delivery order.
   const order = [...children].sort((a, b) => a.order - b.order);

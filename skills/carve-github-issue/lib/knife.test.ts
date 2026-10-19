@@ -785,3 +785,21 @@ describe('the local carve lock', () => {
     rmSync(join(ctx.runDir, `carve-10-gen${generation}.json`));
   });
 });
+
+describe('an amend', () => {
+  test('removes a dependency edge the confirmed amendment no longer commands', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    const [posts, authors] = readTree(ctx, 10, io).children.map((c) => c.number);
+    expect(io.view(authors)!.blockedBy?.nodes.map((b) => b.number)).toEqual([posts]);
+
+    // The same two children, now independent of each other.
+    const [base] = carving(10).cuts as [Cut];
+    const pieces = base.pieces.map((p, i) => ({ ...p, kind: 'child' as const, number: [posts, authors][i], title: undefined, body: undefined, dependsOn: [] }));
+    const amend = { ...carving(10, { cuts: [{ ...base, pieces }] }), mode: 'revisit' as const, verdict: 'amend' as const };
+    const out = await carveIssue(ctx, issue10, knobs(fixture('amend', amend), fixture('agree', confirmation(10, 'revisit', 'cover', true))), io);
+    expect(out.outcome).toBe('amend');
+    expect(io.view(authors)!.blockedBy?.nodes ?? []).toEqual([]);
+  });
+});
