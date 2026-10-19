@@ -1192,7 +1192,8 @@ async function main(): Promise<void> {
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the
     // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
-    const stranded = findStranded(ctx, allIssues(), CONFIG.skipLabels);
+    // `--only` bounds resumption too: a run restricted to #12 must not land a stranded #34.
+    const stranded = findStranded(ctx, allIssues().filter((issue) => !ONLY || ONLY.has(issue.number)), CONFIG.skipLabels);
     for (const entry of stranded) place(entry.issue.number, entry.issue.title, 'E1', `resumed PR #${entry.result.pr}`);
     await resumeStranded(
       ctx,
