@@ -336,6 +336,25 @@ describe('runtime moves and settlement', () => {
     await api.reviewAndLand(ctx, { number: 1, labels: [] }, '/fake', { pr: 7 }, 2, noop);
     expect(edges).toEqual([]);
   });
+  it('a base that moved into the work at the merge gate sends the proof back to be reacquired', async () => {
+    const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
+    const reproofs: boolean[] = [];
+    let landings = 0;
+    const api = loadFunctions(pipeline, ['reviewAndLand'], {
+      reviewCount: () => 0, sh: () => 'h', catchUp: () => null, move: noop, mutate: noop, MAX_BASE_REFRESHES: 3,
+      review: async () => ({ review: { decision: 'merge', blocking: [] }, reviewedSha: 'h' }),
+      serializePullMaster: (_ctx: unknown, _issue: unknown, _say: unknown, action: () => unknown) => action(),
+      land: async () => (landings++ === 0 ? { reproof: { before: 'a', after: 'b', overlap: ['src/x.ts'], netChangeIntact: true } } : 'merged'),
+      runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
+        reproofs.push(reproof);
+        return { verdict: 'fixed', pr: 7, reason: 'proof reacquired' };
+      },
+      settleTerminalVerdict: async () => null,
+    });
+    const result = await api.reviewAndLand(ctx, { number: 1, labels: [] }, '/fake', { pr: 7 }, 2, noop);
+    expect(reproofs).toEqual([true]);
+    expect(result.outcome).toBe('merged');
+  });
   it('an exhausted review budget is a machine DLQ even on re-entry', async () => {
     let parked = false; const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
     const api = loadFunctions(pipeline, ['reviewAndLand'], {

@@ -713,7 +713,7 @@ export type DeadLetter = { dlq: DlqPhase; reason: string };
  * `dlq` is a landing the machine could not complete (a conflict, red checks, a failed smoke, a
  * refused line, an unreported merge), which the landing queue's triage may retry.
  */
-export type Landing = 'merged' | 'revise' | 'stale' | { park: string } | { dlq: string };
+export type Landing = 'merged' | 'revise' | 'stale' | { reproof: CaughtUp } | { park: string } | { dlq: string };
 
 /** How long the smoke command may run before the pull request parks as unbootable. */
 
@@ -859,13 +859,15 @@ async function land(
       return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
     }
     if (caught) {
+      // The catch-up is already merged and pushed, so the next pass's own catch-up finds nothing
+      // behind; it is handed back whole, so the proof is reacquired rather than only re-reviewed.
       if (caught.overlap.length > 0) {
         say(`base moved into this work (${caught.overlap.join(', ')}); the approval no longer describes what would land`);
-        return 'stale';
+        return { reproof: caught };
       }
       if (!caught.netChangeIntact) {
         say('the catch-up changed what this branch contributes; the approval no longer describes what would land');
-        return 'stale';
+        return { reproof: caught };
       }
       say(`base moved outside this work; the approval stands and the landing head is ${caught.after.slice(0, 10)}`);
       landingSha = caught.after;
@@ -1274,6 +1276,8 @@ export async function reviewAndLand(
   if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun) {
     return deadLetter(ctx, issue, 'review', `The review budget of ${consumed} rounds was already spent when this pull request came back for review.`, say, result.pr);
   }
+  /** A catch-up the merge gate already made, whose movement reached this work: the next pass reproves from it. */
+  let caughtAtLanding: CaughtUp | null = null;
   while (consumed < ctx.knobs.maxReviewRounds) {
     if (!result.pr) return deadLetter(ctx, issue, 'work', 'The worker reported a fix but named no pull request.', say);
     const pr = result.pr;
@@ -1286,7 +1290,8 @@ export async function reviewAndLand(
     // that reached the paths the proof covers means the world moved beneath the proof: the work
     // goes back to its author to reacquire it, which is upstream churn and spends no round.
     const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    const current = catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+    const current = caughtAtLanding ?? catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+    caughtAtLanding = null;
     if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
     if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
       refreshes += 1;
@@ -1329,6 +1334,12 @@ export async function reviewAndLand(
         say(`base moved into this work ${refreshes} times`);
         return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
       }
+      continue;
+    }
+    // The merge gate's catch-up reached what the proof covers: back to the top, where the reproof
+    // branch counts the refresh and sends the work to have its proof reacquired.
+    if (typeof outcome === 'object' && 'reproof' in outcome) {
+      caughtAtLanding = outcome.reproof;
       continue;
     }
 
