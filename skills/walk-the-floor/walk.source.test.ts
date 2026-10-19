@@ -42,3 +42,11 @@ describe('the docs name only flags the walker accepts', () => {
     }
   });
 });
+
+describe('an incident handed to the fix pipeline', () => {
+  const incident = readFileSync(join(HERE, 'lib', 'incident.ts'), 'utf8');
+  it('carries its live labels, so attempt and review budgets accumulate across wakes', () => {
+    expect(incident).not.toContain('labels: []');
+    expect(incident).toMatch(/fixIssue\(ctx, live,/);
+  });
+});

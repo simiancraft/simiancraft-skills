@@ -9,7 +9,8 @@ import { readResult, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import { ensureLabels, parkIssue } from '../../fix-github-issue/lib/labels.ts';
-import { fixIssue, type FixOutcome } from '../../fix-github-issue/lib/pipeline.ts';
+import { enrichBlockers } from '../../fix-github-issue/lib/blockers.ts';
+import { fixIssue, type FixOutcome, type Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import { type LedgerEntry, lastClean, readLedger } from './floor.ts';
 import { mergedSince, type MergedPullRequest } from './forge.ts';
@@ -192,12 +193,12 @@ export async function handleIncident(
     return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true };
   }
 
-  // The fix is the pipeline's job, exactly as for any other issue.
-  const fix = await fixIssue(
-    ctx,
-    { number: issue, title, createdAt: new Date().toISOString(), labels: [] },
-    { maxPoints: options.maxPoints },
-  );
+  // The fix is the pipeline's job, exactly as for any other issue. The issue is read live, labels and
+  // all: the pipeline's attempt and review budgets are counted on them, and an incident walked every
+  // wake would otherwise start from zero each time and never run out.
+  const live = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy'])) as Issue;
+  enrichBlockers(ctx, [live]);
+  const fix = await fixIssue(ctx, live, { maxPoints: options.maxPoints });
   ctx.log(`incident #${issue}: ${fix.outcome}; ${fix.reason}`);
   return { issue, created: existing === null, fix, diagnosis, withAPerson: fix.outcome !== 'merged' };
 }
