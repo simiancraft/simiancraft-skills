@@ -505,7 +505,18 @@ const opt = (name: string) => {
 };
 
 const DRY_RUN = flag('dry-run');
-const LIMIT = Number(opt('limit') ?? CONFIG.limit);
+/** A count option: a mistyped value must refuse, not become NaN and quietly select nothing. */
+function countOption(name: string, fallback: number): number {
+  const raw = opt(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.error(`--${name} expects a whole number, got '${raw}'`);
+    process.exit(1);
+  }
+  return parsed;
+}
+const LIMIT = countOption('limit', CONFIG.limit);
 // Per-run ambition knob: a one-off ceiling raise belongs on the command line, not in the durable
 // config, whose value is what unattended runs get.
 const MAX_POINTS = (() => {
@@ -538,7 +549,7 @@ const ONLY: Set<number> | null = (() => {
     process.exit(1);
   }
 })();
-const APPRAISE_LIMIT = Number(opt('appraise-limit') ?? CONFIG.appraiseLimit);
+const APPRAISE_LIMIT = countOption('appraise-limit', CONFIG.appraiseLimit);
 const CLOSURE_PROBE = opt('closure');
 // Operator feedback is on by default: a board line per issue on every change, the whole board on
 // a cadence, and the pause duration on every poll of the switch. `--silent` keeps only the log.

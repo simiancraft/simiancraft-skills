@@ -108,7 +108,7 @@ const CONFIG = await loadProjectConfig<FixKnobs>({
   repoRoot: REPO_ROOT,
   fileName: CONFIG_FILE ?? 'fix-github-issue.config.ts',
   defaults: FIX_DEFAULTS,
-  positiveIntegers: ['maxReviewRounds', 'maxPoints', 'checksTimeoutMinutes', 'smokeTimeoutMinutes'],
+  positiveIntegers: ['maxReviewRounds', 'maxPoints', 'checksTimeoutMinutes', 'smokeTimeoutMinutes', 'maxWorkerAttempts'],
   help: [
     'This pipeline is shared across repositories; everything true of a repository lives in that file.',
     'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
