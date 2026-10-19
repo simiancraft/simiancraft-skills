@@ -215,7 +215,7 @@ spent the issue's review budget, or when the objection is one no revision will a
 4. **Otherwise intersect** the incoming set with the import closure of the changed files
    (`--closure <file>`), and reacquire any receipt whose covered paths were touched.
 5. **Order the merges** so that a pull request touching a global invalidator (a lockfile, a
-   manifest, build or lint config, generated output) goes **last**. Landing it first invalidates
+   manifest, build or lint config, or generated output) goes **last**. Landing it first invalidates
    every sibling for nothing.
 6. Merge with `--match-head-commit <sha>`, confirm `mergedAt` is non-null, then close the issue
    manually and clear `loop/parked`.
