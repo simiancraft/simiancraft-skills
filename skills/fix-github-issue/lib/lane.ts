@@ -33,6 +33,12 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
   const base = ctx.project.baseBranch;
   try {
     const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    // A lane kept from an earlier, stopped run can hold commits that run never pushed; the reset
+    // below discards this attempt's work, never theirs, so they keep a ref of their own.
+    if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
+      const sha = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      sh(ctx, ['git', 'update-ref', `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`, sha], cwd);
+    }
     sh(ctx, ['git', 'fetch', remote, base]);
     sh(ctx, ['git', 'checkout', '--detach', `${remote}/${base}`], cwd);
     sh(ctx, ['git', 'reset', '--hard', `${remote}/${base}`], cwd);

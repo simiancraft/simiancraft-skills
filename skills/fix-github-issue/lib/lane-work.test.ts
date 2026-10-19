@@ -8,7 +8,7 @@ import { claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
 import { reconcile } from './resume.ts';
-import { worktreeAtPullRequest } from './lane.ts';
+import { resetLane, worktreeAtPullRequest } from './lane.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -220,5 +220,15 @@ describe('resuming a pull request in its lane', () => {
     expect(() => worktreeAtPullRequest(ctxFor(lines), 84, 'fix/resume-84')).toThrow(/holds commits no remote has/);
     expect(existsSync(dir)).toBe(true);
     expect(git(repo, 'rev-parse', `refs/loop/rescued/issue-84/${sha.slice(0, 12)}`)).toBe(sha);
+  });
+});
+
+describe('resetting a lane for a retry', () => {
+  it('gives commits no remote has a ref of their own before deleting the branch that held them', () => {
+    const dir = lane(85, true, 'fix/inherited-85');
+    const sha = git(dir, 'rev-parse', 'HEAD');
+    resetLane(ctxFor([]), 85, dir);
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
+    expect(git(repo, 'rev-parse', `refs/loop/rescued/issue-85/${sha.slice(0, 12)}`)).toBe(sha);
   });
 });
