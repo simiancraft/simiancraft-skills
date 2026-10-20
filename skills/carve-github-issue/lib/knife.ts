@@ -545,6 +545,12 @@ async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Ar
   const labels = labelsOf(tree.issue);
   if (tree.generation === 0) addLabel(k, 'handed-off-label', k.trunk, 'loop/handed-off', labels);
   addLabel(k, 'hold-label', k.trunk, hold, labels);
+  // A dead letter takes its spent count off, as every phase's does, so a person lifting the label
+  // hands the knife a fresh budget whichever driver runs it next.
+  if (deadLetter && !k.ctx.dryRun && carveCount(tree.issue.labels) > 0) {
+    holdLease(k, `clear the carve count on #${k.trunk}`);
+    clearCarves(k.ctx, k.trunk);
+  }
   const record = newRecord(k, tree, { state: 'live', verdict, reason: carving.reason, ledger, children, affected, revisits: previous?.revisits ?? 0 });
   reconcilePauses(k, record);
   await callback(k, tree, 'on-carve-fail', record, children);

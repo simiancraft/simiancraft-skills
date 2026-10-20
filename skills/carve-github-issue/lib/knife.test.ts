@@ -818,3 +818,14 @@ describe('a child with work started is never superseded', () => {
     expect(workStarted(node('size: 2'))).toBe(false);
   });
 });
+
+describe('a carve dead letter', () => {
+  test('takes the spent carve count off, so lifting the label is a fresh budget for any driver', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { title: '[t] big', labels: [{ name: 'size: 8' }, { name: 'loop/carves: 2' }] })]);
+    const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('gap', confirmation(10, 'carve', 'gap', false))), io);
+    expect(out.outcome).toBe('dlq');
+    expect(labels(io, 10)).toContain('loop/dlq: carve');
+    expect(labels(io, 10).some((l) => l.startsWith('loop/carves'))).toBe(false);
+  });
+});
