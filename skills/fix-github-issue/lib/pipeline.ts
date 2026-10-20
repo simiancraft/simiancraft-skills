@@ -1111,9 +1111,11 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       }
       const refused = gateBeforeClose();
       if (refused) return refused;
-      closePullRequest();
+      // The thread is read before anything closes: a read that throws then leaves the pull request
+      // open and the answer recoverable, rather than closed with the answer only in a lane file.
       const marker = `<!-- carve-answer issue=${issue.number} -->`;
       const already = ctx.dryRun ? false : trackerIo(ctx).view(issue.number)?.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(marker));
+      closePullRequest();
       if (!already) mutate(ctx, `post the answer on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `${marker}\n${result.answer ?? ''}`]);
       await closeIssue(ctx, issue.number, `Answered; see the answer above. Independently re-checked: ${confirmation.reason}`, { kind: 'answered', reason: 'answered', by: 'worker' });
       move(ctx, issue, 'T2', 'answered');
