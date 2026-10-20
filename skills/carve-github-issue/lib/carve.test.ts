@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { buildLedger, carryIds, type Ledger, pauseSet, parseRecord, type Record, renderRecord } from './record.ts';
@@ -334,5 +336,14 @@ describe('FakeTracker writes', () => {
     expect(io.view(1)?.comments.length).toBe(1);
     io.write({ description: 'close', argv: ['gh', 'issue', 'close', '1', '--reason', 'not planned'] });
     expect(io.view(1)?.stateReason).toBe('NOT_PLANNED');
+  });
+});
+
+describe('the production tracker read', () => {
+  test('fails rather than return a thread whose comments, claims, and records it could not read', () => {
+    const source = readFileSync(join(import.meta.dir, 'tree.ts'), 'utf8');
+    const view = source.slice(source.indexOf('export function ghIo('), source.indexOf('search(q)'));
+    expect(view).not.toContain('let rest: RawRestComment[] = [];');
+    expect(view).toContain('cannot be read');
   });
 });

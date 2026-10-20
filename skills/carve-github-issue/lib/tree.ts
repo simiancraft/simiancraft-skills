@@ -178,12 +178,14 @@ export function ghIo(ctx: Context): TrackerIo {
         if (/could not resolve|not found|404/i.test((error as Error).message)) return null;
         throw error;
       }
-      let rest: RawRestComment[] = [];
+      // Every comment is keyed by its REST id, so a thread read without them has no claims and no
+      // records: an issue another run holds would read as free. The read fails instead.
+      let rest: RawRestComment[];
       try {
         const pages = api(ctx, `repos/{repo}/issues/${n}/comments`, ['--paginate', '--slurp', '-X', 'GET', '-f', 'per_page=100']);
         rest = (JSON.parse(pages) as RawRestComment[][]).flat();
       } catch (error) {
-        ctx.log(`  #${n}  could not list comments through the REST api: ${(error as Error).message}`);
+        throw new Error(`could not list the comments on #${n} through the REST api, so its claims and records cannot be read: ${(error as Error).message.split('\n')[0]}`);
       }
       return enrichBlockers(ctx, [toNode(raw, rest, ctx.botLogin, ctx.log)])[0];
     },
