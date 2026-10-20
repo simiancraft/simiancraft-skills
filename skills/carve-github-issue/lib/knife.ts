@@ -17,7 +17,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import { CARVING_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
+import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
@@ -448,11 +448,13 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
   return { ok: true, live };
 }
 
-/** Any of: a live working claim, an open pull request, an assignee, a park, a dead-letter, a review count. */
-function workStarted(node: { labels: Array<{ name: string }>; comments: Array<{ author: string; body: string }> }): boolean {
+/**
+ * Any of: a working claim, a park, a dead letter of any phase, or a spent attempt or review. A dead
+ * letter clears its phase's counter, so the letter itself has to count: an ejected child still holds work.
+ */
+export function workStarted(node: { labels: Array<{ name: string }>; comments: Array<{ author: string; body: string }> }): boolean {
   const labels = labelsOf(node);
-  if (labels.some((l) => l === 'loop/working' || l === 'loop/parked' || l === 'loop/dlq' || /^loop\/reviews:\s*[1-9]/.test(l))) return true;
-  return false;
+  return labels.some((l) => l === 'loop/working' || l === 'loop/parked' || isDlqLabel(l) || /^loop\/(reviews|attempts):\s*[1-9]/.test(l));
 }
 
 async function callback(k: Knife, tree: Tree, name: 'on-carve-pass' | 'on-carve-fail', record: Record, children: RecordChild[]): Promise<void> {

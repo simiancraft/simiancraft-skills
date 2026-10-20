@@ -9,7 +9,7 @@ import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { awaitReleases, type ClaimHandle, claim, keepClaimed, leaseLost } from './claims.ts';
 import { loopLabels } from '../../fix-github-issue/lib/labels.ts';
-import { carveIssue } from './knife.ts';
+import { carveIssue, workStarted } from './knife.ts';
 import { type Cut, renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
 import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carving.ts';
@@ -801,5 +801,20 @@ describe('an amend', () => {
     const out = await carveIssue(ctx, issue10, knobs(fixture('amend', amend), fixture('agree', confirmation(10, 'revisit', 'cover', true))), io);
     expect(out.outcome).toBe('amend');
     expect(io.view(authors)!.blockedBy?.nodes ?? []).toEqual([]);
+  });
+});
+
+describe('a child with work started is never superseded', () => {
+  const node = (...names: string[]) => ({ labels: names.map((name) => ({ name })), comments: [] });
+  test('reads a dead letter of any phase as started work, since the letter clears its counter', () => {
+    expect(workStarted(node('loop/dlq: review'))).toBe(true);
+    expect(workStarted(node('loop/dlq: work'))).toBe(true);
+    expect(workStarted(node('loop/dlq'))).toBe(true);
+  });
+  test('reads a spent attempt as started work', () => {
+    expect(workStarted(node('loop/attempts: 1'))).toBe(true);
+  });
+  test('reads an untouched child as not started', () => {
+    expect(workStarted(node('size: 2'))).toBe(false);
   });
 });
