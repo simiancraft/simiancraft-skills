@@ -314,7 +314,7 @@ export async function closeIssue(
   if (!pendingClose(ctx, issue, marker)) {
     mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', `${marker}\n${comment}`]);
   }
-  const stateReason = event.kind === 'closed' && /^(obsolete|not-planned)/.test(event.reason) ? 'not planned' : 'completed';
+  const stateReason = event.kind === 'closed' && /^(obsolete|not-planned|superseded)/.test(event.reason) ? 'not planned' : 'completed';
   mutate(ctx, `close #${issue}`, ['gh', 'issue', 'close', String(issue), '--reason', stateReason]);
   if (ctx.dryRun) return;
   const viewed = ctx.io?.view?.(issue) as { closedAt?: string | null } | null | undefined;

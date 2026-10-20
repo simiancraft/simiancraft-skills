@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import type { Context } from './context.ts';
-import { countOf, DLQ_PHASES, dlqLabel, dlqPhase, HOLD_LABELS, isDlqLabel, isHeldBy, loopLabels, recordCount, sendToDlq } from './labels.ts';
+import { countOf, DLQ_PHASES, dlqLabel, dlqPhase, HOLD_LABELS, isDlqLabel, closeIssue, isHeldBy, loopLabels, recordCount, sendToDlq } from './labels.ts';
 
 const labels = (...names: string[]) => names.map((name) => ({ name }));
 
@@ -122,5 +122,15 @@ describe('a dead letter', () => {
     const on = io.view(1)!.labels.map((l) => l.name);
     expect(on).toContain('loop/dlq: work');
     expect(on.some((name) => name.startsWith('loop/attempts:'))).toBe(false);
+  });
+});
+
+describe('a close', () => {
+  it('records a superseded child as not planned, so nothing that depends on it reads it as done', async () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(1), fakeIssue(2)]);
+    const ctx = { botLogin: 'loop-bot', runId: 'host-1-1', dryRun: false, dryRunLog: [], project: { repo: 'o/close-superseded' }, log: () => {}, io } as unknown as Context;
+    await closeIssue(ctx, 1, 'Superseded by #2', { kind: 'closed', reason: 'superseded by #2', by: 'knife' });
+    expect(io.view(1)!.state).toBe('CLOSED');
+    expect(io.view(1)!.stateReason).toBe('NOT_PLANNED');
   });
 });
