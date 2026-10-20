@@ -186,9 +186,10 @@ export async function handleIncident(
   // A remedy outside the repository (a reindex, a config value, a vendor outage) is not code; a
   // worker would only spend a lane proving that. Park it for a person with the diagnosis attached.
   if (diagnosis?.remedy === 'outside-repository') {
-    if (existing === null) {
-      parkIssue(ctx, issue, 'The diagnosis places the remedy outside this repository, so no fix was attempted; a person has to act on the environment. See the diagnosis above.');
-    }
+    // A new incident carries the diagnosis in its body; an open one learns it here, with the park,
+    // or every wake would diagnose it again and every other driver would still read it as work.
+    const where = existing === null ? 'See the diagnosis above.' : `Diagnosis (${diagnosis.confidence}): ${diagnosis.summary}`;
+    parkIssue(ctx, issue, `The diagnosis places the remedy outside this repository, so no fix was attempted; a person has to act on the environment. ${where}`);
     ctx.log(`incident #${issue}: parked; the remedy is outside the repository`);
     return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true };
   }

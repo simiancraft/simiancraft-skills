@@ -56,3 +56,12 @@ describe('a repair landing', () => {
     for (const knob of ['checks: CONFIG.checks', 'requiredChecks: CONFIG.requiredChecks', 'idleCheckSuiteApps: CONFIG.idleCheckSuiteApps']) expect(source).toContain(knob);
   });
 });
+
+describe('an incident diagnosed as outside the repository', () => {
+  const incident = readFileSync(join(HERE, 'lib', 'incident.ts'), 'utf8');
+  it('is parked whether it was just filed or already open', () => {
+    const branch = incident.slice(incident.indexOf("diagnosis?.remedy === 'outside-repository'"), incident.indexOf('return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true }'));
+    expect(branch).toContain('parkIssue(ctx, issue,');
+    expect(branch).not.toContain('if (existing === null) {');
+  });
+});
