@@ -27,6 +27,7 @@ export type OrderRung = 'dependency' | 'source-of-truth' | 'risk' | 'size';
 
 export type Node = Issue & {
   author: string;
+  assignees: string[];
   body: string;
   state: 'OPEN' | 'CLOSED' | 'DELETED';
   stateReason: string | null;
@@ -97,6 +98,8 @@ export type TrackerWrite = { description: string; argv: string[] };
 export type TrackerIo = {
   view: (n: number) => Node | null;
   search: (q: string) => Issue[];
+  /** The head branches of the repository's open pull requests; the loop's own end in `-<issue>`. */
+  openPullBranches: () => string[];
   write: (op: TrackerWrite) => void;
   /** `gh issue create ...`, answering the new issue's number (gh prints its URL). */
   create: (op: TrackerWrite) => number;
@@ -143,13 +146,14 @@ export function isBotMarker(comment: Comment, botLogin: string): boolean {
 // GitHub
 // ---------------------------------------------------------------------------
 
-const VIEW_FIELDS = 'number,title,author,body,state,stateReason,labels,createdAt,closedAt,parent,subIssues,subIssuesSummary,blockedBy,comments,url';
+const VIEW_FIELDS = 'number,title,author,assignees,body,state,stateReason,labels,createdAt,closedAt,parent,subIssues,subIssuesSummary,blockedBy,comments,url';
 const LIST_FIELDS = 'number,title,createdAt,labels,parent,subIssuesSummary,blockedBy';
 
 type RawView = {
   number: number;
   title: string;
   author: { login: string } | null;
+  assignees?: Array<{ login: string }>;
   body: string;
   state: string;
   stateReason: string | null;
@@ -188,6 +192,9 @@ export function ghIo(ctx: Context): TrackerIo {
         throw new Error(`could not list the comments on #${n} through the REST api, so its claims and records cannot be read: ${(error as Error).message.split('\n')[0]}`);
       }
       return enrichBlockers(ctx, [toNode(raw, rest, ctx.botLogin, ctx.log)])[0];
+    },
+    openPullBranches() {
+      return sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'headRefName', '--jq', '.[].headRefName']).split('\n').filter(Boolean);
     },
     search(q) {
       return enrichBlockers(ctx, JSON.parse(sh(ctx, ['gh', 'issue', 'list', '--search', q, '--state', 'all', '--limit', '5000', '--json', LIST_FIELDS])) as Issue[]);
@@ -233,6 +240,7 @@ export function toNode(raw: RawView, rest: RawRestComment[], botLogin: string, l
     subIssuesSummary: raw.subIssuesSummary,
     blockedBy,
     author: raw.author?.login ?? 'ghost',
+    assignees: (raw.assignees ?? []).map((a) => a.login),
     body: raw.body ?? '',
     // A pull request's MERGED reads as finished work and an unmerged close as dropped work, so
     // every later read of it agrees with how the record settled it.
@@ -254,6 +262,7 @@ export function deletedNode(number: number): Node {
     number,
     title: '',
     createdAt: '',
+    assignees: [],
     labels: [],
     author: 'ghost',
     body: '',

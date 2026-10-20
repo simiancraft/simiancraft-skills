@@ -19,6 +19,7 @@ export function fakeIssue(number: number, partial: Partial<FakeIssue> = {}): Fak
     createdAt: '2026-09-01T00:00:00Z',
     labels: [],
     author: 'person',
+    assignees: [],
     body: '',
     state: 'OPEN',
     stateReason: null,
@@ -39,6 +40,8 @@ export class FakeTracker implements TrackerIo {
   throwOn: RegExp | null = null;
   /** Called before every write; a test can interleave another runner's writes here. */
   beforeWrite: ((op: TrackerWrite) => void) | null = null;
+  /** Head branches of open pull requests, as `gh pr list` would report them. */
+  openPulls: string[] = [];
   private nextNumber: number;
 
   constructor(
@@ -52,6 +55,10 @@ export class FakeTracker implements TrackerIo {
       for (const { name } of issue.labels) this.repoLabels.add(name);
     }
     this.nextNumber = Math.max(0, ...issues.map((i) => i.number)) + 1;
+  }
+
+  openPullBranches(): string[] {
+    return [...this.openPulls];
   }
 
   view(n: number): Node | null {

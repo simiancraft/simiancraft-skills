@@ -805,17 +805,21 @@ describe('an amend', () => {
 });
 
 describe('a child with work started is never superseded', () => {
-  const node = (...names: string[]) => ({ labels: names.map((name) => ({ name })), comments: [] });
+  const node = (...names: string[]) => ({ number: 7, labels: names.map((name) => ({ name })), assignees: [] as string[] });
   test('reads a dead letter of any phase as started work, since the letter clears its counter', () => {
-    expect(workStarted(node('loop/dlq: review'))).toBe(true);
-    expect(workStarted(node('loop/dlq: work'))).toBe(true);
-    expect(workStarted(node('loop/dlq'))).toBe(true);
+    expect(workStarted(node('loop/dlq: review'), [])).toBe(true);
+    expect(workStarted(node('loop/dlq: work'), [])).toBe(true);
+    expect(workStarted(node('loop/dlq'), [])).toBe(true);
   });
   test('reads a spent attempt as started work', () => {
-    expect(workStarted(node('loop/attempts: 1'))).toBe(true);
+    expect(workStarted(node('loop/attempts: 1'), [])).toBe(true);
+  });
+  test('reads an open pull request on its branch, or an assignee, as started work', () => {
+    expect(workStarted(node('size: 2'), ['fix/null-guard-7'])).toBe(true);
+    expect(workStarted({ ...node('size: 2'), assignees: ['someone'] }, [])).toBe(true);
   });
   test('reads an untouched child as not started', () => {
-    expect(workStarted(node('size: 2'))).toBe(false);
+    expect(workStarted(node('size: 2'), ['fix/other-17'])).toBe(false);
   });
 });
 

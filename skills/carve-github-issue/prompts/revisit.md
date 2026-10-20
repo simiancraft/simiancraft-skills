@@ -38,8 +38,8 @@ any issue; the driver does every tracker write from your answer.
   superseded, or is gone), or `deferred` while its spike is closed; those need an `amend`.
 - `amend`: a better or necessary cut. Return `cuts` and `chosen` as a carve would, plus
   `supersedes`: each child of the current record your cut replaces, with the piece indexes that
-  replace it and why. A child with work started (a live claim, an open pull request, an assignee,
-  a park, a review count) is never superseded; adopt it as a piece (`kind: "child"`). A question
+  replace it and why. A child with work started (a live claim, an open pull request on its
+  branch, an assignee, a park, a dead letter, a spent attempt or review) is never superseded; adopt it as a piece (`kind: "child"`). A question
   answered on the thread may require a rollback piece for work that landed on the old premise.
 - `exhausted`: every criterion is `completed` (its owner closed `COMPLETED`) or `withdrawn` (a
   comment you cite retracts it), and no recorded dependency is open. The trunk goes back to the

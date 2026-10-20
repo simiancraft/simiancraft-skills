@@ -62,7 +62,7 @@ Created on first run, alongside the burndown's:
 | `loop/paused` | paused by its parent while a question is open; owned by trunks only |
 | `loop/released` | the carving is exhausted; the burndown's release appraisal finishes it |
 | `loop/handed-off` | the knife handed it off before carving it; found by the sweep when the hold lifts |
-| `loop/carves: N` | failed carve attempts, cleared by a confirmed verdict |
+| `loop/carves: N` | failed carve attempts, cleared by a confirmed verdict or by the carve dead letter |
 | `spike` | a child that answers a question with evidence; no pull request |
 
 A person who wants a leaf held uses `loop/skip` or a `needs-*` label, never `loop/paused`.

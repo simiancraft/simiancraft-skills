@@ -395,6 +395,8 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
 
   // Supersessions: a child with no work started closes not planned with a pointer; one with work
   // started, or one a person reopened after this knife closed it, is left as it is.
+  /** Read once, at the first supersession that gets this far. */
+  let branches: string[] | null = null;
   for (const s of applying.supersedes) {
     const node = k.io.view(s.old);
     if (!node) continue;
@@ -408,7 +410,8 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
       k.journal.abandoned('supersede', `#${s.old} was reopened by a person after the knife closed it`, s.old);
       continue;
     }
-    if (workStarted(node)) {
+    branches ??= k.io.openPullBranches();
+    if (workStarted(node, branches)) {
       k.journal.abandoned('supersede', `#${s.old} has work started; kept`, s.old);
       continue;
     }
@@ -449,12 +452,16 @@ export async function applyRecord(k: Knife, applying: Record): Promise<{ ok: tru
 }
 
 /**
- * Any of: a working claim, a park, a dead letter of any phase, or a spent attempt or review. A dead
- * letter clears its phase's counter, so the letter itself has to count: an ejected child still holds work.
+ * Any of: a working claim, a park, a dead letter of any phase, a spent attempt or review, an
+ * assignee, or an open pull request on the loop's branch for it (one ending in `-<number>`). A dead
+ * letter clears its phase's counter, so the letter itself has to count; a worker that opened its
+ * pull request and died before a review leaves no label, so the branch has to count too.
  */
-export function workStarted(node: { labels: Array<{ name: string }>; comments: Array<{ author: string; body: string }> }): boolean {
+export function workStarted(node: { number: number; labels: Array<{ name: string }>; assignees?: string[] }, openPullBranches: string[]): boolean {
   const labels = labelsOf(node);
-  return labels.some((l) => l === 'loop/working' || l === 'loop/parked' || isDlqLabel(l) || /^loop\/(reviews|attempts):\s*[1-9]/.test(l));
+  if (labels.some((l) => l === 'loop/working' || l === 'loop/parked' || isDlqLabel(l) || /^loop\/(reviews|attempts):\s*[1-9]/.test(l))) return true;
+  if ((node.assignees?.length ?? 0) > 0) return true;
+  return openPullBranches.some((branch) => branch.endsWith(`-${node.number}`));
 }
 
 async function callback(k: Knife, tree: Tree, name: 'on-carve-pass' | 'on-carve-fail', record: Record, children: RecordChild[]): Promise<void> {
