@@ -235,6 +235,8 @@ export class Carving {
           // The knife claims for itself; this claim steps aside for it and is retaken after.
           stop();
           handle.release();
+          // Released here, so the finally below has nothing of its own to release if the knife throws.
+          handle = 'busy';
           // The remainder is oversized, so it is To carve before the knife takes it.
           mark(number, issue.title, 'C1', `released at ${points}, over the ceiling of ${knobs.ceiling}`);
           let outcome: Awaited<ReturnType<typeof carveIssue>>;
