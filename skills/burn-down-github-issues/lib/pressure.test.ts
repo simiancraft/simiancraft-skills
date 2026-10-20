@@ -594,3 +594,19 @@ describe('blocker close reasons', () => {
     });
   }
 });
+
+describe('an unreadable thread during the sweep', () => {
+  it('costs that issue this sweep and lets the sweep reach the rest', async () => {
+    const unreadable = fakeIssue(1, { labels: [{ name: 'loop/working' }] });
+    const stale = fakeIssue(2, { labels: [{ name: 'loop/working' }] });
+    const io = new FakeTracker(bot, [unreadable, stale]);
+    const view = io.view.bind(io);
+    io.view = (n: number) => {
+      if (n === 1) throw new Error('could not list the comments on #1 through the REST api');
+      return view(n);
+    };
+    await driver(io, []).sweep([unreadable, stale]);
+    expect(view(2)?.labels.map((l) => l.name)).not.toContain('loop/working');
+    expect(view(1)?.labels.map((l) => l.name)).toContain('loop/working');
+  });
+});

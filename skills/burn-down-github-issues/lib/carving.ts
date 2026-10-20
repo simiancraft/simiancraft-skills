@@ -279,125 +279,142 @@ export class Carving {
     const first = new Set<number>();
 
     for (const issue of all) {
-      if (!inScope(issue)) continue;
-      const labels = issue.labels.map((l) => l.name);
-      if (!labels.some((l) => SWEEP_LABELS.includes(l) || l.startsWith('loop/carve-gen'))) continue;
-      first.add(issue.number);
-      const tree = readTree(ctx, issue.number, io);
-      const now = new Date().toISOString();
+      try {
+        if (!inScope(issue)) continue;
+        const labels = issue.labels.map((l) => l.name);
+        if (!labels.some((l) => SWEEP_LABELS.includes(l) || l.startsWith('loop/carve-gen'))) continue;
+        first.add(issue.number);
+        const tree = readTree(ctx, issue.number, io);
+        const now = new Date().toISOString();
 
-      // Torn or expired claims: a label with no live claim behind it comes off, once nothing is pending.
-      for (const kind of ['carving', 'working'] as const) {
-        const label = kind === 'carving' ? 'loop/carving' : 'loop/working';
-        if (!labels.includes(label)) continue;
-        const live = tree.claims.some((c) => c.kind === kind && !c.released && Date.parse(c.expires) > Date.parse(now));
-        const pending = tree.intents.some((i) => !i.finished && (i.kind === 'applying' || i.kind === 'released' || i.kind === 'carve-handoff'));
-        if (live || pending) continue;
-        if (ctx.dryRun) {
-          log(`DRY RUN  would clear the stale ${label} on #${issue.number}`);
-          continue;
+        // Torn or expired claims: a label with no live claim behind it comes off, once nothing is pending.
+        for (const kind of ['carving', 'working'] as const) {
+          const label = kind === 'carving' ? 'loop/carving' : 'loop/working';
+          if (!labels.includes(label)) continue;
+          const live = tree.claims.some((c) => c.kind === kind && !c.released && Date.parse(c.expires) > Date.parse(now));
+          const pending = tree.intents.some((i) => !i.finished && (i.kind === 'applying' || i.kind === 'released' || i.kind === 'carve-handoff'));
+          if (live || pending) continue;
+          if (ctx.dryRun) {
+            log(`DRY RUN  would clear the stale ${label} on #${issue.number}`);
+            continue;
+          }
+          mutate(ctx, `clear stale ${label} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `The ${label} label had no live claim behind it (the run died, or was killed); cleared by the sweep.`]);
+          mutate(ctx, `unlabel #${issue.number} ${label}`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', label]);
         }
-        mutate(ctx, `clear stale ${label} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `The ${label} label had no live claim behind it (the run died, or was killed); cleared by the sweep.`]);
-        mutate(ctx, `unlabel #${issue.number} ${label}`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', label]);
-      }
-      // A torn loop/paused: no unreleased marker from any trunk.
-      if (labels.includes('loop/paused')) {
-        const byTrunk = new Map<number, boolean>();
-        for (const c of tree.issue.comments) {
-          if (c.author !== ctx.botLogin) continue;
-          const m = parseMarker(c.body);
-          if (m?.name === 'carve-pause') byTrunk.set(Number(m.fields.by), true);
-          if (m?.name === 'carve-unpause') byTrunk.set(Number(m.fields.by), false);
-        }
-        const anyLive = [...byTrunk.values()].some(Boolean);
-        if (!anyLive) {
-          if (ctx.dryRun) log(`DRY RUN  would remove the torn loop/paused on #${issue.number}`);
-          else {
-            mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', 'loop/paused with no trunk pausing it; removed by the sweep. A person who wants this held uses loop/skip or a needs-* label.']);
-            mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
+        // A torn loop/paused: no unreleased marker from any trunk.
+        if (labels.includes('loop/paused')) {
+          const byTrunk = new Map<number, boolean>();
+          for (const c of tree.issue.comments) {
+            if (c.author !== ctx.botLogin) continue;
+            const m = parseMarker(c.body);
+            if (m?.name === 'carve-pause') byTrunk.set(Number(m.fields.by), true);
+            if (m?.name === 'carve-unpause') byTrunk.set(Number(m.fields.by), false);
+          }
+          const anyLive = [...byTrunk.values()].some(Boolean);
+          if (!anyLive) {
+            if (ctx.dryRun) log(`DRY RUN  would remove the torn loop/paused on #${issue.number}`);
+            else {
+              mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', 'loop/paused with no trunk pausing it; removed by the sweep. A person who wants this held uses loop/skip or a needs-* label.']);
+              mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
+            }
           }
         }
+        const isTrunkish = labels.includes('loop/carved') || labels.includes('loop/released') || labels.includes('loop/handed-off') || labels.some((l) => l.startsWith('loop/carve-gen')) || tree.record !== null || tree.children.length > 0;
+        if (!isTrunkish) continue;
+        const held = labels.some((l) => HOLD_LABELS.includes(l) && l !== 'loop/paused');
+        const pending = tree.intents.some((i) => !i.finished && (i.kind === 'applying' || i.kind === 'released' || i.kind === 'carve-handoff'));
+        if (pending) {
+          await this.guard(issue.number, () => this.revisit(issue.number, 'an unfinished announcement'));
+          continue;
+        }
+        if (labels.includes('loop/released')) {
+          if (!held) await this.guard(issue.number, () => this.releaseAppraisal(issue.number));
+          continue;
+        }
+        const redrive = Boolean(tree.record && tree.record.seen.holds.some((h) => !labels.includes(h)));
+        if (held) {
+          // The knife snapshots a hold it has not recorded, then leaves the trunk to its person.
+          if (tree.record && !tree.record.seen.holds.some((h) => labels.includes(h))) await this.guard(issue.number, () => this.revisit(issue.number, 'a hold to snapshot'));
+          continue;
+        }
+        if (redrive) {
+          await this.guard(issue.number, () => this.revisit(issue.number, 'a hold was removed'));
+          continue;
+        }
+        const why = needsRevisit(tree.record, tree, ctx.botLogin);
+        if (why) await this.guard(issue.number, () => this.revisit(issue.number, why === 'no-record' ? 'no record' : `${why} changed`));
+      } catch (error) {
+        // One unreadable thread costs that issue this sweep, never the run: a rate limit on one read
+        // would otherwise end every run at startup until the API recovered.
+        if (error instanceof RunStopping || isStopping()) throw error;
+        log(`  #${issue.number}  sweep: could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this sweep`);
       }
-      const isTrunkish = labels.includes('loop/carved') || labels.includes('loop/released') || labels.includes('loop/handed-off') || labels.some((l) => l.startsWith('loop/carve-gen')) || tree.record !== null || tree.children.length > 0;
-      if (!isTrunkish) continue;
-      const held = labels.some((l) => HOLD_LABELS.includes(l) && l !== 'loop/paused');
-      const pending = tree.intents.some((i) => !i.finished && (i.kind === 'applying' || i.kind === 'released' || i.kind === 'carve-handoff'));
-      if (pending) {
-        await this.guard(issue.number, () => this.revisit(issue.number, 'an unfinished announcement'));
-        continue;
-      }
-      if (labels.includes('loop/released')) {
-        if (!held) await this.guard(issue.number, () => this.releaseAppraisal(issue.number));
-        continue;
-      }
-      const redrive = Boolean(tree.record && tree.record.seen.holds.some((h) => !labels.includes(h)));
-      if (held) {
-        // The knife snapshots a hold it has not recorded, then leaves the trunk to its person.
-        if (tree.record && !tree.record.seen.holds.some((h) => labels.includes(h))) await this.guard(issue.number, () => this.revisit(issue.number, 'a hold to snapshot'));
-        continue;
-      }
-      if (redrive) {
-        await this.guard(issue.number, () => this.revisit(issue.number, 'a hold was removed'));
-        continue;
-      }
-      const why = needsRevisit(tree.record, tree, ctx.botLogin);
-      if (why) await this.guard(issue.number, () => this.revisit(issue.number, why === 'no-record' ? 'no record' : `${why} changed`));
     }
 
     // Second pass: oversized in the window, or an open child at any age.
     for (const issue of all) {
-      if (!inScope(issue) || first.has(issue.number)) continue;
-      const labels = issue.labels.map((l) => l.name);
-      if (labels.some((l) => HOLD_LABELS.includes(l))) continue;
-      const points = pointsOf(issue.labels);
-      const summary = issue.subIssuesSummary;
-      const openChild = summary !== undefined && summary.total > summary.completed;
-      const oversized = points !== null && points > knobs.ceiling && (only !== null || issue.parent || Date.parse(issue.createdAt) >= cutoff);
-      if (!openChild && !oversized) continue;
-      const tree = readTree(ctx, issue.number, io);
-      if (liveClaim(tree, new Date().toISOString(), ctx.runId)) continue;
-      await this.guard(issue.number, () => this.revisit(issue.number, openChild ? 'an open child with no record' : `sized ${points}, over the ceiling`));
+      try {
+        if (!inScope(issue) || first.has(issue.number)) continue;
+        const labels = issue.labels.map((l) => l.name);
+        if (labels.some((l) => HOLD_LABELS.includes(l))) continue;
+        const points = pointsOf(issue.labels);
+        const summary = issue.subIssuesSummary;
+        const openChild = summary !== undefined && summary.total > summary.completed;
+        const oversized = points !== null && points > knobs.ceiling && (only !== null || issue.parent || Date.parse(issue.createdAt) >= cutoff);
+        if (!openChild && !oversized) continue;
+        const tree = readTree(ctx, issue.number, io);
+        if (liveClaim(tree, new Date().toISOString(), ctx.runId)) continue;
+        await this.guard(issue.number, () => this.revisit(issue.number, openChild ? 'an open child with no record' : `sized ${points}, over the ceiling`));
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        log(`  #${issue.number}  sweep: could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this sweep`);
+      }
     }
 
     // Third pass: invalid blockers, and pauses left by closed trunks.
     for (const issue of all) {
-      if (!inScope(issue)) continue;
-      const blockers = issue.blockedBy?.nodes ?? [];
-      const invalid = blockers.find((b) => b.state === 'DELETED' || (b.state === 'CLOSED' && (b.stateReason === 'NOT_PLANNED' || b.stateReason === 'DUPLICATE')));
-      if (invalid) {
-        const parent = issue.parent?.number ?? null;
-        const parentNode = parent === null ? null : io.view(parent);
-        if (parent !== null && parentNode && parentNode.state === 'OPEN') {
-          await this.guard(parent, () => this.revisit(parent, `#${issue.number} has an invalid blocker #${invalid.number}`));
-        } else if (!issue.labels.some((l) => l.name === 'needs-human')) {
-          if (ctx.dryRun) log(`DRY RUN  would hand #${issue.number} to a person for its invalid blocker #${invalid.number}`);
-          else {
-            mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `<!-- appraise-handoff verdict=needs-human -->\nBlocked by #${invalid.number}, which is ${invalid.state === 'DELETED' ? 'deleted' : 'closed not planned'}, and no open parent owns the dependency. A person decides whether this still waits on anything.`]);
-            mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+      try {
+        if (!inScope(issue)) continue;
+        const blockers = issue.blockedBy?.nodes ?? [];
+        const invalid = blockers.find((b) => b.state === 'DELETED' || (b.state === 'CLOSED' && (b.stateReason === 'NOT_PLANNED' || b.stateReason === 'DUPLICATE')));
+        if (invalid) {
+          const parent = issue.parent?.number ?? null;
+          const parentNode = parent === null ? null : io.view(parent);
+          if (parent !== null && parentNode && parentNode.state === 'OPEN') {
+            await this.guard(parent, () => this.revisit(parent, `#${issue.number} has an invalid blocker #${invalid.number}`));
+          } else if (!issue.labels.some((l) => l.name === 'needs-human')) {
+            if (ctx.dryRun) log(`DRY RUN  would hand #${issue.number} to a person for its invalid blocker #${invalid.number}`);
+            else {
+              mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `<!-- appraise-handoff verdict=needs-human -->\nBlocked by #${invalid.number}, which is ${invalid.state === 'DELETED' ? 'deleted' : 'closed not planned'}, and no open parent owns the dependency. A person decides whether this still waits on anything.`]);
+              mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+            }
           }
         }
-      }
-      const parentNumber = issue.parent?.number ?? null;
-      if (parentNumber !== null && issue.labels.some((l) => l.name === 'loop/paused')) {
-        const parentNode = io.view(parentNumber);
-        if (parentNode && parentNode.state !== 'OPEN') {
-          const node = io.view(issue.number);
-          const mine = node?.comments.some((c) => c.author === ctx.botLogin && c.body.includes(`carve-pause by=${parentNumber} `) && !node.comments.some((u) => u.author === ctx.botLogin && u.body.includes(`carve-unpause by=${parentNumber}`) && u.databaseId > c.databaseId));
-          if (mine) {
-            if (ctx.dryRun) log(`DRY RUN  would release the pause #${parentNumber} left on #${issue.number}`);
-            else {
-              mutate(ctx, `unpause #${issue.number} for closed #${parentNumber}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `<!-- carve-unpause by=${parentNumber} -->\n#${parentNumber} is closed; its pause is released.`]);
-              mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
-              for (const d of descendants(issue.number, io)) {
-                const dn = io.view(d);
-                if (dn?.labels.some((l) => l.name === 'loop/paused')) {
-                  mutate(ctx, `unpause #${d} for closed #${parentNumber}`, ['gh', 'issue', 'comment', String(d), '--body', `<!-- carve-unpause by=${parentNumber} -->\n#${parentNumber} is closed; its pause is released.`]);
-                  mutate(ctx, `unlabel #${d} loop/paused`, ['gh', 'issue', 'edit', String(d), '--remove-label', 'loop/paused']);
+        const parentNumber = issue.parent?.number ?? null;
+        if (parentNumber !== null && issue.labels.some((l) => l.name === 'loop/paused')) {
+          const parentNode = io.view(parentNumber);
+          if (parentNode && parentNode.state !== 'OPEN') {
+            const node = io.view(issue.number);
+            const mine = node?.comments.some((c) => c.author === ctx.botLogin && c.body.includes(`carve-pause by=${parentNumber} `) && !node.comments.some((u) => u.author === ctx.botLogin && u.body.includes(`carve-unpause by=${parentNumber}`) && u.databaseId > c.databaseId));
+            if (mine) {
+              if (ctx.dryRun) log(`DRY RUN  would release the pause #${parentNumber} left on #${issue.number}`);
+              else {
+                mutate(ctx, `unpause #${issue.number} for closed #${parentNumber}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `<!-- carve-unpause by=${parentNumber} -->\n#${parentNumber} is closed; its pause is released.`]);
+                mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
+                for (const d of descendants(issue.number, io)) {
+                  const dn = io.view(d);
+                  if (dn?.labels.some((l) => l.name === 'loop/paused')) {
+                    mutate(ctx, `unpause #${d} for closed #${parentNumber}`, ['gh', 'issue', 'comment', String(d), '--body', `<!-- carve-unpause by=${parentNumber} -->\n#${parentNumber} is closed; its pause is released.`]);
+                    mutate(ctx, `unlabel #${d} loop/paused`, ['gh', 'issue', 'edit', String(d), '--remove-label', 'loop/paused']);
+                  }
                 }
               }
             }
           }
         }
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        log(`  #${issue.number}  sweep: could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this sweep`);
       }
     }
   }

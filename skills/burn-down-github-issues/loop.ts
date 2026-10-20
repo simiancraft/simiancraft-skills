@@ -779,7 +779,8 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
       if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
       // Immediately before the close, once more against the live issue.
       if (!DRY_RUN) {
-        const tree = readTree(ctx, issue.number, io);
+        const tree = threadOf(issue.number);
+        if (!tree) continue;
         const why = refusal(tree, MAX_POINTS);
         if (why) {
           log(`repair: #${issue.number} is referenced by merged PR #${pr.number} but is not closed, because ${why}`);
@@ -912,7 +913,8 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
       log(`  #${issue.number} has PR #${pull.number} by ${pull.author || 'an unknown author'} on ${pull.branch}, which is not the loop's; left to its author`);
       continue;
     }
-    const tree = readTree(ctx, issue.number, io);
+    const tree = threadOf(issue.number);
+    if (!tree) continue;
     if (!tree.claims.some((c) => c.kind === 'working')) {
       log(`  #${issue.number} has PR #${pull.number} but the loop never worked it; left to its author`);
       continue;
@@ -967,7 +969,8 @@ function selectCandidates(placement: Placement): Issue[] {
       if (reviewCount(issue.labels) >= CONFIG.maxReviewRounds) return exclude(issue, 'its review budget is spent');
       // Ancestors and blockers need the thread: a pause above, an edge on the tracker or in a record.
       if (issue.parent || (issue.blockedBy?.nodes.length ?? 0) > 0) {
-        const tree = readTree(ctx, issue.number, io);
+        const tree = threadOf(issue.number);
+        if (!tree) return exclude(issue, 'its thread could not be read');
         const why2 = refusal(tree, MAX_POINTS);
         if (why2) return exclude(issue, why2);
         const trunk = tree.ancestors[0];
@@ -1008,6 +1011,20 @@ function selectCandidates(placement: Placement): Issue[] {
     }
   }
   return out;
+}
+
+/**
+ * One issue's thread, or null when it cannot be read: a rate limit on one read costs that issue
+ * this pass, never the run. A stop is not a read failure and still propagates.
+ */
+function threadOf(issue: number): ReturnType<typeof readTree> | null {
+  try {
+    return readTree(ctx, issue, trackerIo(ctx));
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    log(`  #${issue} could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this pass`);
+    return null;
+  }
 }
 
 /**

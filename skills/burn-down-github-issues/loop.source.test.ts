@@ -11,3 +11,10 @@ describe('--only bounds every pass that can land work', () => {
     expect(call).toContain('ONLY.has(issue.number)');
   });
 });
+
+describe('an unreadable thread at startup', () => {
+  it('costs one issue its pass in the loop, never the run', () => {
+    expect(source).not.toContain('readTree(ctx, issue.number, io)');
+    expect(source).toContain('function threadOf(');
+  });
+});
