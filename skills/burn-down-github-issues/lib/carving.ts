@@ -11,8 +11,8 @@ import { appraiseIssue, recordAppraisalThrow, type AppraiseKnobs, isHeld } from 
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import type { CarveKnobs } from '../../carve-github-issue/lib/carve.ts';
 import { claim, keepClaimed, leaseLost, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { carveIssue } from '../../carve-github-issue/lib/knife.ts';
-import { descendants, liveClaim, needsRevisit, parseMarker, pointsOf, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
+import { carveIssue, unreleasedPauseMarkers } from '../../carve-github-issue/lib/knife.ts';
+import { liveClaim, needsRevisit, parseMarker, pointsOf, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts';
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
@@ -349,7 +349,7 @@ export class Carving {
         // One unreadable thread costs that issue this sweep, never the run: a rate limit on one read
         // would otherwise end every run at startup until the API recovered.
         if (error instanceof RunStopping || isStopping()) throw error;
-        log(`  #${issue.number}  sweep: could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this sweep`);
+        log(`  #${issue.number}  sweep: ${(error as Error).message.split('\n')[0]}; skipped this sweep, the next one retries`);
       }
     }
 
@@ -369,7 +369,7 @@ export class Carving {
         await this.guard(issue.number, () => this.revisit(issue.number, openChild ? 'an open child with no record' : `sized ${points}, over the ceiling`));
       } catch (error) {
         if (error instanceof RunStopping || isStopping()) throw error;
-        log(`  #${issue.number}  sweep: could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this sweep`);
+        log(`  #${issue.number}  sweep: ${(error as Error).message.split('\n')[0]}; skipped this sweep, the next one retries`);
       }
     }
 
@@ -392,31 +392,26 @@ export class Carving {
             }
           }
         }
-        const parentNumber = issue.parent?.number ?? null;
-        if (parentNumber !== null && issue.labels.some((l) => l.name === 'loop/paused')) {
-          const parentNode = io.view(parentNumber);
-          if (parentNode && parentNode.state !== 'OPEN') {
-            const node = io.view(issue.number);
-            const mine = node?.comments.some((c) => c.author === ctx.botLogin && c.body.includes(`carve-pause by=${parentNumber} `) && !node.comments.some((u) => u.author === ctx.botLogin && u.body.includes(`carve-unpause by=${parentNumber}`) && u.databaseId > c.databaseId));
-            if (mine) {
-              if (ctx.dryRun) log(`DRY RUN  would release the pause #${parentNumber} left on #${issue.number}`);
-              else {
-                mutate(ctx, `unpause #${issue.number} for closed #${parentNumber}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `<!-- carve-unpause by=${parentNumber} -->\n#${parentNumber} is closed; its pause is released.`]);
-                mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
-                for (const d of descendants(issue.number, io)) {
-                  const dn = io.view(d);
-                  if (dn?.labels.some((l) => l.name === 'loop/paused')) {
-                    mutate(ctx, `unpause #${d} for closed #${parentNumber}`, ['gh', 'issue', 'comment', String(d), '--body', `<!-- carve-unpause by=${parentNumber} -->\n#${parentNumber} is closed; its pause is released.`]);
-                    mutate(ctx, `unlabel #${d} loop/paused`, ['gh', 'issue', 'edit', String(d), '--remove-label', 'loop/paused']);
-                  }
-                }
-              }
-            }
+        // Pauses whose trunk has closed. Each paused issue is judged on its own thread, against every
+        // trunk that paused it: a marker is released only when its own trunk is closed, and the label
+        // comes off only when no unreleased marker remains. Nothing depends on a parent's cleanup
+        // having finished, so a write that failed partway is finished by the next sweep.
+        if (issue.labels.some((l) => l.name === 'loop/paused')) {
+          const node = io.view(issue.number);
+          const held = [...unreleasedPauseMarkers(node?.comments ?? [], ctx.botLogin)].filter(([, paused]) => paused).map(([trunk]) => trunk);
+          const closed = held.filter((trunk) => io.view(trunk)?.state !== 'OPEN');
+          for (const trunk of closed) {
+            if (ctx.dryRun) log(`DRY RUN  would release the pause #${trunk} left on #${issue.number}`);
+            else mutate(ctx, `unpause #${issue.number} for closed #${trunk}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `<!-- carve-unpause by=${trunk} -->\n#${trunk} is closed; its pause is released.`]);
+          }
+          if (closed.length > 0 && closed.length === held.length) {
+            if (ctx.dryRun) log(`DRY RUN  would unlabel #${issue.number} loop/paused`);
+            else mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
           }
         }
       } catch (error) {
         if (error instanceof RunStopping || isStopping()) throw error;
-        log(`  #${issue.number}  sweep: could not read its thread (${(error as Error).message.split('\n')[0]}); skipped this sweep`);
+        log(`  #${issue.number}  sweep: ${(error as Error).message.split('\n')[0]}; skipped this sweep, the next one retries`);
       }
     }
   }

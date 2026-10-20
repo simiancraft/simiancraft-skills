@@ -230,9 +230,10 @@ function commandedPauses(record: Record, io: TrackerIo): Set<number> {
   return out;
 }
 
-function unreleasedPauseMarkers(node: { comments: Array<{ author: string; body: string }> }, botLogin: string): Map<number, boolean> {
+/** Every trunk that ever paused this issue, true while its newest marker is a pause and not an unpause. */
+export function unreleasedPauseMarkers(comments: Array<{ author: string; body: string }>, botLogin: string): Map<number, boolean> {
   const byTrunk = new Map<number, boolean>();
-  for (const c of node.comments) {
+  for (const c of comments) {
     if (c.author !== botLogin) continue;
     const m = parseMarker(c.body);
     if (!m) continue;
@@ -254,7 +255,7 @@ export function reconcilePauses(k: Knife, record: Record): void {
   for (const n of candidates) {
     const node = k.io.view(n);
     if (!node || node.state !== 'OPEN') continue;
-    const markers = unreleasedPauseMarkers(node, k.ctx.botLogin);
+    const markers = unreleasedPauseMarkers(node.comments, k.ctx.botLogin);
     const mine = markers.get(k.trunk) === true;
     const labels = labelsOf(node);
     if (commanded.has(n)) {

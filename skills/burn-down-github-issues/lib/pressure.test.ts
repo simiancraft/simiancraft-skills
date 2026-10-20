@@ -610,3 +610,34 @@ describe('an unreadable thread during the sweep', () => {
     expect(view(1)?.labels.map((l) => l.name)).toContain('loop/working');
   });
 });
+
+describe('pauses left by a closed trunk', () => {
+  let id = 9000;
+  const pause = (by: number) => ({ id: `c${id}`, databaseId: id++, author: bot, body: `<!-- carve-pause by=${by} gen=1 -->\nPaused by #${by}.`, createdAt: '2026-09-01T00:00:00Z' });
+  const labelsOf = (io: FakeTracker, n: number) => io.view(n)!.labels.map((l) => l.name);
+  // A (1) closed, B (2) open under it, C (3) under B.
+  const world = (cPausedBy: number[]) => {
+    const a = fakeIssue(1, { state: 'CLOSED', stateReason: 'COMPLETED', subIssues: [2] });
+    const b = fakeIssue(2, { parentNumber: 1, subIssues: [3], labels: [{ name: 'loop/paused' }], comments: [pause(1)] });
+    const c = fakeIssue(3, { parentNumber: 2, labels: [{ name: 'loop/paused' }], comments: cPausedBy.map(pause) });
+    return { io: new FakeTracker(bot, [a, b, c]), open: [b, c] };
+  };
+
+  it("releases only the closed trunk's marker, and keeps the label while another trunk's pause stands", async () => {
+    const { io, open } = world([1, 2]);
+    await driver(io, []).sweep(open);
+    expect(labelsOf(io, 3)).toContain('loop/paused');
+    expect(io.view(3)!.comments.some((c) => c.body.startsWith('<!-- carve-unpause by=1 '))).toBe(true);
+    expect(io.view(3)!.comments.some((c) => c.body.startsWith('<!-- carve-unpause by=2 '))).toBe(false);
+    expect(labelsOf(io, 2)).not.toContain('loop/paused');
+  });
+
+  it('finishes on the next sweep a release whose write failed partway', async () => {
+    const { io, open } = world([1]);
+    io.throwOn = /unpause #3/;
+    await driver(io, []).sweep(open);
+    expect(labelsOf(io, 3)).toContain('loop/paused');
+    await driver(io, []).sweep(open.map((i) => ({ ...i, labels: io.view(i.number)!.labels })));
+    expect(labelsOf(io, 3)).not.toContain('loop/paused');
+  });
+});
