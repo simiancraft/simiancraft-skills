@@ -237,8 +237,11 @@ export function unreleasedPauseMarkers(comments: Array<{ author: string; body: s
     if (c.author !== botLogin) continue;
     const m = parseMarker(c.body);
     if (!m) continue;
-    if (m.name === 'carve-pause') byTrunk.set(Number(m.fields.by), true);
-    if (m.name === 'carve-unpause') byTrunk.set(Number(m.fields.by), false);
+    // A marker naming no issue (written by hand) commands nothing; a NaN key would read as a live pause forever.
+    const by = Number(m.fields.by);
+    if (!Number.isInteger(by) || by <= 0) continue;
+    if (m.name === 'carve-pause') byTrunk.set(by, true);
+    if (m.name === 'carve-unpause') byTrunk.set(by, false);
   }
   return byTrunk;
 }
