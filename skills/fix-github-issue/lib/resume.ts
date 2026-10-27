@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
 import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
+import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight } from './lane.ts';
@@ -143,7 +144,7 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
     if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
 
-    const verdict = parseJsonFile<WorkerResult>(join(dir, VERDICT_FILE));
+    const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
       ctx.log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
       parkForInspection(ctx, issue.number, `An earlier run died with this issue's lane at ${dir} and left no usable verdict. A person inspects the lane and the pull request, if any.`);
@@ -168,6 +169,19 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
   }
   return found;
 }
+/**
+ * The finished work a dead lane holds, as the pipeline reads it: the prover's ready pull request, or,
+ * in a lane an older run left, the single worker's verdict. A coder's answer alone is not finished
+ * work; the next attempt places itself from the issue's announcement instead.
+ */
+function strandedVerdict(dir: string): WorkerResult | null {
+  const proof = parseJsonFile<{ issue: number; verdict: string; reason: string; pr?: number; branch?: string; touches?: WorkerResult['touches'] }>(join(dir, PROOF_FILE));
+  if (proof) {
+    return proof.verdict === 'proved' ? { issue: proof.issue, verdict: 'fixed', reason: proof.reason, pr: proof.pr, branch: proof.branch, touches: proof.touches } : null;
+  }
+  return parseJsonFile<WorkerResult>(join(dir, VERDICT_FILE));
+}
+
 /**
  * Lands what a dead run left finished, before anything new is selected.
  *

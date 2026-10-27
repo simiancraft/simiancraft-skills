@@ -10,11 +10,12 @@
  */
 
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
+import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
+import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { agentCapMs, children, killAgent, killAgentsOn, logTail, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
@@ -24,6 +25,7 @@ import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, record
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -32,8 +34,6 @@ import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBas
  * is one that needs a person (a product decision, access an agent lacks, work outside the band);
  * `parked` means a pull request exists and a human owns the next call.
  */
-const HERE = dirname(fileURLToPath(import.meta.url));
-
 export type FixOutcome = {
   /** `not-run` is a dry run that reached a seat it does not run: nothing was tried, so nothing failed. */
   /**
@@ -142,19 +142,18 @@ export function move(ctx: Context, issue: Issue, lane: string, note?: string): v
 }
 
 /**
- * The command the worker runs to move its own card: the seat that does the work moves the card,
- * and the board then says what the agent is doing rather than what the driver last knew. The
- * board pointer and repository are rendered in, since a worktree may not carry the config.
+ * The Work phase for one issue, as two seats on two fresh contexts: the coder (`code-github-issue`)
+ * makes, gates, and pushes the change; the prover (`prove-github-issue`) proves the pushed head and
+ * hands it to review as a ready pull request. Each seat ends at a fact on the remote, the driver
+ * moves the card between them, and the push is announced on the issue before anything else
+ * happens, so a kill costs the lane it happened in: a prover that dies leaves a coded commit the
+ * next attempt proves again, not one it codes again.
+ *
+ * Where the turn starts follows from why it exists. A first attempt places itself from the issue's
+ * standing `loop-step` marker; a reproof, a resumed pull request, and a reviewer's request for more
+ * evidence are the prover's alone; an objection to the code, and a person's redrive, are the
+ * coder's, then the prover's. The answer is the one `WorkerResult` the rest of the pipeline reads.
  */
-function cardCommand(ctx: Context, issue: number, lane: string): string {
-  const card = join(HERE, '..', '..', 'burn-down-github-issues', 'card.ts');
-  const pointer = join(ctx.runDir, 'board.json');
-  // Single-quoted for the agent's shell: a checkout under a path with a space, or a repository
-  // name with anything a shell reads as syntax, must arrive as one literal argument.
-  const q = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
-  return `bun run ${q(card)} --board ${q(pointer)} --repo ${q(ctx.project.repo)} --issue ${issue} --lane ${lane}`;
-}
-
 async function runWorker(
   ctx: Context,
   issue: Issue,
@@ -164,88 +163,182 @@ async function runWorker(
   /** True when nothing was rejected: the base moved beneath the proof and only the proof is owed. */
   reproof = false,
 ): Promise<WorkerResult> {
-  const prompt = renderPrompt(ctx, 'triage-and-fix.md', {
-    ISSUE: String(issue.number),
-    TITLE: issue.title,
-    MAX_POINTS: String(maxPoints),
-    CARD_PROVING: cardCommand(ctx, issue.number, 'D2'),
-    CARD_DRAFTED: cardCommand(ctx, issue.number, 'D3'),
-    FEEDBACK: reproof && feedback
-      ? `Nobody rejected your work. The base branch moved beneath your proof after you captured it, and the ` +
-        `branch has been caught up for you. Start at Step 3: confirm the fix still holds on the current head, ` +
-        `reacquire the receipts the movement reached, update the proof on the same pull request, and mark it ` +
-        `ready. Change code only if the base's movement requires it.\n\n${JSON.stringify(feedback, null, 2)}`
-      : feedback
-        ? `A reviewer has already seen your pull request and asked for more. Address every blocking item, ` +
-          `push to the same branch, and update the proof comment.\n\n${JSON.stringify(feedback, null, 2)}`
-        : 'This is the first attempt at this issue.',
-  });
+  const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  const fromThread = feedback ? JSON.stringify(feedback, null, 2) : '';
+  // A redrive arrives as gather-more too, but a person asking for the work to be continued is
+  // asking the coder; only the reviewer's own request for evidence, a reproof, and a resume are the prover's.
+  const proveOnly = reproof || (feedback !== undefined && feedback.decision === 'gather-more' && feedback.confidence !== 'redrive');
 
-  // The closest lane that can correct the card: stale proof goes back to Proving, a rejection to
-  // Sent back, and only a first attempt starts at Coding.
-  // The note says where the brief came from. A redrive passes feedback too, and a person lifting a
-  // park or a dead letter is not a review; a card that says otherwise sends its reader to look for
-  // one that never happened.
-  const note = reproof
-    ? 'reacquiring proof after the base moved'
-    : feedback
-      ? feedback.confidence === 'redrive' || feedback.confidence === 'resume'
-        ? `continuing the existing pull request: ${feedback.confidence === 'resume' ? 'it lost its driver' : "a person asked for it to be continued"}`
-        : 'revision after a review'
-      : undefined;
-  move(ctx, issue, reproof ? 'D2' : feedback ? 'D4' : 'D1', note);
-  // A revision is the exception: its lane holds the branch and the pull request under review, so a
-  // reset would throw away work the reviewer already read. Only a first attempt may be reset.
-  const { logPath, exitCode, notRun, timedOut } = await runAgent(
-    ctx,
-    reproof ? 'worker-reprove' : feedback ? 'worker-revise' : 'worker',
-    issue.number,
-    cwd,
-    ctx.seats.worker,
-    prompt,
-    feedback ? undefined : () => resetLane(ctx, issue.number, cwd),
-  );
-  holdLease(ctx, issue.number, 'settle the worker');
-  if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the worker was not run' };
-  if (exitCode !== 0) {
-    return {
-      issue: issue.number,
-      verdict: 'failed',
-      reason: timedOut
-        ? `worker timed out at ${agentCapMs(ctx, 'worker') / 60000} minutes and was killed, so nothing it left in its lane is trusted; anything it had already pushed survives, and a redrive continues from that head rather than starting again; log ends: ${logTail(logPath)}`
-        : `worker exited ${exitCode}, so its verdict is not trusted; anything it had already pushed survives, and a redrive continues from that head; log ends: ${logTail(logPath)}`,
-    };
+  let code: CodeBrief | null = null;
+  let proof: ProveBrief | null = null;
+  let coded: { branch: string; gated: string; touches: Touch[] } | null = null;
+  let note: string | undefined;
+  if (proveOnly && feedback) {
+    // Nothing is known about which commit was gated, so the prover gates the head it proves.
+    coded = { branch: laneBranch(ctx, cwd), gated: '', touches: [] };
+    // A catch-up and a lost driver owe the same thing, current proof; a reviewer's request owes more of it.
+    proof = reproof || feedback.confidence === 'resume' ? { kind: 'reproof', text: fromThread } : { kind: 'more-evidence', text: fromThread };
+    note = reproof ? 'reacquiring proof after the base moved' : feedback.confidence === 'resume' ? 'continuing the existing pull request: it lost its driver' : 'more evidence after a review';
+  } else if (feedback) {
+    code = { kind: 'revision', branch: laneBranch(ctx, cwd), text: fromThread };
+    // The note says where the brief came from. A person lifting a park or a dead letter is not a
+    // review; a card that says otherwise sends its reader to look for one that never happened.
+    note = feedback.confidence === 'redrive' ? 'continuing the existing pull request: a person asked for it to be continued' : 'revision after a review';
+  } else {
+    const placed = placeWork(ctx, issue, cwd, say);
+    if (placed.kind === 'prove') {
+      coded = placed.coded;
+      proof = { kind: 'handoff', text: placed.handoff };
+      note = `resuming at Proving: ${placed.coded.branch} was coded at ${placed.sha.slice(0, 12)} by an earlier attempt`;
+    } else code = placed.brief;
   }
 
-  const result = readResult<WorkerResult>(cwd, 'loop-verdict.json');
-  const KNOWN: WorkerResult['verdict'][] = ['already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'fixed', 'answered', 'failed'];
-  if (!result || !KNOWN.includes(result.verdict)) {
-    return {
-      issue: issue.number,
-      verdict: 'failed',
-      reason: result
-        ? `worker verdict '${result.verdict}' is not one the driver knows; log ends: ${logTail(logPath)}`
-        : `no verdict from the worker; log ends: ${logTail(logPath)}`,
-    };
-  }
-  if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
-    return { issue: issue.number, verdict: 'failed', reason: `worker verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}` };
-  }
-  // A malformed classification must read as no classification, which fails closed at the merge
-  // boundary; a bare string would otherwise spread into characters that match no risky kind.
-  result.touches = validTouches(result.touches);
-  // Out of band means "larger than the ceiling, on the scale"; anything else is a failed verdict,
-  // or the worker could re-size an issue into the band it just refused.
-  if (result.verdict === 'out-of-band') {
-    const points = Number(result.points);
-    if (!ctx.knobs.pointScale.includes(points) || points <= maxPoints) {
-      return { issue: issue.number, verdict: 'failed', reason: `out-of-band with points ${result.points ?? 'unstated'}, which is not on the scale above ${maxPoints}; log ends: ${logTail(logPath)}` };
+  // At most the attempts the issue has left: every refused proof spends one and codes again.
+  for (;;) {
+    if (code) {
+      const revision = code.kind === 'revision';
+      move(ctx, issue, revision ? 'D4' : 'D1', code.kind === 'unproved' ? 'the proof was refused; coding again with what it could not show' : note);
+      // Only a first attempt may be reset on a retry: every other kind holds a branch someone already read.
+      const c = await runCode(ctx, issue, cwd, maxPoints, code, code.kind === 'first' ? () => resetLane(ctx, issue.number, cwd) : undefined);
+      holdLease(ctx, issue.number, 'settle the coder');
+      if (c.verdict === 'not-run') return { issue: issue.number, verdict: 'not-run', reason: c.reason };
+      if (c.verdict !== 'coded') {
+        // The escapes are the same words either seat may say, with the pull request a revision holds.
+        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches };
+      }
+      coded = { branch: c.branch ?? '', gated: c.gated ?? '', touches: c.touches ?? [] };
+      // The push is the fact; the announcement is what the next run, on any machine, reads.
+      if (!ctx.dryRun) {
+        mutate(ctx, `announce #${issue.number} coded at ${String(c.sha).slice(0, 12)}`, ['gh', 'issue', 'comment', String(issue.number), '--body', codedComment(ctx.runId, { branch: coded.branch, sha: c.sha ?? '', gated: coded.gated, touches: coded.touches }, c.handoff ?? '')]);
+      }
+      proof = { kind: 'handoff', text: c.handoff ?? '' };
+      note = `coded at ${String(c.sha).slice(0, 12)}; proving on a fresh seat`;
+      code = null;
     }
+    if (!coded || !proof) throw new Error(`#${issue.number}: the Work phase reached Proving with nothing coded`);
+
+    // No seat begins on a stale lane: the base is merged in at the seam, never inside a turn.
+    const seam = ctx.dryRun ? 'current' : seamCatchUp(ctx, issue, cwd, say, 'before proving');
+    if (seam === 'conflict') {
+      return { issue: issue.number, verdict: 'failed', reason: `the branch conflicts with ${ctx.project.baseBranch} at the seam before proving`, pr: feedback?.pr, branch: coded.branch };
+    }
+    // The catch-up pushed a merge, so the announcement must name the new head: placement proves only
+    // an announced head, and a prover killed after this seam must be proved again, not coded again.
+    if (seam === 'caught-up' && proof.kind === 'handoff') {
+      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      mutate(ctx, `announce #${issue.number} coded at ${head.slice(0, 12)} after catching up`, ['gh', 'issue', 'comment', String(issue.number), '--body', codedComment(ctx.runId, { branch: coded.branch, sha: head, gated: coded.gated, touches: coded.touches }, proof.text)]);
+    }
+    move(ctx, issue, 'D2', note);
+    const p = await runProve(ctx, issue, cwd, coded, proof);
+    holdLease(ctx, issue.number, 'settle the prover');
+    if (p.verdict === 'not-run') return { issue: issue.number, verdict: 'not-run', reason: p.reason };
+    if (p.verdict === 'proved') {
+      const touches = [...new Set([...coded.touches, ...(p.touches ?? [])])];
+      return { issue: issue.number, verdict: 'fixed', reason: p.reason, pr: p.pr, branch: coded.branch, touches: touches.length > 0 ? touches : undefined };
+    }
+    if (p.verdict !== 'unprovable') return { issue: issue.number, verdict: p.verdict, reason: p.reason, pr: p.pr ?? feedback?.pr, branch: coded.branch };
+
+    // Proof that cannot be produced is a fault in the code: back a step, spending an attempt. The
+    // last attempt is the caller's to count, so a refusal at the cap is never counted twice.
+    const spent = attemptCount(issue.labels);
+    if (spent + 1 >= ctx.knobs.maxWorkerAttempts) {
+      return { issue: issue.number, verdict: 'failed', reason: `the change could not be proved: ${p.brief}`, pr: p.pr ?? feedback?.pr, branch: coded.branch };
+    }
+    const used = recordAttempt(ctx, issue.number, spent);
+    issue.labels = [...issue.labels.filter((label) => !/^loop\/attempts:/.test(label.name)), { name: `loop/attempts: ${used}` }];
+    say(`proof refused (attempt ${used} of ${ctx.knobs.maxWorkerAttempts}); back to coding`);
+    const head = ctx.dryRun ? '' : sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+    if (!ctx.dryRun) mutate(ctx, `announce #${issue.number} not proved at ${head.slice(0, 12)}`, ['gh', 'issue', 'comment', String(issue.number), '--body', unprovedComment(ctx.runId, coded.branch, head, p.brief ?? '')]);
+    code = { kind: 'unproved', branch: coded.branch, text: p.brief ?? '' };
+    proof = null;
   }
-  if (result.verdict === 'answered' && typeof result.answer !== 'string') {
-    return { issue: issue.number, verdict: 'failed', reason: `answered without an answer; log ends: ${logTail(logPath)}` };
+}
+
+/** The branch a lane holds; a detached lane has none to name, which no seat may then continue. */
+function laneBranch(ctx: Context, cwd: string): string {
+  if (ctx.dryRun) return 'dry-run';
+  const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  if (branch === 'HEAD') throw new Error(`the lane at ${cwd} is detached, so there is no branch to continue`);
+  return branch;
+}
+
+export type Placement =
+  | { kind: 'code'; brief: CodeBrief }
+  | { kind: 'prove'; sha: string; handoff: string; coded: { branch: string; gated: string; touches: Touch[] } };
+
+/**
+ * Where a first attempt starts, read from facts on the remote and the tracker, never from a dead
+ * process's memory. A `coded` announcement whose commit is still the head of its branch on the
+ * remote is proved, not coded again. An `unproved` one is coded again on its branch with what the
+ * prover could not show. A branch that moved past its announcement, or one of this issue's branches
+ * that was pushed and never announced, holds work nobody declared finished, so a coder continues it.
+ * An announcement whose commit the base already holds is history, not work. Anything else starts
+ * from the base. The lane is switched onto the branch it continues.
+ */
+export function placeWork(ctx: Context, issue: Issue, cwd: string, say: (message: string) => void): Placement {
+  const first: Placement = { kind: 'code', brief: { kind: 'first' } };
+  if (ctx.dryRun) return first;
+  const node = trackerIo(ctx).view(issue.number);
+  const step = node ? latestStep(node.comments, ctx.botLogin) : null;
+  if (!step) {
+    const pushed = unannouncedBranch(ctx, cwd, issue.number);
+    if (!pushed) return first;
+    say(`${pushed} holds pushed work for this issue that was never announced; a coder continues it`);
+    switchLane(ctx, cwd, pushed);
+    return { kind: 'code', brief: { kind: 'continue', branch: pushed, text: 'Nothing was announced for it: the coder that pushed it stopped before it said the change was finished.' } };
   }
-  return result;
+  const remoteHead = remoteBranchHead(ctx, cwd, step.branch);
+  if (!remoteHead) {
+    say(`the announced branch ${step.branch} is gone from ${ctx.project.remote}; starting from the base`);
+    return first;
+  }
+  const baseSha = fetchBase(ctx, cwd);
+  if (Bun.spawnSync(['git', 'merge-base', '--is-ancestor', step.sha, baseSha], { cwd, stdout: 'pipe', stderr: 'pipe' }).exitCode === 0) {
+    say(`the announced commit ${step.sha.slice(0, 12)} is already in ${ctx.project.baseBranch}; starting from the base`);
+    return first;
+  }
+  switchLane(ctx, cwd, step.branch);
+  if (step.kind === 'unproved') return { kind: 'code', brief: { kind: 'unproved', branch: step.branch, text: step.brief } };
+  if (remoteHead !== step.sha) {
+    return { kind: 'code', brief: { kind: 'continue', branch: step.branch, text: `It was announced coded at ${step.sha}, and has moved to ${remoteHead} since.` } };
+  }
+  return { kind: 'prove', sha: step.sha, handoff: step.handoff, coded: { branch: step.branch, gated: step.gated, touches: step.touches } };
+}
+
+/** Checks the lane out on a branch at its remote head. */
+function switchLane(ctx: Context, cwd: string, branch: string): void {
+  sh(ctx, ['git', 'fetch', ctx.project.remote, `+refs/heads/${branch}:refs/remotes/${ctx.project.remote}/${branch}`], cwd);
+  sh(ctx, ['git', 'checkout', '-B', branch, `${ctx.project.remote}/${branch}`], cwd);
+}
+
+/**
+ * The one branch on the remote that names this issue the way a coder is told to (`fix/<words>-<n>`)
+ * and is not yet in the base, or null. Two such branches are a person's to sort out, so neither is taken.
+ */
+function unannouncedBranch(ctx: Context, cwd: string, issue: number): string | null {
+  const out = sh(ctx, ['git', 'ls-remote', '--heads', ctx.project.remote, 'refs/heads/fix/*'], cwd);
+  const branches = out.split('\n').map((line) => line.trim().split(/\s+/)[1] ?? '').filter((ref) => ref.endsWith(`-${issue}`)).map((ref) => ref.replace(/^refs\/heads\//, ''));
+  return branches.length === 1 ? branches[0] : null;
+}
+
+/** The commit a branch names on the remote, or null when the remote has no such branch. Throws when the remote cannot be read. */
+function remoteBranchHead(ctx: Context, cwd: string, branch: string): string | null {
+  const out = sh(ctx, ['git', 'ls-remote', '--heads', ctx.project.remote, `refs/heads/${branch}`], cwd);
+  return out.trim().split(/\s+/)[0] || null;
+}
+
+/**
+ * The catch-up at the seam between two Work seats: the base merged in and pushed when the lane is
+ * behind, with no card move, since the card is between lanes the driver already owns. A conflict is
+ * never resolved here.
+ */
+function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (message: string) => void, why: string): 'conflict' | 'current' | 'caught-up' {
+  holdLease(ctx, issue.number, `catch up ${why}`);
+  const baseSha = fetchBase(ctx, cwd);
+  const behind = behindBase(ctx, cwd, baseSha);
+  if (behind.length === 0) return 'current';
+  say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
+  return updateFromBase(ctx, cwd, baseSha) ? 'caught-up' : 'conflict';
 }
 
 /** The second engine on a worker's close: the appraiser's confirmer for a close, its own prompt for a spike's answer. */

@@ -62,7 +62,7 @@ const REDRIVE: Transition[] = [
  */
 const RESUME: Transition[] = [
   { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['reclaim', 'markResuming'] },
-  { target: 'ticket.work.proving', actions: ['reclaim', 'prToDraft', 'runWorkerReproof'] },
+  { target: 'ticket.work.proving', actions: ['reclaim', 'prToDraft', 'runProver'] },
 ];
 
 /** Transitions every ticket state inherits, tried before its own only for the events named here. */
@@ -329,14 +329,14 @@ export const MACHINE: StateNode = {
 
         work: {
           initial: 'coding',
-          // The worker's turn is atomic to the driver. Proving and Drafted are the worker's own
-          // progress reports from inside that turn; the verdict is the event the driver acts on,
-          // from whichever of the four lanes the card was last reported in. A lane's own list is
-          // tried first, so the hand-offs below are only the ones a lane does not refine.
+          // Each Work lane is its own seat, and the driver moves the card from what the seat leaves
+          // on the remote: Coding ends at a pushed commit the driver announces as coded, Proving at
+          // a ready pull request whose head is the proven commit. No seat moves its own card, so a
+          // lane is always derivable from facts, and a kill costs the lane it happened in, not the
+          // work before it. The hand-offs below are the escapes either seat may take; a lane's own
+          // list is tried first.
           on: {
             WORKER_VERDICT: [
-              { target: 'ticket.review.readyForReview', guard: 'verdictFixed and readyPr' },
-              { target: 'ticket.deadLetters.work', guard: 'verdictFixed', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
               { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
               { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
@@ -353,12 +353,11 @@ export const MACHINE: StateNode = {
           },
           states: {
             sentBack: {
-              lane: { key: 'D4', name: 'Sent back', description: 'Rejected with actionable items; a revision is pending or in progress' },
-              entry: ['moveCard', 'prToDraft', 'runWorkerRevision'],
+              lane: { key: 'D4', name: 'Sent back', description: 'Rejected over the code; a code revision is pending or in progress' },
+              entry: ['moveCard', 'prToDraft', 'runCoderRevision'],
               on: {
-                DRAFT_PUSHED: { target: 'ticket.work.drafted' },
-                // A revision proves its work like a first attempt does, and the worker's card move says so.
-                WORKER_STARTED_PROOF: { target: 'ticket.work.proving' },
+                // A revision is code like a first attempt, and is proved again by a fresh seat.
+                CODED: { target: 'ticket.work.proving', actions: ['announceCoded', 'runProver'] },
                 WORKER_VERDICT: [
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
@@ -369,10 +368,11 @@ export const MACHINE: StateNode = {
               },
             },
             coding: {
-              lane: { key: 'D1', name: 'Coding', description: 'Claim held; confirming the appraisal, then the smallest change' },
-              entry: ['moveCard', 'runWorker'],
+              lane: { key: 'D1', name: 'Coding', description: 'Claim held; the coder makes the smallest change, gates it, and pushes' },
+              entry: ['moveCard', 'runCoder'],
               on: {
-                WORKER_STARTED_PROOF: { target: 'ticket.work.proving' },
+                // The coder's push is the fact; the driver announces it on the issue, then a fresh seat proves it.
+                CODED: { target: 'ticket.work.proving', actions: ['announceCoded', 'runProver'] },
                 WORKER_VERDICT: [
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'releaseClaim'] },
@@ -382,13 +382,17 @@ export const MACHINE: StateNode = {
               },
             },
             proving: {
-              lane: { key: 'D2', name: 'Proving', description: 'Change pushed; acquiring, storing, and rendering proof' },
+              lane: { key: 'D2', name: 'Proving', description: 'Coded and pushed; the prover acquires proof and opens the pull request' },
               entry: ['moveCard'],
               on: {
-                DRAFT_OPENED: { target: 'ticket.work.drafted' },
-                // A reproof works on a pull request that already exists: the proof is reacquired
-                // on the caught-up head and the card goes straight back to review.
-                PROOF_REACQUIRED: { target: 'ticket.review.readyForReview', actions: ['prReady'] },
+                // A ready pull request whose head is the proven commit: the prover's whole contract.
+                PROVED: { target: 'ticket.review.readyForReview', actions: ['prReady'] },
+                // Proof that cannot be produced is a fault in the code, not the proof: back a step,
+                // with what could not be shown as the coder's brief. It spends an attempt.
+                PROOF_REFUSED: [
+                  { target: 'ticket.work.coding', guard: 'attemptsUnderCap', actions: ['countAttempt', 'announceUnproved'] },
+                  { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
+                ],
                 AGENT_FAILED: { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
               },
             },
@@ -433,9 +437,11 @@ export const MACHINE: StateNode = {
               on: {
                 REVIEWED: [
                   { target: 'ticket.landing.approved', guard: 'decisionMerge', actions: ['pinReviewedHead'] },
-                  // A revision never begins on a stale lane: the rejection stands through the catch-up,
-                  // and Catching up hands the card to Sent back once the lane holds the base.
+                  // A rejection goes to the lane it is about: asking for more evidence is the
+                  // prover's, objecting to the code is the coder's. Neither begins on a stale lane:
+                  // the rejection stands through the catch-up, which hands the card on afterwards.
                   { target: 'ticket.landing.catchingUp', guard: 'reviewRoundsUnderCap and behindBase', actions: ['spendRound', 'prToDraft'] },
+                  { target: 'ticket.work.proving', guard: 'decisionGatherMore and reviewRoundsUnderCap', actions: ['spendRound', 'prToDraft', 'runProver'] },
                   { target: 'ticket.work.sentBack', guard: 'reviewRoundsUnderCap', actions: ['spendRound'] },
                   { target: 'ticket.deadLetters.review', actions: ['spendRound', 'labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },
                 ],
@@ -475,15 +481,16 @@ export const MACHINE: StateNode = {
                 CAUGHT_UP: [
                   // A resumed pull request has no verdict and no driver's memory of its proof:
                   // whatever the base changed, its author makes the proof current next.
-                  { target: 'ticket.work.proving', guard: 'resuming', actions: ['pushBranch', 'prToDraft', 'runWorkerReproof'] },
+                  { target: 'ticket.work.proving', guard: 'resuming', actions: ['pushBranch', 'prToDraft', 'runProver'] },
                   { target: 'ticket.landing.checksPending', guard: 'standingVerdictMerge and movementOutsideClosure and netChangeIntact', actions: ['pushBranch', 'pinLandingHead'] },
                   { target: 'ticket.review.readyForReview', guard: 'standingVerdictMerge and refreshesUnderCap', actions: ['countRefresh', 'pushBranch'] },
+                  { target: 'ticket.work.proving', guard: 'standingVerdictGatherMore and reviewRoundsUnderCap', actions: ['pushBranch', 'runProver'] },
                   { target: 'ticket.work.sentBack', guard: 'standingVerdictRejection and reviewRoundsUnderCap', actions: ['pushBranch'] },
                   // The rejection that spent the last round: there is no revision left to catch up for.
-                  { target: 'ticket.deadLetters.review', guard: 'standingVerdictRejection', actions: ['labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },
+                  { target: 'ticket.deadLetters.review', guard: 'standingVerdictRejection or standingVerdictGatherMore', actions: ['labelDlq', 'commentObjection', 'clearRounds', 'releaseClaim'] },
                   { target: 'ticket.review.readyForReview', guard: 'noVerdictYet and movementOutsideClosure and netChangeIntact', actions: ['pushBranch'] },
                   // Stale proof is demoted to the closest lane that can correct it: Proving, not a revision.
-                  { target: 'ticket.work.proving', guard: 'noVerdictYet and refreshesUnderCap', actions: ['countRefresh', 'pushBranch', 'prToDraft', 'runWorkerReproof'] },
+                  { target: 'ticket.work.proving', guard: 'noVerdictYet and refreshesUnderCap', actions: ['countRefresh', 'pushBranch', 'prToDraft', 'runProver'] },
                   { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
                 ],
                 CONFLICT: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
@@ -611,7 +618,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.carving.toCarve', guard: 'decisionOversize', actions: ['unlabelDlq', 'labelSize'] },
                   // Work that has a pull request is carried on, never started over: caught up first when behind.
                   { target: 'ticket.landing.catchingUp', guard: 'decisionRetry and redrivesUnderCap and prExists and behindBase', actions: ['countRedrive', 'unlabelDlq', 'reclaim', 'markResuming'] },
-                  { target: 'ticket.work.proving', guard: 'decisionRetry and redrivesUnderCap and readyPr', actions: ['countRedrive', 'unlabelDlq', 'reclaim', 'prToDraft', 'runWorkerReproof'] },
+                  { target: 'ticket.work.proving', guard: 'decisionRetry and redrivesUnderCap and readyPr', actions: ['countRedrive', 'unlabelDlq', 'reclaim', 'prToDraft', 'runProver'] },
                   { target: 'ticket.work.drafted', guard: 'decisionRetry and redrivesUnderCap and draftPr', actions: ['countRedrive', 'unlabelDlq', 'reclaim'] },
                   { target: 'ticket.work.coding', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'clearAttempts'] },
                   { target: 'ticket.human.parked', guard: 'prExists', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },

@@ -1,8 +1,8 @@
 ---
 name: fix-github-issue
 description: >-
-  Turn one known GitHub issue into a merged pull request, headless: a worker in its own git
-  worktree, a draft pull request carrying its proof, an isolated second-engine reviewer, and a
+  Turn one known GitHub issue into a merged pull request, headless: a coder and then a prover in
+  the issue's own git worktree, a pull request carrying the proof, an isolated second-engine reviewer, and a
   serial pull master that checks import-closure staleness against the base before it merges. Use
   when the task is "fix issue N unattended", "run the fix pipeline on that issue", or when another
   loop needs a fix seat it can call. Requires a per-repository config at the target repo's root
@@ -15,8 +15,11 @@ description: >-
 
 One issue in, one outcome out: `merged`, `parked`, `handed-off`, `closed`, `dlq`, or `failed`
 when it ran, and `left-alone`, `busy`, `not-run`, `stopped`, or `lease-lost` when it did not
-settle the issue (`references/pipeline.md` says what each means). Internally it is a worker, then
-a review, then a landing, revising until the issue's review budget is spent.
+settle the issue (`references/pipeline.md` says what each means). Internally it is a coder
+(`code-github-issue`), then a prover on a fresh context (`prove-github-issue`), then a review, then
+a landing, revising until the issue's review budget is spent. Each seat ends at a fact on the
+remote, and the driver moves the card between them: the coder at a pushed commit it announces on
+the issue, the prover at a ready pull request whose head is the proven commit.
 
 Invoked by `burn-down-github-issues` (one call per Ready card) and `walk-the-floor` (the repair
 after an incident), both through `fixIssue`.

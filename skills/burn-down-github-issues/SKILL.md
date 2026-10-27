@@ -120,7 +120,8 @@ the rest); a flag beats the config for the run it is given on.
    to the sibling `carve-github-issue` skill, which cuts it into children along its highest
    natural seam and holds the parent as an Epic while they move.
 4. **Works Ready.** Up to `concurrency` cards at once, each in its own worktree, each moving
-   through Coding, Proving (the worker moves its own card), Drafted, Ready for review, Evidence
+   through Coding and Proving (two seats, `code-github-issue` then `prove-github-issue`, with the
+   driver moving the card from the push and the pull request each leaves), Ready for review, Evidence
    under review, and the landing lanes to Merged; or back to Sent back on a rejection; or into a
    dead-letter or human lane when a machine gives up or a person is needed.
 5. **Finishes.** The instance lock is released, and the walker (when `walk-the-floor` is

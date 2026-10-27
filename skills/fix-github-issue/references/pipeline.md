@@ -7,9 +7,9 @@ one issue passes through.
 ## Shape
 
 ```
-worker ──▶ draft PR ──▶ review ──────────────────▶ pull master ──▶ merge
-                        (concurrent, no writes)    (one at a time)  ├▶ stale  ──▶ catch up, review again
-                                                                    ├▶ revise ──▶ worker revises
+coder ──▶ push ──▶ prover ──▶ ready PR ──▶ review ──────────────────▶ pull master ──▶ merge
+  ▲                  │                    (concurrent, no writes)    (one at a time)  ├▶ stale  ──▶ catch up, review again
+  └── unprovable ────┘                                                                ├▶ revise ──▶ gather-more to the prover, block to the coder
                                                                     ├▶ park   ──▶ leave for a human
                                                                     └▶ dlq    ──▶ the landing dead-letter queue
 ```
@@ -51,10 +51,24 @@ Agents answer on disk, not in prose. Each role writes one JSON file into its lan
 reads that file; the agent's last message is a fallback channel, parsed for the first JSON object
 it contains, because an agent that answered in chat has still done the thinking.
 
-The worker writes a verdict naming its issue, one of `already-fixed`, `obsolete`, `needs-decision`,
-`needs-human`, `out-of-band`, `fixed`, `answered` (a `spike` issue's questions, answered with
-evidence and no pull request), or `failed`, a reason, and for a fix the pull request number, the
-branch, and what the change touches. A verdict outside that set reads as no verdict at all.
+The Work phase is two seats. The coder (`code-github-issue`, `loop-code.json`) writes a verdict
+naming its issue, one of `coded`, `already-fixed`, `obsolete`, `needs-decision`, `needs-human`,
+`out-of-band`, `answered` (a `spike` issue's questions, answered with evidence and no pull request),
+or `failed`, a reason, and for `coded` the branch, the pushed commit, the commit the gate passed
+on, a hand-off for the prover, and what the change touches. `coded` is believed only when that
+commit is the lane's head and the remote's head of the branch; the driver then announces it on
+the issue as a `<!-- loop-step coded ... -->` comment carrying the hand-off. The prover
+(`prove-github-issue`, `loop-proof.json`) writes `proved` with the ready pull request and the head
+it proved, `unprovable` with what the coder must fix, a hand-off verdict, or `failed`. Together they
+are one `WorkerResult` (`fixed` with the pull request, or the escape either seat took), which is all
+the review and landing read. A verdict outside either set reads as no verdict at all.
+
+Where a first attempt starts is read from facts, never from a dead process's memory (`placeWork`):
+a `coded` announcement whose commit is still its branch's head on the remote is proved, not coded
+again; an `unproved` one is coded again on its branch with what could not be shown; a branch that
+moved past its announcement is continued by a coder; anything else starts from the base. A refused
+proof spends one attempt and goes straight back to a coder in the same process, until the attempts
+run out.
 
 The reviewer writes a decision of `merge`, `gather-more`, or `block`, its adequacy judgement, its
 confidence, the blocking items, and its own classification of the diff. A decision outside that
@@ -183,8 +197,8 @@ each one fetches, and merges the base forward (never a rebase) when the lane is 
 
 | Moment | Who | What a base that moved costs |
 |---|---|---|
-| before the first line of a fix | the lane is cut from the fetched base; the worker fetches again | nothing; there is no work yet |
-| before proving, and before marking ready | the worker, in its own turn | a rerun of the checks, and any receipt captured before the merge |
+| before the first line of a fix | the lane is cut from the fetched base | nothing; there is no work yet |
+| before proving, at the seam between the two seats | the driver | the prover reruns the checks once, because its head is no longer the gated one |
 | before a revision or a redrive | the driver | nothing beyond the merge; the author revises against current code |
 | before a review | the driver | see the table below: the proof stands, or goes back to be reacquired |
 | before the merge, at the front of the queue | the pull master | see the table below: the approval stands, or the head is reviewed again |
@@ -194,10 +208,10 @@ from under the verdict. The catch-up happens before the reviewer starts and agai
 master takes the branch, and the head that lands is the caught-up one: the merge pins it, and the
 checks that gate it are the checks of that head.
 
-A worker that meets a conflict while merging forward resolves it toward upstream and re-applies
-its change on top, with one exception: where the conflicting upstream lines are the very defect
-the issue exists to fix, the fix stands and the pull request says which upstream commit it
-overrode. The driver itself never resolves a conflict; one it meets is a landing dead letter.
+No seat merges the base itself or chases it mid-turn: staying current happens at the seams, where
+the driver catches the lane up before the next seat starts. The driver never resolves a conflict;
+one it meets at a seam fails the attempt, and one it meets before a review or the merge is a landing
+dead letter.
 
 Catching up and having stale proof are different questions. Whether a lane catches up is decided
 by whether it is behind at all. What that catch-up costs is the freshness rule in
@@ -247,12 +261,14 @@ with a fresh staleness check, since the base can move again while queued.
 ## Draft until complete, to protect the CI budget
 
 Every push to an open pull request spends a CI run, and a driver working several issues at once
-multiplies that. So the worker finishes and pushes everything before opening anything, opens the
-pull request as a draft, attaches its proof, and marks it ready only as a statement that the work is
-feature complete. A revision round puts it back to draft first, so the pushes in between are free.
+multiplies that. So the coder pushes before any pull request exists, the prover pushes nothing to
+the branch, opens the pull request as a draft, attaches its proof, and marks it ready only as a
+statement that the work is proved. A revision round puts it back to draft first, so the pushes in
+between are free. Because the coder pushes with no pull request open, a workflow's `on: push`
+should be limited to the base branch, or every Coding push spends CI.
 
-The pipeline refuses to review a draft: a draft is the worker's own statement that the work is
-unfinished, and approving one can bless a branch it still intends to push to.
+The pipeline refuses to review a draft: a draft is the prover's own statement that the work is
+unproved, and approving one can bless a branch a coder still intends to push to.
 
 The adopting repository's workflow has to cooperate: gate the job on the pull request not being a
 draft and carry the ready-for-review event in the trigger types, so a draft queues nothing and the
@@ -262,7 +278,8 @@ checks run once, at the moment the branch is declared finished.
 
 The pull master runs inside the driver's process rather than as its own, so merging happens only
 while a run is alive. A run that dies after opening pull requests does not strand them outright: the
-next start resumes each stranded pull request from the worker verdict file its lane still holds,
+next start resumes each stranded pull request from the prover's verdict file its lane still holds
+(or, in a lane an older run left, the single worker's),
 before selecting anything new. Result-file clearing is role-specific precisely so that starting a
 reviewer does not destroy the verdict this resume depends on.
 

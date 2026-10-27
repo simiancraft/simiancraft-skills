@@ -4,9 +4,9 @@
  * `LOOP_ROLE` naming the seat. Exists so a gate can drive a whole flow to an exact verdict.
  */
 
-import { copyFileSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { APPRAISAL_FILE, CARVING_FILE, CONFIRMATION_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
+import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
 const FILE_BY_ROLE: Record<string, string> = {
   appraiser: APPRAISAL_FILE,
@@ -14,6 +14,9 @@ const FILE_BY_ROLE: Record<string, string> = {
   worker: VERDICT_FILE,
   'worker-revise': VERDICT_FILE,
   'worker-reprove': VERDICT_FILE,
+  coder: CODE_FILE,
+  'coder-revise': CODE_FILE,
+  prover: PROOF_FILE,
   reviewer: REVIEW_FILE,
   carver: CARVING_FILE,
 };
@@ -25,8 +28,12 @@ if (!cwd || !answer || !target) {
   console.error(`fixture-runner: usage <cwd> <answer-file> with LOOP_ROLE set to one of ${Object.keys(FILE_BY_ROLE).join(', ')} (got '${role}')`);
   process.exit(2);
 }
-copyFileSync(answer, join(cwd, target));
-console.log(`fixture ${role}: ${answer} -> ${target}`);
+// One seat can fill two roles in one flow (the worker seat codes, then proves), so a role may have an
+// answer of its own beside the seat's: `verdict.coder.json` next to `verdict.json`.
+const own = answer.replace(/(\.json)?$/, `.${role}.json`);
+const source = existsSync(own) ? own : answer;
+copyFileSync(source, join(cwd, target));
+console.log(`fixture ${role}: ${source} -> ${target}`);
 
 // A test of the driver's cap: write the answer, then hang, and exit 0 when killed, the way an engine
 // that traps SIGTERM does. The answer is on disk by then, which is what must not be trusted.

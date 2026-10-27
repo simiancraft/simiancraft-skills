@@ -384,30 +384,114 @@ describe('runtime moves and settlement', () => {
   });
   it('a card says where its brief came from, so a redrive does not claim a review that never happened', () => {
     const notes: string[] = [];
-    const api = loadFunctions(pipeline, ['runWorker'], {
+    const api = loadFunctions(pipeline, ['runWorker', 'laneBranch'], {
       move: (_ctx: unknown, _issue: unknown, _lane: string, note?: string) => notes.push(note ?? ''),
-      renderPrompt: () => 'prompt',
-      cardCommand: () => 'card',
-      runAgent: async () => ({ logPath: '', exitCode: 1 }),
+      runCode: async () => ({ verdict: 'failed', reason: 'stub' }),
+      runProve: async () => ({ verdict: 'failed', reason: 'stub' }),
       holdLease: noop,
-      agentCapMs: () => 60_000,
-      logTail: () => '',
       resetLane: noop,
-      attemptCount: () => 0,
       ctx: {},
     });
-    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1] }, dryRun: true } as never;
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1] }, dryRun: true, log: noop } as never;
     const issue = { number: 1, title: 't', labels: [] } as never;
-    const review = (confidence: string) => ({ pr: 1, decision: 'gather-more', adequacy: 'a', confidence, blocking: ['x'] }) as never;
+    const review = (confidence: string, decision = 'gather-more') => ({ pr: 1, decision, adequacy: 'a', confidence, blocking: ['x'] }) as never;
     return Promise.all([
       api.runWorker(ctx, issue, '/tmp', 2, review('redrive')),
       api.runWorker(ctx, issue, '/tmp', 2, review('resume')),
       api.runWorker(ctx, issue, '/tmp', 2, review('round 1')),
+      api.runWorker(ctx, issue, '/tmp', 2, review('round 1', 'block')),
     ]).then(() => {
       expect(notes[0]).toContain('a person asked for it to be continued');
       expect(notes[1]).toContain('it lost its driver');
-      expect(notes[2]).toBe('revision after a review');
+      expect(notes[2]).toBe('more evidence after a review');
+      expect(notes[3]).toBe('revision after a review');
     });
+  });
+  it('a reviewer asking for evidence reaches the prover alone, and an objection to the code the coder first', () => {
+    const seats: string[] = [];
+    const api = loadFunctions(pipeline, ['runWorker', 'laneBranch'], {
+      move: noop,
+      runCode: async () => { seats.push('coder'); return { verdict: 'failed', reason: 'stub' }; },
+      runProve: async () => { seats.push('prover'); return { verdict: 'failed', reason: 'stub' }; },
+      holdLease: noop,
+      resetLane: noop,
+      ctx: {},
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1] }, dryRun: true, log: noop } as never;
+    const issue = { number: 1, title: 't', labels: [] } as never;
+    const review = (decision: string) => ({ pr: 1, decision, adequacy: 'a', confidence: 'round 1', blocking: ['x'] }) as never;
+    return api.runWorker(ctx, issue, '/tmp', 2, review('gather-more'))
+      .then(() => api.runWorker(ctx, issue, '/tmp', 2, review('block')))
+      .then(() => expect(seats).toEqual(['prover', 'coder']));
+  });
+  it('a first attempt placed at Proving by an earlier announcement runs the prover alone', async () => {
+    const seats: string[] = [];
+    const api = loadFunctions(pipeline, ['runWorker'], {
+      move: noop, holdLease: noop, resetLane: noop,
+      placeWork: () => ({ kind: 'prove', sha: 'abc', handoff: 'changed x', coded: { branch: 'fix/x-1', gated: 'abc', touches: ['code'] } }),
+      runCode: async () => { seats.push('coder'); return { verdict: 'failed', reason: 'stub' }; },
+      runProve: async (_c: unknown, _i: unknown, _cwd: unknown, _coded: unknown, brief: { kind: string; text: string }) => { seats.push(`prover:${brief.kind}:${brief.text}`); return { verdict: 'proved', reason: 'ok', pr: 9 }; },
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1], maxWorkerAttempts: 3 }, dryRun: true, log: noop } as never;
+    const result = await api.runWorker(ctx, { number: 1, title: 't', labels: [] }, '/tmp', 2);
+    expect(seats).toEqual(['prover:handoff:changed x']);
+    expect(result).toMatchObject({ verdict: 'fixed', pr: 9, branch: 'fix/x-1', touches: ['code'] });
+  });
+  it('a refused proof spends one attempt and codes again with what could not be shown, then proves afresh', async () => {
+    const seats: string[] = [];
+    const attempts: number[] = [];
+    let proofs = 0;
+    const api = loadFunctions(pipeline, ['runWorker'], {
+      move: noop, holdLease: noop, resetLane: noop, attemptCount: () => 0,
+      recordAttempt: (_c: unknown, _n: unknown, previous: number) => { attempts.push(previous + 1); return previous + 1; },
+      placeWork: () => ({ kind: 'code', brief: { kind: 'first' } }),
+      runCode: async (_c: unknown, _i: unknown, _cwd: unknown, _m: unknown, brief: { kind: string; text?: string }) => {
+        seats.push(`coder:${brief.kind}${brief.text ? `:${brief.text}` : ''}`);
+        return { verdict: 'coded', reason: 'pushed', branch: 'fix/x-1', sha: 'abc', gated: 'abc', handoff: 'h', touches: ['code'] };
+      },
+      runProve: async () => {
+        seats.push('prover');
+        proofs += 1;
+        return proofs === 1 ? { verdict: 'unprovable', reason: 'no', brief: 'empty list throws' } : { verdict: 'proved', reason: 'ok', pr: 9, touches: ['ci'] };
+      },
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1], maxWorkerAttempts: 3 }, dryRun: true, log: noop } as never;
+    const issue = { number: 1, title: 't', labels: [] as Array<{ name: string }> };
+    const result = await api.runWorker(ctx, issue, '/tmp', 2);
+    expect(seats).toEqual(['coder:first', 'prover', 'coder:unproved:empty list throws', 'prover']);
+    expect(attempts).toEqual([1]);
+    expect(issue.labels).toEqual([{ name: 'loop/attempts: 1' }]);
+    expect(result).toMatchObject({ verdict: 'fixed', pr: 9, touches: ['code', 'ci'] });
+  });
+  it('a catch-up at the seam announces the head it pushed, so a prover killed after it is proved again', async () => {
+    const bodies: string[] = [];
+    const api = loadFunctions(pipeline, ['runWorker'], {
+      move: noop, holdLease: noop, resetLane: noop,
+      placeWork: () => ({ kind: 'code', brief: { kind: 'first' } }),
+      runCode: async () => ({ verdict: 'coded', reason: 'pushed', branch: 'fix/x-1', sha: 'coded1', gated: 'coded1', handoff: 'h' }),
+      seamCatchUp: () => 'caught-up',
+      sh: () => 'merged2',
+      codedComment: (_run: unknown, coded: { sha: string; gated: string }) => `coded sha=${coded.sha} gated=${coded.gated}`,
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => bodies.push(argv[argv.length - 1]),
+      runProve: async () => ({ verdict: 'proved', reason: 'ok', pr: 9 }),
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1], maxWorkerAttempts: 3 }, dryRun: false, log: noop, runId: 'r' } as never;
+    await api.runWorker(ctx, { number: 1, title: 't', labels: [] }, '/tmp', 2);
+    expect(bodies).toEqual(['coded sha=coded1 gated=coded1', 'coded sha=merged2 gated=coded1']);
+  });
+  it('a refused proof on the last attempt is left for the caller to count, never counted twice', async () => {
+    const recorded: number[] = [];
+    const api = loadFunctions(pipeline, ['runWorker'], {
+      move: noop, holdLease: noop, resetLane: noop, attemptCount: () => 2,
+      recordAttempt: () => { recorded.push(1); return 3; },
+      placeWork: () => ({ kind: 'code', brief: { kind: 'first' } }),
+      runCode: async () => ({ verdict: 'coded', reason: 'pushed', branch: 'fix/x-1', sha: 'abc', gated: 'abc', handoff: 'h' }),
+      runProve: async () => ({ verdict: 'unprovable', reason: 'no', brief: 'still wrong' }),
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1], maxWorkerAttempts: 3 }, dryRun: true, log: noop } as never;
+    const result = await api.runWorker(ctx, { number: 1, title: 't', labels: [] }, '/tmp', 2);
+    expect(recorded).toEqual([]);
+    expect(result).toMatchObject({ verdict: 'failed', reason: 'the change could not be proved: still wrong' });
   });
   it('a disputed worker close reports the human lane', () => {
     const lanes: string[] = [];
@@ -415,9 +499,9 @@ describe('runtime moves and settlement', () => {
     api.parkWithBothOpinions({}, { number: 1 }, { verdict: 'obsolete', reason: 'worker' }, { reason: 'confirmer disagrees' }, noop);
     expect(lanes).toEqual(['H2']);
   });
-  it('revision proof reports are chart events, too', () => {
-    const prompt = readFileSync(new URL('../../fix-github-issue/prompts/triage-and-fix.md', import.meta.url), 'utf8');
-    expect(prompt).toContain('{{CARD_PROVING}}');
+  it('a revision is proved like a first attempt, by a seat that never moves its own card', () => {
+    const prompts = ['../../code-github-issue/prompts/code.md', '../../prove-github-issue/prompts/prove.md'].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'));
+    for (const prompt of prompts) expect(prompt).not.toMatch(/card\.ts|\{\{CARD_/);
     expect(legal('D4', 'D2')).toBe(true);
   });
   it('work DLQ retry with an existing stale ready PR never starts a first worker', () => {

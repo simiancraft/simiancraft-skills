@@ -6,7 +6,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { APPRAISAL_FILE, CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
+import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
 import { LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
@@ -44,7 +44,8 @@ export const agentTimeout = { ms: AGENT_TIMEOUT_MS };
 export function agentCapMs(ctx: Context, role: string): number {
   const knob = ctx.knobs?.agentTimeoutMinutes;
   if (typeof knob === 'number') return knob * 60_000;
-  const seat = role.startsWith('worker') ? 'worker' : role;
+  // The coder and the prover sit in the worker seat: one cap for the Work lanes, never a budget per step.
+  const seat = role.startsWith('worker') || role.startsWith('coder') || role === 'prover' ? 'worker' : role;
   const minutes = knob?.[seat] ?? knob?.default;
   return minutes === undefined ? agentTimeout.ms : minutes * 60_000;
 }
@@ -286,12 +287,17 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     confirmer: [CONFIRMATION_FILE, LAST_MESSAGE_FILE],
     worker: [VERDICT_FILE, LAST_MESSAGE_FILE],
     'worker-revise': [VERDICT_FILE, LAST_MESSAGE_FILE],
+    // A coder's turn makes every earlier proof describe a tree that is about to change: its proof
+    // file goes too, or a coder killed mid-revision would be resumed into review on the old proof.
+    coder: [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
+    'coder-revise': [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
+    prover: [PROOF_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
     carver: [CARVING_FILE, LAST_MESSAGE_FILE],
     callback: ['loop-callback.json', LAST_MESSAGE_FILE],
   };
   // A role the table does not name (a reproof, a diagnosis) clears every answer file there is.
-  const answers = clearsByRole[role] ?? [VERDICT_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, CARVING_FILE, LAST_MESSAGE_FILE];
+  const answers = clearsByRole[role] ?? [VERDICT_FILE, CODE_FILE, PROOF_FILE, REVIEW_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, CARVING_FILE, LAST_MESSAGE_FILE];
   for (const stale of answers) rmSync(join(cwd, stale), { force: true });
 
   // The worktree belongs to the agent until it exits. Nothing else may touch it in the meantime.

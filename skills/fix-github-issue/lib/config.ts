@@ -96,7 +96,7 @@ export type PipelineKnobs = {
   checksTimeoutMinutes: number;
   /**
    * How long an agent may run before the driver kills it: one number for every seat, or a map by
-   * seat (`worker`, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `walker`, `diagnose`) with an
+   * seat (`worker`, which caps the coder's and the prover's turns each, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `walker`, `diagnose`) with an
    * optional `default`. Unset is 45 minutes. An agent that hits the cap is a sign its turn is doing
    * too much, and the answer to that is a smaller turn, not a longer cap. This knob is for the
    * repository whose single run of its own gate honestly exceeds the default, and for nothing else.

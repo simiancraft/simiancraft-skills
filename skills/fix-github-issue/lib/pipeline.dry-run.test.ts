@@ -69,10 +69,10 @@ describe('a dry run and the worker seat', () => {
   it('reports a seat it does not run as not run: no failure, no attempt counted, no Ready card', async () => {
     // A verdict left in the lane by an earlier run is not this run's answer.
     mkdirSync(join(scratch, 'wt', 'issue-7'), { recursive: true });
-    writeFileSync(join(scratch, 'wt', 'issue-7', 'loop-verdict.json'), JSON.stringify({ issue: 7, verdict: 'failed', reason: 'stale' }));
+    writeFileSync(join(scratch, 'wt', 'issue-7', 'loop-code.json'), JSON.stringify({ issue: 7, verdict: 'failed', reason: 'stale' }));
     const run = await dryRun({ engine: 'claude', model: 'any' });
-    expect(run.outcome).toEqual({ outcome: 'not-run', reason: 'dry run: the worker was not run' });
-    expect(run.lines.some((l) => /DRY RUN {2}would run worker/.test(l))).toBe(true);
+    expect(run.outcome).toEqual({ outcome: 'not-run', reason: 'dry run: the coder was not run' });
+    expect(run.lines.some((l) => /DRY RUN {2}would run coder/.test(l))).toBe(true);
     expect(run.lines.filter((l) => /failed/.test(l))).toEqual([]);
     expect(run.rehearsed.filter((d) => /loop\/attempts/.test(d))).toEqual([]);
     expect(run.lanes).toEqual(['D1']);
