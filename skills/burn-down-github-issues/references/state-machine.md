@@ -357,9 +357,10 @@ How far that is built: `loop.ts` dispatches from the placement by lane. The run 
 where every card's facts put it (the `reconcile` above, for the whole window at once), writes the
 cards whose lane differs, and takes the appraisers' queue from the Inbox and the workers' queue
 from Ready; nothing is selected by reading labels a second way. Each seat moves the card it
-holds: the driver at the appraisal verdicts, the knife at its outcomes, the worker itself at
-Proving and Drafted (through `card.ts`, rendered into its prompt), and the fix pipeline at every
-seam from Coding to Merged. What is not yet built is the split past the driver's seams: a Ready
+holds: the driver at the appraisal verdicts, the knife at its outcomes, and the fix pipeline at
+every seam from Coding to Merged, including the one between the coder and the prover; no agent
+moves its own card. A first attempt places itself in Work from the issue's newest `loop-step`
+marker (`placeWork` in the fix pipeline), so a run that died while proving resumes at Proving. What is not yet built is the split past the driver's seams: a Ready
 card still runs from Coding to Merged inside one process, so a dispatcher cannot hand Evidence
 under review to a different seat than the one that coded, and the per-phase WIP limit is the
 single `concurrency` knob. That split is the pipeline's functions cut at the lane events they

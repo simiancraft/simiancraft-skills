@@ -132,14 +132,14 @@ describe('a stopping run', () => {
   });
 
   it('settles a lane whose worker ended under the stop as stopped: no failure, no attempt, no Ready card', async () => {
-    // The worker would have answered `failed`, which a run that is not stopping counts.
+    // The coder would have answered `failed`, which a run that is not stopping counts.
     writeFileSync(join(scratch, 'verdict.json'), JSON.stringify({ issue: 7, verdict: 'failed', reason: 'could not reproduce' }));
     const io = new FakeTracker('loop-bot', [fakeIssue(7, { labels: [{ name: 'size: 1' }] })]);
     const lines: string[] = [];
     const lanes: string[] = [];
     const ctx = context(io, true, (m) => {
       lines.push(m);
-      if (/running worker/.test(m)) beginStop();
+      if (/running coder/.test(m)) beginStop();
     });
     ctx.onLane = (e) => lanes.push(e.lane);
     const outcome = await fixIssue(ctx, { number: 7, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] }, { maxPoints: 2 });
@@ -176,8 +176,8 @@ describe('a lane that lost its lease', () => {
     const lanes: string[] = [];
     const ctx = context(io, true, (m) => {
       lines.push(m);
-      // Lost the way it is in a run: a renewal fails with the expiry already past, while the worker runs.
-      if (!/running worker/.test(m) || leaseLost(ctx, 8)) return;
+      // Lost the way it is in a run: a renewal fails with the expiry already past, while the coder runs.
+      if (!/running coder/.test(m) || leaseLost(ctx, 8)) return;
       const handle: ClaimHandle = { kind: 'working', commentId: 1, label: 'loop/working', issue: 8, key: 'o/stop#8', expires: () => 0, renew: () => { throw new Error('tracker down'); }, release: () => {} };
       keepClaimed(handle, undefined, () => 0, (fn) => (fn(), () => {}));
     });

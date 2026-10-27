@@ -75,10 +75,10 @@ describe('an agent killed at the cap', () => {
     const ctx = context(lines, true);
     const outcome = await fixIssue(ctx, { number: 7, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] }, { maxPoints: 2 });
     expect(outcome.outcome).toBe('failed');
-    expect(outcome.reason).toContain('worker timed out at');
+    expect(outcome.reason).toContain('coder timed out at');
     expect(outcome.reason).toContain('nothing it left in its lane is trusted');
-    expect(outcome.reason).toContain('a redrive continues from that head');
-    expect(lines.some((l) => /verdict: fixed/.test(l))).toBe(false);
+    expect(outcome.reason).toContain('anything it had already pushed survives');
+    expect(lines.some((l) => /verdict: (fixed|coded)/.test(l))).toBe(false);
   }, 20_000);
 
   it('keeps the answer of an agent that exited in time, though something it started held its output past the cap', async () => {
