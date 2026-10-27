@@ -154,7 +154,7 @@ the seconds between the last look and the merge. A repository closes that window
 branches to be up to date before merging; without that rule the pipeline cannot prevent it, so it
 detects it: after the merge it compares the base commit the merge landed on with the one the lane
 last saw, and when they differ it says so on the pull request and tells the driver
-(`unseenBase` on the merge event), so the walker checks that base first.
+(`unseenBase` on the merge event), so the floor checks that base first.
 
 An observation of the checks is never proof of the whole list: they register one at a time after
 a push, so neither an empty list, nor a short green one, nor one that has stopped changing says

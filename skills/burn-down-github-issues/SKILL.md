@@ -83,6 +83,7 @@ bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closur
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
 bun run <this-skill-dir>/loop.ts --appraiser codex:gpt-5.6-sol --confirmer claude:claude-opus-5   # the sizing seats
 bun run <this-skill-dir>/loop.ts --pulse 2             # console board every 2 minutes (default 5); --silent turns it off
+bun run <this-skill-dir>/loop.ts --floor once          # walk the deployed base once and work no issue; also liveness, watch, drain
 bun run <this-skill-dir>/watch.ts                      # follow the current run; --wait for its terminal lines only
 bun run <this-skill-dir>/card.ts --issue <n> --show    # where one card is; --lane <key> moves it by hand, --lanes lists the table
 bun run <this-skill-dir>/claim-race.ts --issue <n> --contenders 3 --rounds 3   # prove the claim lock on a loop/skip issue
@@ -98,7 +99,7 @@ Everything an operator or agent does to a run is one of these commands. Watching
 
 `<this-skill-dir>` is the filesystem path of this directory wherever the collection is checked out
 or installed; it is a path, not a skill name. The seat flags (`--worker`, `--reviewer`,
-`--confirmer`, `--appraiser`, `--carver`, `--carve-confirmer`, and `--callback-seat`) take
+`--confirmer`, `--appraiser`, `--carver`, `--carve-confirmer`, `--callback-seat`, and `--walker`) take
 `engine[:model]` specs resolved against the engine registry in
 `../fix-github-issue/lib/engines.ts`. The config file sets the
 same seats and every loop knob (`ageDays`, `maxPoints`, `autoMerge`, `limit`, `concurrency`, and
@@ -124,8 +125,10 @@ the rest); a flag beats the config for the run it is given on.
    driver moving the card from the push and the pull request each leaves), Ready for review, Evidence
    under review, and the landing lanes to Merged; or back to Sent back on a rejection; or into a
    dead-letter or human lane when a machine gives up or a person is needed.
-5. **Finishes.** The instance lock is released, and the walker (when `walk-the-floor` is
-   configured) drains the merges it has not yet checked on the deployed base.
+5. **Walks the floor and finishes.** With `floor` configured, every merge went up onto the floor
+   as it landed, and the loop has been walking the deployed base on its cadence, pausing the line
+   when a walk found it wrong. The run walks on until its merges are verified there (or the drain
+   window closes), then releases the instance lock. See `references/floor.md`.
 
 ## The board
 
@@ -169,6 +172,7 @@ work left rather than opening another.
 | Adopt the loop in a repository: the config template, the two fields that actually bite, preconditions, the board and its token scope, first-run order, stopping a run | `references/adopting.md` |
 | How and why the loop works: the board as state, the placement as queue, the seats, the pool, crash recovery, known gaps | `references/architecture.md` |
 | The state machine the lanes draw: phases, every lane's entry actions and exits, reconcile precedence, the per-phase dead letters, the polymorphic pool, what the tests check, what is not built yet | `references/state-machine.md` |
+| Check what merged on the running environment: the floor block, the cadence, the walk and its ledger, the line it pauses, the callbacks, incidents, the drain | `references/floor.md` |
 | The fix pipeline itself: the verdict-file contract, the review budget, the merge boundary, staleness, resuming, the dead letters it writes | [`../fix-github-issue/references/pipeline.md`](../fix-github-issue/references/pipeline.md) |
 
 ## Hard dependencies
@@ -182,6 +186,9 @@ work left rather than opening another.
 - The [`prove-work-on-github`](../prove-work-on-github/SKILL.md) skill, loaded by name in the
   worker and reviewer prompts; the pull master's staleness rule implements its
   `references/freshness-and-reproof.md`.
+- The [`emoji-readout`](../emoji-readout/SKILL.md) skill, whose renderer prints each floor walk.
+- With `floor` configured, the driver skill for its environment kind (`playwright-harness` for
+  `web`, `ios-simulator` or `android-emulator-harness` for mobile), loaded by name in the walk prompt.
 - Bun, which runs `loop.ts`.
 - `gh` authenticated with push and merge rights on the target repository, and the `project` scope
   for the board.

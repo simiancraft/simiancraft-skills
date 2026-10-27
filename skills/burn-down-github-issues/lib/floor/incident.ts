@@ -5,16 +5,29 @@
  */
 
 import { join } from 'node:path';
-import { readResult, runAgent } from '../../fix-github-issue/lib/agent.ts';
-import type { Context } from '../../fix-github-issue/lib/context.ts';
-import type { Seat } from '../../fix-github-issue/lib/engines.ts';
-import { ensureLabels, parkIssue } from '../../fix-github-issue/lib/labels.ts';
-import { enrichBlockers } from '../../fix-github-issue/lib/blockers.ts';
-import { fixIssue, type FixOutcome, type Issue } from '../../fix-github-issue/lib/pipeline.ts';
-import { sh } from '../../fix-github-issue/lib/shell.ts';
-import { type LedgerEntry, lastClean, readLedger } from './floor.ts';
-import { mergedSince, type MergedPullRequest } from './forge.ts';
-import { renderWalkerPrompt } from './prompts.ts';
+import { readResult, renderPrompt, runAgent } from '../../../fix-github-issue/lib/agent.ts';
+import type { Context } from '../../../fix-github-issue/lib/context.ts';
+import type { Seat } from '../../../fix-github-issue/lib/engines.ts';
+import { ensureLabels, parkIssue } from '../../../fix-github-issue/lib/labels.ts';
+import { enrichBlockers } from '../../../fix-github-issue/lib/blockers.ts';
+import { fixIssue, type FixOutcome, type Issue } from '../../../fix-github-issue/lib/pipeline.ts';
+import { sh } from '../../../fix-github-issue/lib/shell.ts';
+import { type LedgerEntry, lastClean, readLedger } from './ledger.ts';
+
+type MergedPullRequest = { number: number; title: string; mergedAt: string; mergeCommit: string; paths: string[] };
+
+/** Pull requests merged into the base since `since`, newest first, from the forge. */
+export function mergedSince(ctx: Context, since: string): MergedPullRequest[] {
+  const raw = sh(ctx, [
+    'gh', 'pr', 'list', '-R', ctx.project.repo, '--state', 'merged', '--base', ctx.project.baseBranch, '--limit', '100',
+    '--search', `merged:>=${since.slice(0, 10)}`, '--json', 'number,title,mergedAt,mergeCommit,files',
+  ]);
+  const rows = JSON.parse(raw) as Array<{ number: number; title: string; mergedAt: string; mergeCommit: { oid: string } | null; files: Array<{ path: string }> }>;
+  return rows
+    .filter((pr) => Date.parse(pr.mergedAt) >= Date.parse(since))
+    .map((pr) => ({ number: pr.number, title: pr.title, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? '', paths: pr.files.map((f) => f.path) }))
+    .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt));
+}
 
 export const INCIDENT_LABEL = 'floor/incident';
 const DIAGNOSIS_FILE = 'floor-diagnosis.json';
@@ -48,12 +61,16 @@ function readLogs(command: string | undefined, cwd: string): string {
   return text.split('\n').slice(-200).join('\n');
 }
 
-function suspectsBetween(ctx: Context, lastGood: LedgerEntry | undefined, failed: LedgerEntry): MergedPullRequest[] {
-  const since = lastGood?.checkedAt ?? new Date(Date.parse(failed.checkedAt) - 24 * 60 * 60 * 1000).toISOString();
+/**
+ * Merges between the last clean walk and the failure. An absent item reaches back to its own merge
+ * as well: the clean probe at the start of the same walk would otherwise leave no suspects at all.
+ */
+function suspectsBetween(ctx: Context, lastGood: LedgerEntry | undefined, failed: LedgerEntry, mergedAt?: string): MergedPullRequest[] {
+  const floor = Date.parse(failed.checkedAt) - 24 * 60 * 60 * 1000;
+  const candidates = [lastGood?.checkedAt, mergedAt && new Date(Date.parse(mergedAt) - 60_000).toISOString()].filter((at): at is string => !!at);
+  const since = candidates.length > 0 ? candidates.sort()[0] : new Date(floor).toISOString();
   try {
-    return mergedSince(ctx.project.repo, ctx.project.baseBranch, since, ctx.repoRoot)
-      .filter((pr) => Date.parse(pr.mergedAt) <= Date.parse(failed.checkedAt))
-      .reverse();
+    return mergedSince(ctx, since).filter((pr) => pr.mergeCommit && Date.parse(pr.mergedAt) <= Date.parse(failed.checkedAt));
   } catch (error) {
     ctx.log(`could not list merges from the forge: ${(error as Error).message}`);
     return [];
@@ -99,12 +116,14 @@ export async function handleIncident(
     walker: Seat;
     logsCommand?: string;
     maxPoints: number;
+    /** When the failed item merged, for an `absent` item. */
+    mergedAt?: string;
   },
 ): Promise<IncidentResult> {
   const { dir, entry, checkout, walker } = options;
   const ledger = readLedger(dir);
   const lastGood = lastClean(ledger);
-  const suspects = suspectsBetween(ctx, lastGood, entry);
+  const suspects = suspectsBetween(ctx, lastGood, entry, options.mergedAt);
   const logs = readLogs(options.logsCommand, ctx.invokeRoot);
 
   // An incident already open for this item, checked first: one a person owns needs no diagnosis
@@ -118,7 +137,7 @@ export async function handleIncident(
   // Diagnosis is one agent turn, read-only, in the checkout at the failing revision.
   let diagnosis: Diagnosis | null = null;
   if (!ctx.dryRun) {
-    const prompt = renderWalkerPrompt(ctx, 'diagnose.md', {
+    const prompt = renderPrompt(ctx, 'diagnose.md', {
       ENTRY: JSON.stringify(entry, null, 2),
       LAST_GOOD: lastGood ? JSON.stringify(lastGood, null, 2) : '(no clean walk on record)',
       SUSPECTS: renderSuspects(suspects),
@@ -164,7 +183,7 @@ export async function handleIncident(
       logs.split('\n').slice(-40).join('\n') || '(none)',
       '```',
       '',
-      entry.evidence ? `Evidence: \`${entry.evidence}\` on the walker's floor.` : '',
+      entry.evidence ? `Evidence: \`${entry.evidence}\` on the floor.` : '',
     ].join('\n');
     if (ctx.dryRun) {
       ctx.log(`  DRY RUN  would file incident "${title}"`);

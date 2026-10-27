@@ -1043,7 +1043,7 @@ async function land(
     // The card is in Merging for the whole wait: a paused line holds a card that is about to land.
     move(ctx, issue, 'F5', `PR #${pr} at ${landingSha.slice(0, 10)}`);
     if (ctx.mayMerge) {
-      const permission = await ctx.mayMerge();
+      const permission = await ctx.mayMerge(issue);
       if (!permission.ok) {
         say(`refusing to merge PR #${pr}: ${permission.reason}`);
         return { dlq: permission.reason };

@@ -130,7 +130,7 @@ describe('the cap a config sets', () => {
 
   it('can be set for every role a driver actually runs an agent as', () => {
     // Read from the source, so a new runAgent role cannot arrive without a seat to cap it by.
-    const roots = [join(HERE, '..'), join(HERE, '..', '..', 'appraise-github-issues'), join(HERE, '..', '..', 'carve-github-issue'), join(HERE, '..', '..', 'walk-the-floor')];
+    const roots = [join(HERE, '..'), join(HERE, '..', '..', 'appraise-github-issues'), join(HERE, '..', '..', 'carve-github-issue'), join(HERE, '..', '..', 'burn-down-github-issues')];
     const roles = new Set<string>();
     for (const root of roots) {
       for (const file of new Bun.Glob('**/*.ts').scanSync({ cwd: root })) {

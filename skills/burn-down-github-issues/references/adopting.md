@@ -89,7 +89,8 @@ export default {
   // carve: { maxDepth: 3, maxChildren: 8, maxCarveRounds: 5, maxCarveAttempts: 3, maxGenerations: 5, maxRevisitsPerGeneration: 10 },
   // and confirmCloses (default true): a close proposed by the appraiser needs the confirmer's agreement.
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
-  // floor: { cadenceMinutes: 10, drainMinutes: 60 } starts walk-the-floor beside the loop; see "The line" below.
+  // floor: { every: 10, drainMinutes: 60, environment: { kind: 'web', baseUrl: '...' }, walks: [] }
+  // walks the deployed base after every merge and pauses the line when it is wrong; see references/floor.md.
 };
 ```
 
@@ -175,7 +176,7 @@ as release noise automatically, while a dependency change still invalidates. Wit
 each landing rewrites paths that `alwaysInvalidates` matches, so every queued pull request loses
 its approval and is re-reviewed for noise the machine produced.
 
-## The line: a switch, and a walker that flips it
+## The line: a switch, and the floor that flips it
 
 The loop reads `<worktreeRoot>/runs/line-switch` at a few seams, the merge among them; which ones,
 and what runs on a paused line regardless, is listed once in `operating.md`, "When the line is
@@ -189,21 +190,12 @@ echo pause > <worktreeRoot>/runs/line-switch     # hold every seam
 echo go > <worktreeRoot>/runs/line-switch        # release
 ```
 
-With `floor: { cadenceMinutes: N }` in the config and a `walk-the-floor.config.ts` beside it, the
-loop also starts the `walk-the-floor` skill as a child, on `<worktreeRoot>/floor/`, and writes two
-executable callbacks there: `on-fail` pauses the line with a reason naming the failed item, and
-`on-pass` releases a pause that the same item caused and no other, so a pause a person set by
-hand stays until that person clears it. Every merge the loop makes is put on the floor as a list
-item, and the walker checks it against the deployed base on its next wake. The walker's log is
-`<worktreeRoot>/runs/floor.log`. The loop never reads the walker's ledger to decide anything; the
-switch is the whole interface.
-
-When the run is done the loop does not kill the walker; its last merges landed on the floor seconds
-earlier and are still unwalked. It sends SIGUSR1, which tells the walker to finish every pending
-item and exit, and waits up to `floor.drainMinutes` (default 60) for that. If items are still
-pending at the cap (a deploy that never landed, an incident whose fix is still running) the loop
-stops the walker, names the count, and prints the `walk.ts --once` command that finishes them.
-Ctrl+C still stops the walker outright.
+With a `floor` block in the config, every merge the loop makes goes up onto
+`<worktreeRoot>/floor/`, and the loop walks the deployed base on a cadence. A walk that finds it
+wrong pauses the line with a reason beginning `floor:`; once nothing on the floor is wrong the
+floor releases its own pause, and never one a person set. At the end of a run the loop keeps
+walking until its merges are verified there, up to `floor.drainMinutes`. The block, the walk, the
+callbacks, and the first-run order are in `references/floor.md`.
 
 `project.smokeCommand` is the other half: it runs in the lane after the checks are green and
 before the merge, so a change that builds but does not boot is a landing dead letter
@@ -324,12 +316,11 @@ outlives the call.
 
 ## Let an agent operate it without approval stalls
 
-Every operation on a run is `bun run <skill-dir>/<script>.ts ...`: `loop.ts` to start, `watch.ts`
-to follow, and the walker's `walk.ts`. That is deliberate, so a harness that gates shell commands
+Every operation on a run is `bun run <skill-dir>/<script>.ts ...`: `loop.ts` to start (or, with
+`--floor`, to walk the floor alone) and `watch.ts` to follow. That is deliberate, so a harness that gates shell commands
 has one shape to allow. If the agent driving the loop runs under such a harness, allow that shape
 up front in the adopting repository's settings rather than approving each invocation; in Claude
-Code that is a `Bash(bun run *burn-down-github-issues/*.ts*)` entry (and the `walk-the-floor`
-equivalent) in `.claude/settings.json`. An agent that reaches for `tail -F`, `kill`, `pgrep`, or
+Code that is a `Bash(bun run *burn-down-github-issues/*.ts*)` entry in `.claude/settings.json`. An agent that reaches for `tail -F`, `kill`, `pgrep`, or
 `nohup` around the loop is missing a script, and the fix is to add the script here, not to widen
 the allowlist.
 

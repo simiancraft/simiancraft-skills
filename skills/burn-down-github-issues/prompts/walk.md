@@ -73,5 +73,3 @@ When every item has an answer, write `{{VERDICT_FILE}}` as JSON:
 One entry per item above, and no other verdicts; the pending verdicts are the driver's to assign,
 not yours. `reason` is read by a person deciding whether to trust you; write it so they could
 repeat what you did.
-
-{{CALLBACK_PROMPT}}

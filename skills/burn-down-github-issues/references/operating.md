@@ -30,7 +30,7 @@ log, and verify process state with a direct check on a pid you already confirmed
 ## Watch the run
 
 The driver tees everything it prints to `<worktreeRoot>/runs/driver.log` (every run, appended,
-each opened by a `run pid N started` header) and its walker child to `runs/floor.log`; each agent
+each opened by a `run pid N started` header), the floor's walks and readouts included; each agent
 additionally gets `runs/<issue>-<role>-<timestamp>.log`. Driver lines are timestamped `HH:MM:SS`;
 everything else is agent output echoed through.
 
@@ -113,7 +113,9 @@ running loop reads it, and the other references point here. A paused line holds:
   runs under the same check, not one of its own);
 - every Ready card before its dispatch, and every pull request with no driver before its resume;
 - every merge, through the fix pipeline's `mayMerge` hook, which the loop answers by waiting for
-  `go`; a stranded pull request resumed at the run's start reaches it here too.
+  `go`; a stranded pull request resumed at the run's start reaches it here too. The one exception
+  is a floor incident's fix, which passes a pause the floor wrote (it is the merge that clears it)
+  and still waits on a person's.
 
 The start-of-run work before those seams is not held: the repair, the stranded-lane resume up to
 its merge, and the knife's sweep (its revisits and redrives included) run on a paused line. The
@@ -122,10 +124,11 @@ statechart guards the knife's dispatch and revisit with `lineActive` as well
 
 A paused seam logs one line, `line is paused (<reason>); holding <where> until <path> says go`,
 and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
-see the state and the reason. A reason beginning `floor:` was written by the walker's `on-fail`
-callback and names the item that failed; the walker's ledger on `<worktreeRoot>/floor/` and its
-log in `<worktreeRoot>/runs/floor.log` say what it found. A reason without that prefix was written
-by a person, and only a person clears it: `echo go > <worktreeRoot>/runs/line-switch`.
+see the state and the reason. A reason beginning `floor:` was written by the floor and names what
+it found wrong; the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
+more, and the floor releases its own pause once nothing on it is wrong. A reason without that
+prefix was written by a person, and only a person clears it:
+`echo go > <worktreeRoot>/runs/line-switch`.
 
 ## What is not a bug
 

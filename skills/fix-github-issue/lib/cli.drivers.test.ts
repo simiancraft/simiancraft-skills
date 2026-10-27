@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const SKILLS = join(import.meta.dir, '..', '..');
-const DRIVERS = ['burn-down-github-issues/loop.ts', 'fix-github-issue/fix.ts', 'appraise-github-issues/appraise.ts', 'carve-github-issue/carve.ts', 'walk-the-floor/walk.ts'];
+const DRIVERS = ['burn-down-github-issues/loop.ts', 'fix-github-issue/fix.ts', 'appraise-github-issues/appraise.ts', 'carve-github-issue/carve.ts'];
 
 describe('every driver guards its arguments before it does anything', () => {
   for (const driver of DRIVERS) {

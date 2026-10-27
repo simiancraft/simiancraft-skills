@@ -35,6 +35,9 @@ export type MergeEvent = {
  */
 export type MergePermission = { ok: true } | { ok: false; reason: string };
 
+/** What a merge gate is told about the issue about to land. */
+export type MergingIssue = { number: number; labels: Array<{ name: string }> };
+
 /** What `closeIssue` tells a driver after every close it makes, whichever path made it. */
 export type CloseEvent = {
   issue: number;
@@ -86,8 +89,8 @@ export type Context = {
   landingLine?: number[];
   log: (message: string) => void;
   step: (message: string) => void;
-  /** Asked once, just before every merge. Absent means always allowed. */
-  mayMerge?: () => Promise<MergePermission>;
+  /** Asked once, just before every merge, with the issue that is landing. Absent means always allowed. */
+  mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
   /** Told once, after every confirmed merge. */
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
@@ -123,7 +126,7 @@ export function createContext(options: {
   runDir?: string;
   log?: (message: string) => void;
   step?: (message: string) => void;
-  mayMerge?: () => Promise<MergePermission>;
+  mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;

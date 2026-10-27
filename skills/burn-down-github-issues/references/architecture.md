@@ -161,20 +161,18 @@ A file switch, `<worktreeRoot>/runs/line-switch`, stops the loop at its seams; `
 fix pipeline's `mayMerge` hook, which the loop answers by waiting until the switch says go; nothing in the pipeline knows a switch exists. The seam holds rather
 than parks, because a pause is temporary and a parked pull request needs a human.
 
-The switch is how the loop composes with `walk-the-floor` without either knowing the other's
-internals. The walker is a separate process that checks a running environment against a list and
-runs two callbacks, `on-fail` and `on-pass`; the loop starts it, writes those callbacks as shell
-scripts that flip the switch, and puts every merge on the walker's list through the pipeline's
-`afterMerge` hook. A walk that finds the deployed base wrong pauses the line before the walker
-files its incident and attempts a fix; a walk that finds the same item right again releases it.
-The callbacks are executables rather than prompts on purpose: an interlock that stops other
-processes must not depend on an agent following instructions.
+The floor runs inside the loop's process, so the switch is its whole interlock with the merge
+queue and nothing has to parse a ledger to flip it. Every merge goes up onto the floor through the
+pipeline's `afterMerge` hook; a walk of the deployed base that finds something wrong pauses the line
+before it files an incident, and releases its own pause once nothing on the floor is wrong. The
+incident's fix is the one merge a paused line must not hold, so the floor fixes it under the
+loop's context without the `mayMerge` gate. A passing walk is the statechart's `WALKED` event: the
+card moves from Merged to Verified on the floor.
 
-The walker outlives the run's last merge by design. Those merges reach the floor through
-`afterMerge` seconds before the loop prints done, so stopping the walker there would leave them
-unwalked (the first run with the walker did exactly that). The loop instead drains it: SIGUSR1
-asks the walker to finish what is pending and exit, and the loop waits for that with a cap
-(`floor.drainMinutes`) before stopping it outright.
+A run is done when its merges are verified, not when they land. They reach the floor seconds
+before the last lane returns, so the loop drains it under the instance lock: it keeps walking until
+every merge has a terminal verdict or is with a person, bounded by `floor.drainMinutes`, and only
+then releases the lock. Holding the lock is what keeps a second run from walking the same floor.
 
 ## Sizing
 

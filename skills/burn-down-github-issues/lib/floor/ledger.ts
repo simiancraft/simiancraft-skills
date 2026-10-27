@@ -1,19 +1,16 @@
 /**
- * The floor: the directory contract between the walker and whoever feeds it. This module owns the
- * file names, the two record shapes, the verdict vocabulary, and the append-only reads and writes.
- * Nothing here knows about GitHub, agents, or the burndown; see references/the-floor.md.
+ * The floor directory: `list.jsonl` in, `ledger.jsonl` out, both append only. This module owns the
+ * file names, the two record shapes, the verdict vocabulary, and the reads and writes. The ledger is
+ * the floor's memory across runs: what was walked, against which deployed revision, what was
+ * found, and the evidence. Nothing here knows about GitHub or agents; see references/floor.md.
  */
 
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { acquirePidLock } from '../../fix-github-issue/lib/pid-lock.ts';
 
 export const FILES = {
   list: 'list.jsonl',
   ledger: 'ledger.jsonl',
-  onPass: 'on-pass',
-  onFail: 'on-fail',
-  lock: 'floor.lock',
   evidence: 'evidence',
 } as const;
 
@@ -22,7 +19,7 @@ export type ListItem = {
   addedAt: string;
   source: string;
   text: string;
-  ref?: { pullRequest?: number; sha?: string; mergedAt?: string; paths?: string[] };
+  ref?: { issue?: number; pullRequest?: number; sha?: string; mergedAt?: string; paths?: string[]; unseenBase?: string };
 };
 
 export const RUNGS = ['liveness', 'classify', 'look', 'exercise', 'fallback', 'exists-in-git'] as const;
@@ -30,15 +27,7 @@ export type Rung = (typeof RUNGS)[number];
 /** Rungs an agent may report; the other two belong to the driver. */
 export const AGENT_RUNGS: ReadonlySet<Rung> = new Set<Rung>(['look', 'exercise', 'fallback', 'exists-in-git']);
 
-export const VERDICTS = [
-  'present',
-  'intact',
-  'not-checkable',
-  'absent',
-  'down',
-  'not-yet-deployed',
-  'unverified',
-] as const;
+export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'unverified'] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 /** Verdicts that retire an item. Everything else leaves it on the walk list. */
@@ -56,7 +45,8 @@ export type LedgerEntry = {
   verdict: Verdict;
   reason: string;
   evidence?: string;
-  incident?: number;
+  /** Recorded inside a quiet window, so nothing was paused or run for it. */
+  quiet?: true;
 };
 
 /** The synthetic item the liveness probe reports against; never on the list. */
@@ -72,22 +62,26 @@ function readJsonl<T>(path: string): T[] {
       out.push(JSON.parse(trimmed) as T);
     } catch {
       // A torn line from a crash mid-write is skipped rather than fatal; the record it would
-      // have carried is re-derived on the next wake.
+      // have carried is re-derived on the next walk.
     }
   }
   return out;
 }
 
-/** The list, deduplicated on id: the first item with an id wins, so producers append blindly. */
+/**
+ * The list, deduplicated on id: the first item with an id wins, so producers append blindly. The
+ * one exception is a merge the forge listed before the loop's own record of it arrived: the loop's
+ * record knows the issue, so it fills in what the forge's lacked.
+ */
 export function readList(dir: string): ListItem[] {
-  const seen = new Set<string>();
-  const items: ListItem[] = [];
+  const byId = new Map<string, ListItem>();
   for (const item of readJsonl<ListItem>(join(dir, FILES.list))) {
-    if (!item?.id || seen.has(item.id)) continue;
-    seen.add(item.id);
-    items.push(item);
+    if (!item?.id) continue;
+    const kept = byId.get(item.id);
+    if (!kept) byId.set(item.id, item);
+    else if (kept.source === 'forge' && item.source !== 'forge') byId.set(item.id, { ...kept, ...item, ref: { ...kept.ref, ...item.ref } });
   }
-  return items;
+  return [...byId.values()];
 }
 
 export function readLedger(dir: string): LedgerEntry[] {
@@ -156,19 +150,3 @@ export function evidenceDir(dir: string): string {
   mkdirSync(path, { recursive: true });
   return path;
 }
-
-/** A filename-safe form of an item id for evidence files. */
-export function safeName(id: string): string {
-  return id.replace(/[^A-Za-z0-9._-]/g, '-');
-}
-
-/**
- * One walker per floor. The lock holds the pid; a lock whose pid is dead is reclaimed, so a crash
- * never wedges the floor. Returns the release function.
- */
-export function claimFloorLock(dir: string): () => void {
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, FILES.lock);
-  return acquirePidLock(path, { held: (pid) => `another walker (pid ${pid}) holds ${path}`, lost: `another walker claimed ${path} first` });
-}
-

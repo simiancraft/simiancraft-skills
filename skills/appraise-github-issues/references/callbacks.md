@@ -3,7 +3,8 @@
 What happens after an issue is sized is not the appraiser's decision. A producer (the issue
 burndown, a person, another skill) puts files into a directory, and the appraiser looks one up for
 the points it just applied and runs it, knowing nothing about what it does. This is the same slot
-mechanism `walk-the-floor` uses for `on-pass` and `on-fail`, keyed by size instead of by verdict.
+mechanism the burndown's floor uses for `on-walk` and `on-walk-fail`, keyed by size instead of by
+walk.
 
 ## The directory
 

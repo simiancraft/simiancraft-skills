@@ -23,7 +23,7 @@
  * references/freshness-and-reproof.md.
  */
 
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
@@ -45,7 +45,9 @@ import { createBoardWriter, placeByFacts, readBoardPointer } from './lib/board-w
 import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { issueRefs } from './lib/refs.ts';
-import { FILES as FLOOR_FILES, type ListItem as FloorItem, pending, readLedger, readList } from '../walk-the-floor/lib/floor.ts';
+import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
+import { Floor, FLOOR_PAUSE } from './lib/floor/floor.ts';
+import { INCIDENT_LABEL } from './lib/floor/incident.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
@@ -85,22 +87,14 @@ type LoopKnobs = {
    * references/callbacks.md for the ladder.
    */
   callbacksDir: string;
-  seats: { appraiser: string; confirmer: string; callback: string; worker: string; reviewer: string; carver?: string; carveConfirmer?: string };
+  seats: { appraiser: string; confirmer: string; callback: string; worker: string; reviewer: string; walker: string; carver?: string; carveConfirmer?: string };
   /** The knife's knobs; see carve-github-issue/references/adopting.md. */
   carve: typeof CARVE_DEFAULTS;
   /**
-   * When set, the loop starts the walk-the-floor skill beside itself, puts every merge on the
-   * floor, and stops merging the moment a walk finds the deployed base wrong. Requires a
-   * walk-the-floor.config.ts in the same repository.
+   * When set, every merge goes up onto the floor, the loop walks the deployed base on a cadence,
+   * and a walk that finds it wrong pauses the line until it is right again. See references/floor.md.
    */
-  floor?: {
-    cadenceMinutes: number;
-    /**
-     * How long, after the run is done, to wait for the walker to finish the items still on the
-     * floor (the run's own last merges among them) before stopping it. Default 60.
-     */
-    drainMinutes?: number;
-  };
+  floor?: FloorConfigInput;
 };
 
 const DEFAULTS: LoopKnobs = {
@@ -198,6 +192,7 @@ const DEFAULTS: LoopKnobs = {
     callback: 'codex:gpt-5.6-sol',
     worker: 'codex:gpt-5.6-sol',
     reviewer: 'claude:claude-opus-5',
+    walker: 'claude:claude-opus-5',
   },
 };
 
@@ -210,6 +205,8 @@ const DEFAULTS: LoopKnobs = {
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The appraisal prompts, shipped with the sibling skill this loop depends on for sizing. */
 const APPRAISE_PROMPTS = join(HERE, '..', 'appraise-github-issues', 'prompts');
+/** The loop's own prompts: the floor's walk and diagnosis. */
+const LOOP_PROMPTS = join(HERE, 'prompts');
 /** The fix pipeline's own prompts, shipped with the sibling skill this loop depends on. */
 const FIX_PROMPTS = join(HERE, '..', 'fix-github-issue', 'prompts');
 /** The knife's prompts: the sweep revisits trunks in process, so the loop renders carve.md and revisit.md itself. */
@@ -221,7 +218,7 @@ const CARVE_PROMPTS = join(HERE, '..', 'carve-github-issue', 'prompts');
  * repository, so this answers with the main checkout wherever it is invoked from.
  */
 /** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
-export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat'] } as const;
+export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat', 'walker', 'floor', 'base-url'] } as const;
 export const USAGE = `burn-down-github-issues: appraise, carve, work, review, and land a repository's open issues, headless.
 Run it from inside the target repository. With no flags it starts a REAL run on the whole window.
 
@@ -236,7 +233,10 @@ Run it from inside the target repository. With no flags it starts a REAL run on 
   --pulse <minutes>       how often the whole operator board is printed
   --silent                print no operator board
   --closure <file>        print every module the import-closure walk reaches from that file, and exit
-  --worker, --reviewer, --confirmer, --appraiser, --carver, --carve-confirmer, --callback-seat <seat>
+  --floor <mode>          walk the floor and work no issue: once, liveness (probe only), watch
+                          (on the cadence until Ctrl+C), or drain (until every merge is verified)
+  --base-url <url>        walk this URL in place of the floor's configured one
+  --worker, --reviewer, --confirmer, --appraiser, --carver, --carve-confirmer, --callback-seat, --walker <seat>
                           engine[:model] for that seat, for example codex:gpt-5.6-sol
   --issue <n>             not accepted here: one issue alone is fix.ts --issue <n>
   --help, -h              print this and exit
@@ -288,15 +288,15 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
 });
 
 assertConfirmCloses(CONFIG.confirmCloses, 'burn-down-github-issues.config.ts');
-if (CONFIG.floor) {
-  for (const key of ['cadenceMinutes', 'drainMinutes'] as const) {
-    const value = CONFIG.floor[key];
-    if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
-      console.error(`config floor.${key} must be a positive integer, got ${JSON.stringify(value)}`);
-      process.exit(1);
-    }
+const FLOOR_CONFIG = (() => {
+  if (!CONFIG.floor) return null;
+  const { floor, faults } = resolveFloor(CONFIG.floor);
+  if (faults.length > 0) {
+    console.error(['config floor is invalid:', ...faults.map((f) => `  - ${f}`)].join('\n'));
+    process.exit(1);
   }
-}
+  return floor;
+})();
 
 const PROJECT = CONFIG.project;
 const REMOTE = PROJECT.remote;
@@ -307,13 +307,13 @@ const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 // ---------------------------------------------------------------------------
 // The line. A file switch anyone can flip stops the loop at its three seams: before the appraisal
 // batch, before each issue is dispatched, and inside the pull master before every merge. The
-// walker, when configured, flips it through the callbacks written below; a person flips it with
-// `echo pause > <runs>/line-switch`. Absent means go; an unknown word means pause.
+// floor, when configured, pauses it when a walk finds the deployed base wrong and releases its own
+// pause once nothing is; a person flips it with `echo pause > <runs>/line-switch`. Absent means
+// go; an unknown word means pause.
 // ---------------------------------------------------------------------------
 
 const SWITCH_FILE = join(RUN_DIR, 'line-switch');
 const FLOOR_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor');
-const WALK_TS = join(HERE, '..', 'walk-the-floor', 'walk.ts');
 const SWITCH_POLL_MS = 30 * 1000;
 
 function readSwitch(): { state: 'go' | 'pause'; reason: string } {
@@ -327,14 +327,15 @@ function readSwitch(): { state: 'go' | 'pause'; reason: string } {
  * Holds until the switch says go. The log gets one line per pause; the operator board gets the
  * elapsed pause on every poll, so a paused line is never mistaken for a quiet one.
  */
-async function waitForGo(where: string): Promise<void> {
+async function waitForGo(where: string, passFloorPause = false): Promise<void> {
   let announced = false;
   for (;;) {
     // A paused line holds a card for as long as it takes; a stop ends the hold, and the lane with it.
     if (isStopping()) throw new RunStopping(`the run is stopping; no longer holding ${where}`);
     const sw = readSwitch();
-    if (sw.state === 'go') {
-      setLine('active');
+    // An incident's fix is the merge that clears the floor's own pause; a person's pause still holds it.
+    if (sw.state === 'go' || (passFloorPause && sw.reason.startsWith(FLOOR_PAUSE))) {
+      if (sw.state === 'go') setLine('active');
       if (announced) log(`line is go again; resuming ${where}`);
       return;
     }
@@ -349,153 +350,6 @@ async function waitForGo(where: string): Promise<void> {
   }
 }
 
-/** One list item per merge, in the floor's documented shape, so the walker checks what landed. */
-function putOnTheFloor(event: { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[]; unseenBase?: string }): void {
-  if (!CONFIG.floor) return;
-  mkdirSync(FLOOR_DIR, { recursive: true });
-  const item = {
-    id: `pull-request:${event.pr}`,
-    addedAt: new Date().toISOString(),
-    source: 'burndown',
-    // A merge that landed across a commit nobody checked it against is the walker's first suspect.
-    text: event.unseenBase ? `${event.title} (landed on unseen base ${event.unseenBase.slice(0, 10)})` : event.title,
-    ref: { pullRequest: event.pr, sha: event.sha, mergedAt: event.mergedAt, paths: event.paths, unseenBase: event.unseenBase },
-  };
-  appendFileSync(join(FLOOR_DIR, 'list.jsonl'), `${JSON.stringify(item)}\n`);
-}
-
-/**
- * Starts the walker beside the loop and writes the two callbacks that tie it to the switch. The
- * executable form is deliberate: the interlock must not depend on an agent following a prompt.
- * Returns the function that stops it.
- */
-type Walker = { stop: () => void;
-  /** stop, then wait for the exit with a bounded escalation to SIGKILL. */
-  stopAndWait: () => Promise<void>; drain: () => Promise<void> };
-
-/**
- * The previous run releases its instance lock before it drains its walker, so this run can start
- * while that walker still holds the floor. One walker per floor: wait for it to finish, bounded
- * by the drain window, rather than start a second one that would refuse the lock and leave this
- * run unprotected.
- */
-async function awaitFloorFree(maxMinutes: number): Promise<void> {
-  const lock = join(FLOOR_DIR, FLOOR_FILES.lock);
-  const holder = (): number | null => {
-    if (!existsSync(lock)) return null;
-    const pid = Number(readFileSync(lock, 'utf8').trim());
-    try {
-      process.kill(pid, 0);
-      return pid;
-    } catch {
-      return null;
-    }
-  };
-  const deadline = Date.now() + maxMinutes * 60_000;
-  let announced = false;
-  for (;;) {
-    const pid = holder();
-    if (pid === null) return;
-    if (!announced) {
-      log(`a walker from an earlier run (pid ${pid}) still holds the floor; waiting up to ${maxMinutes} minute(s) for it to finish`);
-      announced = true;
-    }
-    if (Date.now() > deadline) {
-      log(`walker ${pid} still holds the floor after ${maxMinutes} minute(s); starting without one would leave this run unprotected, so this run runs without the floor`);
-      return;
-    }
-    await Bun.sleep(10_000);
-  }
-}
-
-function startWalker(cadenceMinutes: number, drainMinutes: number): Walker {
-  mkdirSync(FLOOR_DIR, { recursive: true });
-  mkdirSync(RUN_DIR, { recursive: true });
-  const onFail = `#!/bin/sh
-# Written by burn-down-github-issues. A failed walk pauses the line; the reason names the item.
-entry=$(cat)
-id=$(printf '%s' "$entry" | sed -E 's/.*"itemId":"([^"]*)".*/\\1/')
-verdict=$(printf '%s' "$entry" | sed -E 's/.*"verdict":"([^"]*)".*/\\1/')
-printf 'pause\nfloor: %s is %s; see the ledger on the floor\n' "$id" "$verdict" > '${SWITCH_FILE}'
-`;
-  const onPass = `#!/bin/sh
-# Written by burn-down-github-issues. A passing walk releases a pause that the same item caused,
-# and nothing else: a pause a person set by hand stays until that person clears it.
-entry=$(cat)
-id=$(printf '%s' "$entry" | sed -E 's/.*"itemId":"([^"]*)".*/\\1/')
-f='${SWITCH_FILE}'
-if [ -f "$f" ] && sed -n '2p' "$f" | grep -q "^floor: $id is "; then printf 'go\n' > "$f"; fi
-`;
-  writeFileSync(join(FLOOR_DIR, 'on-fail'), onFail);
-  writeFileSync(join(FLOOR_DIR, 'on-pass'), onPass);
-  chmodSync(join(FLOOR_DIR, 'on-fail'), 0o755);
-  chmodSync(join(FLOOR_DIR, 'on-pass'), 0o755);
-
-  const logFd = openSync(join(RUN_DIR, 'floor.log'), 'a');
-  const proc = Bun.spawn(['bun', 'run', WALK_TS, '--dir', FLOOR_DIR, '--every', String(cadenceMinutes)], {
-    cwd: INVOKE_ROOT,
-    stdout: logFd,
-    stderr: logFd,
-  });
-  log(`walker started (pid ${proc.pid}) on ${FLOOR_DIR}, every ${cadenceMinutes} minute(s); log in ${join(RUN_DIR, 'floor.log')}`);
-  const stop = () => {
-    try {
-      proc.kill();
-    } catch {
-      // already gone
-    }
-  };
-  /** SIGTERM, then a bounded wait, then SIGKILL: an orphan walker would keep floor.lock and silently unprotect the next run. */
-  const stopAndWait = async () => {
-    if (proc.exitCode !== null) return;
-    stop();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const outcome = await Promise.race([
-      proc.exited.then(() => 'exited' as const),
-      new Promise<'timeout'>((done) => {
-        timer = setTimeout(() => done('timeout'), 5_000);
-      }),
-    ]);
-    clearTimeout(timer);
-    if (outcome === 'timeout') {
-      log('walker ignored SIGTERM; killing it');
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // gone
-      }
-    }
-  };
-  // The run's last merges land on the floor seconds before "done"; killing the walker there
-  // would leave them unwalked. SIGUSR1 asks it to finish what is pending and exit on its own.
-  const drain = async () => {
-    if (proc.exitCode !== null) return;
-    const stillPending = () => pendingOnTheFloor().length;
-    log(`asking the walker to finish the ${stillPending()} item(s) still on the floor; waiting up to ${drainMinutes} minute(s)`);
-    proc.kill('SIGUSR1');
-    // A plain timer, cleared on exit: a pending sleep would keep this process alive for the whole
-    // window after the walker had already gone.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<'timeout'>((done) => {
-      timer = setTimeout(() => done('timeout'), drainMinutes * 60_000);
-    });
-    const outcome = await Promise.race([proc.exited.then(() => 'exited' as const), timeout]);
-    clearTimeout(timer);
-    if (outcome === 'exited') {
-      log('walker finished; the floor is clear');
-      return;
-    }
-    log(`walker still has ${stillPending()} item(s) pending after ${drainMinutes} minute(s); stopping it. Finish them with: bun run ${WALK_TS} --dir ${FLOOR_DIR} --once`);
-    stop();
-  };
-  return { stop, stopAndWait, drain };
-}
-
-/** Floor items with no terminal verdict yet, read the same way the walker reads them. */
-function pendingOnTheFloor(): FloorItem[] {
-  return pending(readList(FLOOR_DIR), readLedger(FLOOR_DIR));
-}
-
 const args = process.argv.slice(2);
 
 const flag = (name: string) => args.includes(`--${name}`);
@@ -505,6 +359,17 @@ const opt = (name: string) => {
 };
 
 const DRY_RUN = flag('dry-run');
+const FLOOR_MODES = ['once', 'liveness', 'watch', 'drain'] as const;
+const FLOOR_MODE = opt('floor') as (typeof FLOOR_MODES)[number] | undefined;
+if (FLOOR_MODE !== undefined && !FLOOR_MODES.includes(FLOOR_MODE)) {
+  console.error(`--floor expects one of ${FLOOR_MODES.join(', ')}, got '${FLOOR_MODE}'`);
+  process.exit(1);
+}
+// Another URL makes the floor a rehearsal that records nothing, which a real run could never drain.
+if (opt('base-url') !== undefined && FLOOR_MODE === undefined) {
+  console.error('--base-url rehearses the floor alone; pair it with --floor');
+  process.exit(1);
+}
 /** A count option: a mistyped value must refuse, not become NaN and quietly select nothing. */
 function countOption(name: string, fallback: number): number {
   const raw = opt(name);
@@ -575,6 +440,7 @@ const SEATS = (() => {
       callback: parseSeat(opt('callback-seat') ?? CONFIG.seats.callback, '--callback-seat'),
       worker: parseSeat(opt('worker') ?? CONFIG.seats.worker, '--worker'),
       reviewer: parseSeat(opt('reviewer') ?? CONFIG.seats.reviewer, '--reviewer'),
+      walker: parseSeat(opt('walker') ?? CONFIG.seats.walker, '--walker'),
       // The knife's seats resolve after the merge, so an adopter's worker override carries.
       carver: parseSeat(opt('carver') ?? CONFIG.seats.carver ?? CONFIG.seats.worker, '--carver'),
       carveConfirmer: parseSeat(opt('carve-confirmer') ?? CONFIG.seats.carveConfirmer ?? CONFIG.seats.confirmer ?? CONFIG.seats.reviewer, '--carve-confirmer'),
@@ -662,15 +528,47 @@ const ctx = createContext({
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
-  promptsDirs: [APPRAISE_PROMPTS, FIX_PROMPTS, CARVE_PROMPTS],
+  promptsDirs: [LOOP_PROMPTS, APPRAISE_PROMPTS, FIX_PROMPTS, CARVE_PROMPTS],
   dryRun: DRY_RUN,
-  mayMerge: async () => {
-    await waitForGo('the merge queue');
+  // An incident's fix is the merge that clears the floor's own pause, so it passes that pause;
+  // a person's pause holds it like any other.
+  mayMerge: async (issue) => {
+    await waitForGo('the merge queue', issue.labels.some((label) => label.name === INCIDENT_LABEL));
     return { ok: true } as const;
   },
   // The pipeline has already placed the card in Merged by the time this fires.
-  afterMerge: (event) => putOnTheFloor(event),
+  afterMerge: (event) => FLOOR?.put(event),
 });
+
+/**
+ * The floor, when configured: merges go up onto it, and walks of the deployed base pause the line
+ * when they find it wrong. An incident's fix lands through a pull master of its own. Sharing the
+ * lanes' queue would deadlock: a lane waits at the paused gate inside its slot, and the fix that
+ * clears the pause would queue behind it. A lane released from that gate looks upstream again
+ * before it merges, so the fix that landed meanwhile is caught up like any other.
+ */
+// A dry run walks only when asked to (`--floor`): it probes and classifies and writes nothing.
+const FLOOR: Floor | null =
+  FLOOR_CONFIG && (!DRY_RUN || FLOOR_MODE)
+    ? new Floor({
+        ctx: { ...ctx, integrationQueue: Promise.resolve(), landingLine: [] },
+        config: FLOOR_CONFIG,
+        dir: FLOOR_DIR,
+        switchFile: SWITCH_FILE,
+        callbacksDir: resolveCallbacksDir(ctx, CONFIG.callbacksDir),
+        seats: { walker: SEATS.walker, callback: SEATS.callback },
+        maxPoints: MAX_POINTS,
+        log,
+        baseUrl: opt('base-url'),
+        print: (readout) => console.log(`\n${readout}\n`),
+        // A walk that passes is the machine's WALKED event: the card moves to Verified on the floor.
+        onWalked: (item, entry, incident) => {
+          if (!item.ref?.issue) return;
+          if (entry.verdict === 'present' || entry.verdict === 'intact') place(item.ref.issue, item.text, 'T3', `${entry.verdict} by ${entry.rung}`);
+          else if (entry.verdict === 'absent') place(item.ref.issue, item.text, 'T1', `floor: absent${incident ? `; incident #${incident}` : ''}`);
+        },
+      })
+    : null;
 
 /** The knife, as the loop runs it: the loop's ceiling, the config's carve block, the resolved seats. */
 const CARVE_KNOBS: CarveKnobs = {
@@ -797,7 +695,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
       });
       place(issue.number, issue.title, 'T1', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
       if (!DRY_RUN && pr.mergeCommit) {
-        putOnTheFloor({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
+        FLOOR?.put({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
       }
       open.delete(ref);
     }
@@ -1045,9 +943,9 @@ let SKIP_APPRAISAL_THIS_RUN = false;
 const SHIPPED_CALLBACKS = join(HERE, 'callbacks');
 
 /**
- * Writes the loop's size callbacks where the appraiser looks, the way `startWalker` writes the
- * floor's `on-fail`. Shipped files are overwritten so a skill update reaches the adopter; any file
- * the adopter added under another name is left alone. Returns the directory.
+ * Writes the loop's size callbacks where the appraiser looks. Shipped files are overwritten so a
+ * skill update reaches the adopter; any file the adopter added under another name (the floor's
+ * `on-walk` and `on-walk-fail` among them) is left alone. Returns the directory.
  */
 function placeSizeCallbacks(): string {
   const dir = resolveCallbacksDir(ctx, CONFIG.callbacksDir);
@@ -1188,35 +1086,38 @@ async function main(): Promise<void> {
   }
   // A polite kill should leave nothing behind: release the lock and take the agents with it. Only
   // SIGKILL can still leave wreckage, which is what `reconcile` exists to clear on the next run.
-  // The walker is a child that would otherwise keep this process alive after the run is done, so
-  // main drains it (finish the floor, then exit) and every other exit path stops it outright.
-  if (CONFIG.floor && !DRY_RUN) await awaitFloorFree(CONFIG.floor.drainMinutes ?? 60);
-  const walker: Walker =
-    CONFIG.floor && !DRY_RUN
-      ? startWalker(CONFIG.floor.cadenceMinutes, CONFIG.floor.drainMinutes ?? 60)
-      : { stop: () => {}, stopAndWait: async () => {}, drain: async () => {} };
-  // The run's own work is done once the last lane returns; the walker's drain is the floor's, not
-  // the instance's, so the lock goes first and the next run may start while this one waits.
+  // The run is done when its merges are verified on the floor too, so the floor drains under the
+  // lock: a second run never walks the same floor at the same time.
   const finish = async () => {
+    if (FLOOR) {
+      step('Walking the floor until this run\'s merges are verified');
+      await FLOOR.drain('run');
+    }
     step('done');
     pulse('final');
     stopPulse();
     releaseLock();
-    log('instance lock released; the walker drains without it');
-    await walker.drain();
   };
-  const stopWalker = walker.stop;
   const stopPulse = startPulse(PULSE_MINUTES);
   if (!SILENT) log(`operator board: a line per issue on every change, the whole board every ${PULSE_MINUTES} minute(s); --silent turns it off`);
   process.on('exit', () => {
     stopPulse();
-    stopWalker();
+    FLOOR?.stop();
     releaseLock();
   });
   installStopHandler(log, async () => {
-    await walker.stopAndWait();
+    FLOOR?.stop();
     releaseLock();
   });
+  if (FLOOR_MODE) {
+    process.exitCode = await walkTheFloorOnly(FLOOR_MODE);
+    releaseLock();
+    return;
+  }
+  // The floor starts before the stranded resume: a resumed landing waits at the gate on a floor
+  // pause an earlier run left, and only a walk can clear it. An incident a crashed lane was fixing
+  // is still open, so the first walk leaves it to the resume rather than working it twice.
+  FLOOR?.start();
 
   ensureLabels(ctx);
   if (!DRY_RUN) {
@@ -1338,6 +1239,25 @@ async function main(): Promise<void> {
   );
 
   await finish();
+}
+
+/** `--floor <mode>`: the floor alone, under the instance lock, so it never races a running loop. */
+async function walkTheFloorOnly(mode: (typeof FLOOR_MODES)[number]): Promise<number> {
+  if (!FLOOR) {
+    log('--floor needs a floor block in burn-down-github-issues.config.ts; see references/floor.md');
+    return 2;
+  }
+  step(`${PROJECT.name} floor: ${mode}`);
+  if (mode === 'watch') {
+    FLOOR.start();
+    await new Promise(() => {});
+  }
+  if (mode === 'drain') {
+    await FLOOR.drain('all');
+    return FLOOR.owed('all').length > 0 ? 1 : 0;
+  }
+  const walk = await FLOOR.walkOnce({ livenessOnly: mode === 'liveness' });
+  return walk === null || walk.wrong ? 1 : 0;
 }
 
 // A stop unwinds main through RunStopping; that is the signal handler's exit to make, once the

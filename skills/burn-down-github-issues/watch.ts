@@ -5,11 +5,9 @@
  *   bun run <skill-dir>/watch.ts                 # events from the current run; exits when the driver exits
  *   bun run <skill-dir>/watch.ts --all           # every line, not only events
  *   bun run <skill-dir>/watch.ts --wait          # print nothing until the run ends, then its terminal lines
- *   bun run <skill-dir>/watch.ts --floor <dir>   # follow a standalone walker on <dir> instead of the loop
  *
- * The loop tees its console to `<worktreeRoot>/runs/driver.log` and its walker child to
- * `runs/floor.log`; a standalone walker tees to `<floor>/walk.log`. This script polls those files
- * in-process and reports the pid it found in the lock, so an agent watching a run needs one
+ * The loop tees its console, the floor's walks and readouts included, to
+ * `<worktreeRoot>/runs/driver.log`. This script polls that file in-process and reports the pid it found in the lock, so an agent watching a run needs one
  * command and no `tail`, `kill`, `pgrep`, or subshell. It reads and never writes.
  *
  * With no lock, or a lock whose pid is gone, it prints what the last run left and exits 0; a run
@@ -22,20 +20,18 @@ import { invokeRootFrom, loadProjectConfig, PIPELINE_DEFAULTS, repoRootFrom } fr
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
-const opt = (name: string) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : undefined;
-};
 
 const ALL = flag('all');
 const WAIT = flag('wait');
-const FLOOR = opt('floor');
 
 /** The lines an operator acts on; everything else is agent chatter echoed through. */
 const EVENT = new RegExp(
   [
     'run pid \\d+ started',
-    'walker started',
+    'floor:',
+    '· floor walk',
+    '^- (✅|🔄|🩺|⚠️|⛔)',
+    '^  - ',
     'running (appraiser|worker|reviewer|walker) on',
     'appraisal:',
     'verdict:',
@@ -160,25 +156,11 @@ async function main(): Promise<void> {
     help: ['watch.ts reads the same config as loop.ts to find the runs directory.'],
   });
 
-  let lockPath: string;
-  let files: Followed[];
-  if (FLOOR) {
-    const dir = resolve(FLOOR);
-    lockPath = join(dir, 'floor.lock');
-    files = [{ path: join(dir, 'walk.log'), offset: 0, label: 'walk' }];
-    seekToLastRun(files[0], /^.*walk-the-floor$/gm);
-  } else {
-    const runDir = resolve(repoRoot, project.worktreeRoot, 'runs');
-    lockPath = join(runDir, 'loop.lock');
-    files = [
-      { path: join(runDir, 'driver.log'), offset: 0, label: 'loop' },
-      { path: join(runDir, 'floor.log'), offset: 0, label: 'floor' },
-    ];
-    // The driver's header is timestamped like every other log line.
-    seekToLastRun(files[0], /^\d{2}:\d{2}:\d{2}  run pid \d+ started/gm);
-    // The floor log has no per-run header; show only what arrives from now on.
-    if (existsSync(files[1].path)) files[1].offset = statSync(files[1].path).size;
-  }
+  const runDir = resolve(repoRoot, project.worktreeRoot, 'runs');
+  const lockPath = join(runDir, 'loop.lock');
+  const files: Followed[] = [{ path: join(runDir, 'driver.log'), offset: 0, label: 'loop' }];
+  // The driver's header is timestamped like every other log line.
+  seekToLastRun(files[0], /^\d{2}:\d{2}:\d{2}  run pid \d+ started/gm);
 
   const pid = readLockPid(lockPath);
   const held: string[] = [];

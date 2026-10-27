@@ -21,8 +21,8 @@ a landing, revising until the issue's review budget is spent. Each seat ends at 
 remote, and the driver moves the card between them: the coder at a pushed commit it announces on
 the issue, the prover at a ready pull request whose head is the proven commit.
 
-Invoked by `burn-down-github-issues` (one call per Ready card) and `walk-the-floor` (the repair
-after an incident), both through `fixIssue`.
+Invoked by `burn-down-github-issues`, once per Ready card and once per floor incident, through
+`fixIssue`.
 
 The pipeline is shared; the repository is config. Nothing here is copied into a repository.
 Everything true of a repository (remotes, branches, commands, path aliases, invalidation paths)
