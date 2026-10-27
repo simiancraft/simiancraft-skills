@@ -78,7 +78,7 @@ describe('a walk that finds the environment down', () => {
     expect(f.calls('on-walk-fail')).toBe(1);
     // Nothing here needs a person yet: the outage is a heads-up, not a question.
     expect(f.readouts[0]).toContain('liveness is down');
-    expect(f.readouts[0]).toContain('⛔ Nothing waiting on you.');
+    expect(f.readouts[0]).toContain('🟢 Nothing needs you.');
 
     await f.floor.walkOnce({ livenessOnly: true });
     expect(f.calls('on-walk-fail')).toBe(1);

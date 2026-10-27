@@ -559,20 +559,30 @@ export class Floor {
       else if (entry.verdict === 'not-checkable') headsUp.push(`${label(entry.itemId)}: not checkable; ${entry.reason}`);
       else if (!REPAIR.has(entry.verdict)) pendingLines.push(`${label(entry.itemId)}: ${entry.verdict.replaceAll('-', ' ')}`);
     }
-    // Only what a person must act on is waiting on them; a failure the floor is repairing is in flight.
-    for (const entry of entries.filter((e) => REPAIR.has(e.verdict))) {
+    // Only what a person must act on is waiting on them, and it stays there every walk until they
+    // do, walked this time or not; a failure the floor is still repairing is in flight.
+    for (const entry of entries.filter((e) => REPAIR.has(e.verdict) && !this.withAPerson.has(e.itemId))) {
       const incident = incidents.find((i) => i.itemId === entry.itemId);
       const text = `${label(entry.itemId)} is ${entry.verdict}: ${entry.reason}`;
-      if (this.withAPerson.has(entry.itemId)) waiting.push(`${text}; incident #${incident?.issue ?? this.incidentOf.get(entry.itemId) ?? '?'} needs a person`);
-      else if (incident) pendingLines.push(`${text}; incident #${incident.issue}: ${incident.outcome}, walked again next time`);
+      if (incident) pendingLines.push(`${text}; incident #${incident.issue}: ${incident.outcome}, walked again next time`);
       else headsUp.push(text);
+    }
+    for (const itemId of this.withAPerson) {
+      const issue = this.incidentOf.get(itemId);
+      waiting.push(`${label(itemId)} is still wrong and incident ${issue ? `#${issue}` : '(see floor/incident)'} is parked for you: fix it, close it, or lift its label to hand it back`);
     }
     if (this.ownPause()) headsUp.push('the merge line is paused until a walk finds the floor right again');
     if (stillPending > 0) pendingLines.push(`${stillPending} item(s) on the floor still owed a verdict`);
     return renderReadout({
+      since: new Date(this.openedAt),
       title: 'floor walk',
-      labels: { landed: 'Verified', inFlight: 'Pending' },
-      sections: { landed: verified, inFlight: pendingLines, health: [health], headsUp, waiting },
+      sections: [
+        { emoji: '✅', label: 'Verified', lines: verified },
+        { emoji: '🔄', label: 'Pending', lines: pendingLines },
+        { emoji: '🩺', lines: [health] },
+        { emoji: '⚠️', lines: headsUp },
+      ],
+      needsYou: waiting,
     });
   }
 

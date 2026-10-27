@@ -85,15 +85,15 @@ anything that looks like a value, and the values live only in the shell that sta
    and runs `on-walk`. A walk that found nothing new (still up, nothing to walk) is silent.
 
 ```
-14:20 CDT · floor walk
+14:20 CDT · 40m in · floor walk
 
 - ✅ Verified: PR #812 fix(search): return an empty page: present (look)
 - 🔄 Pending: PR #815 feat(export): add CSV: not yet deployed
-- 🩺 Health: up: / 200 120ms; /api/health 200 41ms; deployed 9f3c2a1b7e
-- ⛔ Nothing waiting on you.
+- 🩺 up: / 200 120ms; /api/health 200 41ms; deployed 9f3c2a1b7e
+- 🟢 Nothing needs you.
 ```
 
-Inside a quiet window a walk still probes, records, and prints its readout, so the ledger stays
+Inside a quiet window a walk still probes, records, and prints any news, so the ledger stays
 honest, but it pauses nothing, runs no callback, files nothing, and leaves item walks to the next
 one. An outage that outlasts the window is handled on the first walk after it.
 
@@ -181,7 +181,7 @@ open one for the item) and hands it to `fix-github-issue` like any other issue. 
 through the floor's own pause (it is the merge that makes the next walk come back clean) but still
 waits on a pause a person set; it lands through a pull master of its own, since the lanes' one may
 be held by a lane waiting at that very pause, and its merge goes up onto the floor too. The readout lists an incident the floor is
-repairing under 🔄, and under ⛔ only once a person owns it.
+repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
 
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)
 parks the incident for a person instead. An incident with a person, parked or dead-lettered or
