@@ -15,10 +15,8 @@
  * as invoking another skill to break the issue apart.
  */
 
-import { mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { readResult, renderTemplate, runAgent } from '../../fix-github-issue/lib/agent.ts';
-import { hasCallback, runCallback } from '../../fix-github-issue/lib/callbacks.ts';
+import { readdirSync } from 'node:fs';
+import { type CallbackVerdict, CALLBACK_FILE, hasCallback, runCallback, runCallbackPrompt } from '../../fix-github-issue/lib/callbacks.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
@@ -37,8 +35,7 @@ export type SizePayload = {
   repoRoot: string;
 };
 
-/** What a callback prompt may write to `loop-callback.json` to be recorded; optional. */
-export type CallbackVerdict = { outcome: string; reason: string };
+export { type CallbackVerdict, CALLBACK_FILE };
 
 export type SizeCallbackResult = {
   /** The slot name that matched, or null when the directory holds nothing for this size. */
@@ -47,7 +44,6 @@ export type SizeCallbackResult = {
   prompt?: { exitCode: number; verdict: CallbackVerdict | null };
 };
 
-export const CALLBACK_FILE = 'loop-callback.json';
 
 /** The slot name the ladder resolves to for `points`, or null. */
 export function resolveSizeCallback(dir: string, points: number): string | null {
@@ -99,24 +95,21 @@ export async function runSizeCallback(
     say(`DRY RUN  would run the ${name}.md prompt on ${seat.engine}`);
     return result;
   }
-  const cwd = join(ctx.runDir, `callback-${issue.number}-${process.pid}`);
-  rmSync(cwd, { recursive: true, force: true });
-  mkdirSync(cwd, { recursive: true });
-  const prompt = renderTemplate(ctx, slot.prompt, {
-    ISSUE: String(payload.issue),
-    TITLE: payload.title,
-    POINTS: String(payload.points),
-    PRIOR_POINTS: payload.priorPoints === null ? 'none' : String(payload.priorPoints),
-    REASON: payload.reason,
-    CALLBACK_FILE,
-  });
-  const run = await runAgent(ctx, 'callback', issue.number, cwd, seat, prompt);
-  const verdict = run.exitCode === 0 ? readResult<CallbackVerdict>(cwd, CALLBACK_FILE) : null;
-  const usable = verdict && typeof verdict.outcome === 'string' && typeof verdict.reason === 'string' ? verdict : null;
-  if (usable) say(`${name}.md: ${usable.outcome}; ${usable.reason}`);
-  else if (run.exitCode !== 0) say(`${name}.md exited ${run.exitCode}`);
-  else say(`${name}.md finished without a recorded outcome`);
-  rmSync(cwd, { recursive: true, force: true });
-  result.prompt = { exitCode: run.exitCode, verdict: usable };
+  const run = await runCallbackPrompt(
+    ctx,
+    seat,
+    name,
+    slot.prompt,
+    {
+      ISSUE: String(payload.issue),
+      TITLE: payload.title,
+      POINTS: String(payload.points),
+      PRIOR_POINTS: payload.priorPoints === null ? 'none' : String(payload.priorPoints),
+      REASON: payload.reason,
+    },
+    issue.number,
+    say,
+  );
+  result.prompt = run;
   return result;
 }

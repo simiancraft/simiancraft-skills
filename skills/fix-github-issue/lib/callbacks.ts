@@ -6,9 +6,17 @@
  * load-bearing (an interlock, a label, a pause) never depends on an agent following prose.
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { children, killAgent, SETSID } from './agent.ts';
+import { children, killAgent, readResult, renderTemplate, runAgent, SETSID } from './agent.ts';
+import type { Context } from './context.ts';
+import type { Seat } from './engines.ts';
+import { RunStopping } from './shell.ts';
+
+/** What a callback prompt may write to `loop-callback.json` to be recorded; optional. */
+export type CallbackVerdict = { outcome: string; reason: string };
+
+export const CALLBACK_FILE = 'loop-callback.json';
 
 export type CallbackResult = {
   /** True when an executable existed and was run to completion (any exit code). */
@@ -94,4 +102,40 @@ export async function runCallback(
     result.prompt = readFileSync(prompt, 'utf8');
   }
   return result;
+}
+
+/**
+ * Runs a slot's prompt form as one agent turn on `seat`, in a scratch directory that is not a
+ * checkout, rendered with the project vocabulary plus `vars` and `{{CALLBACK_FILE}}`. Throws only
+ * for a stop: a turn that fails, cannot start, or answers nothing is logged with a null verdict.
+ */
+export async function runCallbackPrompt(
+  ctx: Context,
+  seat: Seat,
+  name: string,
+  template: string,
+  vars: Record<string, string>,
+  key: number,
+  say: (message: string) => void,
+): Promise<{ exitCode: number; verdict: CallbackVerdict | null }> {
+  const cwd = join(ctx.runDir, `callback-${name}-${key}-${process.pid}`);
+  try {
+    rmSync(cwd, { recursive: true, force: true });
+    mkdirSync(cwd, { recursive: true });
+    const prompt = renderTemplate(ctx, template, { ...vars, CALLBACK_FILE });
+    const run = await runAgent(ctx, 'callback', key, cwd, seat, prompt);
+    const answer = run.exitCode === 0 ? readResult<CallbackVerdict>(cwd, CALLBACK_FILE) : null;
+    const verdict = answer && typeof answer.outcome === 'string' && typeof answer.reason === 'string' ? answer : null;
+    if (verdict) say(`${name}.md: ${verdict.outcome}; ${verdict.reason}`);
+    else if (run.exitCode !== 0) say(`${name}.md exited ${run.exitCode}`);
+    else say(`${name}.md finished without a recorded outcome`);
+    return { exitCode: run.exitCode, verdict };
+  } catch (error) {
+    // A stop unwinds through here; anything else is the callback's failure, never the caller's.
+    if (error instanceof RunStopping) throw error;
+    say(`${name}.md could not run: ${(error as Error).message}`);
+    return { exitCode: -1, verdict: null };
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 }
