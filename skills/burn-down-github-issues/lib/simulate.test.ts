@@ -3,16 +3,20 @@ import { LANES } from './lanes.ts';
 import { MACHINE, transitions, walk } from './machine.ts';
 import { atoms, fire, laneKey, laneState, Leak, settle, successors } from './simulate.ts';
 
-/** Lane sequences the real driver wrote to its logs, per issue, from real runs; issue numbers are renumbered. */
+/**
+ * Lane sequences the real driver wrote to its logs, per issue, from real runs; issue numbers are
+ * renumbered. They were recorded while one worker turn both coded and proved, so the driver logged
+ * Coding or Sent back and then Ready for review; D2 is written in where the prover's own turn now sits.
+ */
 const RECORDED: Array<{ run: string; issue: number; lanes: string }> = [
-  { run: 'stage 1, one issue', issue: 101, lanes: 'D1 E1 E2 F1 F3 F4 F5 T1' },
-  { run: 'stage 2, loop', issue: 102, lanes: 'D1 E1 E2 F1 F3 F4 F5 T1' },
-  { run: 'stage 2, fix.ts, boundary park', issue: 103, lanes: 'A1 D1 E1 E2 F1 H3' },
-  { run: 'stage 3, boundary park', issue: 104, lanes: 'D1 E1 E2 F1 H3' },
-  { run: 'stage 3, base moved into the work', issue: 105, lanes: 'D1 E1 E2 F1 F2 E1 E2 F1 F3 F4 F5 T1' },
-  { run: 'stage 3, appraised then worked', issue: 106, lanes: 'A2 B1 D1 E1 E2 F1 F3 F4 F5 T1' },
-  { run: 'redrive from the review dead letters', issue: 107, lanes: 'Q4 D4 E1 E2 F1 F2 E1 E2 F1 F3 F4 F5 T1' },
-  { run: 'redrive from parked, base moved', issue: 104, lanes: 'H3 F2 D4 E1 E2 F1 F3 F4 F5 T1' },
+  { run: 'stage 1, one issue', issue: 101, lanes: 'D1 D2 E1 E2 F1 F3 F4 F5 T1' },
+  { run: 'stage 2, loop', issue: 102, lanes: 'D1 D2 E1 E2 F1 F3 F4 F5 T1' },
+  { run: 'stage 2, fix.ts, boundary park', issue: 103, lanes: 'A1 D1 D2 E1 E2 F1 H3' },
+  { run: 'stage 3, boundary park', issue: 104, lanes: 'D1 D2 E1 E2 F1 H3' },
+  { run: 'stage 3, base moved into the work', issue: 105, lanes: 'D1 D2 E1 E2 F1 F2 E1 E2 F1 F3 F4 F5 T1' },
+  { run: 'stage 3, appraised then worked', issue: 106, lanes: 'A2 B1 D1 D2 E1 E2 F1 F3 F4 F5 T1' },
+  { run: 'redrive from the review dead letters', issue: 107, lanes: 'Q4 D4 D2 E1 E2 F1 F2 E1 E2 F1 F3 F4 F5 T1' },
+  { run: 'redrive from parked, base moved', issue: 104, lanes: 'H3 F2 D4 D2 E1 E2 F1 F3 F4 F5 T1' },
 ];
 
 describe('the machine leaks no card', () => {
@@ -130,6 +134,10 @@ describe('the landing is single file and checks upstream', () => {
 });
 
 describe('the driver only makes moves the machine allows', () => {
+  it('never takes a card from Coding or Sent back to review without a proving turn between', () => {
+    for (const from of ['D1', 'D4']) expect(successors(laneState(from), { ownEventsOnly: true }).has(laneState('E1'))).toBe(false);
+  });
+
   for (const { run, issue, lanes } of RECORDED) {
     it(`#${issue}, ${run}: ${lanes}`, () => {
       const keys = lanes.split(' ');

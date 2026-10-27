@@ -121,13 +121,13 @@ or W1 by their own facts. Every child that reaches T1 or T2 fires `FINGERPRINT_C
 trunk. The entry actions of C4 are the `applying` intent the carve lifecycle already announces,
 so any run can finish a spawn another run started.
 
-### Work (the worker; one worktree per card)
+### Work (one seat per lane, `code-github-issue` then `prove-github-issue`; one worktree per card)
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| D4 Sent back | PR to draft, run worker revision | `DRAFT_PUSHED` to D3; `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
-| D1 Coding | run worker | `WORKER_STARTED_PROOF` to D2; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
-| D2 Proving | move card (the worker moves its own card at step 3) | `DRAFT_OPENED` to D3; `AGENT_FAILED` to Q3 |
+| D4 Sent back | PR to draft, run a code revision with the reviewer's objection as the brief | `CODED` to D2 (announce the pushed commit, run the prover); `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
+| D1 Coding | run the coder | `CODED` to D2: the coder pushed, and the driver announces the pushed commit on the issue (`loop-step coded`) and runs the prover; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
+| D2 Proving | move card; the transition that enters it runs the prover | `PROVED` to E1 (a ready pull request whose head is the proven commit); `PROOF_REFUSED`: under the attempt cap to D1 (count an attempt; the driver announces `loop-step unproved` with what could not be shown, which is the coder's brief), else Q3; `AGENT_FAILED` to Q3 |
 | D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
 
 D4 sits left of D1 on the board so a rejection is a visible leftward move.
@@ -137,14 +137,14 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
-| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card to D4), else to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
+| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card on), else gather-more to D2 (spend a round; the prover reacquires proof with the reviewer's words as the brief) and block to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
 
 ### Landing (the pull master; serial)
 
 | Lane | Entry | Leaves on |
 |---|---|---|
 | F1 Approved | enqueue, ask the merge boundary | `BOUNDARY_REFUSED` to H3 (the boundary is a fact about the change, asked once, before anything waits); `HEAD_MOVED` to E1 (the lane moved past the reviewed commit); `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
-| F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the proof is reacquired on the existing pull request and `PROOF_REACQUIRED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
+| F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing request for more evidence to D2 (run the prover); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the prover reacquires the proof on the existing pull request and `PROVED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
 | F3 Checks pending | wait on checks | `CHECKS`: green but behind the base to F2 under the refresh cap, to Q5 past it; green and smoke configured to F4; green to F5; else Q5 |
 | F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap, to Q5 past it; passed to F5; else Q5 (tail as the reason) |
 | F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
@@ -205,11 +205,14 @@ phase, never Ready.
 
 T1 and T2 roll up to the parent on entry. T3 exists only when `floor` is configured.
 
-The worker's turn is atomic to the driver. Proving and Drafted are the worker's own progress
-reports from inside one agent turn (it moves its own card with `card.ts`); the event the driver
-acts on is `WORKER_VERDICT`, answered at the Work phase from whichever of its four lanes the card
-was last reported in: fixed with a ready pull request to E1, fixed without one to Q3, a close to
-A3, and the hand-offs to their human lanes. A person's `fix.ts --issue N` is `PERSON_DISPATCHED`
+Each Work lane is its own seat, and no seat moves its own card. The coder (`code-github-issue`)
+ends at a pushed commit; the driver checks the remote holds it, announces it on the issue as
+`<!-- loop-step coded sha=... -->` with the coder's hand-off, and starts a fresh prover
+(`prove-github-issue`), which ends at a ready pull request whose head is the proven commit. Every
+Work lane is therefore derivable from facts on the remote: a run killed while proving leaves the
+announcement and the pushed branch, and the next attempt starts at Proving instead of coding again.
+The escapes either seat may take (a close, a hand-off, out of band) are `WORKER_VERDICT` at the
+Work phase. A person's `fix.ts --issue N` is `PERSON_DISPATCHED`
 from the Inbox straight to Coding, skipping the sizing pass but not the worker's own appraisal.
 
 Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`). Its
@@ -226,7 +229,7 @@ never back in Ready, so a hold a person lifts by removing the label lands where 
 
 ## Demotions the loop makes
 
-E2 to D4 (rejection, round spent); E2 to F2 (rejection on a lane that fell behind; then F2 to D4); F3 or F4 to F2 (the base moved while a gate ran); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
+E2 to D4 (an objection to the code, round spent); E2 to D2 (a request for more evidence, round spent); E2 to F2 (rejection on a lane that fell behind; then F2 to D2 or D4); D2 to D1 (`PROOF_REFUSED`, attempt spent); F3 or F4 to F2 (the base moved while a gate ran); E1 to F2 (the base moved before the review); F2 to E1 (stale approval, no round spent); F2 to D2 (stale proof, no round spent); F2 to D4 (the
 standing verdict was a rejection); D1 to B1 (failed attempt, attempts remain); C3 to C2 (cut
 disputed); C6 to C5 (still-good) and C6 to C4 (amend); C7 to A2 (release appraisal); every Q lane
 to its phase's entry on redrive; every H lane through reconcile on hold removal; every W lane

@@ -21,7 +21,7 @@ class World {
 
 class Work extends Card {
   holds = 0;
-  verdict: 'none' | 'merge' | 'reject' = 'none';
+  verdict: 'none' | 'merge' | 'reject' | 'gather' = 'none';
   refreshes = 0;
   rounds = 0;
   attempts = 0;
@@ -46,7 +46,7 @@ class Work extends Card {
     if (incoming.length > 0) facts.add('behindBase');
     if (!incoming.some((f) => closure.has(f) || GLOBAL.includes(f))) facts.add('movementOutsideClosure');
     if (!incoming.some((f) => this.files.includes(f))) facts.add('netChangeIntact');
-    facts.add(this.verdict === 'merge' ? 'standingVerdictMerge' : this.verdict === 'reject' ? 'standingVerdictRejection' : 'noVerdictYet');
+    facts.add(this.verdict === 'merge' ? 'standingVerdictMerge' : this.verdict === 'reject' ? 'standingVerdictRejection' : this.verdict === 'gather' ? 'standingVerdictGatherMore' : 'noVerdictYet');
     if (this.refreshes < REFRESH_CAP) facts.add('refreshesUnderCap');
     if (this.rounds < 3) facts.add('reviewRoundsUnderCap');
     if (this.attempts < 3) facts.add('attemptsUnderCap');
@@ -58,11 +58,11 @@ class Work extends Card {
     return this.incoming().some((f) => this.files.includes(f));
   }
 
-  /** Ready to a pull request awaiting review: dispatch, then the worker's verdict. */
+  /** Ready to a pull request awaiting review: dispatch, the coder's push, then the prover's ready pull request. */
   work(): this {
     this.send('DISPATCHED', this.facts());
     this.holds = this.world.base.length; // the lane is cut from the fetched base
-    return this.send('WORKER_VERDICT', this.facts(['verdictFixed', 'readyPr']));
+    return this.send('CODED', this.facts()).send('PROVED', this.facts());
   }
   failWorker(): this {
     this.send('DISPATCHED', this.facts());
@@ -86,24 +86,24 @@ class Work extends Card {
     if (this.lane === 'F2') this.catchUp(['resuming']);
     expect(this.lanes.at(-1), `${this.name} resumes in Proving, holding the base`).toBe('D2');
     expect(this.holds).toBe(this.world.base.length);
-    return this.send('PROOF_REACQUIRED');
+    return this.send('PROVED');
   }
   /** A review; `meanwhile` lands something else while the reviewer reads. */
-  review(decision: 'merge' | 'reject', meanwhile?: () => void): this {
+  review(decision: 'merge' | 'reject' | 'gather', meanwhile?: () => void): this {
     this.send('REVIEWER_DISPATCHED', this.facts());
     // `lane` is a getter that `send` changes; read it through a call so the checker does not
     // narrow it to the loop's condition.
     const at = () => this.lane;
     while (at() === 'F2') {
       this.catchUp();
-      if (at() === 'D2') this.send('PROOF_REACQUIRED');
+      if (at() === 'D2') this.send('PROVED');
       if (at() !== 'E1') return this;
       this.send('REVIEWER_DISPATCHED', this.facts());
     }
     meanwhile?.();
     this.verdict = decision;
-    if (decision === 'reject') this.rounds += 1;
-    this.send('REVIEWED', this.facts(decision === 'merge' ? ['decisionMerge'] : []));
+    if (decision !== 'merge') this.rounds += 1;
+    this.send('REVIEWED', this.facts(decision === 'merge' ? ['decisionMerge'] : decision === 'gather' ? ['decisionGatherMore'] : []));
     // A rejection on a lane that fell behind catches up first, and the rejection stands through it.
     if (at() === 'F2') this.catchUp();
     if (at() === 'D4') expect(this.holds, `${this.name} is revised holding the whole base`).toBe(this.world.base.length);
@@ -170,8 +170,8 @@ describe('two cards, disjoint work', () => {
     const b = new Work('B', world, ['app/b.ts']).work().review('merge');
     a.land();
     b.land();
-    expect(a.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F4 F5 T1');
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F2 F3 F4 F5 T1');
+    expect(a.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F3 F4 F5 T1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F2 F3 F4 F5 T1');
     expect(b.refreshes).toBe(0);
     expect(world.order).toEqual(['A', 'B']);
   });
@@ -185,7 +185,7 @@ describe('two cards, overlapping work', () => {
     a.land();
     b.land();
     expect(b.lane).toBe('E1');
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F2 E1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F2 E1');
     expect(b.rounds).toBe(0);
     expect(b.refreshes).toBe(1);
     b.review('merge').land();
@@ -198,7 +198,7 @@ describe('two cards, overlapping work', () => {
     const b = new Work('B', world, ['app/b.ts'], ['app/shared.ts']).work();
     a.land();
     b.review('merge');
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 F2 D2 E1 E2 F1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 F2 D2 E1 E2 F1');
     expect(b.lanes).not.toContain('D4');
     b.land();
     expect(b.lane).toBe('T1');
@@ -250,10 +250,51 @@ describe('A works, B fails', () => {
     expect(b.lane).toBe('D4');
     expect(b.rounds).toBe(1);
     a.land();
-    b.send('WORKER_VERDICT', b.facts(['verdictFixed', 'readyPr']));
+    b.send('CODED', b.facts()).send('PROVED', b.facts());
     b.verdict = 'none';
     b.review('merge').land();
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 D4 E1 F2 E1 E2 F1 F3 F4 F5 T1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 D4 D2 E1 F2 E1 E2 F1 F3 F4 F5 T1');
+  });
+});
+
+describe('each Work lane is its own seat', () => {
+  it('a reviewer asking for more evidence sends the card to Proving, not to a code revision', () => {
+    const b = new Work('B', new World(), ['app/b.ts']).work().review('gather');
+    expect(b.lane).toBe('D2');
+    expect(b.actions).toContain('runProver');
+    expect(b.actions).not.toContain('runCoderRevision');
+    b.send('PROVED', b.facts());
+    b.verdict = 'none';
+    b.review('merge').land();
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 D2 E1 E2 F1 F3 F4 F5 T1');
+  });
+
+  it('a request for more evidence on a lane that fell behind catches up, then goes to Proving', () => {
+    const world = new World();
+    const a = new Work('A', world, ['app/a.ts']).work().review('merge');
+    const b = new Work('B', world, ['app/b.ts']).work();
+    b.review('gather', () => a.land());
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F2 D2');
+    expect(b.holds).toBe(world.base.length);
+  });
+
+  it('an objection to the code sends the card to Sent back, whose push is proved by a fresh seat', () => {
+    const b = new Work('B', new World(), ['app/b.ts']).work().review('reject');
+    expect(b.lane).toBe('D4');
+    b.send('CODED', b.facts());
+    expect(b.lane).toBe('D2');
+    expect(b.actions.lastIndexOf('announceCoded')).toBeLessThan(b.actions.lastIndexOf('runProver'));
+  });
+
+  it('proof that cannot be produced goes back to Coding and spends an attempt, and dead-letters at the cap', () => {
+    const b = new Work('B', new World(), ['app/b.ts']);
+    b.send('DISPATCHED', b.facts()).send('CODED', b.facts()).send('PROOF_REFUSED', b.facts());
+    expect(b.lane).toBe('D1');
+    expect(b.actions).toContain('countAttempt');
+    expect(b.actions).toContain('announceUnproved');
+    b.attempts = 3;
+    b.send('CODED', b.facts()).send('PROOF_REFUSED', b.facts());
+    expect(b.lane).toBe('Q3');
   });
 });
 
@@ -264,7 +305,7 @@ describe('single file at the end', () => {
     const b = new Work('B', world, ['app/b.ts']).work().review('merge');
     b.land(() => a.land());
     expect(world.order).toEqual(['A', 'B']);
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F4 F5 F2 F3 F4 F5 T1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F3 F4 F5 F2 F3 F4 F5 T1');
   });
 
   it('a merge that lands during B\'s checks sends B back from Checks pending, never into Smoke or Merging', () => {
@@ -273,7 +314,7 @@ describe('single file at the end', () => {
     const b = new Work('B', world, ['app/b.ts']).work().review('merge');
     b.land({ during: 'checks', land: () => a.land() });
     expect(world.order).toEqual(['A', 'B']);
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F2 F3 F4 F5 T1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F3 F2 F3 F4 F5 T1');
   });
 
   it('a merge that lands during B\'s smoke sends B back from Smoke, never into Merging', () => {
@@ -281,7 +322,7 @@ describe('single file at the end', () => {
     const a = new Work('A', world, ['app/a.ts']).work().review('merge');
     const b = new Work('B', world, ['app/b.ts']).work().review('merge');
     b.land({ during: 'smoke', land: () => a.land() });
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F4 F2 F3 F4 F5 T1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F3 F4 F2 F3 F4 F5 T1');
   });
 
   it('a merge into B\'s closure during its checks revokes the approval from there: back to review, not to coding', () => {
@@ -289,7 +330,7 @@ describe('single file at the end', () => {
     const a = new Work('A', world, ['app/shared.ts']).work().review('merge');
     const b = new Work('B', world, ['app/b.ts'], ['app/shared.ts']).work().review('merge');
     b.land({ during: 'checks', land: () => a.land() });
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F1 F3 F2 E1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F1 F3 F2 E1');
     b.review('merge').land();
     expect(world.order).toEqual(['A', 'B']);
   });
@@ -299,8 +340,8 @@ describe('single file at the end', () => {
     const a = new Work('A', world, ['app/a.ts']).work().review('merge');
     const b = new Work('B', world, ['app/b.ts']).work();
     b.review('reject', () => a.land());
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 E2 F2 D4');
-    expect(b.actions.indexOf('mergeBaseIntoBranch')).toBeLessThan(b.actions.lastIndexOf('runWorkerRevision'));
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 E2 F2 D4');
+    expect(b.actions.indexOf('mergeBaseIntoBranch')).toBeLessThan(b.actions.lastIndexOf('runCoderRevision'));
   });
 
   it('three cards land one after another, each holding everything before it', () => {
@@ -333,7 +374,7 @@ describe('a pull request whose driver is gone', () => {
     const b = new Work('B', world, ['app/b.ts']).work();
     a.land();
     b.resume().review('merge').land();
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 F2 D2 E1 E2 F1 F3 F4 F5 T1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 F2 D2 E1 E2 F1 F3 F4 F5 T1');
     expect(b.lanes).not.toContain('D4');
     expect(b.rounds).toBe(0);
   });
@@ -341,7 +382,7 @@ describe('a pull request whose driver is gone', () => {
   it('on a base that has not moved goes straight to Proving', () => {
     const world = new World();
     const b = new Work('B', world, ['app/b.ts']).work().resume();
-    expect(b.lanes.join(' ')).toBe('B1 D1 E1 D2 E1');
+    expect(b.lanes.join(' ')).toBe('B1 D1 D2 E1 D2 E1');
   });
 });
 

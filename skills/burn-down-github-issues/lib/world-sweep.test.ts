@@ -70,8 +70,8 @@ for (const key of ['closed', 'paused', 'active', 'parentOpen', 'released', 'trus
 axis('closeBy', ['appraiser', 'worker']);
 for (const key of ['attempts', 'appraisals', 'carves', 'carveRounds', 'reviewRounds', 'refreshes', 'redrives'] as const) axis(key, [0, 3]);
 axis('pr', ['none', 'draft', 'ready', 'merged']);
-axis('verdict', ['none', 'merge', 'reject']);
-axis('decision', ['none', 'merge', 'retry', 'oversize', 'rerun-reviewer', 'resolve-conflict', 'design-objection']);
+axis('verdict', ['none', 'merge', 'reject', 'gather']);
+axis('decision', ['none', 'merge', 'gather-more', 'retry', 'oversize', 'rerun-reviewer', 'resolve-conflict', 'design-objection']);
 axis('result', ['none', 'fixed', 'close', 'needs-decision', 'needs-human', 'out-of-band', 'too-uncertain', 'indivisible', 'small-enough', 'nothing-left', 'still-good', 'amend', 'exhausted', 'question']);
 axis('hold', ['none', 'needs-decision', 'needs-human', 'parked']);
 axis('dlq', ['none', 'appraisal', 'carve', 'work', 'review', 'landing']);
@@ -120,11 +120,11 @@ pred('sizedOverCeiling', ['points'], m => m.points > 2);
 eq('releasedLabel', 'released', true); eq('trustedVerdict', 'trusted', true);
 eq('blockerOpen', 'blocker', 'open'); eq('blockerCompleted', 'blocker', 'completed'); eq('hasOpenParent', 'parentOpen', true);
 for (const [name, key] of [['attemptsUnderCap', 'attempts'], ['appraisalsUnderCap', 'appraisals'], ['carvesUnderCap', 'carves'], ['carveRoundsUnderCap', 'carveRounds'], ['reviewRoundsUnderCap', 'reviewRounds'], ['redrivesUnderCap', 'redrives'], ['refreshesUnderCap', 'refreshes']] as const) pred(name, [key], m => m[key] < (key === 'refreshes' ? 2 : 3));
-for (const [name, value] of [['decisionMerge', 'merge'], ['decisionRetry', 'retry'], ['decisionOversize', 'oversize'], ['decisionRerunReviewer', 'rerun-reviewer'], ['decisionResolveConflict', 'resolve-conflict'], ['decisionDesignObjection', 'design-objection']]) eq(name, 'decision', value);
+for (const [name, value] of [['decisionMerge', 'merge'], ['decisionGatherMore', 'gather-more'], ['decisionRetry', 'retry'], ['decisionOversize', 'oversize'], ['decisionRerunReviewer', 'rerun-reviewer'], ['decisionResolveConflict', 'resolve-conflict'], ['decisionDesignObjection', 'design-objection']]) eq(name, 'decision', value);
 for (const [name, value] of [['verdictFixed', 'fixed'], ['verdictIsClose', 'close'], ['verdictNeedsDecision', 'needs-decision'], ['verdictNeedsHuman', 'needs-human'], ['verdictTooUncertain', 'too-uncertain'], ['verdictIndivisible', 'indivisible'], ['verdictSmallEnough', 'small-enough'], ['verdictNothingLeft', 'nothing-left'], ['verdictStillGood', 'still-good'], ['verdictAmend', 'amend'], ['verdictExhausted', 'exhausted'], ['verdictQuestion', 'question']]) eq(name, 'result', value);
 pred('verdictOutOfBandOverCeiling', ['result', 'points'], m => m.result === 'out-of-band' && m.points > 2);
 eq('standingVerdictMerge', 'verdict', 'merge'); eq('verdictMerge', 'verdict', 'merge');
-eq('standingVerdictRejection', 'verdict', 'reject'); eq('noVerdictYet', 'verdict', 'none');
+eq('standingVerdictRejection', 'verdict', 'reject'); eq('standingVerdictGatherMore', 'verdict', 'gather'); eq('noVerdictYet', 'verdict', 'none');
 pred('behindBase', ['movement'], m => m.behind());
 pred('movementOutsideClosure', ['movement'], m => !m.incoming().some(f => [...m.files, ...m.imports, 'bun.lock'].includes(f)));
 pred('netChangeIntact', ['contribution'], m => m.contribution === m.reviewedContribution);
@@ -196,7 +196,7 @@ class Work extends Card {
     super(name, laneState(lane)); this.m.world = world; this.m.files = [file]; this.m.head = world.base.length;
   }
   event(event: string) { this.send(event, facts(this.m)); return this; }
-  work() { this.event('DISPATCHED'); this.m.head = this.m.world.base.length; this.m.pr = 'ready'; this.m.result = 'fixed'; return this.event('WORKER_VERDICT'); }
+  work() { this.event('DISPATCHED'); this.m.head = this.m.world.base.length; this.event('CODED'); this.m.pr = 'ready'; return this.event('PROVED'); }
   catchUp() {
     const before = Object.assign(new Model(), this.m);
     this.m.head = this.m.world.base.length;
@@ -207,7 +207,7 @@ class Work extends Card {
   review(decision = 'merge') {
     this.event('REVIEWER_DISPATCHED');
     if (this.lane === 'F2') { this.catchUp(); if (this.laneKeyNow() !== 'E1') return this; this.event('REVIEWER_DISPATCHED'); }
-    this.m.decision = decision; this.m.verdict = decision === 'merge' ? 'merge' : 'reject';
+    this.m.decision = decision; this.m.verdict = decision === 'merge' ? 'merge' : decision === 'gather-more' ? 'gather' : 'reject';
     return this.event('REVIEWED');
   }
   laneKeyNow() { return this.lane; }
@@ -232,7 +232,7 @@ describe('independent multi-card scenarios', () => {
     const w = new World(); const a = new Work('A', w, 'shared.ts').work().review();
     const b = new Work('B', w, 'b.ts').work(); const c = new Work('C', w, 'shared.ts').work().review();
     a.land(); b.event('REVIEWER_DISPATCHED').catchUp(); expect(b.lane).toBe('D2');
-    b.event('PROOF_REACQUIRED').review().land(); expect(b.lane).toBe('T1');
+    b.event('PROVED').review().land(); expect(b.lane).toBe('T1');
     c.event('FRONT_OF_QUEUE').event('CONFLICT'); expect(c.lane).toBe('Q5');
   });
   it('approval revoked while waiting on checks, then review and land again', () => {
@@ -245,9 +245,9 @@ describe('independent multi-card scenarios', () => {
   it('a rejection on a lane that fell behind catches up first, and the rejection stands through it', () => {
     const w = new World(); const a = new Work('A', w, 'shared.ts').work().review(); const b = new Work('B', w, 'b.ts').work();
     b.event('REVIEWER_DISPATCHED'); a.land(); b.m.decision = 'reject'; b.m.verdict = 'reject'; b.event('REVIEWED');
-    expect(b.lane).toBe('F2'); expect(b.actions).not.toContain('runWorkerRevision');
+    expect(b.lane).toBe('F2'); expect(b.actions).not.toContain('runCoderRevision');
     const before = Object.assign(new Model(), b.m); b.m.head = w.base.length; b.send('CAUGHT_UP', facts(before));
-    expect(b.lane).toBe('D4'); expect(b.m.behind()).toBe(false); expect(b.actions).toContain('runWorkerRevision');
+    expect(b.lane).toBe('D4'); expect(b.m.behind()).toBe(false); expect(b.actions).toContain('runCoderRevision');
   });
   it('a child dead letter changes the parent fingerprint while other children remain in flight', () => {
     const w = new World(); const trunk = new Work('trunk', w, '', 'C5'); trunk.m.children = 3; trunk.m.record = 'live';
@@ -308,7 +308,7 @@ describe('owner invariants', () => {
   });
   it('does not start a rejected revision behind the base', () => {
     const m = new Model(); m.pr = 'ready'; m.verdict = 'reject'; m.world.base.push(['shared.ts']);
-    expect(fire(laneState('E2'), 'REVIEWED', facts(m))!.actions).not.toContain('runWorkerRevision');
+    expect(fire(laneState('E2'), 'REVIEWED', facts(m))!.actions).not.toContain('runCoderRevision');
   });
   it('does not park on an automatic triage failure', () => {
     const m = new Model(); m.pr = 'ready';
