@@ -378,7 +378,7 @@ safe to run while deciding what to do next.
 
 Two things are deliberately not config:
 
-- The verdict schema in each prompt (`loop-verdict.json`, `loop-appraisal.json`,
+- The verdict schema in each prompt (`loop-code.json`, `loop-proof.json`, `loop-appraisal.json`,
   `loop-review.json`) assumes GitHub issues and pull requests via `gh`. Another forge means a real
   port of the skill, not a config change.
 - The Conventional Commits and no-em-dash house rules are written into the prompts as prose. They

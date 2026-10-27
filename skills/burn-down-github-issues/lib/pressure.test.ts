@@ -463,6 +463,22 @@ describe('runtime moves and settlement', () => {
     expect(issue.labels).toEqual([{ name: 'loop/attempts: 1' }]);
     expect(result).toMatchObject({ verdict: 'fixed', pr: 9, touches: ['code', 'ci'] });
   });
+  it('a catch-up at the seam announces the head it pushed, so a prover killed after it is proved again', async () => {
+    const bodies: string[] = [];
+    const api = loadFunctions(pipeline, ['runWorker'], {
+      move: noop, holdLease: noop, resetLane: noop,
+      placeWork: () => ({ kind: 'code', brief: { kind: 'first' } }),
+      runCode: async () => ({ verdict: 'coded', reason: 'pushed', branch: 'fix/x-1', sha: 'coded1', gated: 'coded1', handoff: 'h' }),
+      seamCatchUp: () => 'caught-up',
+      sh: () => 'merged2',
+      codedComment: (_run: unknown, coded: { sha: string; gated: string }) => `coded sha=${coded.sha} gated=${coded.gated}`,
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => bodies.push(argv[argv.length - 1]),
+      runProve: async () => ({ verdict: 'proved', reason: 'ok', pr: 9 }),
+    });
+    const ctx = { seats: { worker: {} }, knobs: { pointScale: [1], maxWorkerAttempts: 3 }, dryRun: false, log: noop, runId: 'r' } as never;
+    await api.runWorker(ctx, { number: 1, title: 't', labels: [] }, '/tmp', 2);
+    expect(bodies).toEqual(['coded sha=coded1 gated=coded1', 'coded sha=merged2 gated=coded1']);
+  });
   it('a refused proof on the last attempt is left for the caller to count, never counted twice', async () => {
     const recorded: number[] = [];
     const api = loadFunctions(pipeline, ['runWorker'], {

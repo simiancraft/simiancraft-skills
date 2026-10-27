@@ -99,10 +99,15 @@ export async function runProve(
   if (result.verdict === 'proved') {
     if (!Number.isInteger(Number(result.pr)) || Number(result.pr) <= 0) return fail(issue.number, `proved without naming the pull request; log ends: ${logTail(logPath)}`);
     result.pr = Number(result.pr);
-    // The prover pushes nothing, so the head it proved is the lane's; a proof pinned anywhere else
-    // describes a tree that will not be reviewed.
-    const now = ctx.dryRun ? String(result.sha) : sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    if (result.sha !== now) return fail(issue.number, `proved ${String(result.sha).slice(0, 12)}, but the lane's head is ${now.slice(0, 12)}; log ends: ${logTail(logPath)}`);
+    // The prover pushes nothing, so the head it proved is the head it was given, and the remote
+    // must hold it: a proof pinned anywhere else describes a tree that will not be reviewed.
+    if (!ctx.dryRun) {
+      const now = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      if (result.sha !== head || now !== head) return fail(issue.number, `proved ${String(result.sha).slice(0, 12)} on a lane now at ${now.slice(0, 12)}, but it was given ${head.slice(0, 12)}, and pushes nothing; log ends: ${logTail(logPath)}`);
+      const remote = Bun.spawnSync(['git', 'ls-remote', '--heads', ctx.project.remote, `refs/heads/${coded.branch}`], { cwd, stdout: 'pipe', stderr: 'pipe' });
+      const onRemote = remote.stdout.toString().trim().split(/\s+/)[0] ?? '';
+      if (onRemote !== head) return fail(issue.number, `proved ${head.slice(0, 12)}, but ${ctx.project.remote}/${coded.branch} is ${onRemote ? onRemote.slice(0, 12) : 'not there'}; log ends: ${logTail(logPath)}`);
+    }
     result.branch = coded.branch;
   }
   if (result.verdict === 'unprovable' && (typeof result.brief !== 'string' || result.brief.trim() === '')) {

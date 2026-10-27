@@ -53,7 +53,9 @@ matching verdict, and change nothing:
 
 **If the issue has a parent**, read the parent's thread and its newest carving record (the comment
 starting `<!-- carve-record`), and every ancestor's. The record says which piece this is, what it
-may assume has landed (a `layers` relation), and what it must not touch (a `shards` relation).
+may assume has landed (a `layers` relation), what it must not touch (a `shards` relation), and
+whether it waits on a spike. Work within that; a leaf that re-does its sibling's work or reaches into
+its sibling's files is the wrong fix even when it passes.
 
 **If the issue carries the `spike` label**, it asks questions, not for a change. Run the
 experiments its body names, measure, and return `answered` with the answers and their evidence.
@@ -65,7 +67,8 @@ Three rules stand whatever the appraisal said:
 - **Never edit production data.** An issue asking for a record to be corrected is `needs-human`.
 - **A written convention outranks the issue's prescribed remedy.** Where the remedy contradicts
   {{CONVENTION_DOCS}}, or what the surrounding code plainly does, follow the convention and say so
-  in your hand-off. If the convention-respecting fix is materially larger than the appraisal, that
+  in your hand-off: what the issue asked for, what you did instead, and which line of which
+  convention decided it. The prover carries that into the pull request body. If the convention-respecting fix is materially larger than the appraisal, that
   is `out-of-band`; your own taste is not a convention, and substituting it is `needs-decision`.
 
 For `already-fixed` or `obsolete`, write a `closeComment` a reader can re-check without trusting

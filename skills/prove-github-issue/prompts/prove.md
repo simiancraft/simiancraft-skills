@@ -64,7 +64,10 @@ to the loop:
    `gh pr create -R {{REPO}} --draft --base {{BASE_BRANCH}} --head {{BRANCH}}`. Otherwise use the one
    there is; the driver has put it back in draft.
 2. Title in Conventional Commits form. The body describes what changed in the code and renders the
-   proof inline. Do not mention the loop, agents, prompts, or any local tooling. Reference the issue
+   proof inline. Where the coder's hand-off says it followed a written convention instead of the
+   remedy the issue proposed, the body says so too: what the issue asked for, what was done instead,
+   and which line of which convention decided it. Do not mention the loop, agents, prompts, or any
+   local tooling. Reference the issue
    as `Refs #{{ISSUE}}`, never a closing keyword. No em dashes; semicolons and the Oxford comma.
 3. Mark it ready only when the proof is attached and covers the claim:
    `gh pr ready <number> -R {{REPO}}`. That flip is your statement that the work is proved.

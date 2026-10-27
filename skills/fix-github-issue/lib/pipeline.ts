@@ -218,8 +218,15 @@ async function runWorker(
     if (!coded || !proof) throw new Error(`#${issue.number}: the Work phase reached Proving with nothing coded`);
 
     // No seat begins on a stale lane: the base is merged in at the seam, never inside a turn.
-    if (!ctx.dryRun && seamCatchUp(ctx, issue, cwd, say, 'before proving') === 'conflict') {
+    const seam = ctx.dryRun ? 'current' : seamCatchUp(ctx, issue, cwd, say, 'before proving');
+    if (seam === 'conflict') {
       return { issue: issue.number, verdict: 'failed', reason: `the branch conflicts with ${ctx.project.baseBranch} at the seam before proving`, pr: feedback?.pr, branch: coded.branch };
+    }
+    // The catch-up pushed a merge, so the announcement must name the new head: placement proves only
+    // an announced head, and a prover killed after this seam must be proved again, not coded again.
+    if (seam === 'caught-up' && proof.kind === 'handoff') {
+      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      mutate(ctx, `announce #${issue.number} coded at ${head.slice(0, 12)} after catching up`, ['gh', 'issue', 'comment', String(issue.number), '--body', codedComment(ctx.runId, { branch: coded.branch, sha: head, gated: coded.gated, touches: coded.touches }, proof.text)]);
     }
     move(ctx, issue, 'D2', note);
     const p = await runProve(ctx, issue, cwd, coded, proof);
@@ -261,29 +268,57 @@ export type Placement =
 
 /**
  * Where a first attempt starts, read from facts on the remote and the tracker, never from a dead
- * process's memory. A `coded` announcement whose commit is still the branch's head on the remote is
- * proved, not coded again. An `unproved` one is coded again on its branch with what the prover
- * could not show. A branch that moved past its announcement holds work nobody declared finished,
- * so it is continued by a coder. Anything else starts from the base. The lane is switched onto the
- * branch it continues.
+ * process's memory. A `coded` announcement whose commit is still the head of its branch on the
+ * remote is proved, not coded again. An `unproved` one is coded again on its branch with what the
+ * prover could not show. A branch that moved past its announcement, or one of this issue's branches
+ * that was pushed and never announced, holds work nobody declared finished, so a coder continues it.
+ * An announcement whose commit the base already holds is history, not work. Anything else starts
+ * from the base. The lane is switched onto the branch it continues.
  */
 export function placeWork(ctx: Context, issue: Issue, cwd: string, say: (message: string) => void): Placement {
-  if (ctx.dryRun) return { kind: 'code', brief: { kind: 'first' } };
+  const first: Placement = { kind: 'code', brief: { kind: 'first' } };
+  if (ctx.dryRun) return first;
   const node = trackerIo(ctx).view(issue.number);
   const step = node ? latestStep(node.comments, ctx.botLogin) : null;
-  if (!step) return { kind: 'code', brief: { kind: 'first' } };
+  if (!step) {
+    const pushed = unannouncedBranch(ctx, cwd, issue.number);
+    if (!pushed) return first;
+    say(`${pushed} holds pushed work for this issue that was never announced; a coder continues it`);
+    switchLane(ctx, cwd, pushed);
+    return { kind: 'code', brief: { kind: 'continue', branch: pushed, text: 'Nothing was announced for it: the coder that pushed it stopped before it said the change was finished.' } };
+  }
   const remoteHead = remoteBranchHead(ctx, cwd, step.branch);
   if (!remoteHead) {
     say(`the announced branch ${step.branch} is gone from ${ctx.project.remote}; starting from the base`);
-    return { kind: 'code', brief: { kind: 'first' } };
+    return first;
   }
-  sh(ctx, ['git', 'fetch', ctx.project.remote, `+refs/heads/${step.branch}:refs/remotes/${ctx.project.remote}/${step.branch}`], cwd);
-  sh(ctx, ['git', 'checkout', '-B', step.branch, `${ctx.project.remote}/${step.branch}`], cwd);
+  const baseSha = fetchBase(ctx, cwd);
+  if (Bun.spawnSync(['git', 'merge-base', '--is-ancestor', step.sha, baseSha], { cwd, stdout: 'pipe', stderr: 'pipe' }).exitCode === 0) {
+    say(`the announced commit ${step.sha.slice(0, 12)} is already in ${ctx.project.baseBranch}; starting from the base`);
+    return first;
+  }
+  switchLane(ctx, cwd, step.branch);
   if (step.kind === 'unproved') return { kind: 'code', brief: { kind: 'unproved', branch: step.branch, text: step.brief } };
   if (remoteHead !== step.sha) {
     return { kind: 'code', brief: { kind: 'continue', branch: step.branch, text: `It was announced coded at ${step.sha}, and has moved to ${remoteHead} since.` } };
   }
   return { kind: 'prove', sha: step.sha, handoff: step.handoff, coded: { branch: step.branch, gated: step.gated, touches: step.touches } };
+}
+
+/** Checks the lane out on a branch at its remote head. */
+function switchLane(ctx: Context, cwd: string, branch: string): void {
+  sh(ctx, ['git', 'fetch', ctx.project.remote, `+refs/heads/${branch}:refs/remotes/${ctx.project.remote}/${branch}`], cwd);
+  sh(ctx, ['git', 'checkout', '-B', branch, `${ctx.project.remote}/${branch}`], cwd);
+}
+
+/**
+ * The one branch on the remote that names this issue the way a coder is told to (`fix/<words>-<n>`)
+ * and is not yet in the base, or null. Two such branches are a person's to sort out, so neither is taken.
+ */
+function unannouncedBranch(ctx: Context, cwd: string, issue: number): string | null {
+  const out = sh(ctx, ['git', 'ls-remote', '--heads', ctx.project.remote, 'refs/heads/fix/*'], cwd);
+  const branches = out.split('\n').map((line) => line.trim().split(/\s+/)[1] ?? '').filter((ref) => ref.endsWith(`-${issue}`)).map((ref) => ref.replace(/^refs\/heads\//, ''));
+  return branches.length === 1 ? branches[0] : null;
 }
 
 /** The commit a branch names on the remote, or null when the remote has no such branch. Throws when the remote cannot be read. */

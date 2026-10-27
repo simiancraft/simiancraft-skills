@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCode } from '../../code-github-issue/lib/code.ts';
@@ -148,6 +148,39 @@ describe('where a first attempt starts, read from the remote and the tracker', (
   });
 });
 
+describe('placement finds the work a dead coder left, and ignores what already landed', () => {
+  it('continues a branch of this issue that was pushed and never announced', () => {
+    const dir = lane(15);
+    code(dir, 'fix/fifteen-15');
+    const fresh = lane(150);
+    const placed = placeWork(context(new FakeTracker(BOT, [fakeIssue(15)]), 'unused'), issue(15), fresh, () => {});
+    expect(placed.kind === 'code' && placed.brief).toMatchObject({ kind: 'continue', branch: 'fix/fifteen-15' });
+    expect(git(fresh, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('fix/fifteen-15');
+  });
+
+  it('starts from the base when the announced commit is already in the base', () => {
+    const dir = lane(16);
+    const sha = code(dir, 'fix/sixteen-16');
+    git(dir, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+    const io = new FakeTracker(BOT, [fakeIssue(16)]);
+    io.comment(16, BOT, codedComment('run-1', { branch: 'fix/sixteen-16', sha, gated: sha, touches: [] }, 'h'));
+    expect(placeWork(context(io, 'unused'), issue(16), lane(160), () => {})).toEqual({ kind: 'code', brief: { kind: 'first' } });
+  });
+
+  it('proves, after a seam catch-up, the head the catch-up announced', () => {
+    const dir = lane(17);
+    const coded = code(dir, 'fix/seventeen-17');
+    // The driver's catch-up at the seam: a merge pushed onto the coder's commit, then announced.
+    git(dir, 'commit', '-q', '--allow-empty', '-m', 'Merge the base');
+    git(dir, 'push', '-q', 'origin', 'HEAD:refs/heads/fix/seventeen-17');
+    const merged = git(dir, 'rev-parse', 'HEAD');
+    const io = new FakeTracker(BOT, [fakeIssue(17)]);
+    io.comment(17, BOT, codedComment('run-1', { branch: 'fix/seventeen-17', sha: coded, gated: coded, touches: [] }, 'h'));
+    io.comment(17, BOT, codedComment('run-1', { branch: 'fix/seventeen-17', sha: merged, gated: coded, touches: [] }, 'h'));
+    expect(placeWork(context(io, 'unused'), issue(17), lane(170), () => {})).toMatchObject({ kind: 'prove', sha: merged, coded: { gated: coded } });
+  });
+});
+
 describe("the coder's answer is believed only as far as the remote bears it out", () => {
   it('believes a coded push that is the lane head and on the remote', async () => {
     const dir = lane(20);
@@ -183,6 +216,14 @@ describe("the coder's answer is believed only as far as the remote bears it out"
     expect(result.verdict).toBe('failed');
   });
 
+  it("removes an earlier proof when it starts: a revision's old proof must never be resumed into review", async () => {
+    const dir = lane(25);
+    writeFileSync(join(dir, 'loop-proof.json'), JSON.stringify({ issue: 25, verdict: 'proved', reason: 'old', pr: 1, sha: base }));
+    const answer = answerFile('escape-25', { issue: 25, verdict: 'needs-human', reason: 'stopped' });
+    await runCode(context(new FakeTracker(BOT), answer), issue(25), dir, 2, { kind: 'revision', branch: 'fix/x-25', text: 'blocked' });
+    expect(existsSync(join(dir, 'loop-proof.json'))).toBe(false);
+  });
+
   it('passes an escape through untouched', async () => {
     const dir = lane(24);
     const answer = answerFile('escape-24', { issue: 24, verdict: 'needs-decision', reason: 'which currency?' });
@@ -206,6 +247,15 @@ describe("the prover's answer is believed only on the head it was given", () => 
     const answer = answerFile('proved-31', { issue: 31, verdict: 'proved', reason: 'proved', pr: 310, sha: base });
     const result = await runProve(context(new FakeTracker(BOT), answer), issue(31), dir, { branch: 'fix/thirtyone-31', gated: base }, { kind: 'handoff', text: 'h' });
     expect(result.verdict).toBe('failed');
+  });
+
+  it('refuses a proof of a head the remote does not hold', async () => {
+    const dir = lane(33);
+    const sha = code(dir, 'fix/thirtythree-33', false);
+    const answer = answerFile('proved-33', { issue: 33, verdict: 'proved', reason: 'proved', pr: 330, sha });
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(33), dir, { branch: 'fix/thirtythree-33', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain('is not there');
   });
 
   it('refuses an unprovable that tells the coder nothing to fix', async () => {
