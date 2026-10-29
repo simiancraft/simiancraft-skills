@@ -91,6 +91,11 @@ export type Context = {
   step: (message: string) => void;
   /** Asked once, just before every merge, with the issue that is landing. Absent means always allowed. */
   mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
+  /**
+   * The one issue a person has cleared to land past the merge boundary (`fix.ts --land`). Every
+   * other gate still applies; only the autoMerge park is waived, and the waiver is recorded on the PR.
+   */
+  landPastBoundary?: number;
   /** Told once, after every confirmed merge. */
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
@@ -127,6 +132,7 @@ export function createContext(options: {
   log?: (message: string) => void;
   step?: (message: string) => void;
   mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
+  landPastBoundary?: number;
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;
@@ -155,6 +161,7 @@ export function createContext(options: {
     log: options.log ?? defaultLog,
     step: options.step ?? defaultStep,
     mayMerge: options.mayMerge,
+    landPastBoundary: options.landPastBoundary,
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
     onLane: options.onLane,

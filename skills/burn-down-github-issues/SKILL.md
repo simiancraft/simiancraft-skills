@@ -88,6 +88,7 @@ bun run <this-skill-dir>/watch.ts                      # follow the current run;
 bun run <this-skill-dir>/card.ts --issue <n> --show    # where one card is; --lane <key> moves it by hand, --lanes lists the table
 bun run <this-skill-dir>/claim-race.ts --issue <n> --contenders 3 --rounds 3   # prove the claim lock on a loop/skip issue
 bun run <fix-skill-dir>/fix.ts --issue <n> --redrive   # lift a dead letter or a park and continue its pull request
+bun run <fix-skill-dir>/fix.ts --issue <n> --land      # land an approved pull request the merge boundary parked
 ```
 
 `claim-race.ts` also reads `--contend` and `--start <ms>`, which the parent passes to each

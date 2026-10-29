@@ -138,6 +138,16 @@ comes back as `needs-decision` with the question stated, however small the diff 
 That category is common in most trackers and it is the one place a plausible-looking diff can do
 real harm.
 
+A person can land an approved change the boundary parked with `fix.ts --issue <n> --land`. It
+refuses anything else before it changes a label: no open pull request, a dead letter, or a newest
+park that is not the boundary's (`--redrive` is the command for those). Then it lifts only the park,
+on the issue and the pull request, leaving the review and attempt budgets alone, and continues the
+pull request with no objection, so it is re-proved and re-reviewed rather than recoded. The pull
+master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
+and the pinned merge. Only the boundary is waived, only for that issue, and only when both agents
+classified the change: a missing classification still fails closed. The pull request carries a
+comment that a person cleared it, posted before the remaining gates run.
+
 A lease that cannot be renewed is a lease running out. A renewal that fails is tried again every
 minute; when the last confirmed expiry is about to pass, the run marks the lease lost, stops the
 agents it has on that issue, and its live gate refuses every merge and close from then on, since
@@ -244,6 +254,7 @@ reaching the same verdict twice.
 | Incoming change | Before a review | Before the merge |
 |---|---|---|
 | none | the review starts | the merge proceeds |
+| only files `releaseArtifacts` names, none of them in the work's import closure, and protection is known not to require an up-to-date branch | the base is merged in; the proof stands | no catch-up and no new CI run: the merge itself brings them in, on the head that was checked. A version-only manifest bump, or protection that cannot be read, catches up as usual |
 | nothing the closure reaches, and the branch's own change is byte-identical across the merge (compared by patch id) | the base is merged in; the proof stands; the review starts on the caught-up head | the base is merged in; the approval stands; the pull master waits on the caught-up head's checks and lands that head |
 | inside the closure, or a global invalidator, or the merge altered the branch's own change | the base is merged in; the proof is stale; the card goes back to Proving, not to a revision: the author reruns the checks and reacquires what the movement reached on the same pull request, spending no review round | the base is merged in; the approval no longer describes what would land; the head is **re-reviewed**, spending no round |
 | any, on a **rejection** | | the base is merged in and the author revises; the verdict still stands |

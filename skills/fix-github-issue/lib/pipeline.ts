@@ -24,7 +24,8 @@ import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
-import { behindBase, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { boundaryWaived } from './land.ts';
+import { behindBase, behindBeyondNoise, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
 
 /**
@@ -548,6 +549,33 @@ function checksOn(ctx: Context, sha: string): { names: string[]; passed: string[
   return { names: [...new Set(all.map((c) => c.name))], passed: [...new Set(passed)] };
 }
 
+/**
+ * Whether the base requires a branch to be up to date before it merges, by classic protection or by
+ * a ruleset. When it does, a landing catches up on every base movement, release noise included, or
+ * GitHub refuses it. Only a base known to require neither skips that: a denied or failed read is not
+ * knowledge, so it answers true and the landing catches up as before.
+ */
+function requiresUpToDate(ctx: Context): boolean {
+  let classic: boolean;
+  try {
+    classic = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/branches/${ctx.project.baseBranch}/protection/required_status_checks`, '--jq', '.strict'], ctx.repoRoot, 1) === 'true';
+  } catch (error) {
+    // Only GitHub's explicit answer that the branch has no such protection lets the ruleset check decide.
+    if (!/Branch not protected|Required status checks not enabled/i.test((error as Error).message)) return true;
+    classic = false;
+  }
+  if (classic) return true;
+  try {
+    // The rules in force on the branch, rulesets included; readable with ordinary repository access.
+    return (
+      sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/rules/branches/${ctx.project.baseBranch}`, '--jq', '[.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy] | any'], ctx.repoRoot, 1) ===
+      'true'
+    );
+  } catch {
+    return true;
+  }
+}
+
 /** The status checks the base branch's protection requires; none when the branch has no such rule. */
 function requiredStatusChecks(ctx: Context): string[] {
   try {
@@ -775,7 +803,10 @@ function netChangeId(cwd: string, baseSha: string, head: string): string {
   return id.stdout.toString().trim().split(/\s+/)[0] ?? '';
 }
 
-function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string): CaughtUp | 'conflict' | null {
+/** Pull requests whose boundary waiver is already on the thread: a reproof re-enters the landing, and the note says it once. */
+const waiverNoted = new Set<number>();
+
+function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean } = {}): CaughtUp | 'conflict' | null {
   // A catch-up merges the base in and pushes the lane's branch; every wait in a landing can
   // outlast the lease, so every catch-up asks for it first.
   holdLease(ctx, issue.number, `catch up ${why}`);
@@ -785,6 +816,10 @@ function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (m
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return null;
+  if (options.skipNoise && behindBeyondNoise(ctx, cwd, baseSha).length === 0) {
+    say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up`);
+    return null;
+  }
   // Both judged before the merge: afterwards the merge base is the base's own tip and every
   // comparison against it is vacuously empty.
   const overlap = staleAgainstBase(ctx, cwd, since, baseSha);
@@ -917,7 +952,23 @@ async function land(
   // caught-up one, and the checks below are waited on for that head, not the reviewed one.
   // The boundary is a fact about the change itself, so it is asked once, before anything waits.
   const effective = effectiveTouches(ctx, touches, verdict.touches, cwd);
-  if (!mergeAllowed(ctx, effective)) {
+  const touched = effective?.join(', ') ?? 'unstated';
+  if (!mergeAllowed(ctx, effective) && boundaryWaived(ctx.landPastBoundary, issue.number, effective)) {
+    // A person cleared this landing past the boundary; every gate below still holds, and a missing
+    // classification is not waived (boundaryWaived fails closed on it).
+    say(`the merge boundary would park this (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}); a person cleared it with --land`);
+    if (!waiverNoted.has(pr)) {
+      waiverNoted.add(pr);
+      mutate(ctx, `note the boundary waiver on PR #${pr}`, [
+        'gh',
+        'pr',
+        'comment',
+        String(pr),
+        '--body',
+        `Cleared by a person to land past the merge boundary (\`fix.ts --land\`): autoMerge is ${ctx.knobs.autoMerge} and this change touches ${touched}. It merges only if the freshness, check, smoke, and line gates all pass.`,
+      ]);
+    }
+  } else if (!mergeAllowed(ctx, effective)) {
     mutate(ctx, `park PR #${pr} (autoMerge: ${ctx.knobs.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
       'gh',
       'pr',
@@ -943,10 +994,12 @@ async function land(
   // What complete looks like, read before anything moves the head: the checks the reviewed head carried.
   const reviewedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? { names: [], passed: [] } : checksOn(ctx, reviewedSha);
   const requiredByBase = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : requiredStatusChecks(ctx);
+  // Release noise on the base is merged in by the merge itself, unless protection insists on an up-to-date branch.
+  const skipNoise = !ctx.dryRun && !requiresUpToDate(ctx);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
   for (let pass = 0; ; pass++) {
-    const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge');
+    const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
     if (caught === 'conflict') {
       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
       return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
@@ -984,7 +1037,7 @@ async function land(
       // The commit fetched is the commit compared and the commit remembered. The remote-tracking
       // ref is shared with every other lane, so reading it again could name a commit never checked.
       const checked = fetchBase(ctx, cwd);
-      if (behindBase(ctx, cwd, checked).length === 0) {
+      if ((skipNoise ? behindBeyondNoise(ctx, cwd, checked) : behindBase(ctx, cwd, checked)).length === 0) {
         baseSeen = checked;
         return 'fresh';
       }
@@ -1700,7 +1753,8 @@ export async function redriveIssue(
    * to answer and the card goes to the closest lane that can carry it on, Proving, not to a revision.
    */
   objection: string | null,
-  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat } = {},
+  /** `landing`: a person's --land; with no objection, the brief says the change was approved and parked by policy. */
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
@@ -1746,7 +1800,9 @@ export async function redriveIssue(
         ? {
             pr: pull.number,
             decision: 'gather-more',
-            adequacy: 'This pull request lost its driver before it was reviewed. Nobody has objected to the change; its proof has to be current before a review can start.',
+            adequacy: options.landing
+              ? 'This pull request was reviewed and approved, then parked by the merge boundary, and a person has cleared it to land. Nobody has objected to the change; its proof has to be current before it is reviewed again and lands.'
+              : 'This pull request lost its driver before it was reviewed. Nobody has objected to the change; its proof has to be current before a review can start.',
             confidence: 'resume',
             blocking: [
               `The branch has been caught up with ${ctx.project.baseBranch}. Re-run the checks on the current head, confirm the fix still holds, reacquire any receipt that no longer describes this head, and update the proof. Change code only if something fails.`,

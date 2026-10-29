@@ -13,6 +13,7 @@
  *   bun run <skill-dir>/fix.ts --issue <n> --dry-run
  *   bun run <skill-dir>/fix.ts --issue <n> --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
  *   bun run <skill-dir>/fix.ts --issue <n> --redrive          # lift a park or dead letter and continue its pull request
+ *   bun run <skill-dir>/fix.ts --issue <n> --land             # land an approved pull request the merge boundary parked
  *   bun run <skill-dir>/fix.ts --issue <n> --resume-pr <pr>   # continue that pull request rather than open another
  *
  * With a board (the burndown's board.ts has run for this repository) every move the pipeline makes
@@ -37,6 +38,7 @@ import { createContext } from './lib/context.ts';
 import { parseSeat, seatLabel } from './lib/engines.ts';
 import { createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
+import { landBlocker } from './lib/land.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
 import { guardCli } from './lib/cli.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
@@ -66,16 +68,26 @@ export const USAGE = `fix-github-issue: fix one known issue end to end, headless
                      config's confirmer, else the config's reviewer (--reviewer does not change this),
                      and it must be a different engine from the worker
   --redrive          lift a park or a dead letter and continue the issue's pull request
+  --land             a person's go-ahead past the merge boundary for a pull request it parked: lift only
+                     that park, re-prove and re-review the pull request, and land it with every other
+                     gate in force; refuses a dead letter or any other park (use --redrive)
   --resume-pr <pr>   continue that pull request rather than open another
   --help, -h         print this and exit
 
 Ctrl+C stops the run: its agent is killed, nothing is settled from it, and its claim is released.`;
 
 /** Every flag this command reads, for the guard: an argument it does not know must never fall through to a real run. */
-export const CLI = { flags: ['dry-run', 'redrive'], options: ['issue', 'max-points', 'worker', 'reviewer', 'confirmer', 'resume-pr'] } as const;
+export const CLI = { flags: ['dry-run', 'redrive', 'land'], options: ['issue', 'max-points', 'worker', 'reviewer', 'confirmer', 'resume-pr'] } as const;
 guardCli(args, CLI, USAGE);
 
 const DRY_RUN = flag('dry-run');
+/** `--land` is a redrive the person has also cleared past the merge boundary, for this issue only. */
+const LAND = flag('land');
+const REDRIVE = flag('redrive');
+if (LAND && REDRIVE) {
+  console.error('--land and --redrive are different acts; give one');
+  process.exit(1);
+}
 
 const ISSUE_NUMBER = (() => {
   const raw = opt('issue');
@@ -154,6 +166,7 @@ const ctx = createContext({
   // The appraiser's prompts too: a worker's close is confirmed with the appraiser's confirmer prompt.
   promptsDirs: [PROMPTS, join(HERE, '..', 'appraise-github-issues', 'prompts')],
   dryRun: DRY_RUN,
+  landPastBoundary: LAND ? ISSUE_NUMBER : undefined,
   onLane: BOARD && !DRY_RUN ? BOARD.onLane : undefined,
 });
 
@@ -188,6 +201,48 @@ const PULLS: Array<{ number: number; isDraft: boolean; merged: boolean; headRefN
     .map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: pr.mergedAt !== null, headRefName: pr.headRefName, state: pr.state }));
 })();
 
+// An open pull request to continue: named, or the newest open one that references the issue.
+const RESUME_PR = (() => {
+  const raw = opt('resume-pr');
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) {
+      console.error(`--resume-pr expects a pull request number, got '${raw}'`);
+      process.exit(1);
+    }
+    const found = PULLS.find((pr) => pr.number === n);
+    if (!found || found.state !== 'OPEN') {
+      console.error(`--resume-pr ${n}: not an open pull request that references #${ISSUE_NUMBER}`);
+      process.exit(1);
+    }
+    return found;
+  }
+  return REDRIVE || LAND ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
+})();
+
+// `--land` waives the merge boundary and nothing else, so everything it needs is checked before
+// anything is written, labels and board included: the one pull request it will land, and a park the
+// boundary wrote. Then only the park comes off, on the issue and that pull request.
+if (LAND) {
+  if (!RESUME_PR) {
+    console.error(`--land needs an open pull request that references #${ISSUE_NUMBER}; there is none`);
+    process.exit(1);
+  }
+  const comments = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | { body, createdAt }]'])) as Array<{ body: string; createdAt: string }>;
+  const parkedAt = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/issues/${ISSUE_NUMBER}/events`, '--paginate', '--jq', '.[] | select(.event == "labeled" and .label.name == "loop/parked") | .created_at'])
+    .split('\n')
+    .filter(Boolean)
+    .at(-1) ?? null;
+  const blocker = landBlocker(issue.labels.map((l) => l.name), comments, parkedAt);
+  if (blocker) {
+    console.error(`--land refuses #${ISSUE_NUMBER}: ${blocker}`);
+    process.exit(1);
+  }
+  mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (land)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
+  mutate(ctx, `lift loop/parked on PR #${RESUME_PR.number} (land)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', 'loop/parked']);
+  issue.labels = issue.labels.filter((l) => l.name !== 'loop/parked');
+}
+
 // The labels the pipeline writes have to exist before it writes one; creating them is idempotent.
 ensureLabels(ctx);
 
@@ -221,7 +276,6 @@ if (BOARD && !DRY_RUN) BOARD.onLane({ issue: issue.number, title: issue.title, l
 // A redrive is a person's act: lifting the hold is what makes the live gate let the issue through,
 // and the count labels come off with it so the fresh budget is real. The redrive itself is
 // counted, so a thread that keeps coming back shows how many times on its labels.
-const REDRIVE = flag('redrive');
 if (REDRIVE) {
   const lifted = liftDlq(ctx, ISSUE_NUMBER, issue.labels);
   if (issue.labels.some((l) => l.name === 'loop/parked')) {
@@ -233,25 +287,6 @@ if (REDRIVE) {
   clearCount(ctx, 'attempts', ISSUE_NUMBER);
   issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !/^loop\/(reviews|attempts):/.test(l.name));
 }
-
-// An open pull request to continue: named, or the newest open one that references the issue.
-const RESUME_PR = (() => {
-  const raw = opt('resume-pr');
-  if (raw !== undefined) {
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n <= 0) {
-      console.error(`--resume-pr expects a pull request number, got '${raw}'`);
-      process.exit(1);
-    }
-    const found = PULLS.find((pr) => pr.number === n);
-    if (!found || found.state !== 'OPEN') {
-      console.error(`--resume-pr ${n}: not an open pull request that references #${ISSUE_NUMBER}`);
-      process.exit(1);
-    }
-    return found;
-  }
-  return REDRIVE ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
-})();
 
 // The pull request carries the same hold its issue did; a redrive lifts both, or a merged pull
 // request keeps saying parked.
@@ -268,8 +303,10 @@ const OBJECTION = (() => {
   return raw.trim() || 'The pull request was stopped before it could land; finish it and re-prove it.';
 })();
 
+// A landing has no objection to answer: the work was approved and only the boundary stopped it,
+// so the pull request goes to Proving and review, not back to a coder.
 const result = RESUME_PR
-  ? await redriveIssue(ctx, issue, { number: RESUME_PR.number, branch: RESUME_PR.headRefName }, OBJECTION, { maxPoints: MAX_POINTS })
+  ? await redriveIssue(ctx, issue, { number: RESUME_PR.number, branch: RESUME_PR.headRefName }, LAND ? null : OBJECTION, { maxPoints: MAX_POINTS, landing: LAND })
   : await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
 step(`${result.outcome}`);
 log(result.reason);

@@ -1189,8 +1189,14 @@ async function main(): Promise<void> {
   if (!SKIP_APPRAISAL && !SKIP_APPRAISAL_THIS_RUN) placement = await placeBacklog(allIssues());
   // Finished work first: a pull request waiting for a driver lands before anything new starts,
   // which also moves the base before fresh lanes are cut from it.
-  const resumable = DRY_RUN ? [] : selectResumable(placement).slice(0, LIMIT);
-  const candidates = selectCandidates(placement).slice(0, Math.max(0, LIMIT - resumable.length));
+  const stranded = DRY_RUN ? [] : selectResumable(placement);
+  const resumable = stranded.slice(0, LIMIT);
+  for (const { issue, pull } of stranded.slice(LIMIT)) log(`  #${issue.number} not resumed: over this run's limit of ${LIMIT} (PR #${pull.number}; --limit raises it)`);
+  const ready = selectCandidates(placement);
+  const room = Math.max(0, LIMIT - resumable.length);
+  const candidates = ready.slice(0, room);
+  // An issue left out by the limit is Ready, not held: say so, or it reads as silently skipped.
+  for (const issue of ready.slice(room)) log(`  #${issue.number} not selected: over this run's limit of ${LIMIT} (--limit raises it)`);
   if (resumable.length > 0) {
     step(`Resuming ${resumable.length} pull request(s) with no driver`);
     log(resumable.map((r) => `#${r.issue.number} (PR #${r.pull.number})`).join(', '));

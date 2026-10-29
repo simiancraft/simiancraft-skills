@@ -122,6 +122,26 @@ export function behindBase(ctx: Context, cwd: string, baseSha?: string): string[
 }
 
 /**
+ * What a landing has to catch up on: `behindBase` less the files `releaseArtifacts` names, which the
+ * adopter declares the release machinery alone writes. A base that moved only there needs no
+ * catch-up before the merge: the merge brings them in, and catching up would only push a head whose
+ * CI starts over. Two cases keep the catch-up: a release file this work's import closure reaches
+ * (the change reads it, so it must be checked with the new contents), and a version-only
+ * package.json bump, which code can read and which no adopter declared as noise.
+ */
+export function behindBeyondNoise(ctx: Context, cwd: string, baseSha: string): string[] {
+  const behind = behindBase(ctx, cwd, baseSha);
+  const releaseArtifacts: readonly string[] = ctx.project.releaseArtifacts ?? [];
+  if (behind.length === 0 || releaseArtifacts.length === 0) return behind;
+  const artifact = (file: string) => releaseArtifacts.some((pattern) => matchesPath(file, pattern));
+  if (!behind.some(artifact)) return behind;
+  const mine = sh(ctx, ['git', 'diff', '--name-only', `${baseSha}...HEAD`], cwd).split('\n').filter(Boolean);
+  const closure = importClosure(ctx, cwd, mine);
+  if (closure.size > CLOSURE_CAP) return behind;
+  return behind.filter((file) => !artifact(file) || closure.has(file));
+}
+
+/**
  * What the base has changed since `sinceSha` that this branch's proof actually depends on.
  *
  * Being behind the base is not by itself stale proof. Decay is a function of distance from the base

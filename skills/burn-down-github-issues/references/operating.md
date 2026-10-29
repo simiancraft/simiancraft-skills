@@ -132,6 +132,9 @@ prefix was written by a person, and only a person clears it:
 
 ## What is not a bug
 
+- **`#N not selected: over this run's limit of 5 (--limit raises it)`**, or `not resumed` for a
+  pull request waiting on a driver. The issue is Ready; the run took the first `limit` of them (5 by
+  default). `--limit` raises it for one run, or the next run takes it.
 - **`board: N card(s) placed by their facts` and a burst of `board:` lines at startup.** The run
   start puts every card in the window where its facts say before any seat moves one; a card a
   person dragged somewhere the facts do not support goes back, with the line saying where and
@@ -216,10 +219,14 @@ A parked pull request is finished work that the loop declined to land. Landing i
 `gh pr merge`; the freshness rules that govern the pull master govern you too, and skipping them
 is how a base branch gets broken.
 
-Before doing any of it by hand, consider re-driving the issue: `bun run <fix-skill-dir>/fix.ts
---issue <n>` puts one named issue back through the worker, the reviewer, and the pull master, with
-the same freshness and merge rules the loop applies. Do it by hand when the pipeline has already
-spent the issue's review budget, or when the objection is one no revision will answer.
+For a pull request the merge boundary parked (`autoMerge` declined an approved change), use
+`bun run <fix-skill-dir>/fix.ts --issue <n> --land`: it lifts only that park, re-proves and
+re-reviews the pull request, and lands it through the pull master with every other gate in force,
+recording the waiver on the pull request. It refuses a dead letter and every other kind of park;
+for those, consider `--redrive`, which puts the issue back through the coder, the prover, the
+reviewer, and the pull master. Do it by hand only when the
+pipeline has already spent the issue's review budget, or when the objection is one no revision will
+answer.
 
 1. **Judge adequacy** against `prove-work-on-github`'s `references/judgement.md`: every
    load-bearing claim receipted, pinned, resolvable **on the remote**, fresh, re-checkable, clean,

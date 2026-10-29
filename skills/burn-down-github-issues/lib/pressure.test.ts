@@ -548,12 +548,38 @@ describe('runtime moves and settlement', () => {
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
     const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
-      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, behindBeyondNoise: behindBase, requiresUpToDate: () => true, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
       mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
     });
     expect(await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop)).toBe('merged');
     expect(reported).toBe(landedOn);
+  });
+  it('a base that moved only by release noise lands without a catch-up, unless protection wants an up-to-date branch', async () => {
+    const base = 'A';
+    const sh = (_ctx: unknown, argv: string[]) => {
+      if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? base : 'h';
+      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
+      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv.at(-1) === '.parents[0].sha') return base;
+      return '';
+    };
+    const landWith = (strict: boolean) => {
+      const ctx = context(new FakeTracker(bot));
+      const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+        DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+        sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
+        // The lane is behind by a changelog alone, on every look.
+        behindBase: () => ['changelog/1.0.1.md'], behindBeyondNoise: () => [], requiresUpToDate: () => strict,
+        fetchBase: () => base, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+        awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+        mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+      });
+      return api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    };
+    expect(await landWith(false)).toBe('merged');
+    // Strict protection keeps the old rule: never fresh while behind, so the refresh cap is reached.
+    expect(await landWith(true)).toEqual({ dlq: expect.stringMatching(/the base moved \d+ times/) });
   });
 });
 

@@ -174,7 +174,10 @@ every landing-time change is machine-produced; a file humans also edit does not 
 `package.json` needs no entry: a base change that only bumps its `"version"` field is recognized
 as release noise automatically, while a dependency change still invalidates. Without this key,
 each landing rewrites paths that `alwaysInvalidates` matches, so every queued pull request loses
-its approval and is re-reviewed for noise the machine produced.
+its approval and is re-reviewed for noise the machine produced. A landing whose base moved only in these
+files does not catch up at all, so its checks are not re-run for a changelog commit. It still catches
+up when the work imports one of them, on a version-only `package.json` bump, and whenever the base's
+protection requires an up-to-date branch or cannot be read.
 
 ## The line: a switch, and the floor that flips it
 

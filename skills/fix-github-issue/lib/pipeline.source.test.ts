@@ -35,3 +35,16 @@ describe('cleanup never runs under live work', () => {
     });
   }
 });
+
+describe('a person landing past the merge boundary', () => {
+  const pipeline = readFileSync(join(import.meta.dir, 'pipeline.ts'), 'utf8');
+  const fix = readFileSync(join(import.meta.dir, '..', 'fix.ts'), 'utf8');
+  it('routes the boundary through boundaryWaived (tested in land.test.ts) and records the waiver', () => {
+    expect(pipeline).toContain('!mergeAllowed(ctx, effective) && boundaryWaived(ctx.landPastBoundary, issue.number, effective)');
+    expect(pipeline).toContain('note the boundary waiver on PR');
+  });
+  it('re-proves and re-reviews rather than sending the work back to a coder', () => {
+    expect(fix).toContain("landPastBoundary: LAND ? ISSUE_NUMBER : undefined");
+    expect(fix).toContain('LAND ? null : OBJECTION');
+  });
+});

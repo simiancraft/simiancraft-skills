@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { behindBase, staleAgainstBase } from './staleness.ts';
+import { behindBase, behindBeyondNoise, fetchBase, staleAgainstBase } from './staleness.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const run = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -102,5 +102,63 @@ describe('staleAgainstBase: did the world move beneath the proof', () => {
     const proofHead = git(lane, 'rev-parse', 'HEAD');
     landUpstream(other, 'bun.lock', 'lock 2\n');
     expect(staleAgainstBase(ctx, lane, proofHead)).toEqual(['bun.lock']);
+  });
+});
+
+describe('behindBeyondNoise: what a landing must catch up on', () => {
+  const withArtifacts = (ctx: Context) => {
+    (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['changelog/'];
+    return ctx;
+  };
+
+  it('is empty when the base moved only by release artifacts, though the lane is behind', () => {
+    const { ctx, lane, other } = repository();
+    mkdirSync(join(other, 'changelog'), { recursive: true });
+    landUpstream(other, 'changelog/1.0.1.md', '# 1.0.1\n');
+    const base = fetchBase(ctx, lane);
+    expect(behindBase(ctx, lane, base)).toEqual(['changelog/1.0.1.md']);
+    expect(behindBeyondNoise(withArtifacts(ctx), lane, base)).toEqual([]);
+  });
+
+  it('keeps everything else the base changed', () => {
+    const { ctx, lane, other } = repository();
+    mkdirSync(join(other, 'changelog'), { recursive: true });
+    landUpstream(other, 'changelog/1.0.1.md', '# 1.0.1\n');
+    landUpstream(other, 'src/unrelated.ts', 'export const unrelated = 2;\n');
+    expect(behindBeyondNoise(withArtifacts(ctx), lane, fetchBase(ctx, lane))).toEqual(['src/unrelated.ts']);
+  });
+
+  it('treats no changelog as noise when no release artifacts are configured', () => {
+    const { ctx, lane, other } = repository();
+    mkdirSync(join(other, 'changelog'), { recursive: true });
+    landUpstream(other, 'changelog/1.0.1.md', '# 1.0.1\n');
+    expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['changelog/1.0.1.md']);
+  });
+
+  it('keeps a version-only package.json bump, which code can read and no adopter declared', () => {
+    const { ctx, lane, other } = repository();
+    writeFileSync(join(other, 'package.json'), '{ "name": "x", "version": "1.0.0" }\n');
+    git(other, 'add', 'package.json');
+    git(other, 'commit', '-q', '-m', 'manifest');
+    git(other, 'push', '-q', 'origin', 'development');
+    git(lane, 'fetch', '-q', 'origin');
+    git(lane, 'merge', '-q', '--no-edit', 'origin/development');
+    landUpstream(other, 'package.json', '{ "name": "x", "version": "1.0.1" }\n');
+    expect(behindBeyondNoise(withArtifacts(ctx), lane, fetchBase(ctx, lane))).toEqual(['package.json']);
+  });
+
+  it('keeps a release artifact the work imports: the change has to be checked with its new contents', () => {
+    const { ctx, lane, other } = repository();
+    writeFileSync(join(other, 'src/version.ts'), "export const version = '1.0.0';\n");
+    git(other, 'add', 'src/version.ts');
+    git(other, 'commit', '-q', '-m', 'version');
+    git(other, 'push', '-q', 'origin', 'development');
+    git(lane, 'fetch', '-q', 'origin');
+    git(lane, 'merge', '-q', '--no-edit', 'origin/development');
+    writeFileSync(join(lane, 'src/feature.ts'), "import { version } from './version';\nexport const feature = version;\n");
+    git(lane, 'commit', '-q', '-am', 'read the version');
+    landUpstream(other, 'src/version.ts', "export const version = '1.0.1';\n");
+    (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['src/version.ts'];
+    expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['src/version.ts']);
   });
 });
