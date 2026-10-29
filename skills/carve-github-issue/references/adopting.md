@@ -16,7 +16,7 @@ export default {
   maxPoints: 2,                       // the ceiling; an issue sized above it is the knife's
   carve: {
     maxDepth: 3,                      // the root is 0; an issue at depth d is carvable iff d < maxDepth
-    maxChildren: 8,                   // pieces per cut
+    maxChildren: 8,                   // open or new pieces per cut; adopted closed children do not count
     maxCarveRounds: 5,                // carver-confirmer pairs before a dispute hands off
     maxCarveAttempts: 3,              // failed carves before the issue goes to loop/dlq: carve
     maxGenerations: 5,                // amends per epoch before the trunk goes to loop/dlq: carve

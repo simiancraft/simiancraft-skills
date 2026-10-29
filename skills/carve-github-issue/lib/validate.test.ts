@@ -88,6 +88,20 @@ describe('validateCarving', () => {
     const many = Array.from({ length: 9 }, (_, i) => piece({ criteria: i === 0 ? ['A1', 'A2'] : [], order: i + 1 }));
     expect(faultsOf(carving({ ledger: [{ id: 'A1', text: 'one', owner: 0, status: 'open' }, { id: 'A2', text: 'two', owner: 0, status: 'open' }] }, { pieces: many }), tree).join()).toMatch(/maxChildren/);
   });
+  test('fan-out counts open and new pieces, not the closed children a revisit adopts', () => {
+    const closed = Array.from({ length: 9 }, (_, i) => 100 + i);
+    const io = new FakeTracker(BOT, [
+      fakeIssue(10, { title: '[carve-test] big', labels: [{ name: 'size: 8' }], subIssues: closed }),
+      ...closed.map((n) => fakeIssue(n, { parentNumber: 10, title: `done ${n}`, state: 'CLOSED', stateReason: 'COMPLETED' })),
+    ]);
+    const history = readTree(ctxFor(io), 10, io);
+    const ledger = [{ id: 'A1', text: 'one', owner: 0, status: 'open' as const }, { id: 'A2', text: 'two', owner: 1, status: 'open' as const }];
+    const adopted = closed.map((n, i) => piece({ kind: 'child', number: n, criteria: [], order: i + 3 }));
+    const pieces = [piece({ criteria: ['A1'] }), piece({ criteria: ['A2'], order: 2 }), ...adopted];
+    expect(faultsOf(carving({ ledger }, { pieces }), history)).toEqual([]);
+    const crowded = [...Array.from({ length: 9 }, (_, i) => piece({ criteria: i === 0 ? ['A1'] : i === 1 ? ['A2'] : [], order: i + 1 })), ...adopted.map((p, i) => ({ ...p, order: i + 10 }))];
+    expect(faultsOf(carving({ ledger }, { pieces: crowded }), history).join()).toMatch(/9 open or new pieces; maxChildren/);
+  });
   test('cycles, order consistency, headings, ownership, higher rungs', () => {
     expect(faultsOf(carving({}, { pieces: [piece({ criteria: ['A1'], dependsOn: [1] }), piece({ criteria: ['A2'], order: 2, dependsOn: [0] })] }), tree).join()).toMatch(/cycle/);
     expect(faultsOf(carving({}, { pieces: [piece({ criteria: ['A1'], order: 1, dependsOn: [1] }), piece({ criteria: ['A2'], order: 2 })] }), tree).join()).toMatch(/ordered before/);

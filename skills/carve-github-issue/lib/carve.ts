@@ -264,7 +264,12 @@ function validateCut(cut: unknown, faults: string[], where: string, options: { c
   const oneAdopted = n === 1 && parsed[0].kind === 'child';
   const oneSpike = n === 1 && cut.state === 'partial' && parsed[0].role === 'spike';
   if (n < 2 && !oneAdopted && !oneSpike) faults.push(`${where} has ${n} piece(s); a cut needs at least 2 (or one spike in a partial cut, or one adopted child)`);
-  if (n > options.maxChildren) faults.push(`${where} has ${n} pieces; maxChildren is ${options.maxChildren}`);
+  // A revisit must adopt every child with work on it, closed ones included; those are history,
+  // not fan-out. Counting them would make any trunk with more closed children than the ceiling
+  // impossible to re-cut, so the ceiling bounds only the pieces still to be worked.
+  const closedChild = (p: Piece) => p.kind === 'child' && options.tree.children.some((c) => c.number === p.number && c.state === 'CLOSED');
+  const live = parsed.filter((p) => !closedChild(p)).length;
+  if (live > options.maxChildren) faults.push(`${where} has ${live} open or new pieces; maxChildren is ${options.maxChildren}`);
   if (cut.state === 'partial' && spikes.length === 0) faults.push(`${where} is partial but has no spike`);
   if (cut.relation === 'waiting' && spikes.length === 0) faults.push(`${where} is waiting but has no spike`);
   if (cyclic(parsed)) faults.push(`${where}.pieces depend on each other in a cycle`);
