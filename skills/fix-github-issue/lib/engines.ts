@@ -22,21 +22,23 @@ const FIXTURE_RUNNER = join(import.meta.dir, 'fixture-runner.ts');
  */
 export const ENGINES = {
   claude: {
-    command: (_cwd: string, prompt: string, model?: string) => [
+    command: (_cwd: string, prompt: string, model?: string, effort?: string) => [
       'claude',
       '-p',
       prompt,
       ...(model ? ['--model', model] : []),
+      ...(effort ? ['--effort', effort] : []),
       '--dangerously-skip-permissions',
     ],
   },
   codex: {
-    command: (cwd: string, prompt: string, model?: string) => [
+    command: (cwd: string, prompt: string, model?: string, effort?: string) => [
       'codex',
       'exec',
       '--cd',
       cwd,
       ...(model ? ['--model', model] : []),
+      ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
       '--dangerously-bypass-approvals-and-sandbox',
       '--output-last-message',
       join(cwd, LAST_MESSAGE_FILE),
@@ -49,9 +51,10 @@ export const ENGINES = {
   fixture2: {
     command: (cwd: string, _prompt: string, model?: string) => ['bun', FIXTURE_RUNNER, cwd, model ?? ''],
   },
-} satisfies Record<string, { command: (cwd: string, prompt: string, model?: string) => string[] }>;
+} satisfies Record<string, { command: (cwd: string, prompt: string, model?: string, effort?: string) => string[] }>;
 
-export type Seat = { engine: keyof typeof ENGINES; model?: string };
+/** `effort` is the engine's reasoning level for this seat's turns; unset leaves the engine's own default. */
+export type Seat = { engine: keyof typeof ENGINES; model?: string; effort?: string };
 
 /** Parses `engine` or `engine:model`, refusing an engine the registry does not know. */
 export function parseSeat(spec: string, source: string): Seat {

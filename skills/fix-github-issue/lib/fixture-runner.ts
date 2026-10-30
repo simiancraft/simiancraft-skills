@@ -6,7 +6,7 @@
 
 import { copyFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
+import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
 const FILE_BY_ROLE: Record<string, string> = {
   appraiser: APPRAISAL_FILE,
@@ -19,6 +19,9 @@ const FILE_BY_ROLE: Record<string, string> = {
   prover: PROOF_FILE,
   reviewer: REVIEW_FILE,
   carver: CARVING_FILE,
+  'panel-framer': PANEL_QUESTIONS_FILE,
+  panelist: PANEL_REVIEW_FILE,
+  'panel-judge': PANEL_JUDGMENT_FILE,
 };
 
 const [cwd, answer] = process.argv.slice(2);

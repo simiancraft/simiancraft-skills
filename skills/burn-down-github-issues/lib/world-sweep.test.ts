@@ -58,6 +58,10 @@ class Model {
   resuming = false;
   closeBy = 'appraiser';
   confirmCloses = true;
+  deliberating = false;
+  panelStale = false;
+  panelAvailable = false;
+  panels = 0;
   incoming() { return this.world.base.slice(this.head).flat(); }
   behind() { return this.head < this.world.base.length; }
 }
@@ -66,9 +70,9 @@ const axes: Record<string, Axis> = {};
 function axis(key: keyof Model, values: unknown[]) {
   axes[key] = { values, put: (m, v) => { (m as any)[key] = v; } };
 }
-for (const key of ['closed', 'paused', 'active', 'parentOpen', 'released', 'trusted', 'resuming', 'confirmCloses'] as const) axis(key, [false, true]);
+for (const key of ['closed', 'paused', 'active', 'parentOpen', 'released', 'trusted', 'resuming', 'confirmCloses', 'deliberating', 'panelStale', 'panelAvailable'] as const) axis(key, [false, true]);
 axis('closeBy', ['appraiser', 'worker']);
-for (const key of ['attempts', 'appraisals', 'carves', 'carveRounds', 'reviewRounds', 'refreshes', 'redrives'] as const) axis(key, [0, 3]);
+for (const key of ['attempts', 'appraisals', 'carves', 'carveRounds', 'reviewRounds', 'refreshes', 'redrives', 'panels'] as const) axis(key, [0, 3]);
 axis('pr', ['none', 'draft', 'ready', 'merged']);
 axis('verdict', ['none', 'merge', 'reject', 'gather']);
 axis('decision', ['none', 'merge', 'gather-more', 'retry', 'oversize', 'rerun-reviewer', 'resolve-conflict', 'design-objection']);
@@ -109,6 +113,7 @@ for (const [suffix, value] of [['NeedsDecision', 'needs-decision'], ['NeedsHuman
 }
 for (const [suffix, value] of [['Appraise', 'appraisal'], ['Carve', 'carve'], ['Work', 'work'], ['Review', 'review'], ['Land', 'landing']]) eq(`labelDlq${suffix}`, 'dlq', value);
 eq('pausedByAncestor', 'paused', true);
+eq('labelDeliberating', 'deliberating', true); eq('panelStale', 'panelStale', true); eq('panelAvailable', 'panelAvailable', true);
 eq('foreignClaimLive', 'claim', 'foreign'); eq('ownClaimLive', 'claim', 'own'); eq('deadClaim', 'claim', 'dead');
 eq('applyingRecord', 'record', 'applying'); eq('liveRecord', 'record', 'live');
 pred('openChild', ['children'], m => m.children > 0);
@@ -119,7 +124,7 @@ pred('sizedWithinCeiling', ['points'], m => m.points > 0 && m.points <= 2);
 pred('sizedOverCeiling', ['points'], m => m.points > 2);
 eq('releasedLabel', 'released', true); eq('trustedVerdict', 'trusted', true);
 eq('blockerOpen', 'blocker', 'open'); eq('blockerCompleted', 'blocker', 'completed'); eq('hasOpenParent', 'parentOpen', true);
-for (const [name, key] of [['attemptsUnderCap', 'attempts'], ['appraisalsUnderCap', 'appraisals'], ['carvesUnderCap', 'carves'], ['carveRoundsUnderCap', 'carveRounds'], ['reviewRoundsUnderCap', 'reviewRounds'], ['redrivesUnderCap', 'redrives'], ['refreshesUnderCap', 'refreshes']] as const) pred(name, [key], m => m[key] < (key === 'refreshes' ? 2 : 3));
+for (const [name, key] of [['attemptsUnderCap', 'attempts'], ['appraisalsUnderCap', 'appraisals'], ['carvesUnderCap', 'carves'], ['carveRoundsUnderCap', 'carveRounds'], ['reviewRoundsUnderCap', 'reviewRounds'], ['redrivesUnderCap', 'redrives'], ['refreshesUnderCap', 'refreshes'], ['panelsUnderCap', 'panels']] as const) pred(name, [key], m => m[key] < (key === 'refreshes' ? 2 : 3));
 for (const [name, value] of [['decisionMerge', 'merge'], ['decisionGatherMore', 'gather-more'], ['decisionRetry', 'retry'], ['decisionOversize', 'oversize'], ['decisionRerunReviewer', 'rerun-reviewer'], ['decisionResolveConflict', 'resolve-conflict'], ['decisionDesignObjection', 'design-objection']]) eq(name, 'decision', value);
 for (const [name, value] of [['verdictFixed', 'fixed'], ['verdictIsClose', 'close'], ['verdictNeedsDecision', 'needs-decision'], ['verdictNeedsHuman', 'needs-human'], ['verdictTooUncertain', 'too-uncertain'], ['verdictIndivisible', 'indivisible'], ['verdictSmallEnough', 'small-enough'], ['verdictNothingLeft', 'nothing-left'], ['verdictStillGood', 'still-good'], ['verdictAmend', 'amend'], ['verdictExhausted', 'exhausted'], ['verdictQuestion', 'question']]) eq(name, 'result', value);
 pred('verdictOutOfBandOverCeiling', ['result', 'points'], m => m.result === 'out-of-band' && m.points > 2);
@@ -260,8 +265,8 @@ describe('independent multi-card scenarios', () => {
 });
 
 describe('intervention and recovery at every lane', () => {
-  it('all 36 lanes answer each human hold and a foreign claim', () => {
-    expect(LANES.length).toBe(36);
+  it('all 37 lanes answer each human hold and a foreign claim', () => {
+    expect(LANES.length).toBe(37);
     for (const lane of LANES) {
       for (const [hold, expected] of [['needs-decision', 'H1'], ['needs-human', 'H2'], ['parked', 'H3']]) {
         const m = new Model(); m.hold = hold;

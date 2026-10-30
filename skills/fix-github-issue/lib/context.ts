@@ -10,6 +10,7 @@ import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { PIPELINE_DEFAULTS, type PipelineKnobs, type ProjectConfig } from './config.ts';
 import type { Seat } from './engines.ts';
+import type { PanelSetup } from './panel.ts';
 import { log as defaultLog, step as defaultStep } from './shell.ts';
 
 /** What the pull master tells a driver once a merge is confirmed. */
@@ -102,6 +103,8 @@ export type Context = {
   onClosed?: (event: CloseEvent) => Promise<void>;
   /** Told every time a card should move lanes. Never awaited; a throw is the driver's to catch. */
   onLane?: (event: LaneEvent) => void;
+  /** The decision panel an agent-raised `needs-decision` is weighed by before it holds; absent, the hold is applied directly. */
+  panel?: PanelSetup;
   /** When set, every mutation goes here instead of to gh: a fake tracker under test. */
   io?: { write: (op: { description: string; argv: string[] }) => void; view?: (n: number) => unknown; search?: (q: string) => unknown };
 };
@@ -136,6 +139,7 @@ export function createContext(options: {
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;
+  panel?: PanelSetup;
   /** A test supplies its own; production reads it from gh. */
   botLogin?: string;
   io?: Context['io'];
@@ -165,6 +169,7 @@ export function createContext(options: {
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
     onLane: options.onLane,
+    panel: options.panel,
     io: options.io,
   };
 }

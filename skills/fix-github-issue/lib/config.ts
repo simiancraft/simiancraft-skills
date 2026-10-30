@@ -75,7 +75,7 @@ export type ProjectConfig = {
 };
 
 /** The seats an agent cap can be set for, and `default` for the rest. A worker's revision and reproof turns are the worker's. */
-export const AGENT_SEATS = ['default', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'walker', 'diagnose'];
+export const AGENT_SEATS = ['default', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'callback', 'walker', 'diagnose', 'panel'];
 /** The longest cap a timer can hold: past this the runtime clamps the delay to a millisecond, and a generous cap would kill at once. */
 export const MAX_AGENT_TIMEOUT_MINUTES = Math.floor(2_147_483_647 / 60_000);
 
@@ -96,7 +96,7 @@ export type PipelineKnobs = {
   checksTimeoutMinutes: number;
   /**
    * How long an agent may run before the driver kills it: one number for every seat, or a map by
-   * seat (`worker`, which caps the coder's and the prover's turns each, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `walker`, `diagnose`) with an
+   * seat (`worker`, which caps the coder's and the prover's turns each, `reviewer`, `confirmer`, `appraiser`, `carver`, `callback`, `walker`, `diagnose`, `panel`, which caps each decision panel turn) with an
    * optional `default`. Unset is 45 minutes. An agent that hits the cap is a sign its turn is doing
    * too much, and the answer to that is a smaller turn, not a longer cap. This knob is for the
    * repository whose single run of its own gate honestly exceeds the default, and for nothing else.

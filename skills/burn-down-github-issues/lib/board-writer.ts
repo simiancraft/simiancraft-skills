@@ -197,6 +197,9 @@ export function placeByFacts(facts: {
   if (has('needs-decision')) return { lane: 'H1', why: 'needs-decision' };
   if (has('needs-human')) return { lane: 'H2', why: 'needs-human' };
   if (has('loop/parked')) return { lane: 'H3', why: 'loop/parked' };
+  // A decision panel runs inside the process that raised its question: one standing at placement
+  // is another run's, and the burndown holds one whose run died before placing anything.
+  if (has('loop/deliberating')) return { lane: 'W3', why: 'a decision review is weighing it in another run' };
   const dead = dlqPhase(facts.labels.map((name) => ({ name })));
   if (dead) return { lane: { appraisal: 'Q1', carve: 'Q2', work: 'Q3', review: 'Q4', landing: 'Q5' }[dead], why: `loop/dlq: ${dead}` };
   if (has('loop/paused') || facts.pausedAbove) return { lane: 'W2', why: has('loop/paused') ? 'loop/paused' : 'an ancestor is paused' };

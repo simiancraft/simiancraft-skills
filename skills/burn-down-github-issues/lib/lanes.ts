@@ -34,6 +34,7 @@ export const PHASES: Record<Phase, { label: string; emoji: string; color: LaneCo
   landing: { label: 'Landing', emoji: '🚀', color: 'GREEN', description: 'The serial pull master: freshness, checks, smoke, merge' },
   waits: { label: 'Waits', emoji: '⏳', color: 'GRAY', description: 'Nothing is wrong; something else must move first' },
   'dead-letters': { label: 'Dead letters', emoji: '☠️', color: 'RED', description: 'A machine gave up; its triage may retry' },
+  panel: { label: 'Panel', emoji: '⚖️', color: 'ORANGE', description: 'Frontier models test whether a person must decide; read-only' },
   human: { label: 'Human', emoji: '🙋', color: 'PINK', description: 'Only a person can move it' },
   terminal: { label: 'Done', emoji: '✅', color: 'GRAY', description: 'Closed' },
 };

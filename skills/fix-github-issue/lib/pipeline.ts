@@ -22,6 +22,7 @@ import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
@@ -1270,9 +1271,22 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     }
 
     case 'needs-decision':
-    case 'needs-human':
+    case 'needs-human': {
       // Comment first, then the label that hides the issue from selection.
       mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
+      // A question the worker raised is weighed by a decision panel first, when one can sit; one it
+      // settles goes back to be appraised with the receipt as its ruling, and holds nobody up.
+      if (result.verdict === 'needs-decision') {
+        const weighed = await weighHold(ctx, { issue: issue.number, title: issue.title, question: result.reason, raiser: ctx.seats.worker });
+        if (weighed.kind === 'unavailable') say(`no decision panel (${weighed.why}); held for a person`);
+        if (weighed.kind === 'proceed') {
+          clearSizeLabels(ctx, issue.number);
+          closePullRequest();
+          move(ctx, issue, 'A1', 'decided by review; back to appraisal');
+          retireLane(ctx, issue.number, say);
+          return { outcome: 'handed-off', reason: 'the decision review settled the question; back to appraisal' };
+        }
+      }
       mutate(ctx, `label #${issue.number} ${result.verdict}`, [
         'gh',
         'issue',
@@ -1285,6 +1299,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
       move(ctx, issue, result.verdict === 'needs-decision' ? 'H1' : 'H2', result.reason.slice(0, 120));
       retireLane(ctx, issue.number, say);
       return { outcome: 'handed-off', reason: result.reason };
+    }
 
     case 'out-of-band': {
       if (result.points) {

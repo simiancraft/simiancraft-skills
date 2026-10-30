@@ -26,12 +26,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { children, killAgent } from '../fix-github-issue/lib/agent.ts';
+import { agentCapMs, children, killAgent } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
-import { parseSeat, seatLabel } from '../fix-github-issue/lib/engines.ts';
+import { parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
 import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
+import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
@@ -90,6 +91,13 @@ type LoopKnobs = {
   seats: { appraiser: string; confirmer: string; callback: string; worker: string; reviewer: string; walker: string; carver?: string; carveConfirmer?: string };
   /** The knife's knobs; see carve-github-issue/references/adopting.md. */
   carve: typeof CARVE_DEFAULTS;
+  /**
+   * The decision panel that weighs an agent-raised `needs-decision` before it holds an issue:
+   * `seats`, the candidates for the two seats beside the raising seat's, best first (empty means
+   * every distinct seat this run fills); `maxPanels` per issue; and the reasoning `effort` every
+   * panel turn runs at. Without three distinct models on two engines the hold is applied as before.
+   */
+  panel: PanelKnobs;
   /**
    * When set, every merge goes up onto the floor, the loop walks the deployed base on a cadence,
    * and a walk that finds it wrong pauses the line until it is right again. See references/floor.md.
@@ -181,6 +189,8 @@ const DEFAULTS: LoopKnobs = {
   callbacksDir: '<worktreeRoot>/appraisal-callbacks',
 
   carve: CARVE_DEFAULTS,
+
+  panel: PANEL_DEFAULTS,
 
   /** The scale every size is on, and the worker's attempt budget; see fix-github-issue/lib/config.ts. */
   pointScale: [1, 2, 3, 5, 8, 13, 21, 34],
@@ -278,9 +288,10 @@ const CONFIG = await loadProjectConfig<LoopKnobs>({
     'carve.maxCarveAttempts',
     'carve.maxGenerations',
     'carve.maxRevisitsPerGeneration',
+    'panel.maxPanels',
   ],
   nonNegativeIntegers: ['sizeCallbackTimeoutMinutes'],
-  blocks: ['carve'],
+  blocks: ['carve', 'panel'],
   help: [
     'This loop is shared across repositories; everything true of a repository lives in that file.',
     'Copy the template from references/adopting.md in the burn-down-github-issues skill and fill it in.',
@@ -508,6 +519,22 @@ function pullsNaming(issue: number): Array<{ number: number; isDraft: boolean; m
   return (JSON.parse(raw) as Array<{ number: number; isDraft: boolean; headRefName: string }>).filter((pr) => pr.headRefName.endsWith(`-${issue}`)).map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: false }));
 }
 
+/**
+ * The decision panel's candidate seats: the configured list, else every distinct seat this run
+ * already fills, which are the models the adopter has. A spec that does not parse stops the run.
+ */
+const PANEL: PanelSetup = (() => {
+  const configured = CONFIG.panel.seats ?? [];
+  let seats: Seat[];
+  try {
+    seats = configured.length > 0 ? configured.map((spec, i) => parseSeat(spec, `panel.seats[${i}]`)) : [SEATS.confirmer, SEATS.reviewer, SEATS.worker, SEATS.appraiser, SEATS.carver, SEATS.carveConfirmer];
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+  return { seats, maxPanels: CONFIG.panel.maxPanels ?? PANEL_DEFAULTS.maxPanels, effort: CONFIG.panel.effort ?? PANEL_DEFAULTS.effort };
+})();
+
 const ctx = createContext({
   project: PROJECT,
   knobs: {
@@ -525,6 +552,7 @@ const ctx = createContext({
   seats: { worker: SEATS.worker, reviewer: SEATS.reviewer, confirmer: SEATS.confirmer },
   onClosed: (event) => CARVING.onClosed(event),
   onLane: (event) => place(event.issue, event.title, event.lane, event.note),
+  panel: PANEL,
   repoRoot: REPO_ROOT,
   invokeRoot: INVOKE_ROOT,
   runDir: RUN_DIR,
@@ -1017,10 +1045,11 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
               ? `${outcome.verdict}, close ${outcome.close}`
               : outcome.verdict;
         // The card follows the appraisal: sized within the ceiling is Ready, over it is To carve,
-        // a confirmed close is Closed without code, a hand-off is its human lane, a retry is Inbox.
+        // a confirmed close is Closed without code, a hand-off is its human lane, a retry is Inbox,
+        // and a question a decision panel settled goes back to the Inbox to be sized again.
         const lane = outcome.deadLetter
           ? 'Q1'
-          : outcome.retry
+          : outcome.retry || outcome.panel === 'proceed'
             ? 'A1'
           : outcome.verdict === 'valid'
             ? (outcome.points ?? 0) > MAX_POINTS
@@ -1132,6 +1161,19 @@ async function main(): Promise<void> {
       carves: CONFIG.carve.maxCarveAttempts,
     });
     await reconcileMergedPullRequests(allIssues());
+
+    // A decision panel runs inside the process that raised its question, so a label older than
+    // any panel's turns belongs to a run that died: its question is held with the reviews posted.
+    // An age that cannot be read is not an old one; that card waits for the next run.
+    const panelStaleMs = 3 * agentCapMs(ctx, 'panelist') + 15 * 60_000;
+    for (const issue of allIssues()) {
+      if ((ONLY && !ONLY.has(issue.number)) || !issue.labels.some((label) => label.name === DELIBERATING_LABEL)) continue;
+      const since = deliberatingSince(ctx, issue.number);
+      if (since === null || Date.now() - since < panelStaleMs) continue;
+      log(`  #${issue.number}  its decision review was interrupted; held for a person`);
+      holdInterruptedPanel(ctx, issue.number);
+      place(issue.number, issue.title, 'H1', 'decision review interrupted');
+    }
 
     // Resume before selecting anything new: a stranded pull request is finished work, and landing
     // it first also moves the base before fresh lanes cut their branches from it. Re-read the

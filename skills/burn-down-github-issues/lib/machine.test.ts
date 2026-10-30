@@ -10,7 +10,7 @@ describe('the machine and the lane table agree', () => {
     expect(new Set(keys).size).toBe(keys.length);
     const names = LANES.map((l) => l.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(LANES.length).toBe(36);
+    expect(LANES.length).toBe(37);
   });
 
   it('every lane is exactly one leaf state', () => {
@@ -126,7 +126,10 @@ describe('the machine and the lane table agree', () => {
         const list = Array.isArray(raw) ? raw : [raw];
         for (const t of list) {
           if (!t.guard?.includes('UnderCap')) continue;
-          const fallback = list.find((o) => o.guard === undefined);
+          // A list that falls through to its phase's has one more way to be bounded: the same guard
+          // without the cap, which is where the card goes once the cap is spent (the panel's is H1).
+          const uncapped = t.guard.split(' and ').filter((atom) => !atom.endsWith('UnderCap') && atom !== 'panelAvailable').join(' and ');
+          const fallback = list.find((o) => o.guard === undefined) ?? (uncapped ? list.find((o) => o.guard === uncapped) : undefined);
           expect(fallback, `${path} on ${event}: ${t.guard} has no unguarded sibling`).toBeDefined();
           const target = fallback?.target ?? '';
           expect(
@@ -166,6 +169,8 @@ describe('the machine and the lane table agree', () => {
         (event === 'AGENT_FAILED' && transition.target === from) ||
         transition.target.startsWith(own[phase]) ||
         transition.target.startsWith('ticket.human.') ||
+        // The panel is the step before a person: a question triage extracts is weighed there first.
+        transition.target === 'ticket.panel.reviewing' ||
         // A person's redrive continues the pull request: catch up first, then the revision, or
         // re-derive from facts when there is no pull request to continue.
         (event === 'REDRIVEN' && ['ticket.landing.catchingUp', 'ticket.work.sentBack', 'ticket.reconcile'].includes(transition.target)) ||
