@@ -28,6 +28,7 @@ import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/co
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
 import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
+import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
 import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
 
@@ -61,6 +62,8 @@ export type AppraisalOutcome = {
   callback?: SizeCallbackResult;
   /** True when the failure cap was reached and the issue went to the appraisal dead-letter queue. */
   deadLetter?: boolean;
+  /** How a decision panel settled a `needs-decision`, when one sat: `proceed` sends the issue back to be appraised. */
+  panel?: 'proceed' | 'hold';
 };
 
 export type AppraiseKnobs = {
@@ -266,13 +269,14 @@ function recentAnnouncement(ctx: Context, issue: number, marker: string): boolea
   return node.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(marker) && Date.now() - Date.parse(c.createdAt) < ANNOUNCEMENT_FRESH_MS);
 }
 
-/** The hand-off intent: the announcement with its payload, then the hold label. */
-function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs-human', reason: string, extra: Record<string, unknown> = {}): void {
+/** The hand-off intent: the announcement with its payload, then the hold label unless `announceOnly`. */
+function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs-human', reason: string, extra: Record<string, unknown> = {}, announceOnly = false): void {
   const marker = `<!-- appraise-handoff verdict=${verdict} -->`;
   if (!recentAnnouncement(ctx, issue, marker)) {
     const body = [marker, '```json', JSON.stringify({ verdict, reason, ...extra }), '```', reason].join('\n');
     mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', body]);
   }
+  if (announceOnly) return;
   mutate(ctx, `label #${issue} ${verdict}`, ['gh', 'issue', 'edit', String(issue), '--add-label', verdict]);
 }
 
@@ -512,7 +516,27 @@ export async function appraiseIssue(
       break;
     }
 
-    case 'needs-decision':
+    case 'needs-decision': {
+      // The question goes on the thread first; a decision panel, when one can sit, weighs it there
+      // before the hold is applied, and an issue it settles goes back to be appraised instead.
+      handOff(ctx, issue.number, result.verdict, result.reason, {}, true);
+      const weighed = await weighHold(ctx, { issue: issue.number, title: issue.title, question: result.reason, raiser: options.seats.appraiser });
+      if (weighed.kind === 'unavailable') say(`no decision panel (${weighed.why}); held for a person`);
+      else outcome.panel = weighed.kind;
+      if (weighed.kind === 'proceed') {
+        clearSizeLabels(ctx, issue.number);
+        break;
+      }
+      // The panel's turns took minutes; a person may have closed or held the issue meanwhile.
+      const late = readTree(ctx, issue.number, io);
+      if (late.issue.state !== 'OPEN' || isHeld(late.issue.labels, options.skipLabels)) {
+        say('closed or held while the question was weighed; no hold applied');
+        outcome.changed = true;
+        break;
+      }
+      mutate(ctx, `label #${issue.number} needs-decision`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-decision']);
+      break;
+    }
     case 'needs-human':
       handOff(ctx, issue.number, result.verdict, result.reason);
       break;

@@ -89,6 +89,9 @@ The counters worth watching, and what a stall in each means:
 | `review round N of M` | a rejection was recorded; the issue is being revised |
 | `merge PR #N` | the pull master landed it |
 | `park #N` | the merge boundary refused an approved change, or the issue changed under the review; a person owns the landing |
+| `weighing the question on a panel of A, B, C` | a seat raised `needs-decision` and three frontier models are each answering it; their reviews land on the issue one by one |
+| `panel: N of M decided; proceed` or `; hold` | the panel's receipt is on the issue: `proceed` sends the card back to be appraised with the decisions as its ruling, `hold` parks it with what is still open |
+| `no decision panel (<why>); held for a person` | fewer than three distinct models are reachable, or the issue spent its panels; the hold is applied as before |
 | `label #N needs-decision` or `needs-human` | handed off before any pull request; the reason is a comment on the issue, and the label keeps it out of selection until removed |
 | `to the <phase> DLQ` | a machine gave up: the worker past its attempts, the review budget spent, or a landing that could not complete; the issue carries `loop/dlq: <phase>` |
 

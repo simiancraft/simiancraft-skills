@@ -88,6 +88,11 @@ export default {
   // The knife's knobs; every one a positive integer. See carve-github-issue/references/adopting.md.
   // carve: { maxDepth: 3, maxChildren: 8, maxCarveRounds: 5, maxCarveAttempts: 3, maxGenerations: 5, maxRevisitsPerGeneration: 10 },
   // and confirmCloses (default true): a close proposed by the appraiser needs the confirmer's agreement.
+  // The decision panel that weighs a seat's needs-decision before it parks. seats: the candidates
+  // for the two seats beside the raising seat's, best first: the most advanced models you have
+  // access to, as different as possible (ideally from different vendors); empty means every
+  // distinct seat above. It sits only when three distinct models on two engines are reachable.
+  // panel: { seats: ['claude:<model>', 'codex:<model>'], maxPanels: 2, effort: 'high' },
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
   // floor: { every: 10, drainMinutes: 60, environment: { kind: 'web', baseUrl: '...' }, walks: [] }
   // walks the deployed base after every merge and pauses the line when it is wrong; see references/floor.md.
@@ -236,7 +241,7 @@ said so in the log.
   request by hand and confirm nothing queues.
 - An issue tracker where issues carry `size: N` labels, or an appraiser run to create them; a fresh
   repository has none of them, and the appraiser creates each size label the first time it uses it. The
-  driver creates every label it uses (`size: N`, `needs-decision`, `needs-human`, `loop/*`) on
+  driver creates every label it uses (`size: N`, `needs-decision`, `needs-human`, `loop/*`, including `loop/deliberating` and `loop/panels: N`) on
   start and applies the appraiser's verdict itself; nothing needs pre-creating.
 
 ## Order of work

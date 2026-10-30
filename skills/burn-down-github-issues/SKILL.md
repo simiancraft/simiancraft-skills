@@ -73,7 +73,7 @@ From inside the target repository (any directory of it, including a worktree):
 
 ```bash
 bun run <this-skill-dir>/board.ts                      # once per operator: find or create the board, verify it, record the pointer
-bun run <this-skill-dir>/lanes.ts                      # write the 36 lanes and the Phase field onto that board; idempotent
+bun run <this-skill-dir>/lanes.ts                      # write the 37 lanes and the Phase field onto that board; idempotent
 bun run <this-skill-dir>/loop.ts --dry-run             # place every card, print the backlog by lane and what would run; no GitHub or working-tree write
 bun run <this-skill-dir>/loop.ts --limit 3             # work three Ready cards
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
@@ -144,15 +144,28 @@ only `read:project`, and the script names the missing scope instead of failing i
 `references/adopting.md`, "The board".
 
 The lanes are the loop's state machine drawn as kanban: one lane per state a card can be in,
-thirty-six of them in ten phases, with one dead-letter lane per phase and three lanes only a
-person can move a card out of. The machine is data (`lib/machine.ts`), tested against the lane
+thirty-seven of them in eleven phases, with one dead-letter lane per phase, a panel lane where
+frontier models weigh a question before it parks, and three lanes only a person can move a card
+out of. The machine is data (`lib/machine.ts`), tested against the lane
 table, exportable to stately.ai/viz, and chartable with Graphviz; see
 `references/state-machine.md`. A `Phase` field on every card is the collapsed view, so a board
-grouped by Phase is the ten-column summary and a later dashboard of every operator's burndown is
+grouped by Phase is the eleven-column summary and a later dashboard of every operator's burndown is
 a query over these boards, not a second state store.
 
 A repository without a board runs the same loop: the placement is still computed and is still the
 queue; it is simply not written anywhere a person can look at between runs.
+
+## A decision panel before a person
+
+When a seat raises a question nobody has ruled on (`needs-decision`), the card does not park
+straight away. The raising seat's model and two other frontier models on different engines each
+try to answer it from the code, the conventions, and the thread, without seeing one another, and
+each posts its review on the issue. If all three decide every question alike, on cited facts that
+are found in the base, the decisions are recorded on the issue and the card goes back to be
+appraised. Otherwise it parks as before, with the reviews and a receipt of what was decided and
+what is still open (lettered options) already on the thread. It runs only when three distinct
+models are reachable; configure it with `panel` (`references/adopting.md`) and read the lane in
+`references/state-machine.md`, "Panel".
 
 ## Dead letters, per phase
 

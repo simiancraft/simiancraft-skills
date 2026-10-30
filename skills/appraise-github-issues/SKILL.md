@@ -25,7 +25,7 @@ judged against the fetched base ref at one moment.
 |---|---|
 | `valid` | a `size: N` label on the configured scale; a comment when it disagrees with a size already there |
 | `already-fixed`, `obsolete` | a close with a receipt a stranger can re-check, after a second engine agrees |
-| `needs-decision` | the label, and the exact question a person must answer |
+| `needs-decision` | the exact question a person must answer, then the label; under a driver that configures a decision panel, three frontier models weigh the question first, and one they settle goes back to be appraised instead |
 | `needs-human` | the label, and what access or authority an agent lacks |
 
 ## The second opinion on a close
