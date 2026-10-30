@@ -27,6 +27,7 @@ export function loopLabels(): Array<[string, string, string]> {
     ['loop/working', '1d76db', 'A worker has this issue; other runs wait'],
     ['loop/paused', 'fbca04', 'Paused by its parent while a question is open'],
     ['loop/handed-off', 'ededed', 'The knife handed this off before carving it; found by the sweep when the hold lifts'],
+    ['loop/deliberating', 'fbca04', 'A panel of frontier models is weighing whether a person must decide'],
     ['spike', '0e8a16', 'Answer a question with evidence; no pull request'],
   ];
 }
@@ -82,11 +83,11 @@ export function isHeldBy(labels: Array<{ name: string }>, skipLabels: string[]):
 }
 
 /**
- * The five counters, each a `loop/<kind>: N` label: review rounds, carve attempts, appraisal
- * attempts, worker attempts, and redrives out of a dead-letter queue. One pattern, one set of
- * functions, five names.
+ * The six counters, each a `loop/<kind>: N` label: review rounds, carve attempts, appraisal
+ * attempts, worker attempts, redrives out of a dead-letter queue, and decision panels. One
+ * pattern, one set of functions, six names.
  */
-export type Counter = 'reviews' | 'carves' | 'appraisals' | 'attempts' | 'redrives';
+export type Counter = 'reviews' | 'carves' | 'appraisals' | 'attempts' | 'redrives' | 'panels';
 
 const COUNTER_LABEL: Record<Counter, { color: string; description: string }> = {
   reviews: { color: 'd4c5f9', description: 'Review rounds consumed' },
@@ -94,6 +95,7 @@ const COUNTER_LABEL: Record<Counter, { color: string; description: string }> = {
   appraisals: { color: 'd4c5f9', description: 'Appraisal attempts consumed' },
   attempts: { color: 'd4c5f9', description: 'Worker attempts consumed' },
   redrives: { color: 'd4c5f9', description: 'Redrives out of a dead-letter queue' },
+  panels: { color: 'd4c5f9', description: 'Decision panels convened before a hold' },
 };
 
 /**
