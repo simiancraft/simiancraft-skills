@@ -6,7 +6,7 @@ of an explicit state machine, and polymorphic seats move the cards.
 ## Shape
 
 The state is the tracker, projected onto a board; the machine is `lib/machine.ts`; the seats are
-whatever engine a lane's prompt runs on. Ten phases, thirty-six lanes:
+whatever engine a lane's prompt runs on. Eleven phases, thirty-seven lanes:
 
 ```
 📏 Appraisal   A1 Inbox → A2 Appraising → A3 Confirming close
@@ -17,6 +17,7 @@ whatever engine a lane's prompt runs on. Ten phases, thirty-six lanes:
 🚀 Landing     F1 Approved → F2 Catching up → F3 Checks pending → F4 Smoke → F5 Merging
 ⏳ Waits       W1 Blocked by sibling, W2 Paused by epic, W3 Claimed elsewhere
 ☠️ Dead letters Q1 Appraisal, Q2 Carve, Q3 Work, Q4 Review, Q5 Landing   (one queue per machine)
+⚖️ Panel       P1 Panel review                                         (before a question parks)
 🙋 Human       H1 Needs decision, H2 Needs human, H3 Parked
 ✅ Done        T1 Merged, T2 Closed without code, T3 Verified on the floor
 ```

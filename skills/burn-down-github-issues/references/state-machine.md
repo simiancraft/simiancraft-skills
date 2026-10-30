@@ -23,7 +23,7 @@ it. The console's old Stage was the coarse form, and its `working` value covered
 lanes, which is why a stalled run could not be diagnosed from the log.
 
 Collapsing is the direction that works. The `Phase` field on each card is written from a fixed
-lane-to-phase table, and a view grouped by Phase is the ten-column board. Nothing can go the other
+lane-to-phase table, and a view grouped by Phase is the eleven-column board. Nothing can go the other
 way: a coarse state cannot be disassembled into the fine one it hides.
 
 ## The root: two regions in parallel
@@ -31,7 +31,7 @@ way: a coarse state cannot be disassembled into the fine one it hides.
 ```
 burndown (parallel)
 ├── line:   active | paused                 the operator's switch
-└── ticket: appraisal | ready | carving | work | review | landing | waits | deadLetters | human | terminal
+└── ticket: appraisal | ready | carving | work | review | landing | waits | deadLetters | panel | human | terminal
             + reconcile (transient) + offBoard (final)
 ```
 
@@ -65,8 +65,10 @@ order is the rule "GitHub facts beat the lane; the lane beats labels for intent"
 
 1. Issue closed: `terminal.merged` if by a merge, else `terminal.closedWithoutCode`.
 2. PR merged, issue open: close with a pointer; `terminal.merged`.
-3. Hold labels: `needs-decision`, `needs-human`, `loop/parked`, the five `loop/dlq: <phase>`
-   labels, `loop/paused` on the issue or an ancestor.
+3. Hold labels: `needs-decision`, `needs-human`, `loop/parked`, then `loop/deliberating` (a
+   decision panel whose run died: `human.needsDecision` with the reviews it posted; one still
+   running in another process: `waits.claimedElsewhere`), the five `loop/dlq: <phase>` labels,
+   `loop/paused` on the issue or an ancestor.
 4. A foreign live claim: `waits.claimedElsewhere`.
 5. An own live claim: a trunk by its record (`spawningChildren` on an `applying` record,
    `revisiting` on a moved fingerprint, `carving` when oversized with no record); a leaf by its
@@ -95,7 +97,7 @@ mirrored to Number fields on the card.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | A1 Inbox | move card | `APPRAISER_DISPATCHED` [lineActive] to A2 |
-| A2 Appraising | run appraiser | `APPRAISED`: close verdict to A3; needs-decision to H1; needs-human to H2; over ceiling to C1 (size label, size callback); within to B1 (size label). `AGENT_FAILED`: under cap back to A1 (count); else Q1 |
+| A2 Appraising | run appraiser | `APPRAISED`: close verdict to A3; needs-decision to P1 when a panel can sit, else H1; needs-human to H2; over ceiling to C1 (size label, size callback); within to B1 (size label). `AGENT_FAILED`: under cap back to A1 (count); else Q1 |
 | A3 Confirming close | run confirmer | `CONFIRMED` to T2 (both receipts, close); `DISPUTED` to H2 (both opinions); `AGENT_FAILED` to Q1 |
 
 ### Ready
@@ -109,11 +111,11 @@ mirrored to Number fields on the card.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | C1 To carve | move card | `KNIFE_DISPATCHED` [lineActive] to C2 (carving claim) |
-| C2 Carving | run carver | `CUT_PROPOSED` to C3; `KNIFE_VERDICT`: too-uncertain to H1, indivisible (small-enough, nothing-left, depth cap) to H2; `AGENT_FAILED`: under cap to C1, else Q2 |
-| C3 Confirming cut | run carve confirmer | `CUT_CONFIRMED` to C4; `CUT_DISPUTED`: under the round cap to C2, else Q2; `AGENT_FAILED` to Q2 |
+| C2 Carving | run carver | `CUT_PROPOSED` to C3; `KNIFE_VERDICT`: too-uncertain to P1 when a panel can sit, else H1, indivisible (small-enough, nothing-left, depth cap) to H2; `AGENT_FAILED`: under cap to C1, else Q2 |
+| C3 Confirming cut | run carve confirmer | `CUT_CONFIRMED` to C4; `OPINION_CONFIRMED` (the carver's opinion confirmed): too-uncertain to P1 when a panel can sit, else H1, anything else to H2; `CUT_DISPUTED`: under the round cap to C2, else Q2; `AGENT_FAILED` to Q2 |
 | C4 Spawning children | post `applying` record, create children in delivery order, add edges, adopt references, post `live` record, label trunk | `SPAWN_COMPLETE` to C5 (release claim, admit children to the board); `AGENT_FAILED` to Q2 |
 | C5 Epic: children in flight | move card | `FINGERPRINT_CHANGED`, `ALL_CHILDREN_CLOSED` [lineActive] to C6 |
-| C6 Revisiting | run carver, run carve confirmer | `REVISITED`: still-good to C5; amend to C4 (new generation); exhausted to C7; a question to H1 (pause the touched leaves); anything else to Q2. `CAP_REACHED` to Q2; `AGENT_FAILED`: under cap to C5, else Q2 |
+| C6 Revisiting | run carver, run carve confirmer | `REVISITED`: still-good to C5; amend to C4 (new generation); exhausted to C7; a question to P1 when a panel can sit, else H1 (pause the touched leaves); anything else to Q2. `CAP_REACHED` to Q2; `AGENT_FAILED`: under cap to C5, else Q2 |
 | C7 Rolling up | roll-up comment, `released` record, trunk labels off, `loop/released` on | `ROLLED_UP`: nothing remains to T2; else to A2 (size label off; the release appraisal sizes the remainder) |
 
 A trunk never enters B, D, E, or F. Its children are cards of their own, entering at A1, B1, C1,
@@ -126,7 +128,7 @@ so any run can finish a spawn another run started.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | D4 Sent back | PR to draft, run a code revision with the reviewer's objection as the brief | `CODED` to D2 (announce the pushed commit, run the prover); `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
-| D1 Coding | run the coder | `CODED` to D2: the coder pushed, and the driver announces the pushed commit on the issue (`loop-step coded`) and runs the prover; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
+| D1 Coding | run the coder | `CODED` to D2: the coder pushed, and the driver announces the pushed commit on the issue (`loop-step coded`) and runs the prover; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision P1 when a panel can sit, else H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
 | D2 Proving | move card; the transition that enters it runs the prover | `PROVED` to E1 (a ready pull request whose head is the proven commit); `PROOF_REFUSED`: under the attempt cap to D1 (count an attempt; the driver announces `loop-step unproved` with what could not be shown, which is the coder's brief), else Q3; `AGENT_FAILED` to Q3 |
 | D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
 
@@ -184,8 +186,29 @@ phase, never Ready.
 | Q1 Appraisal DLQ | appraiser or confirmer failed past the cap | retry [redrives under cap] to A2 with a strategy (other seat, thread changed, cooling period); else H2 |
 | Q2 Carve DLQ | carve failed past the cap; disputed past the round cap; depth, generation, or revisit cap; a spawn that could not finish; a malformed revisit | retry with an `applying` record to C4 (finish, do not redo); retry to C2 (other seat, ceiling raised one rung, ladder started one rung lower, objections as the brief); else H2 with both opinions |
 | Q3 Work DLQ | worker failed past the cap; failed on a revision; run died with a dirty worktree or an undeclared draft | oversize to C1; retry with a draft to D3 (reclaim); retry to D1 (other engine, appraisal re-checked, dirty diff attached; attempts already cleared by the ejection); else H3 when a PR exists, H2 otherwise |
-| Q4 Review DLQ | review rounds exhausted; no trusted verdict | rerun a crashed reviewer to E1; retry to D4 (reviewer's words as the brief, other engine); a design objection to H1 with the question extracted; else H3 |
+| Q4 Review DLQ | review rounds exhausted; no trusted verdict | rerun a crashed reviewer to E1; retry to D4 (reviewer's words as the brief, other engine); a design objection to P1 when a panel can sit, else H1, with the question extracted; else H3 |
 | Q5 Landing DLQ | conflicts; red or unfinished checks; smoke failure; refresh cap; unreported merge | resolve conflict to F2 (one bounded catch-up turn); retry to F1 (rerun red checks once, wait for a quiet base, smoke retried once); else H3 |
+
+### Panel (read-only; the adversarial check before a person)
+
+Before an agent-raised question parks a card, the seat that raised it sits on a panel with two
+other frontier models, as different from it and from each other as the adopter can reach (other
+engines first), each at the panel's reasoning effort. "A panel can sit" is
+`panelAvailable and panelsUnderCap`: three distinct models on at least two engines are reachable,
+and the issue has convened fewer than `panel.maxPanels`. A question a person labelled is never
+weighed (`HOLD_ADDED_BY_PERSON` goes straight to the human lane).
+
+| Lane | Entry | Leaves on |
+|---|---|---|
+| P1 Panel review | label `loop/deliberating`, count `loop/panels`, frame the question into its decisions (linked ones together), run the three seats concurrently, judge agreement, verify the cited facts | `PANEL_PROCEED` (every decision decided): the receipt, then a trunk to C6 (no new epoch; only a person's hold removal starts one), a leaf to A1 (size label off; the decisions may change the size). `PANEL_HOLD` (anything still open): the receipt, `needs-decision`, to H1 |
+
+Each seat posts its own review on the issue the moment it is in, so the thread holds the whole
+deliberation. A decision is decided only when all three seats answer it with the same substance (for
+copy, the wording is then picked by a stated rule and the rule recorded) and every fact the answers
+cite is found in the base as quoted; an owner answer, which must name the fact only a person has, a
+missing seat, or a fact that does not verify leaves it open. The receipt lists the decided answers,
+then each open one with a lettered option per distinct position and every offered default. A seat
+failing is a seat short, not the machine failing, so the panel answers no `AGENT_FAILED`.
 
 ### Human (only a person can move it)
 
@@ -332,7 +355,7 @@ is the only input that changes what the seat does.
 The dispatcher this implies is a pull over the board, not a push over a selection list:
 
 1. Read every card whose lane has an agent entry action and whose claim is free, in board
-   order within each phase (A2, A3, C2, C3, C6, D1, D4, E2, F4, Q1 to Q5).
+   order within each phase (A2, A3, C2, C3, C6, D1, D4, E2, F4, Q1 to Q5, P1).
 2. Respect the WIP limit of the card's phase (the Kanban Guide's WIP control, a per-phase
    concurrency in the config), and the line switch at the three seams.
 3. Take the claim. The claim is the lock: two seats never take the same card, on one machine
@@ -372,6 +395,9 @@ exercises the same locks.
 The machine is the specification. The gaps between it and the code, each a change to code rather
 than to this file:
 
+- the knife's questions (C2, C3, C6) do not yet sit a panel: they still go to H1 directly, and
+  only the appraiser's and the worker's questions are weighed (Q4's design objection waits on the
+  triage seat below, like every dead letter);
 - no triage seat: every dead-letter lane waits for a person, and `redrivesUnderCap` is counted
   (`loop/redrives: N`) but not enforced, since only a person redrives today;
 - the running loop does not hold the knife's sweep on a paused line, though the machine guards

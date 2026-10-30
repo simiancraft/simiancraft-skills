@@ -111,6 +111,9 @@ export const MACHINE: StateNode = {
               { target: 'ticket.human.needsDecision', guard: 'labelNeedsDecision' },
               { target: 'ticket.human.needsHuman', guard: 'labelNeedsHuman' },
               { target: 'ticket.human.parked', guard: 'labelParked' },
+              // A panel whose run died holds with the reviews it posted; one still running elsewhere is that run's.
+              { target: 'ticket.human.needsDecision', guard: 'labelDeliberating and panelStale', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'labelHold'] },
+              { target: 'ticket.waits.claimedElsewhere', guard: 'labelDeliberating' },
               { target: 'ticket.deadLetters.appraisal', guard: 'labelDlqAppraise' },
               { target: 'ticket.deadLetters.carve', guard: 'labelDlqCarve' },
               { target: 'ticket.deadLetters.work', guard: 'labelDlqWork' },
@@ -165,6 +168,7 @@ export const MACHINE: StateNode = {
                   // An adopter may turn the second opinion off; the close is then the appraiser's alone.
                   { target: 'ticket.terminal.closedWithoutCode', guard: 'verdictIsClose and closesUnconfirmed', actions: ['commentReceipt', 'closeIssue'] },
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
+                  { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason'] },
                   { target: 'ticket.carving.toCarve', guard: 'sizedOverCeiling', actions: ['labelSize', 'fireSizeCallback'] },
@@ -234,6 +238,7 @@ export const MACHINE: StateNode = {
               on: {
                 CUT_PROPOSED: { target: 'ticket.carving.confirmingCut' },
                 KNIFE_VERDICT: [
+                  { target: 'ticket.panel.reviewing', guard: 'verdictTooUncertain and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'liveRecord'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible or verdictSmallEnough or verdictNothingLeft', actions: ['labelHold', 'commentBothOpinions', 'liveRecord'] },
                   // A verdict the driver cannot read is a failed turn, not an opinion about the issue.
@@ -257,6 +262,7 @@ export const MACHINE: StateNode = {
                 CUT_CONFIRMED: { target: 'ticket.carving.spawningChildren' },
                 // The carver's opinion about the issue is confirmed here too, and then it is a person's.
                 OPINION_CONFIRMED: [
+                  { target: 'ticket.panel.reviewing', guard: 'verdictTooUncertain and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'liveRecord', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions', 'liveRecord', 'releaseClaim'] },
                 ],
@@ -297,6 +303,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.carving.childrenInFlight', guard: 'verdictStillGood', actions: ['postLiveRecord', 'countRevisit', 'releaseClaim'] },
                   { target: 'ticket.carving.spawningChildren', guard: 'verdictAmend', actions: ['countGeneration'] },
                   { target: 'ticket.carving.rollingUp', guard: 'verdictExhausted' },
+                  { target: 'ticket.panel.reviewing', guard: 'verdictQuestion and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'pauseTouchedLeaves', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictQuestion', actions: ['labelHold', 'commentQuestion', 'pauseTouchedLeaves', 'releaseClaim'] },
                   // The carver's own opinion that what is left cannot be cut: a person weighs it.
                   { target: 'ticket.human.needsHuman', guard: 'verdictIndivisible', actions: ['labelHold', 'commentBothOpinions', 'pauseTouchedLeaves', 'releaseClaim'] },
@@ -338,6 +345,7 @@ export const MACHINE: StateNode = {
           on: {
             WORKER_VERDICT: [
               { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
+              { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
@@ -360,6 +368,7 @@ export const MACHINE: StateNode = {
                 CODED: { target: 'ticket.work.proving', actions: ['announceCoded', 'runProver'] },
                 WORKER_VERDICT: [
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
+                  { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
@@ -375,6 +384,7 @@ export const MACHINE: StateNode = {
                 CODED: { target: 'ticket.work.proving', actions: ['announceCoded', 'runProver'] },
                 WORKER_VERDICT: [
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
+                  { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'releaseClaim'] },
@@ -638,6 +648,7 @@ export const MACHINE: StateNode = {
                   // through the catch-up, which hands the card to Sent back.
                   { target: 'ticket.landing.catchingUp', guard: 'decisionRetry and redrivesUnderCap and behindBase', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'reclaim', 'prToDraft'] },
                   { target: 'ticket.work.sentBack', guard: 'decisionRetry and redrivesUnderCap', actions: ['countRedrive', 'unlabelDlq', 'applyStrategy', 'reclaim'] },
+                  { target: 'ticket.panel.reviewing', guard: 'decisionDesignObjection and panelAvailable and panelsUnderCap', actions: ['unlabelDlq', 'commentQuestion', 'parkPr'] },
                   { target: 'ticket.human.needsDecision', guard: 'decisionDesignObjection', actions: ['unlabelDlq', 'labelHold', 'commentQuestion', 'parkPr'] },
                   { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },
                 ],
@@ -655,6 +666,35 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.human.parked', actions: ['unlabelDlq', 'labelParked', 'parkPr', 'commentHistory'] },
                 ],
                 AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['countTriage', 'commentReason', 'stopTriage'] },
+              },
+            },
+          },
+        },
+
+        /**
+         * The adversarial check before a person is brought in. Before an agent-raised question parks
+         * a card, three frontier models on different engines (the raising seat's and two others)
+         * each try to answer it from the code, the conventions, and the thread, and each one's review
+         * lands on the issue. Only a question all three decide alike, on facts that verify, is settled
+         * here; anything still open goes to a person with that research already on the thread.
+         */
+        panel: {
+          initial: 'reviewing',
+          states: {
+            reviewing: {
+              lane: { key: 'P1', name: 'Panel review', description: 'Three frontier models test whether a person must decide; read-only' },
+              entry: ['moveCard', 'labelDeliberating', 'countPanel', 'runPanel'],
+              on: {
+                // Every question decided: the receipt is the ruling, and the card goes back the way a
+                // person's answer sends it, without the new epoch only a person's hold removal starts.
+                PANEL_PROCEED: [
+                  { target: 'ticket.carving.revisiting', guard: 'isTrunk', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'claimCarving'] },
+                  { target: 'ticket.appraisal.inbox', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'unlabelSize'] },
+                ],
+                // Anything still open, including a seat that failed or ran out of time: a panel short
+                // a seat cannot decide, so the hold the raising seat asked for stands. A seat failing
+                // is not the machine failing, which is why the panel answers no AGENT_FAILED.
+                PANEL_HOLD: { target: 'ticket.human.needsDecision', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'labelHold'] },
               },
             },
           },
@@ -731,6 +771,7 @@ export const PHASE_OF_STATE: Record<string, Phase> = {
   landing: 'landing',
   waits: 'waits',
   deadLetters: 'dead-letters',
+  panel: 'panel',
   human: 'human',
   terminal: 'terminal',
 };
@@ -744,6 +785,7 @@ export type Phase =
   | 'landing'
   | 'waits'
   | 'dead-letters'
+  | 'panel'
   | 'human'
   | 'terminal';
 
