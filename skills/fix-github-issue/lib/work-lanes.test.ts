@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
-import { runProve } from '../../prove-github-issue/lib/prove.ts';
+import { decidingCommand, gateText, runProve } from '../../prove-github-issue/lib/prove.ts';
 import { agentCapMs } from './agent.ts';
 import { ENGINES } from './engines.ts';
-import type { ProjectConfig } from './config.ts';
+import { ciCommandFault, type ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { placeWork } from './pipeline.ts';
 import { codedComment, latestStep, unprovedComment } from './work-markers.ts';
@@ -336,6 +336,50 @@ bun -e 'const fs = require("node:fs"); const a = JSON.parse(fs.readFileSync("loo
   }, 5000);
 });
 
+describe('the deciding command and its gate instructions', () => {
+  const head = 'a'.repeat(40);
+  for (const [ciCommand, gated, expected] of [
+    ['bun run ci', head, 'bun run ci'],
+    ['bun run ci', 'b'.repeat(40), 'bun run ci'],
+    ['bun run ci', '', 'bun run ci'],
+    [undefined, 'b'.repeat(40), 'bun run check'],
+    [undefined, '', 'bun run check'],
+    [undefined, head, null],
+  ] as const) {
+    it(`selects and renders ci=${ciCommand}, gated=${gated || 'unknown'}`, () => {
+      const project = { ...PROJECT, ciCommand, checkCommand: 'bun run check', installCommand: 'bun install --frozen-lockfile' };
+      expect(decidingCommand(project, head, gated)).toBe(expected);
+      const text = gateText(project, head, gated);
+      expect(text).not.toContain('{{');
+      expect(text).toContain(head);
+      if (expected === null) {
+        expect(text).toContain('do not run it again');
+        expect(text).not.toContain(project.installCommand);
+        expect(text).not.toContain('gateRun');
+      } else {
+        expect(text).toContain(`deciding command \`${expected}\``);
+        expect(text.indexOf(project.installCommand)).toBeLessThan(text.indexOf(expected));
+        if (ciCommand && gated !== head) {
+          expect(text.indexOf(project.checkCommand)).toBeGreaterThan(text.indexOf(project.installCommand));
+          expect(text.indexOf(project.checkCommand)).toBeLessThan(text.indexOf(ciCommand));
+        }
+        if (ciCommand && gated === head) expect(text).not.toContain(project.checkCommand);
+        for (const required of ['unprovable', 'gateRun', 'exactly as given', 'full SHA', 'numeric exitCode']) expect(text).toContain(required);
+      }
+    });
+  }
+
+  it('treats an unknown gated commit as owing a run even without a known head', () => {
+    expect(decidingCommand(PROJECT, '', '')).toBe(PROJECT.checkCommand);
+  });
+
+  it('allows an omitted command and rejects unusable supplied values', () => {
+    expect(ciCommandFault(undefined)).toBeNull();
+    expect(ciCommandFault(' bun run ci ')).toBeNull();
+    for (const value of ['', '  ', null, 0, false, [], {}]) expect(ciCommandFault(value)).toContain('project.ciCommand');
+  });
+});
+
 describe("the prover's answer is believed only on the head it was given", () => {
   it('believes a proof pinned to the lane head, naming its pull request', async () => {
     const dir = lane(30);
@@ -344,6 +388,35 @@ describe("the prover's answer is believed only on the head it was given", () => 
     const result = await runProve(context(new FakeTracker(BOT), answer), issue(30), dir, { branch: 'fix/thirty-30', gated: sha }, { kind: 'handoff', text: 'h' });
     expect(result).toMatchObject({ verdict: 'proved', pr: 300, branch: 'fix/thirty-30' });
   });
+
+  for (const ciCommand of [undefined, 'bun run ci']) {
+    it(`passes gateRun through and renders the command coverage for ci=${ciCommand}`, async () => {
+      const n = ciCommand ? 35 : 34;
+      const dir = lane(n);
+      const branch = `fix/record-${n}`;
+      const sha = code(dir, branch);
+      const gateRun = { command: ciCommand ?? PROJECT.checkCommand, sha, exitCode: 0 };
+      const answer = answerFile(`proved-${n}`, { issue: n, verdict: 'proved', reason: 'proved', pr: n, sha, gateRun });
+      const ctx = context(new FakeTracker(BOT), answer);
+      ctx.project = { ...PROJECT, ciCommand };
+      const original = ENGINES.fixture.command;
+      let prompt = '';
+      ENGINES.fixture.command = (cwd, text, model) => { prompt = text; return original(cwd, text, model); };
+      try {
+        const result = await runProve(ctx, issue(n), dir, { branch, gated: '' }, { kind: 'handoff', text: 'h' });
+        expect(result.verdict).toBe('proved');
+        expect(result.gateRun).toEqual(gateRun);
+        expect(prompt).toContain(gateText(ctx.project, sha, ''));
+        expect(prompt).not.toMatch(/\{\{[A-Z_]+\}\}/);
+        if (ciCommand) {
+          expect(prompt).toContain(`The configured CI command is \`${ciCommand}\``);
+          expect(prompt).not.toContain('Read `.github/workflows/`');
+        } else expect(prompt).toContain('Read `.github/workflows/`');
+      } finally {
+        ENGINES.fixture.command = original;
+      }
+    });
+  }
 
   it('refuses a proof pinned to any other head: it describes a tree nobody will review', async () => {
     const dir = lane(31);
@@ -383,6 +456,13 @@ describe('the lane prompts', () => {
       expect(text).toMatch(/do not chase it/);
     });
   }
+  it('prove.md requires the deciding run record and evidence in addition to it', () => {
+    expect(prompts.prove).toContain('{{GATE}}');
+    expect(prompts.prove).toContain('{{CI_COVERAGE}}');
+    for (const field of ['"gateRun"', '"command"', '"sha"', '"exitCode"']) expect(prompts.prove).toContain(field);
+    expect(prompts.prove).toContain('`gateRun` is required whenever the gate section names a deciding command');
+    expect(prompts.prove).toContain("Focused evidence comes in addition to the deciding command's run, never instead of it.");
+  });
   it('code.md never asks its seat to prove or open a pull request, and prove.md never to push to the branch', () => {
     expect(prompts.code).not.toContain('gh pr create');
     expect(prompts.code).not.toContain('prove-work-on-github');

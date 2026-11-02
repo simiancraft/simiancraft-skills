@@ -60,6 +60,8 @@ export type ProjectConfig = {
    * and passes its tests can still fail the moment the result starts. Optional.
    */
   smokeCommand?: string;
+  /** The command CI decides with, when it differs from checkCommand; the prover always runs it. */
+  ciCommand?: string;
   /**
    * After every confirmed merge, fast-forward the main checkout (the one the driver was invoked
    * from, or that its worktree belongs to) to the remote base branch, so a person watching a dev
@@ -86,6 +88,12 @@ export function agentCapFault(cap: unknown): string | null {
   const mapped = typeof cap === 'object' && cap !== null && !Array.isArray(cap);
   if (mapped && Object.entries(cap).every(([seat, minutes]) => AGENT_SEATS.includes(seat) && positive(minutes))) return null;
   return `agentTimeoutMinutes must be a positive integer no greater than ${MAX_AGENT_TIMEOUT_MINUTES}, or a map of such integers keyed by ${AGENT_SEATS.join(', ')}`;
+}
+
+/** An absent CI command keeps the local gate rule; a supplied command must be usable. */
+export function ciCommandFault(command: unknown): string | null {
+  if (command === undefined || (typeof command === 'string' && command.trim() !== '')) return null;
+  return 'project.ciCommand must be a non-empty string when present';
 }
 
 /** The knobs the fix pipeline itself enforces. A driver may carry more; the pipeline reads these. */
@@ -354,6 +362,8 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   if (project.releaseArtifacts !== undefined && !Array.isArray(project.releaseArtifacts)) {
     faults.push('project.releaseArtifacts must be an array when present');
   }
+  const ciFault = ciCommandFault(project.ciCommand);
+  if (ciFault) faults.push(ciFault);
   if (project.followBase !== undefined && typeof project.followBase !== 'boolean') {
     faults.push('project.followBase must be a boolean when present');
   }

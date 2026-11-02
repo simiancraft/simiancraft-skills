@@ -48,6 +48,7 @@ export default {
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
     releaseArtifacts: [] /* optional string[]; same pattern rules as alwaysInvalidates; see below */,
+    ciCommand: 'bun run test:ci' /* optional; CI's deciding command when different from checkCommand; the prover always runs it */,
     smokeCommand: 'bun run smoke' /* optional; boots the landing head before the merge; see "The line" below */,
     followBase: false /* optional; true fast-forwards the main checkout after every merge; see "The line" below */,
     touchPaths: {
@@ -116,6 +117,7 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `baseBranch` | cut from and merged into | `main` | `develop` |
 | `evidenceBranch` | long-lived, append only | `__evidence_locker__` | create one |
 | `checkCommand` | the local gate | `bun run lint && bun run test` | `bun run verify` (a script fanning out to many checks) |
+| `ciCommand` | optional non-empty string; the prover always runs it and records command, full SHA, and exit code in `gateRun`. If unset, it records `checkCommand` only when the head moved or the gated commit is unknown; otherwise no rerun. A moved or unknown head still owes `checkCommand` first. | `bun run test:ci` | omit when `checkCommand` is also CI's deciding command |
 | `installCommand` | frozen-lockfile install | `bun install --frozen-lockfile` | the same |
 | `conventionDocs` | what a prescribed remedy is read against | `CONTRIBUTING.md` | `AGENTS.md` |
 | `sizingScale` | where the point scale is written | a docs page | an issue template |

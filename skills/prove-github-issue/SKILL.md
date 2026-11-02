@@ -34,9 +34,13 @@ The prompt is `prompts/prove.md`. Its brief is the coder's hand-off on a first p
 reviewer's points when a review asked for more evidence, or the catch-up that moved the base
 beneath an existing proof. It loads `prove-work-on-github` for the definition of proof.
 
-The prover reruns the repository's gate only when the head it proves differs from the commit the
-coder gated (the driver merged the base in at the seam); otherwise the coder's gate stands and CI is
-the second opinion. Like the coder, it never chases the base itself.
+The prover always runs `project.ciCommand` when configured. Otherwise it runs `checkCommand`
+when the head differs from the coder's gated commit, or that commit is unknown; at the same gated
+head the coder's gate stands and is not rerun. Before an owed run it runs `installCommand`; on a
+changed or unknown gated head it runs `checkCommand` first, even with `ciCommand` configured.
+It records only the deciding command in `gateRun`, with the exact command, full SHA, and numeric
+exit code. A failing run is `unprovable`. Focused evidence comes in addition to that run, never
+instead of it. Like the coder, it never chases the base itself.
 
 ## How the driver checks the answer
 
