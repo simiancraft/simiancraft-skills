@@ -224,6 +224,8 @@ describe('findStranded', () => {
     for (const claim of ['live', 'unreadable', 'stop']) {
       it(`leaves a ${claim} claim untouched, usable=${usable}`, () => {
         const s = setup(usable);
+        if (!usable) writeFileSync(join(s.dir, 'unfinished.txt'), 'work');
+        let prReads = 0;
         if (claim === 'live') s.io.comment(s.number, 'bot', '<!-- carve-claim kind=working run=other-run at=2026-09-03T12:00:00Z expires=2999-01-01T00:00:00Z -->');
         const prior = s.io.writes.length;
         const stop = new RunStopping('stop');
@@ -231,9 +233,17 @@ describe('findStranded', () => {
         try {
           reads(() => {
             if (claim === 'stop') expect(() => findStranded(s.context, [s.issue], [])).toThrow(stop);
-            else expect(findStranded(s.context, [s.issue], [])).toEqual([]);
+            else {
+              const found = findStranded(s.context, [s.issue], []);
+              expect(prReads).toBe(0);
+              expect(found).toEqual([]);
+            }
+            expect(prReads).toBe(0);
             expect(s.io.writes.length).toBe(prior);
-          }, () => { throw new Error('must not read PR'); });
+          }, () => {
+            prReads++;
+            return usable ? { state: 'OPEN', headRefOid: head } : [pull(s.number)];
+          });
         } finally { view?.mockRestore(); }
       });
     }
