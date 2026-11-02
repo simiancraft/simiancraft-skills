@@ -25,7 +25,7 @@ import { RunStopping, isStopping, stoppableSleep, yieldToStop } from '${join(HER
 import { installStopHandler } from '${join(HERE, 'stop.ts')}';
 import { runAgentOnce } from '${join(HERE, 'agent.ts')}';
 import { createContext } from '${join(HERE, 'context.ts')}';
-import { fixIssue } from '${join(HERE, 'pipeline.ts')}';
+import { catchUp, fixIssue } from '${join(HERE, 'pipeline.ts')}';
 const io = new FakeTracker('loop-bot', [fakeIssue(1)]);
 const ctx = { botLogin: 'loop-bot', runId: 'host-1-1', dryRun: false, dryRunLog: [], project: { repo: 'o/r' }, log: () => {}, io } as never;
 installStopHandler((m) => console.log('LOG ' + m), () => console.log('BEFORE-EXIT'));
@@ -57,7 +57,7 @@ try {
     if (chunk.done) break;
     out += new TextDecoder().decode(chunk.value);
   }
-  return { code: await proc.exited, lines: out.trim().split('\n') };
+  return { code: await proc.exited, lines: out.trim().split('\n'), stderr: await new Response(proc.stderr).text() };
 }
 
 describe('the stop handler, in a process of its own', () => {
@@ -94,6 +94,61 @@ describe('the stop handler, in a process of its own', () => {
     expect(run.code).toBe(130);
     expect(run.lines.some((l) => l.includes('MERGE BEGUN'))).toBe(false);
     expect(run.lines.some((l) => l.includes('RELEASED true'))).toBe(true);
+  }, 20_000);
+
+  it('hears a signal during reads before a real conflicting catch-up', async () => {
+    const cwd = mkdtempSync(join(scratch, 'catch-up-'));
+    const remote = join(cwd, 'remote.git');
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    };
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'Test');
+    git('config', 'user.email', 'test@example.com');
+    writeFileSync(join(cwd, 'shared.txt'), 'original\n');
+    git('add', 'shared.txt'); git('commit', '-m', 'initial');
+    git('init', '--bare', remote); git('remote', 'add', 'origin', remote);
+    git('push', 'origin', 'main');
+    git('switch', '-c', 'fix/test');
+    writeFileSync(join(cwd, 'shared.txt'), 'lane\n');
+    git('commit', '-am', 'lane'); git('push', 'origin', 'HEAD');
+    const head = git('rev-parse', 'HEAD');
+    git('switch', 'main');
+    writeFileSync(join(cwd, 'shared.txt'), 'base\n');
+    git('commit', '-am', 'base'); git('push', 'origin', 'main'); git('switch', 'fix/test');
+    const lane = `
+      Bun.spawnSync(['sleep', '1']);
+      const lanes = [];
+      const writes = io.writes.length;
+      try {
+        const result = await catchUp({ ...ctx, project: { repo: 'o/r', remote: 'origin', baseBranch: 'main', alwaysInvalidates: [], releaseArtifacts: [], pathAliases: [], sourceExtensions: [] },
+          onLane: (event) => lanes.push(event.lane) }, { number: 1, title: 'test', labels: [] },
+          ${JSON.stringify(cwd)}, ${JSON.stringify(head)}, console.log, 'test');
+        console.log('RESULT ' + result);
+      } finally {
+        console.log('WRITES ' + (io.writes.length - writes));
+        console.log('LANES ' + JSON.stringify(lanes));
+      }
+    `;
+    const stopped = await drive(lane, 1);
+    expect(stopped.code).toBe(130);
+    expect(stopped.lines).toContain('WRITES 0');
+    expect(stopped.lines).toContain('LANES []');
+    expect(stopped.lines).toContain('RELEASED true');
+    expect(git('rev-parse', 'HEAD')).toBe(head);
+    expect(git('--git-dir', remote, 'rev-parse', 'refs/heads/fix/test')).toBe(head);
+    expect(existsSync(join(cwd, '.git', 'MERGE_HEAD'))).toBe(false);
+
+    const control = await drive(lane, 0);
+    expect({ code: control.code, stderr: control.stderr }).toEqual({ code: 0, stderr: '' });
+    expect(control.lines).toContain('RESULT conflict');
+    expect(control.lines).toContain('LANES ["F2"]');
+    expect(control.lines).toContain('WRITES 0');
+    expect(git('rev-parse', 'HEAD')).toBe(head);
+    expect(git('--git-dir', remote, 'rev-parse', 'refs/heads/fix/test')).toBe(head);
+    expect(existsSync(join(cwd, '.git', 'MERGE_HEAD'))).toBe(false);
   }, 20_000);
 
   it('hears a signal during reads before starting an agent turn', async () => {

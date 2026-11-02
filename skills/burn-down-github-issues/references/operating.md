@@ -195,6 +195,9 @@ failed attempts left, and `git log <ref>` reads one; deleting a ref throws that 
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
 A signal arriving during synchronous reads is heard before an agent turn starts.
+A catch-up hears it on entry and after its reads, before moving the card or merging. A signal
+heard after a conflicting merge leaves the lane stopped and kept, without settling the conflict
+as a failed attempt or a landing dead letter.
 A signal arriving during another lane's synchronous work, however short, is heard the same way
 before a waiting stop gate lets its lane act.
 No merge begins after the signal, including one that arrives during the reads just before a merge. A

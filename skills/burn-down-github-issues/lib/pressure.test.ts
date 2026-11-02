@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Card, fire, laneKey, laneState, successors } from './simulate.ts';
 import { Carving, type CarvingDeps } from './carving.ts';
 import { LANES } from './lanes.ts';
+import { RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
@@ -839,4 +840,79 @@ it('claim and head read errors during a stop propagate even without RunStopping'
   const api = loadFunctions('../../fix-github-issue/lib/resume.ts', ['claimHolder', 'judgeLane'], deps);
   expect(() => api.claimHolder({}, 92, new Map())).toThrow(stop);
   expect(() => api.judgeLane({ project: {} }, 92, () => { throw stop; })).toThrow(stop);
+});
+
+
+describe('catch-up stop boundaries', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  for (const name of ['catchUp', 'seamCatchUp']) {
+    for (const stopAt of [1, 2, 3, 0]) it(`${name} refuses at gate ${stopAt}, or preserves a conflict without a stop`, async () => {
+      let gates = 0;
+      const acts: string[] = [];
+      const api = loadFunctions(pipeline, [name], {
+        yieldToStop: async () => { if (++gates === stopAt) throw new RunStopping('stop'); },
+        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'],
+        staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch',
+        move: () => acts.push('F2'), updateFromBase: () => { acts.push('merge'); return false; },
+      });
+      const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
+      const result = name === 'catchUp' ? api[name](...args, 'head', noop, 'test') : api[name](...args, noop, 'test');
+      if (stopAt) await expect(result).rejects.toBeInstanceOf(RunStopping);
+      else expect(await result).toBe('conflict');
+      expect(acts.includes('fetch')).toBe(stopAt !== 1);
+      expect(acts.includes('merge')).toBe(stopAt === 0 || stopAt === 3);
+      expect(acts.includes('F2')).toBe(name === 'catchUp' && (stopAt === 0 || stopAt === 3));
+    });
+    for (const behind of [false, true]) it(`${name} preserves ${behind ? 'pushed' : 'current'} results without a trailing yield`, async () => {
+      let gates = 0;
+      const api = loadFunctions(pipeline, [name], {
+        yieldToStop: async () => { if (++gates > 2) throw new RunStopping('after push'); },
+        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [],
+        staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop, updateFromBase: () => true,
+      });
+      const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
+      const result = await (name === 'catchUp' ? api[name](...args, 'head', noop, 'test') : api[name](...args, noop, 'test'));
+      expect(result).toEqual(name === 'seamCatchUp' ? (behind ? 'caught-up' : 'current') : behind ? { before: 'head', after: 'head', overlap: [], netChangeIntact: true } : null);
+      expect(gates).toBe(behind ? 2 : 1);
+    });
+  }
+  for (const stopped of [true, false]) it(`a review conflict ${stopped ? 'stops before' : 'reaches'} the dead letter`, async () => {
+    const acts: string[] = [];
+    let gates = 0;
+    const api = loadFunctions(pipeline, ['reviewAndLand', 'catchUp'], {
+      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'],
+      staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
+      yieldToStop: async () => { if (++gates === 3 && stopped) throw new RunStopping('stop'); },
+      deadLetter: () => acts.push('deadLetter'), mutate: () => acts.push('ready'),
+    });
+    const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
+    const result = api.reviewAndLand(ctx, { number: 1, labels: [] }, '/fake', { pr: 7 }, 2, noop);
+    if (stopped) await expect(result).rejects.toBeInstanceOf(RunStopping);
+    else await result;
+    expect(acts).toEqual(stopped ? [] : ['deadLetter']);
+  });
+  it('a conflict stop unwinds a rejected landing before the ready flip', async () => {
+    const acts: string[] = [];
+    let gates = 0;
+    const api = loadFunctions(pipeline, ['land', 'catchUp'], {
+      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'],
+      staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
+      yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
+      mutate: (_ctx: unknown, _why: string, argv: string[]) => acts.push(argv.includes('--undo') ? 'draft' : 'ready'),
+    });
+    await expect(api.land(context(new FakeTracker(bot)), { number: 1 }, 7, [], { review: { decision: 'block' }, reviewedSha: 'head' }, '/fake', noop)).rejects.toBeInstanceOf(RunStopping);
+    expect(acts).toEqual(['draft']);
+  });
+  it('a seam conflict stop returns no worker failure and counts no attempt', async () => {
+    let gates = 0;
+    const acts: string[] = [];
+    const api = loadFunctions(pipeline, ['runWorker', 'seamCatchUp'], {
+      placeWork: () => ({ kind: 'prove', coded: { branch: 'fix/x', sha: 'head', gated: 'head' }, sha: 'head', handoff: 'h' }),
+      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false,
+      yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
+      recordAttempt: () => acts.push('attempt'), runProve: () => acts.push('prove'), move: noop,
+    });
+    await expect(api.runWorker(context(new FakeTracker(bot)), { number: 1, title: 't', labels: [] }, '/fake', 2)).rejects.toBeInstanceOf(RunStopping);
+    expect(acts).toEqual([]);
+  });
 });
