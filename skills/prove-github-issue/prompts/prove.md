@@ -34,10 +34,7 @@ Never rebase and never force-push.
 
 ## The gate
 
-The coder ran `{{CHECK_COMMAND}}` on `{{GATED}}`. When that is the head you are proving, its gate
-stands and CI is the second opinion; do not run it again. When the head differs (the driver merged
-the base in since), run `{{INSTALL_COMMAND}}` and `{{CHECK_COMMAND}}` once on this head first. If
-the gate fails here, the change is not proved: return `unprovable` with what failed.
+{{GATE}}
 
 ## Prove it
 
@@ -50,8 +47,8 @@ to the loop:
 - Store artifacts on the `{{EVIDENCE_BRANCH}}` branch and reference them **pinned to a commit SHA**
   in the `https://github.com/{{REPO}}/raw/<sha>/evidence/<file>` form. Bare
   `raw.githubusercontent.com` links render as 404 on a private repository.
-- **Cover the command CI runs.** Read `.github/workflows/`, and make one receipt exercise the
-  command the pipeline uses to decide, not only a focused invocation you chose.
+- **Cover the command CI runs.** {{CI_COVERAGE}}
+  Focused evidence comes in addition to the deciding command's run, never instead of it.
 - **Cite only SHAs that exist on the remote.** Verify each with `git fetch {{REMOTE}} <branch>` then
   `git merge-base --is-ancestor <sha> {{REMOTE}}/<branch>`, and fetch the evidence branch before
   citing an artifact link.
@@ -85,10 +82,15 @@ write it even when you failed.
   "pr": 1234,
   "branch": "{{BRANCH}}",
   "sha": "the full SHA of the head you proved",
+  "gateRun": { "command": "the deciding command exactly as given", "sha": "the full SHA it ran at", "exitCode": 0 },
   "brief": "only for unprovable: what the change does not yet do, or what could not be shown and why, written for the coder who fixes it",
   "touches": ["code"]
 }
 ```
+
+`gateRun` is required whenever the gate section names a deciding command. Record its command
+exactly as given, the full SHA it ran at, and its numeric exit code, including a non-zero exit
+code when that run fails.
 
 `pr` and `sha` are required for `proved`, and `sha` must be `{{HEAD}}` or the head after the
 driver's catch-up; you pushed nothing, so it is the lane's head. `brief` is required for
