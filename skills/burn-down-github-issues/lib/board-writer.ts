@@ -20,6 +20,8 @@ type Field = { id: string; name: string; options: Array<{ id: string; name: stri
 
 export type BoardWriter = {
   board: Board;
+  /** Resolve when no card write is outstanding; never rejects. */
+  settled: () => Promise<void>;
   /** The `onLane` hook: ensure the issue is on the board and set its Status and Phase. True when both writes landed. */
   onLane: (event: LaneEvent) => boolean;
   /** Read the lane the card is in now, or undefined when the issue is not on the board. */
@@ -27,6 +29,20 @@ export type BoardWriter = {
   /** Every card on the board with its lane and its issue's state and labels, in one read. Throws on a failed read. */
   snapshot: () => Map<number, Card>;
 };
+
+/** Give a stopping driver's card writes a bounded wait before it exits. */
+export async function waitForBoard(writer: Pick<BoardWriter, 'settled'> | undefined, timeoutMs = 10_000): Promise<void> {
+  if (!writer) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      writer.settled(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export type Card = {
   item: string;
@@ -163,7 +179,7 @@ export function createBoardWriter(board: Board, repo: string, log: (message: str
     return cards;
   };
 
-  return { board, onLane, laneOf, snapshot };
+  return { board, onLane, laneOf, snapshot, settled: async () => {} };
 }
 
 /**
