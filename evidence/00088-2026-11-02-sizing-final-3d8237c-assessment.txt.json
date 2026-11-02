@@ -1,0 +1,23 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/appraise-github-issues/prompts/appraise.md",
+    "skills/carve-github-issue/lib/carve.ts",
+    "skills/carve-github-issue/lib/knife.test.ts",
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/lib/validate.test.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/confirm-carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/fix-github-issue/lib/agent.sizing.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/references/sizing.md",
+    "package.json",
+    ".github/workflows/"
+  ],
+  "capture_commit": "3d8237c48dae7d0113a9e0816a793e8ca5c16c3a",
+  "capture_method": "Read-only source inspection, focused execution, supplied gate output, and gh run list.",
+  "content_hash": "sha256:ee9dc1870e2b9c7296c9a5f031b729b43f1bd27ab498ff2da4754a2964937715"
+}

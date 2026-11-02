@@ -1,0 +1,23 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/appraise-github-issues/prompts/appraise.md",
+    "skills/carve-github-issue/lib/carve.ts",
+    "skills/carve-github-issue/lib/knife.test.ts",
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/lib/validate.test.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/confirm-carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/fix-github-issue/lib/agent.sizing.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/references/sizing.md",
+    "package.json",
+    ".github/workflows/"
+  ],
+  "capture_commit": "3d8237c48dae7d0113a9e0816a793e8ca5c16c3a",
+  "capture_method": "Preserve supplied bun run gate execution output at the unchanged capture commit; no rerun.",
+  "content_hash": "sha256:5c8d18f9ffb50981edb0386986b4d4e8096984b6a9b91cfa6d31a48d9b17a2ee"
+}

@@ -1,0 +1,19 @@
+Capture commit: 3d8237c48dae7d0113a9e0816a793e8ca5c16c3a
+Command: bun run gate
+Exit status: 0
+Capture provenance: supplied execution output for this commit; preserved without rerunning the gate.
+
+$ tsc --noEmit -p . && bun test
+bun test v1.4.2 (744846f84)
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+world sweep: 40565 cases, 255 disabled events, stale Merging entries: 
+
+skills/burn-down-github-issues/lib/world-sweep.test.ts:
+reconcile: 1117 world pairs
+
+ 551 pass
+ 0 fail
+ 44418 expect() calls
+Ran 551 tests across 37 files. [22.45s]
