@@ -35,7 +35,7 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool } from '../fix-github-issue/lib/pool.ts';
-import { findStranded, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
+import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
@@ -819,6 +819,42 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
   return placement;
 }
 
+async function resumePull({ issue, pull }: { issue: Issue; pull: { number: number; branch: string } }): Promise<void> {
+  await waitForGo(`#${issue.number}`);
+
+  const holder = claimHolder(ctx, issue.number, new Map());
+  if (holder) {
+    place(issue.number, issue.title, 'W3', holder.slice(0, 120));
+    return;
+  }
+  const judgement = judgeLane(ctx, issue.number, () => {
+    const view: { headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'headRefOid']));
+    return view.headRefOid;
+  });
+  if (judgement.kind === 'dirty' || judgement.kind === 'off-head') {
+    try {
+      parkForInspection(ctx, issue.number, judgement.reason);
+    } catch (error) {
+      if (error instanceof RunStopping || isStopping()) throw error;
+      log(`#${issue.number}  could not record the dead letter: ${(error as Error).message}`);
+    }
+    return;
+  }
+  if (judgement.kind === 'unreadable') {
+    log(`#${issue.number}  PR #${pull.number} not resumed this run: ${judgement.reason}`);
+    return;
+  }
+  let objection: string | null;
+  try {
+    objection = lastObjection(issue.number, pull.number);
+  } catch (error) {
+    log(`#${issue.number}  PR #${pull.number} not resumed this run: its thread could not be read (${(error as Error).message.split('\n')[0]})`);
+    return;
+  }
+  const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+  if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+}
+
 /**
  * Work that already has a pull request and nobody driving it: a card the facts put in Drafted or
  * Ready for review whose lane is gone (a park or a dead letter a person lifted, a run on another
@@ -1245,18 +1281,7 @@ async function main(): Promise<void> {
     await pool(
       resumable,
       CONFIG.concurrency,
-      async ({ issue, pull }) => {
-        await waitForGo(`#${issue.number}`);
-        let objection: string | null;
-        try {
-          objection = lastObjection(issue.number, pull.number);
-        } catch (error) {
-          log(`#${issue.number}  PR #${pull.number} not resumed this run: its thread could not be read (${(error as Error).message.split('\n')[0]})`);
-          return;
-        }
-        const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
-        if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
-      },
+      resumePull,
       ({ issue }) => `#${issue.number}`,
     );
   }

@@ -751,3 +751,73 @@ describe('pauses left by a closed trunk', () => {
     expect(labelsOf(io, 3)).not.toContain('loop/paused');
   });
 });
+
+describe('resume dispatch judges the lane before continuing', () => {
+  const entry = { issue: { number: 92, title: 'resume', labels: [] }, pull: { number: 100, branch: 'fix/resume-92' } };
+  function dispatch(kind: string, overrides: Record<string, unknown> = {}) {
+    const calls: string[] = [];
+    const api = loadFunctions('../loop.ts', ['resumePull'], {
+      ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' },
+      waitForGo: async () => { calls.push('wait'); },
+      claimHolder: () => { calls.push('claim'); return null; },
+      judgeLane: (_ctx: unknown, issue: number, readHead: () => string) => {
+        calls.push('judge'); expect(issue).toBe(92); expect(readHead()).toBe('remote-head');
+        return { kind, reason: 'lane reason' };
+      },
+      sh: (_ctx: unknown, args: string[]) => {
+        expect(args).toEqual(['gh', 'pr', 'view', '100', '--json', 'headRefOid']);
+        return JSON.stringify({ headRefOid: 'remote-head' });
+      },
+      parkForInspection: (_ctx: unknown, issue: number, reason: string) => {
+        expect(issue).toBe(92); expect(reason).toBe('lane reason'); calls.push('park');
+      },
+      log: () => calls.push('log'), place: (...args: unknown[]) => { calls.push('place'); expect(args).toEqual([92, 'resume', 'W3', 'held']); },
+      lastObjection: (issue: number, pull: number) => { expect([issue, pull]).toEqual([92, 100]); calls.push('objection'); return 'revise'; },
+      redriveIssue: async (_ctx: unknown, issue: unknown, pull: unknown, objection: string) => {
+        expect([issue, pull, objection]).toEqual([entry.issue, entry.pull, 'revise']); calls.push('redrive'); return { outcome: 'merged' };
+      },
+      ...overrides,
+    });
+    return { run: () => api.resumePull(entry), calls };
+  }
+  for (const kind of ['dirty', 'off-head', 'unreadable']) {
+    for (const fails of [false, true]) it(`${kind} never continues, including a failed dead-letter write (${fails})`, async () => {
+      const d = dispatch(kind, fails ? { parkForInspection: () => { throw new Error('write failed'); } } : {});
+      await d.run();
+      expect(d.calls.slice(0, 3)).toEqual(['wait', 'claim', 'judge']);
+      expect(d.calls).not.toContain('objection');
+      expect(d.calls).not.toContain('redrive');
+      if (kind === 'unreadable') { expect(d.calls).not.toContain('park'); expect(d.calls).toContain('log'); }
+      else if (!fails) expect(d.calls).toContain('park');
+    });
+  }
+  for (const kind of ['no-lane', 'clean-at-head']) it(`${kind} continues with the objection`, async () => {
+    const d = dispatch(kind);
+    await d.run();
+    expect(d.calls).toEqual(['wait', 'claim', 'judge', 'objection', 'redrive']);
+  });
+  it('does not judge or park a held lane', async () => {
+    const d = dispatch('dirty', { claimHolder: () => 'held' });
+    await d.run();
+    expect(d.calls).toEqual(['wait', 'place']);
+  });
+  for (const read of ['claimHolder', 'judgeLane']) it(`propagates a stop from ${read}`, async () => {
+    const stop = new Error('stopping');
+    const d = dispatch('dirty', { [read]: () => { throw stop; } });
+    await expect(d.run()).rejects.toThrow(stop);
+    expect(d.calls).not.toContain('park');
+    expect(d.calls).not.toContain('redrive');
+  });
+});
+
+it('claim and head read errors during a stop propagate even without RunStopping', () => {
+  const stop = new Error('read interrupted');
+  const deps = {
+    isStopping: () => true, resolve: () => 'lane', existsSync: () => true,
+    dirtyPaths: () => [], sh: () => 'head', trackerIo: () => ({}),
+    readTree: () => { throw stop; }, liveClaim: noop,
+  };
+  const api = loadFunctions('../../fix-github-issue/lib/resume.ts', ['claimHolder', 'judgeLane'], deps);
+  expect(() => api.claimHolder({}, 92, new Map())).toThrow(stop);
+  expect(() => api.judgeLane({ project: {} }, 92, () => { throw stop; })).toThrow(stop);
+});

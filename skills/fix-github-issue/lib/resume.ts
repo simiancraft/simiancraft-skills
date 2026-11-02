@@ -17,7 +17,7 @@ import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight } from './lane.ts';
 import { type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { pool } from './pool.ts';
-import { sh } from './shell.ts';
+import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
 export type Stranded = { issue: Issue; cwd: string; result: WorkerResult };
@@ -102,17 +102,49 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
 }
 
 /** Who else holds a live claim on an issue, if anyone; read once per issue, and fail closed. */
-function claimHolder(ctx: Context, issue: number, cache: Map<number, string | null>): string | null {
+export function claimHolder(ctx: Context, issue: number, cache: Map<number, string | null>): string | null {
   if (!cache.has(issue)) {
     let holder: string | null;
     try {
       holder = liveClaim(readTree(ctx, issue, trackerIo(ctx)), new Date().toISOString(), ctx.runId)?.runId ?? null;
     } catch (error) {
+      if (error instanceof RunStopping || isStopping()) throw error;
       holder = `an unreadable claim (${(error as Error).message.split('\n')[0]})`;
     }
     cache.set(issue, holder);
   }
   return cache.get(issue) ?? null;
+}
+
+export type LaneJudgement =
+  | { kind: 'no-lane' | 'clean-at-head' }
+  | { kind: 'dirty' | 'off-head'; reason: string }
+  | { kind: 'unreadable'; reason: string };
+
+/** Judge local work before asking the tracker, without publishing or changing the lane. */
+export function judgeLane(ctx: Context, issue: number, readHead: () => string): LaneJudgement {
+  const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(dir)) return { kind: 'no-lane' };
+  let head: string;
+  let reading = 'git status --porcelain';
+  try {
+    const dirty = dirtyPaths(ctx, dir);
+    if (dirty.length > 0) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
+    reading = 'git rev-parse HEAD';
+    head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: ${reading} failed (${(error as Error).message})` };
+  }
+  let remoteHead: string;
+  try {
+    remoteHead = readHead();
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
+  }
+  if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
+  return { kind: 'clean-at-head' };
 }
 
 /**
@@ -192,7 +224,7 @@ function strandedVerdict(dir: string): WorkerResult | null {
  * What a dead run left behind is a machine's failure, so it is a work dead letter (the machine's
  * "run died with undeclared work"), written once: an issue already held is not commented on again.
  */
-function parkForInspection(ctx: Context, issue: number, reason: string): void {
+export function parkForInspection(ctx: Context, issue: number, reason: string): void {
   if (ctx.dryRun) return;
   try {
     const labels = sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'state,labels', '--jq', '[.state, (.labels[].name)] | join(" ")']);
