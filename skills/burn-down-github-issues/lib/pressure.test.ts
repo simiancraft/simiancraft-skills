@@ -219,6 +219,25 @@ function loadFunctions(path: string, names: string[], deps: Record<string, unkno
   return new Function(...Object.keys(deps), `${js}\nreturn {${names.join(',')}};`)(...Object.values(deps));
 }
 describe('private failure routing, loaded in memory', () => {
+  it('backlog placement waits for every board write before returning', async () => {
+    let release!: () => void;
+    let waiting = false;
+    let returned = false;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const api = loadFunctions('../loop.ts', ['placeBacklog'], {
+      BOARD: { snapshot: () => new Map(), settled: () => { waiting = true; return pending; } },
+      CONFIG: { ageDays: 100 }, ONLY: null, ctx: {}, sh: () => '[]',
+      mergedPullRequests: () => [], log: noop, DRY_RUN: false,
+    });
+    const result = api.placeBacklog([]).then(() => { returned = true; });
+    await Bun.sleep(0);
+    expect(waiting).toBe(true);
+    expect(returned).toBe(false);
+    release();
+    await result;
+    expect(returned).toBe(true);
+  });
+
   it('an unreadable objection is unknown, not evidence that nobody objected', () => {
     const api = loadFunctions('../loop.ts', ['lastObjection'], { ctx: { botLogin: bot }, sh: () => { throw new Error('tracker unavailable'); } });
     expect(() => api.lastObjection(1, 7)).toThrow();

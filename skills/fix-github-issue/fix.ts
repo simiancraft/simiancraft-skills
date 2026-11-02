@@ -36,7 +36,7 @@ import {
 } from './lib/config.ts';
 import { createContext } from './lib/context.ts';
 import { parseSeat, seatLabel } from './lib/engines.ts';
-import { createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
+import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { landBlocker } from './lib/land.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
@@ -172,7 +172,7 @@ const ctx = createContext({
 
 // Agents run under their own process group, so a signal to this driver does not reach them on its
 // own: without a handler, Ctrl+C would leave the agent running with its approvals bypassed.
-installStopHandler(log);
+installStopHandler(log, () => waitForBoard(BOARD));
 
 step(`${ctx.project.name} fix-github-issue`);
 log(`base ${ctx.project.baseBranch} | merge: ${ctx.knobs.autoMerge} | config ${CONFIG_FILE}`);
@@ -311,3 +311,5 @@ const result = RESUME_PR
 step(`${result.outcome}`);
 log(result.reason);
 if (result.outcome === 'failed') process.exitCode = 1;
+
+await BOARD?.settled();
