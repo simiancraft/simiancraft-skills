@@ -44,6 +44,7 @@ export type Finding =
   | 'cover'
   | 'gap'
   | 'overreach'
+  | 'size-mismatch'
   | 'partition-intact'
   | 'partition-broken'
   | 'still-good'
@@ -407,8 +408,8 @@ export function validateCarving(
 // ---------------------------------------------------------------------------
 
 const FINDINGS_BY_MODE: { [mode: string]: Finding[] } = {
-  carve: ['cover', 'gap', 'overreach', 'partition-intact', 'partition-broken', 'hand-off-agree', 'hand-off-disagree'],
-  revisit: ['cover', 'gap', 'overreach', 'partition-intact', 'partition-broken', 'still-good', 'not-still-good', 'exhausted', 'not-exhausted', 'hand-off-agree', 'hand-off-disagree'],
+  carve: ['cover', 'gap', 'overreach', 'size-mismatch', 'partition-intact', 'partition-broken', 'hand-off-agree', 'hand-off-disagree'],
+  revisit: ['cover', 'gap', 'overreach', 'size-mismatch', 'partition-intact', 'partition-broken', 'still-good', 'not-still-good', 'exhausted', 'not-exhausted', 'hand-off-agree', 'hand-off-disagree'],
 };
 
 export function validateConfirmation(raw: unknown, mode: 'carve' | 'revisit'): { ok: true; confirmation: Confirmation } | { ok: false; faults: string[] } {
