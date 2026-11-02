@@ -1,0 +1,13 @@
+{
+  "command": "bun run gate",
+  "capture_commit": "84d11dc73304b4cd5a40ae83449a95c2239c8675",
+  "result": "passed",
+  "tests": 537,
+  "failures": 0,
+  "provenance": "Supplied exact-head gate result, accepted without rerun per task instruction; original terminal output unavailable.",
+  "configuration": {
+    "package.json": "tsc --noEmit -p . && bun test",
+    ".github/workflows/": "Absent at capture_commit"
+  },
+  "ci_runs": "gh run list --branch fix/callback-stop-signal-90 returned no runs."
+}

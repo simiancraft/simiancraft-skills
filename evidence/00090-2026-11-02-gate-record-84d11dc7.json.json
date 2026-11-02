@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code",
+    "gate"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/callbacks.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "84d11dc73304b4cd5a40ae83449a95c2239c8675",
+  "capture_method": "Preserve the supplied successful bun run gate result for the exact head; inspect package.json, git ls-tree HEAD .github, and gh run list. This is a supplied result, not a fresh execution transcript.",
+  "content_hash": "sha256:040d538e95885e1b76ca9191c262d9d215c430555976fb0fcd4a6eae3335252b"
+}

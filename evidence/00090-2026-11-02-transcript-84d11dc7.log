@@ -1,0 +1,13 @@
+bun test v1.4.2 (744846f84)
+
+.gates/proof-90/transcript.test.ts:
+{"signals":1,"code":130,"stdout":"READY\nLOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims\nRELEASED true\nBEFORE-EXIT\n"}
+{"signals":1,"code":130,"stdout":"READY\nLOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims\nRELEASED true\nBEFORE-EXIT\n"}
+{"signals":1,"code":130,"stdout":"READY\nLOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims\nRUN STOPPING true\nRELEASED true\nBEFORE-EXIT\n"}
+{"signals":0,"code":0,"stdout":"READY\non-test exited 0\nCALLBACK RETURNED true\nRELEASED true\n"}
+{"signals":2,"code":130,"stdout":"READY\nLOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims\nLOG received SIGINT again; exiting now, abandoning claim(s) that expire on their own: o/r#1\n"}
+
+ 5 pass
+ 0 fail
+ 25 expect() calls
+Ran 5 tests across 1 file. [5.62s]

@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code",
+    "process",
+    "stop"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/callbacks.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "84d11dc73304b4cd5a40ae83449a95c2239c8675",
+  "capture_method": "bun test skills/fix-github-issue/lib/stopping.test.ts skills/fix-github-issue/lib/stop.test.ts skills/carve-github-issue/lib/claims.test.ts skills/burn-down-github-issues/lib/pressure.test.ts, with TMPDIR inside this worktree.",
+  "content_hash": "sha256:76e005b59afd1deadc3b02a5c02b6b874846aa346c188986b0d6c1cb35e0d21e"
+}

@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code",
+    "process",
+    "stop"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/callbacks.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "84d11dc73304b4cd5a40ae83449a95c2239c8675",
+  "capture_method": "TMPDIR=\"$PWD/.gates/proof-90/tmp\" bun test skills/fix-github-issue/lib/stop.test.ts",
+  "content_hash": "sha256:7cbf52023faf9ff1bcd1cc5c06a8250c8f2cae76ef11e5f1e5380d8a260baed7"
+}

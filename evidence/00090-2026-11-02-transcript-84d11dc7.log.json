@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code",
+    "process",
+    "stop"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/callbacks.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "84d11dc73304b4cd5a40ae83449a95c2239c8675",
+  "capture_method": "Copy stop.test.ts into .gates/proof-90/transcript.test.ts, set HERE to the absolute original lib directory, and print { signals, code, stdout: out } before drive returns; run bun test on that copy with TMPDIR inside the worktree. No assertion or production-code changes.",
+  "content_hash": "sha256:d9981642080d7bea3d9382e669fce59b8979a6d8a2c55a8df38dd58654fdc605"
+}
