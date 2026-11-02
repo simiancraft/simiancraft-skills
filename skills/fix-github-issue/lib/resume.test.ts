@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { PIPELINE_DEFAULTS } from './config.ts';
 import type { Context } from './context.ts';
-import { claimHolder, judgeLane, parkForInspection } from './resume.ts';
+import { claimHolder, findStranded, judgeLane, parkForInspection } from './resume.ts';
+import { VERDICT_FILE } from './agent.ts';
+import type { Issue } from './pipeline.ts';
 import { RunStopping } from './shell.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 
@@ -119,4 +122,188 @@ it('records dirty and off-head reasons in the work dead letter', () => {
       expect(io.view(issue)?.comments.at(-1)?.body).toContain(judgement.reason);
     }
   } finally { spy.mockRestore(); }
+});
+
+describe('findStranded', () => {
+  let nextIssue = 100;
+  function setup(usable = false) {
+    const number = nextIssue++;
+    const dir = lane(number);
+    git(dir, 'push', '-q', 'origin', 'HEAD');
+    if (usable) writeFileSync(join(dir, VERDICT_FILE), JSON.stringify({ issue: number, verdict: 'fixed', pr: number + 1000, reason: 'done' }));
+    const io = new FakeTracker('bot', [fakeIssue(number)]);
+    const logs: string[] = [];
+    const context = { ...ctx(), io, runId: 'this-run', botLogin: 'bot', knobs: { ...PIPELINE_DEFAULTS, maxReviewRounds: 3 }, log: (s: string) => logs.push(s) } as Context;
+    const issue = { number, labels: [], title: 'issue', body: '', createdAt: '2026-09-01T00:00:00Z' } as Issue;
+    return { number, dir, io, logs, context, issue };
+  }
+  function reads<T>(run: () => T, reply: (args: string[]) => unknown) {
+    const before = git(repo, 'ls-remote', 'origin');
+    const original = Bun.spawnSync;
+    const spy = spyOn(Bun, 'spawnSync').mockImplementation(((args: string[], opts: unknown) => {
+      if (args[0] !== 'gh') return original(args, opts as any);
+      const value = args[1] === 'issue' ? 'OPEN' : reply(args);
+      return { exitCode: 0, stdout: Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)), stderr: Buffer.from('') };
+    }) as typeof Bun.spawnSync);
+    try { return run(); } finally {
+      spy.mockRestore();
+      expect(git(repo, 'ls-remote', 'origin')).toBe(before);
+    }
+  }
+  const pull = (number: number, oid = head) => ({ body: `Fixes #${number}`, title: '', headRefName: 'fix/work', headRefOid: oid });
+  function parked(s: ReturnType<typeof setup>, reason: string) {
+    expect(s.io.view(s.number)?.labels.map(l => l.name)).toContain('loop/dlq: work');
+    expect(s.io.view(s.number)?.comments.at(-1)?.body).toContain(reason);
+  }
+
+  for (const usable of [false, true]) {
+    for (const dirty of [false, true]) {
+      for (const offHead of [false, true]) {
+        it(`judges usable=${usable}, dirty=${dirty}, offHead=${offHead} without pushing`, () => {
+          const s = setup(usable);
+          if (offHead) {
+            writeFileSync(join(s.dir, 'revision.txt'), 'revision');
+            git(s.dir, 'add', 'revision.txt');
+            git(s.dir, 'commit', '-q', '-m', 'revision');
+          }
+          const localHead = git(s.dir, 'rev-parse', 'HEAD');
+          if (dirty) writeFileSync(join(s.dir, 'unfinished.txt'), 'work');
+          let calls = 0;
+          const found = reads(() => findStranded(s.context, [s.issue], []), () => {
+            calls++;
+            return usable ? { state: 'OPEN', headRefOid: head } : [pull(s.number)];
+          });
+          if (usable && !offHead) {
+            expect(found.map(f => f.issue.number)).toEqual([s.number]);
+            expect(s.io.writes).toEqual([]);
+          } else {
+            expect(found).toEqual([]);
+            if (dirty && !usable) parked(s, 'unfinished.txt');
+            else if (offHead) { parked(s, localHead); parked(s, head); }
+            else parked(s, `An earlier run died with this issue's lane at ${s.dir} and left no usable verdict. A person inspects the lane and the pull request, if any.`);
+          }
+          expect(calls).toBe(dirty && !usable ? 0 : 1);
+        });
+      }
+    }
+
+    for (const dirty of usable ? [false, true] : [false]) {
+      it(`isolates failed reads and retries next walk, usable=${usable}, dirty=${dirty}`, () => {
+        const s = setup(usable);
+        const next = setup(true);
+        s.io.issues.set(next.number, fakeIssue(next.number));
+        if (dirty) writeFileSync(join(s.dir, 'unfinished.txt'), 'work');
+        let attempts = 0;
+        reads(() => {
+          expect(findStranded(s.context, [s.issue, next.issue], []).map(f => f.issue.number)).toEqual([next.number]);
+          expect(s.io.writes).toEqual([]);
+          expect(findStranded(s.context, [s.issue], [])).toEqual([]);
+          expect(attempts).toBe(2);
+        }, args => {
+          if (args[2] === 'view' && args[3] === String(next.number + 1000)) return { state: 'OPEN', headRefOid: head };
+          attempts++;
+          throw new Error('tracker offline');
+        });
+        expect(s.logs.join('\n')).toContain('tracker offline');
+      });
+    }
+
+    it(`isolates a failed dead-letter write, usable=${usable}`, () => {
+      const s = setup(usable);
+      const next = setup(true);
+      s.io.issues.set(next.number, fakeIssue(next.number));
+      s.io.throwOn = /./;
+      reads(() => {
+        expect(findStranded(s.context, [s.issue, next.issue], []).map(f => f.issue.number)).toEqual([next.number]);
+        expect(s.logs.join('\n')).toContain('could not record the dead letter');
+        expect(findStranded(s.context, [s.issue], [])).toEqual([]);
+        parked(s, head);
+      }, args => args[2] === 'list' ? [pull(s.number, 'other-head')] : { state: 'OPEN', headRefOid: args[3] === String(next.number + 1000) ? head : 'other-head' });
+    });
+
+    for (const claim of ['live', 'unreadable', 'stop']) {
+      it(`leaves a ${claim} claim untouched, usable=${usable}`, () => {
+        const s = setup(usable);
+        if (claim === 'live') s.io.comment(s.number, 'bot', '<!-- carve-claim kind=working run=other-run at=2026-09-03T12:00:00Z expires=2999-01-01T00:00:00Z -->');
+        const prior = s.io.writes.length;
+        const stop = new RunStopping('stop');
+        const view = claim === 'live' ? null : spyOn(s.io, 'view').mockImplementation(() => { throw claim === 'stop' ? stop : new Error('claim offline'); });
+        try {
+          reads(() => {
+            if (claim === 'stop') expect(() => findStranded(s.context, [s.issue], [])).toThrow(stop);
+            else expect(findStranded(s.context, [s.issue], [])).toEqual([]);
+            expect(s.io.writes.length).toBe(prior);
+          }, () => { throw new Error('must not read PR'); });
+        } finally { view?.mockRestore(); }
+      });
+    }
+
+    for (const dirty of usable ? [false, true] : [false]) {
+      it(`propagates a stopped PR read, usable=${usable}, dirty=${dirty}`, () => {
+        const s = setup(usable);
+        if (dirty) writeFileSync(join(s.dir, 'unfinished.txt'), 'work');
+        const stop = new RunStopping('stop');
+        reads(() => {
+          expect(() => findStranded(s.context, [s.issue], [])).toThrow(stop);
+          expect(s.io.writes).toEqual([]);
+        }, () => { throw stop; });
+      });
+    }
+  }
+
+  it('lists once per walk and picks the first owning PR, ignoring passing mentions', () => {
+    const s = setup();
+    const next = setup();
+    s.io.issues.set(next.number, fakeIssue(next.number));
+    let calls = 0;
+    reads(() => {
+      expect(findStranded(s.context, [s.issue, next.issue], [])).toEqual([]);
+      expect(calls).toBe(1);
+      parked(s, 'left no usable verdict');
+    }, () => {
+      calls++;
+      return [{ ...pull(s.number, 'wrong'), body: `mentions #${s.number}` }, pull(s.number), pull(s.number, 'older-head'), pull(next.number)];
+    });
+  });
+
+  it('caches a failed list only for this walk', () => {
+    const s = setup();
+    const next = setup();
+    s.io.issues.set(next.number, fakeIssue(next.number));
+    let calls = 0;
+    reads(() => {
+      for (let i = 0; i < 2; i++) expect(findStranded(s.context, [s.issue, next.issue], [])).toEqual([]);
+      expect(calls).toBe(2);
+      expect(s.io.writes).toEqual([]);
+    }, () => { calls++; throw new Error('offline'); });
+  });
+
+  it('keeps the old park for no PR and a listed lane whose directory is gone', () => {
+    for (const missing of [false, true]) {
+      const s = setup();
+      if (missing) rmSync(s.dir, { recursive: true });
+      reads(() => {
+        expect(findStranded(s.context, [s.issue], [])).toEqual([]);
+        parked(s, 'left no usable verdict');
+      }, () => { if (missing) throw new Error('must not read'); return []; });
+    }
+  });
+
+  it('leaves a mismatched verdict and a closed PR alone', () => {
+    const s = setup(true);
+    writeFileSync(join(s.dir, VERDICT_FILE), JSON.stringify({ issue: -1, verdict: 'fixed', pr: 1 }));
+    reads(() => {
+      expect(findStranded(s.context, [s.issue], [])).toEqual([]);
+      expect(s.logs.join('\n')).toContain('stranded verdict names issue -1');
+      expect(s.io.writes).toEqual([]);
+    }, () => { throw new Error('must not read'); });
+    for (const dirty of [false, true]) {
+      const closed = setup(true);
+      if (dirty) writeFileSync(join(closed.dir, 'unfinished.txt'), 'work');
+      reads(() => {
+        expect(findStranded(closed.context, [closed.issue], [])).toEqual([]);
+        expect(closed.io.writes).toEqual([]);
+      }, () => ({ state: 'CLOSED', headRefOid: 'old-head' }));
+    }
+  });
 });
