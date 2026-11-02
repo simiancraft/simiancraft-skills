@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/code-github-issue/lib/code.ts",
+    "skills/code-github-issue/prompts/code.md",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/fixture-runner.ts",
+    "skills/fix-github-issue/lib/work-lanes.test.ts"
+  ],
+  "capture_commit": "62838032d29652d1665dd0a926fd412b853adcde",
+  "capture_method": "Source review plus bun test skills/fix-github-issue/lib/work-lanes.test.ts",
+  "content_hash": "sha256:47d7d4264adbcfc90b3991c72b011295568535537e42f0755e5fcc394569a852"
+}

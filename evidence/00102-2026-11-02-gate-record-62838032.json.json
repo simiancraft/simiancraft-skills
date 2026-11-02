@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/code-github-issue/lib/code.ts",
+    "skills/code-github-issue/prompts/code.md",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/fixture-runner.ts",
+    "skills/fix-github-issue/lib/work-lanes.test.ts",
+    "package.json"
+  ],
+  "capture_commit": "62838032d29652d1665dd0a926fd412b853adcde",
+  "capture_method": "Existing issue #99 same-head gate attestation; preserved without rerunning gate",
+  "content_hash": "sha256:ff8371ac8bcf11da7d642213eb11172b44b7caa5594bab73d4c5dd710af5ba1f"
+}

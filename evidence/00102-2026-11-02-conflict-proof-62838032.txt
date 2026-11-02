@@ -1,0 +1,38 @@
+Issue #99 proof, PR #102
+Capture commit: 62838032d29652d1665dd0a926fd412b853adcde
+Scope: code. Five files, 139 insertions, eight deletions. No dependency or schema changes.
+Risk: moderate behavior change in execution and answer validation; ordinary turns must retain remote validation. Reversible code change, no production data mutation.
+
+Observed command:
+bun test skills/fix-github-issue/lib/work-lanes.test.ts
+Temporary repositories were confined to this worktree via TMPDIR.
+Exit status: 0
+bun test v1.4.2 (744846f84)
+
+ 36 pass
+ 0 fail
+ 75 expect() calls
+Ran 36 tests across 1 file. [1421.00ms]
+
+Acceptance mapping, assertions in work-lanes.test.ts:
+- Lines 241-278: real conflicting branches, detached merge, two exact parents, unchanged remote, local answer accepted, old proof removed, branch/base/path and no-push instructions received.
+- Lines 280-288: wrong branch, wrong head, wrong gated head, blank handoff, and missing handoff rejected.
+- Lines 290-302: first, continue, revision, and unproved still reject unpushed heads.
+- Lines 304-319: refusal exits failed, one execution, zero retry callbacks, no retry log.
+- Lines 321-338: worker cap is 600 ms with a different default; killed answer is removed and rejected, one execution.
+- Existing cases in the same file passed, including ordinary brief behavior and template invariants.
+
+Source inspection:
+- code.ts sends conflict through runAgentOnce and checks branch, HEAD, gated, and nonempty handoff locally. Other kinds retain unbelievableCoded.
+- agent.ts clears all prior coder control files for coder-conflict.
+- fixture-runner.ts copies first, runs optional role script in the lane, and propagates its exit status. The script may replace the copied answer.
+- Issue asks for <answer>.<role>.sh. Implementation strips .json, yielding verdict.coder-conflict.sh beside verdict.json, consistent with the existing role-answer convention at fixture-runner.ts:35-37.
+- No forbidden pipeline or lane changes. Merge verification, publication, and subsequent review belong to #100 and #101.
+
+Deciding command:
+package.json defines bun run gate as tsc --noEmit -p . && bun test.
+There is no .github/workflows directory in this commit, and gh run list for this SHA returned [].
+The supplied same-head gate result is accepted under the explicit proof instruction not to repeat it: 515 pass, zero fail, bun install --frozen-lockfile passed.
+The accompanying gate-record.json preserves the existing GitHub handoff and its source URL. This is an inherited gate attestation, not a newly observed gate transcript.
+
+Judgement: adequate for the scoped interface and deterministic fixture behavior, with the same-head gate accepted as instructed. No live model exercised. No claim of driver integration, semantic model reliability, or merge-verifier enforcement. Evidence branch protection settings unverified; artifacts pinned to immutable commits.
