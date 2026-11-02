@@ -1,0 +1,14 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "954f6ca4a6a5f881f67cb8569c8ca116c1bbd87c",
+  "capture_method": "Head-specific accepted bun run gate handoff; git ls-tree -r --name-only HEAD .github/workflows; gh pr view 126 -R simiancraft/simiancraft-skills --json statusCheckRollup",
+  "content_hash": "sha256:a42fded5ae2394266dd1b39713e2a2685c566dc064bb3ec6901a5a9c04b46930"
+}

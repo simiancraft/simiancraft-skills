@@ -1,0 +1,12 @@
+{
+  "capture_commit": "954f6ca4a6a5f881f67cb8569c8ca116c1bbd87c",
+  "command": "bun run gate",
+  "expansion": "tsc --noEmit -p . && bun test",
+  "source": "Supplied head-specific handoff and loop-code.json; explicitly accepted without rerun",
+  "reported_result": "571 tests, zero failures, plus TypeScript checks",
+  "independently_rerun": false,
+  "workflow_files": [],
+  "pr_checks": {
+    "statusCheckRollup": []
+  }
+}

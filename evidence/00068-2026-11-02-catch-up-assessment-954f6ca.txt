@@ -1,0 +1,14 @@
+Issue #68 proof at 954f6ca4a6a5f881f67cb8569c8ca116c1bbd87c
+Scope: code. Four files changed; two asynchronous catch-up paths and five awaited callers. Moderate temporal coupling, small surface, reversible code change; no schema or stored-data change.
+
+Observed: bun test skills/fix-github-issue/lib/stop.test.ts skills/burn-down-github-issues/lib/pressure.test.ts
+127 pass, 0 fail, 493 assertions. TMPDIR was inside this worktree; Git remotes and tracker state in the harness are isolated fixtures.
+
+The real subprocess test sends SIGINT around a blocking synchronous read before the real catchUp on conflicting Git branches. Assertions verify exit 130, unchanged local and remote lane heads, absent MERGE_HEAD, no tracker writes, no F2 event, and released claim. The no-signal control returns conflict and emits F2.
+Boundary stubs throw RunStopping at each of the three gates in both paths. They verify no fetch at entry refusal, no merge or F2 at the second gate, and no conflict result at the third. Controls preserve current and caught-up returns without a trailing yield. Caller cases verify no review dead letter, no rejection ready flip, and no seam failure or counted attempt after a conflict stop. The no-stop review control reaches deadLetter.
+Existing stop cases and recordThrow route RunStopping to stopped with keepLane=true; fixIssue and redriveIssue retain that flag through cleanup and release their claim.
+
+Inspection: all five callers await the catch-up result. The F2 move follows the second stop gate. Successful updateFromBase returns without another yield. The implementation follows the issue remedy directly; no convention substitution.
+
+Limits: signal arrival inside fetch or a conflicting merge is modeled with boundary stubs, not timed real signals. Running merges and pushes are not interrupted. No live tracker or board was exercised. No Actions workflows exist at this head and the PR reports no checks. Full-gate success is accepted from the supplied head-specific handoff, not independently rerun.
+Judgement: evidence is adequate for the scoped catch-up change, using the explicitly accepted gate result. Ready for review, not a claim of live-service or CI validation.

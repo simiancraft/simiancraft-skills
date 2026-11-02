@@ -1,0 +1,14 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "954f6ca4a6a5f881f67cb8569c8ca116c1bbd87c",
+  "capture_method": "TMPDIR=\"$PWD/.proof-68/tmp\" bun test skills/fix-github-issue/lib/stop.test.ts skills/burn-down-github-issues/lib/pressure.test.ts",
+  "content_hash": "sha256:35ad9b15a6d4bb892b5d3a6eb94defbb5a43f43f13c0b8a8edc9c8bb6c175002"
+}

@@ -1,0 +1,14 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "954f6ca4a6a5f881f67cb8569c8ca116c1bbd87c",
+  "capture_method": "Diff inspection and the attached focused test results",
+  "content_hash": "sha256:ab545711aa41819cbc22a9a8a150f790e978b93be8678b18abd76dfe3d24bdd5"
+}
