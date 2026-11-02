@@ -1,0 +1,13 @@
+Capture commit: a62eb67723e4c4575514d23cbb885006a68faf1d
+Command: bun test skills/burn-down-github-issues/lib/line.test.ts skills/burn-down-github-issues/lib/pressure.test.ts skills/burn-down-github-issues/lib/machine.test.ts skills/burn-down-github-issues/loop.source.test.ts skills/burn-down-github-issues/status.test.ts skills/burn-down-github-issues/lib/floor/floor.test.ts
+Exit status: 0
+
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+ 140 pass
+ 0 fail
+ 1224 expect() calls
+Ran 140 tests across 6 files. [135.00ms]

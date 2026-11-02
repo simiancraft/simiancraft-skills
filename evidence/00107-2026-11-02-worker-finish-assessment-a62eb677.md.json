@@ -1,0 +1,23 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/line.fixture.ts",
+    "skills/burn-down-github-issues/lib/line.test.ts",
+    "skills/burn-down-github-issues/lib/line.ts",
+    "skills/burn-down-github-issues/lib/machine.test.ts",
+    "skills/burn-down-github-issues/lib/machine.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/loop.source.test.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/burn-down-github-issues/references/operating.md",
+    "skills/burn-down-github-issues/references/state-machine.md",
+    "skills/burn-down-github-issues/status.test.ts",
+    "skills/burn-down-github-issues/status.ts",
+    "skills/burn-down-github-issues/watch.ts"
+  ],
+  "capture_commit": "a62eb67723e4c4575514d23cbb885006a68faf1d",
+  "capture_method": "Diff inspection, issue acceptance and ancestor carving records, git ls-tree, gh run list, and supplied exact-head gate attestation",
+  "content_hash": "sha256:53e35c0c108fcacc5eee10a62c9312db2d6db56d53f2258971ec9b93fe49a5fc"
+}

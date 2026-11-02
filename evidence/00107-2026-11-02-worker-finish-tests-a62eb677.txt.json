@@ -1,0 +1,23 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/line.fixture.ts",
+    "skills/burn-down-github-issues/lib/line.test.ts",
+    "skills/burn-down-github-issues/lib/line.ts",
+    "skills/burn-down-github-issues/lib/machine.test.ts",
+    "skills/burn-down-github-issues/lib/machine.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/loop.source.test.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/burn-down-github-issues/references/operating.md",
+    "skills/burn-down-github-issues/references/state-machine.md",
+    "skills/burn-down-github-issues/status.test.ts",
+    "skills/burn-down-github-issues/status.ts",
+    "skills/burn-down-github-issues/watch.ts"
+  ],
+  "capture_commit": "a62eb67723e4c4575514d23cbb885006a68faf1d",
+  "capture_method": "bun test skills/burn-down-github-issues/lib/line.test.ts skills/burn-down-github-issues/lib/pressure.test.ts skills/burn-down-github-issues/lib/machine.test.ts skills/burn-down-github-issues/loop.source.test.ts skills/burn-down-github-issues/status.test.ts skills/burn-down-github-issues/lib/floor/floor.test.ts",
+  "content_hash": "sha256:094333951fc3b81aec5cf562ffa04e59b43fde8a8a1a64078c7ba8e0948d2b89"
+}
