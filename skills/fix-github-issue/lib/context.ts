@@ -11,6 +11,7 @@ import { resolve } from 'node:path';
 import { PIPELINE_DEFAULTS, type PipelineKnobs, type ProjectConfig } from './config.ts';
 import type { Seat } from './engines.ts';
 import type { PanelSetup } from './panel.ts';
+import type { SkillCommit } from './skill-commit.ts';
 import { log as defaultLog, step as defaultStep } from './shell.ts';
 
 /** What the pull master tells a driver once a merge is confirmed. */
@@ -74,6 +75,8 @@ export type Context = {
   runDir: string;
   /** Prompt directories, searched in order, so a driver's own prompts shadow the pipeline's. */
   promptsDirs: string[];
+  /** The skill checkout at run start; absent or null when its commit is unknowable. */
+  skillCommit?: SkillCommit | null;
   dryRun: boolean;
   /** Every mutation a dry run would have made, in order, so a test can assert a whole flow. */
   dryRunLog: string[];
@@ -130,6 +133,7 @@ export function createContext(options: {
   repoRoot: string;
   invokeRoot: string;
   promptsDirs: string[];
+  skillCommit?: SkillCommit | null;
   dryRun: boolean;
   runDir?: string;
   log?: (message: string) => void;
@@ -157,6 +161,7 @@ export function createContext(options: {
     invokeRoot: options.invokeRoot,
     runDir: options.runDir ?? resolve(options.repoRoot, options.project.worktreeRoot, 'runs'),
     promptsDirs: options.promptsDirs,
+    skillCommit: options.skillCommit,
     dryRun: options.dryRun,
     dryRunLog: [],
     botLogin: options.botLogin ?? readBotLogin(),
