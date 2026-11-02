@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "52216fe39dbc317e28e77748d538cbd97f5969b9",
+  "capture_method": "Detached parent checkout with only stop.test.ts copied from 53a82526d2bca5c31af5a52a46b03f7f1ee85590; bun test skills/fix-github-issue/lib/stop.test.ts; Bun 1.4.2. Exit 1 as expected; all six added cases fail.",
+  "content_hash": "sha256:8ed1ddd99f425032a7184c5cde127d6cb5d021faeb0a6c1416baab345c4c7e73"
+}

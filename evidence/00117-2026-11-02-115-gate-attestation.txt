@@ -1,0 +1,6 @@
+Command: bun run gate
+Expansion from package.json: tsc --noEmit -p . && bun test
+Head: 53a82526d2bca5c31af5a52a46b03f7f1ee85590
+Supplied completed result: 543 pass, 0 fail. bun install --frozen-lockfile passed.
+This is the supplied gate attestation, not a newly captured execution log. The proof instructions explicitly accept this gate on this unchanged head and prohibit repeating it.
+CI inspection: git ls-tree -r --name-only HEAD .github returns no paths. There is no .github/workflows directory at this head. gh run list for this branch returned no runs before PR creation. No configured Actions deciding command or CI success is claimed.

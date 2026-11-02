@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "53a82526d2bca5c31af5a52a46b03f7f1ee85590",
+  "capture_method": "Record the supplied completed bun run gate result, compare its gated SHA to HEAD, and inspect package.json and the committed .github tree.",
+  "content_hash": "sha256:60f7963d157b576fc3d94373ec18b77bed5b201d7b0710e80ed7c8cdea06dd8e"
+}

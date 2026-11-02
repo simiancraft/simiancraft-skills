@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "53a82526d2bca5c31af5a52a46b03f7f1ee85590",
+  "capture_method": "Inspect issue #115 and ancestor carving records; review git show HEAD; capture the positive and parent-control tests; inspect package.json and .github; git diff --check HEAD^ HEAD passes.",
+  "content_hash": "sha256:90f2bcb5f52c96aa57e77d488535e22d8b60ddf22986f229240e5040030555de"
+}

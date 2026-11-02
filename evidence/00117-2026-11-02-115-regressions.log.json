@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "53a82526d2bca5c31af5a52a46b03f7f1ee85590",
+  "capture_method": "bun test skills/fix-github-issue/lib/stop.test.ts skills/fix-github-issue/lib/stopping.test.ts skills/carve-github-issue/lib/claims.test.ts skills/burn-down-github-issues/lib/pressure.test.ts; TMPDIR points inside the worktree; Bun 1.4.2 (744846f84). Exit 0.",
+  "content_hash": "sha256:afb7ec7ac9b67da850867e4af46d9cfd4ca0af0009ddf3cb45940e0ac8b6a291"
+}

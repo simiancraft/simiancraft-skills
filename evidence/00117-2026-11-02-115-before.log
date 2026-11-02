@@ -1,0 +1,94 @@
+bun test v1.4.2 (744846f84)
+
+../issue-115-before-proof/skills/fix-github-issue/lib/stop.test.ts:
+138 |           }
+139 |           await sibling;
+140 |         `, 0);
+141 |         expect(run.code).toBe(signal ? 130 : 0);
+142 |         expect(run.lines).toContain('SIGNAL');
+143 |         expect(run.lines.includes('ACT')).toBe(!signal);
+                                                ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (<parent-checkout>/skills/fix-github-issue/lib/stop.test.ts:143:43)
+(fail) the stop handler, in a process of its own > hears a sibling signal before a gate checks after no read [63.01ms]
+138 |           }
+139 |           await sibling;
+140 |         `, 0);
+141 |         expect(run.code).toBe(signal ? 130 : 0);
+142 |         expect(run.lines).toContain('SIGNAL');
+143 |         expect(run.lines.includes('ACT')).toBe(!signal);
+                                                ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (<parent-checkout>/skills/fix-github-issue/lib/stop.test.ts:143:43)
+(fail) the stop handler, in a process of its own > hears a sibling signal before a gate checks after short read [65.33ms]
+138 |           }
+139 |           await sibling;
+140 |         `, 0);
+141 |         expect(run.code).toBe(signal ? 130 : 0);
+142 |         expect(run.lines).toContain('SIGNAL');
+143 |         expect(run.lines.includes('ACT')).toBe(!signal);
+                                                ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (<parent-checkout>/skills/fix-github-issue/lib/stop.test.ts:143:43)
+(fail) the stop handler, in a process of its own > hears a sibling signal before a gate checks after long read [565.58ms]
+166 |         }
+167 |         await sibling;
+168 |       `, 0);
+169 |       expect(run.code).toBe(signal ? 130 : 0);
+170 |       expect(run.lines).toContain('SIGNAL');
+171 |       expect(run.lines.some((l) => l.includes('running worker'))).toBe(!signal);
+                                                                        ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (<parent-checkout>/skills/fix-github-issue/lib/stop.test.ts:171:67)
+(fail) the stop handler, in a process of its own > does not start an agent behind a sibling signal and short read [369.82ms]
+199 |         ]);
+200 |       `, 0);
+201 |       expect(run.code).toBe(signal ? 130 : 0);
+202 |       expect(run.lines).toContain('FIRST');
+203 |       expect(run.lines).toContain('SIGNAL');
+204 |       expect(run.lines.includes('SECOND')).toBe(!signal);
+                                                 ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (<parent-checkout>/skills/fix-github-issue/lib/stop.test.ts:204:44)
+(fail) the stop handler, in a process of its own > gives simultaneous gates separate turns to hear a signal after the first gate [14.88ms]
+248 |         console.log('MISSES ' + misses);
+249 |         console.log('REFUSED ' + refused);
+250 |       `, 0);
+251 |       expect(run.code).toBe(130);
+252 |       expect(run.lines).toContain('SIGNAL');
+253 |       expect(run.lines).toContain('MISSES 0');
+                              ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "MISSES 0"
+Received: [ "READY", "SIGNAL", "LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims",
+  "MISSES 1", "REFUSED 3", "RELEASED true", "BEFORE-EXIT"
+]
+
+      at <anonymous> (<parent-checkout>/skills/fix-github-issue/lib/stop.test.ts:253:25)
+(fail) the stop handler, in a process of its own > hears a signal across seeded lane orderings with timer and I/O waits [232.57ms]
+
+ 5 pass
+ 6 fail
+ 59 expect() calls
+Ran 11 tests across 1 file. [8.05s]
