@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/lib/knife.test.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/fix-github-issue/lib/agent.ts",
+    "package.json"
+  ],
+  "capture_commit": "a04b9499cd4d1aae6992ccb466eca518ff0f5460",
+  "capture_method": "bun test skills/carve-github-issue/lib/knife.test.ts",
+  "content_hash": "sha256:bf23fbf2b038cf854031eadb751c6c6594fc9006b1ee7f9d76861d52526a4603"
+}

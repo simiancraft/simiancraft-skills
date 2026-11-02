@@ -1,0 +1,50 @@
+Issue 55: answer validation repair proof
+Capture commit: a04b9499cd4d1aae6992ccb466eca518ff0f5460
+Scope: code
+
+Size: four files, 175 insertions, and 21 deletions. Two bounded validation
+loops and two instruction examples; no schema or persisted-data changes.
+Rollback is a code revert. Evidence uses fixture processes and FakeTracker.
+
+Fresh command: bun test skills/carve-github-issue/lib/knife.test.ts
+TMPDIR was set to a directory inside the proving worktree.
+Result: 64 pass, 0 fail, 231 assertions. See the companion log.
+
+Behavioral assertions in knife.test.ts, lines 413-486:
+- Each seat receives exactly two turns when its initial answer is invalid.
+- Both turns use the same scratch directory.
+- The repair includes the rejected {} answer and verbatim validator faults.
+- A valid repair completes carving without a loop/carves label.
+- A second invalid answer fails, writes no carving record, and counts one attempt.
+- A seat process exiting 3 receives no validation repair and counts one attempt.
+- A revised cut following an objection is repaired within two allowed rounds:
+  three carver turns, two confirmer turns, success, and no attempt label.
+
+Implementation inspection:
+- knife.ts:629-648 captures rejected output before the next process clears it.
+- knife.ts:670-688 and 708-725 retain the same configured seat and directory,
+  prepend the original instructions, validate again, and stop after one repair.
+- agent.ts:286-306 clears stale role output before each process, so the repair
+  cannot accidentally reuse a predecessor's result.
+- carve.md and revisit.md explicitly demonstrate affected, higherRungs,
+  criterion ids in deferred, and spike indexes in waitsOn, matching issue 55.
+
+Deciding command and prior verification:
+package.json defines gate as: tsc --noEmit -p . && bun test
+The supplied hand-off records bun run gate passing on this exact pushed commit
+with 572 tests. That prior result is accepted under the task's explicit direction
+not to rerun the gate on the same head; this report does not claim a fresh gate run.
+git ls-tree -r --name-only HEAD .github returns no files. There is no
+.github/workflows directory at this head, and gh run list for this branch returns
+no runs. Therefore there is no configured Actions deciding command to capture.
+
+Remote identity:
+git fetch origin fix/carve-answer-repair-55
+ git merge-base --is-ancestor HEAD origin/fix/carve-answer-repair-55
+Both exited 0 before this report was written.
+
+Judgement: the bounded repair behavior and attempt accounting are covered by
+fixture integration tests. The unchanged-head gate is accepted prior verification.
+Live model compliance and the probability of producing a valid repair were not
+measured; this change guarantees the opportunity to repair, not model success.
+No shared tracker data was mutated. Logs contain no credentials.

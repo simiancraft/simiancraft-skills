@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/lib/knife.test.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/fix-github-issue/lib/agent.ts",
+    "package.json"
+  ],
+  "capture_commit": "a04b9499cd4d1aae6992ccb466eca518ff0f5460",
+  "capture_method": "Implementation inspection, remote ancestry verification, and accepted prior gate result",
+  "content_hash": "sha256:232906914c435e876c774136f5f41829ad4442e1925e953ffa0a2c22aa9609bd"
+}
