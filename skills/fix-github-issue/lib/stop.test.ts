@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RunStopping } from './shell.ts';
+import { staleStop } from './stale-stop.fixture.ts';
 
 const HERE = import.meta.dir;
 let scratch: string;
@@ -19,7 +21,7 @@ async function drive(lane: string, signals: number) {
     script,
     `import { FakeTracker, fakeIssue } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'fake-tracker.ts')}';
 import { claim } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'claims.ts')}';
-import { RunStopping, stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
+import { RunStopping, isStopping, stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
 import { installStopHandler } from '${join(HERE, 'stop.ts')}';
 import { runAgentOnce } from '${join(HERE, 'agent.ts')}';
 import { createContext } from '${join(HERE, 'context.ts')}';
@@ -59,6 +61,22 @@ try {
 }
 
 describe('the stop handler, in a process of its own', () => {
+  it('hears a signal during a synchronous read only after an event loop turn', async () => {
+    const run = await drive(`
+      Bun.spawnSync(['sleep', '1']);
+      console.log('AFTER READ ' + isStopping());
+      await Promise.resolve();
+      console.log('AFTER MICROTASK ' + isStopping());
+      await Bun.sleep(0);
+      console.log('AFTER TURN ' + isStopping());
+    `, 1);
+    expect(run.code).toBe(130);
+    expect(run.lines).toContain('AFTER READ false');
+    expect(run.lines).toContain('AFTER MICROTASK false');
+    expect(run.lines).toContain('AFTER TURN true');
+    expect(run.lines).toContain('RELEASED true');
+  }, 20_000);
+
   it('unwinds a waiting lane through its finally, so the claim is released before the exit', async () => {
     const run = await drive('await stoppableSleep(600_000);', 1);
     expect(run.code).toBe(130);
@@ -302,4 +320,57 @@ describe('the stop handler, in a process of its own', () => {
     expect(run.lines.some((l) => /again; exiting now, abandoning claim\(s\).*o\/r#1/.test(l))).toBe(true);
     expect(run.lines.some((l) => l.startsWith('RELEASED'))).toBe(false);
   }, 20_000);
+});
+
+describe('staleStop', () => {
+  it('keeps an arrival before entry unheard until the yield, then stays stopped', async () => {
+    const stop = staleStop(0);
+    expect(stop.RunStopping).toBe(RunStopping);
+    expect(stop.reads).toBe(0);
+    expect(stop.isStopping()).toBe(false);
+    stop.act('before yield');
+    await expect(stop.yieldToStop('merge')).rejects.toBeInstanceOf(RunStopping);
+    expect(stop.isStopping()).toBe(true);
+    stop.read();
+    stop.act('after yield');
+    await expect(stop.yieldToStop('park')).rejects.toThrow('not begun: park');
+    expect(stop.isStopping()).toBe(true);
+    expect(stop.reads).toBe(1);
+    expect(stop.late).toEqual(['before yield', 'after yield']);
+  });
+
+  it('records acts after the selected read as late even before the stop is heard', async () => {
+    const stop = staleStop(2);
+    stop.read();
+    await stop.yieldToStop('early act');
+    stop.act('early');
+    expect(stop.isStopping()).toBe(false);
+    expect(stop.late).toEqual([]);
+    stop.read();
+    stop.act('unheard');
+    await Promise.resolve();
+    expect(stop.isStopping()).toBe(false);
+    expect(stop.late).toEqual(['unheard']);
+    await expect(stop.yieldToStop('merge')).rejects.toBeInstanceOf(RunStopping);
+    expect(stop.isStopping()).toBe(true);
+    stop.read();
+    stop.act('heard');
+    expect(stop.reads).toBe(3);
+    expect(stop.acts).toEqual(['early', 'unheard', 'heard']);
+    expect(stop.late).toEqual(['unheard', 'heard']);
+  });
+
+  it('counts every read without stopping in the control run', async () => {
+    const stop = staleStop();
+    await stop.yieldToStop('entry');
+    for (let i = 0; i < 3; i++) {
+      stop.read();
+      await stop.yieldToStop('act');
+      stop.act(`act ${i}`);
+    }
+    expect(stop.reads).toBe(3);
+    expect(stop.isStopping()).toBe(false);
+    expect(stop.acts).toEqual(['act 0', 'act 1', 'act 2']);
+    expect(stop.late).toEqual([]);
+  });
 });
