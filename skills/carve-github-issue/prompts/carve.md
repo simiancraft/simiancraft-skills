@@ -124,3 +124,25 @@ when withdrawn or deferred); `status` is `open`, `withdrawn` (with `cite`, the c
 
 Be accurate rather than generous. A cut the confirmer rejects costs a round; one that ships wrong
 costs every leaf under it.
+
+For every hand-off (`small-enough`, `indivisible`, `nothing-left`, or `too-uncertain`,
+where allowed by the mode), include `"affected": ["A1"]` with the criterion ids the question
+touches, or `"affected": []` when it touches none. This field is required even for `indivisible`.
+
+Every cut below `domain`, including unchosen cuts, needs one `higherRungs` entry per higher
+seam. For example, a tier cut includes:
+
+```json
+{ "seam": "tier", "higherRungs": [{ "seam": "domain", "why": "One domain object spans persistence and API; there are no independent domain outcomes." }] }
+```
+
+A file cut needs entries for `domain`, `tier`, `route`, and `area`, each with its own `why`.
+A partial cut uses criterion ids in `deferred`, and zero-based spike piece indexes in `waitsOn`:
+
+```json
+{ "state": "partial", "deferred": [{ "criterion": "A2", "waitsOn": 0 }] }
+```
+
+Here piece 0 must have `"role": "spike"`, and the matching ledger row is
+`{ "id": "A2", "text": "...", "owner": null, "status": "deferred", "waitsOn": 0 }`.
+These fragments illustrate fields within the full answer; they are not standalone answers.

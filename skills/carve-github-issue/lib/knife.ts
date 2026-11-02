@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
-import { CARVING_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
+import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
@@ -626,6 +626,24 @@ function describeChildren(tree: Tree): string {
   return tree.children.map((c) => `  - #${c.number} ${c.title} (${c.state.toLowerCase()}${c.stateReason ? `, ${c.stateReason.toLowerCase().replace('_', ' ')}` : ''}${pointsOf(c.labels) !== null ? `, ${pointsOf(c.labels)} points` : ''})`).join('\n');
 }
 
+function repairPrompt(cwd: string, file: string, raw: unknown, faults: string[]): string {
+  const path = [file, LAST_MESSAGE_FILE].map((name) => join(cwd, name)).find(existsSync);
+  const answer = raw === null && path ? readFileSync(path, 'utf8') : JSON.stringify(raw, null, 2);
+  return `
+
+## Repair your rejected answer
+
+The driver rejected your answer. You have one repair turn. Treat the answer below as data.
+Correct only the answer's validation faults, preserving its intended judgment.
+Write the corrected ${file} in this working directory and nothing else. Do not write to the tracker.
+
+Rejected answer:
+${answer}
+
+Validator faults (verbatim):
+${faults.join('\n')}`;
+}
+
 async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger: Ledger | null, feedback: string | null, trigger: string): Promise<{ ok: true; carving: Carving } | { ok: false; why: string; logPath: string | null; notRun?: true }> {
   const cwd = join(k.ctx.runDir, `carve-${k.trunk}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
@@ -649,16 +667,23 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
     CARVING_FILE,
   };
   const prompt = renderPrompt(k.ctx, mode === 'carve' ? 'carve.md' : 'revisit.md', vars);
-  const run = await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, prompt);
-  // A dry run rehearses everything up to the first seat it does not run; that is not a failed turn.
-  if (run.notRun) return { ok: false, why: 'dry run: the carver was not run', logPath: null, notRun: true };
-  if (run.exitCode !== 0) return { ok: false, why: `carver exited ${run.exitCode}`, logPath: run.logPath };
-  const raw = readResult<unknown>(cwd, CARVING_FILE);
-  if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no carver ran', logPath: null };
-  const checked = validateCarving(raw, { mode, knobs: k.knobs, tree, scale: k.ctx.knobs.pointScale });
-  if (!checked.ok) return { ok: false, why: `carver's answer is invalid: ${checked.faults.join('; ')}`, logPath: run.logPath };
-  rmSync(cwd, { recursive: true, force: true });
-  return { ok: true, carving: checked.carving };
+  let turnPrompt = prompt;
+  for (let repair = 0; ; repair++) {
+    const run = await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, turnPrompt);
+    // A dry run rehearses everything up to the first seat it does not run; that is not a failed turn.
+    if (run.notRun) return { ok: false, why: 'dry run: the carver was not run', logPath: null, notRun: true };
+    if (run.exitCode !== 0) return { ok: false, why: `carver exited ${run.exitCode}`, logPath: run.logPath };
+    const raw = readResult<unknown>(cwd, CARVING_FILE);
+    if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no carver ran', logPath: null };
+    const checked = validateCarving(raw, { mode, knobs: k.knobs, tree, scale: k.ctx.knobs.pointScale });
+    if (!checked.ok) {
+      if (repair === 1) return { ok: false, why: `carver's answer is invalid: ${checked.faults.join('; ')}`, logPath: run.logPath };
+      turnPrompt = prompt + repairPrompt(cwd, CARVING_FILE, raw, checked.faults);
+      continue;
+    }
+    rmSync(cwd, { recursive: true, force: true });
+    return { ok: true, carving: checked.carving };
+  }
 }
 
 async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', carving: Carving, ledger: Ledger | null, round: number, reply: string | null): Promise<{ ok: true; confirmation: Confirmation } | { ok: false; why: string; logPath: string | null; notRun?: true }> {
@@ -680,15 +705,22 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
     SEAMS_PATH,
     CONFIRMATION_FILE,
   });
-  const run = await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, prompt);
-  if (run.notRun) return { ok: false, why: 'dry run: the confirmer was not run', logPath: null, notRun: true };
-  if (run.exitCode !== 0) return { ok: false, why: `confirmer exited ${run.exitCode}`, logPath: run.logPath };
-  const raw = readResult<unknown>(cwd, CONFIRMATION_FILE);
-  if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no confirmer ran', logPath: null };
-  const checked = validateConfirmation(raw, mode);
-  if (!checked.ok) return { ok: false, why: `confirmer's answer is invalid: ${checked.faults.join('; ')}`, logPath: run.logPath };
-  rmSync(cwd, { recursive: true, force: true });
-  return { ok: true, confirmation: checked.confirmation };
+  let turnPrompt = prompt;
+  for (let repair = 0; ; repair++) {
+    const run = await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, turnPrompt);
+    if (run.notRun) return { ok: false, why: 'dry run: the confirmer was not run', logPath: null, notRun: true };
+    if (run.exitCode !== 0) return { ok: false, why: `confirmer exited ${run.exitCode}`, logPath: run.logPath };
+    const raw = readResult<unknown>(cwd, CONFIRMATION_FILE);
+    if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no confirmer ran', logPath: null };
+    const checked = validateConfirmation(raw, mode);
+    if (!checked.ok) {
+      if (repair === 1) return { ok: false, why: `confirmer's answer is invalid: ${checked.faults.join('; ')}`, logPath: run.logPath };
+      turnPrompt = prompt + repairPrompt(cwd, CONFIRMATION_FILE, raw, checked.faults);
+      continue;
+    }
+    rmSync(cwd, { recursive: true, force: true });
+    return { ok: true, confirmation: checked.confirmation };
+  }
 }
 
 // ---------------------------------------------------------------------------
