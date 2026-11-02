@@ -1,0 +1,67 @@
+Capture commit: 73ec67c7e8b65cb00531b91085069b51b33d60b9
+Scope: code. Seven changed files; additive membership helper, shared consumer wiring, tests, and documentation. No persistent data or CI changes.
+Claims: selected roots and nested descendants share membership; unrelated trees are excluded; refresh is ordered independently, idempotent, and incremental; existing eligibility remains authoritative.
+No .github/workflows files exist at capture head. package.json defines gate as tsc --noEmit -p . && bun test. PR statusCheckRollup is empty.
+
+$ bun install --frozen-lockfile
+bun install v1.4.2 (744846f84)
+
+Checked 6 installs across 26 packages (no changes) [0.00ms]
+
+exit: 0
+$ bun run gate
+$ tsc --noEmit -p . && bun test
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+skills/burn-down-github-issues/lib/world-sweep.test.ts:
+world sweep: 40565 cases, 255 disabled events, stale Merging entries: 
+reconcile: 1117 world pairs
+
+ 595 pass
+ 0 fail
+ 44646 expect() calls
+Ran 595 tests across 38 files. [24.37s]
+
+exit: 0
+$ bun test skills/burn-down-github-issues/lib/run-scope.test.ts skills/burn-down-github-issues/loop.source.test.ts
+bun test v1.4.2 (744846f84)
+
+ 11 pass
+ 0 fail
+ 45 expect() calls
+Ran 11 tests across 2 files. [17.00ms]
+
+exit: 0
+$ bun .proof-52/check.ts
+{
+  "permutations": 720,
+  "roots": [
+    10,
+    21
+  ],
+  "effective": [
+    10,
+    11,
+    12,
+    21
+  ],
+  "excluded": [
+    20,
+    22
+  ],
+  "repeatedRefresh": [],
+  "addedDescendant": [
+    13
+  ],
+  "resumptionPredicate": "(issue) => !ONLY || ONLY.has(issue.number)",
+  "result": "PASS"
+}
+
+exit: 0
+
+Focused tests cover nested and unrelated trees, selected leaves, cycles, unrestricted mode and age filtering, repeat and incremental refresh, stable shared membership, placement/appraisal, held/blocked worker refusal, and the real carving sweep with revisit stubbed. The independent fixture executes the actual resumption predicate for all 720 orderings. Source checks verify refresh-before-consumption wiring.
+Limits: no live stranded-worktree recovery, panel recovery, live appraisal, or real knife execution. Same-process scheduling remains outside this change. Existing claims and size eligibility code is unchanged; no live shared records were mutated.
+Adequacy: all issue membership claims have executable fixtures, source checks, and a successful full gate on this head. The fixture is saved as .proof-52/check.ts for reproduction from the repository root. This refresh replaces the previous PR receipts.

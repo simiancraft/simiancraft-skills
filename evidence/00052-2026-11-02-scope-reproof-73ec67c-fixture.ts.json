@@ -1,0 +1,12 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/run-scope.ts",
+    "skills/burn-down-github-issues/loop.ts"
+  ],
+  "capture_commit": "73ec67c7e8b65cb00531b91085069b51b33d60b9",
+  "capture_method": "Save as .proof-52/check.ts and run bun .proof-52/check.ts from repository root; 720 orderings passed.",
+  "content_hash": "sha256:7a4430715d4b3b72dd22b85d35c4f4e8230fd9ad0e03c4576aecc898d35f1790"
+}
