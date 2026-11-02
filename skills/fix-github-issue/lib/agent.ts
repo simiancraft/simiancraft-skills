@@ -10,7 +10,7 @@ import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAG
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
 import { LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
-import { beginStop, isStopping, RunStopping, stoppableSleep } from './shell.ts';
+import { beginStop, isStopping, RunStopping, stoppableSleep, yieldToStop } from './shell.ts';
 
 export { APPRAISAL_FILE, CONTROL_FILES, LAST_MESSAGE_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 
@@ -260,7 +260,7 @@ export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timed
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
-  if (isStopping()) throw new RunStopping(`the run is stopping; ${role} not started on #${issue}`);
+  await yieldToStop(`${role} not started on #${issue}`);
   // A lease can run out where no agent is running to be killed: in the backoff before a retry.
   // An agent started then would push and open pull requests on an issue another run may hold.
   if (leaseLost(ctx, issue)) throw new LeaseLostError(`this run lost its lease on #${issue}; ${role} not started`);
