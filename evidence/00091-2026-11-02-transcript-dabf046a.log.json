@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pool.ts",
+    "skills/carve-github-issue/lib/claims.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "dabf046ac728d76442ff9a0d113ceeac8ce75e83",
+  "capture_method": "Copy stop.test.ts into a scratch directory, set HERE to the absolute original lib directory, and print the drive result before returning it. Run bun test on the copy with --test-name-pattern \"before taking another pool item|before posting a claim\". Implementation and assertions unchanged; set TMPDIR inside this worktree. The stored harness records the capture path; replace HERE when reproducing elsewhere.",
+  "content_hash": "sha256:45225e35359bc9eb691644a9e0bb75d08ec2230358fc52eb5522c2d3a4b86c69"
+}

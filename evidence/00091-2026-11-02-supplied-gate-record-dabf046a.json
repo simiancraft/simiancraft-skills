@@ -1,0 +1,15 @@
+{
+  "capture_commit": "dabf046ac728d76442ff9a0d113ceeac8ce75e83",
+  "command": "bun run gate",
+  "expanded_command": "tsc --noEmit -p . && bun test",
+  "source": "Supplied hand-off and loop-code.json, accepted for this exact SHA by task instruction; not independently rerun.",
+  "result": {
+    "tests_passed": 539,
+    "tests_failed": 0,
+    "typescript": "passed"
+  },
+  "ci_inspection": {
+    "command": "git ls-tree -r --name-only HEAD .github",
+    "result": "No .github/workflows files at this head. gh run list for the branch returned []. No configured Actions deciding command exists at this head."
+  }
+}

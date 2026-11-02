@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pool.ts",
+    "skills/carve-github-issue/lib/claims.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "dabf046ac728d76442ff9a0d113ceeac8ce75e83",
+  "capture_method": "Run unchanged acceptance suites: bun test skills/fix-github-issue/lib/stop.test.ts skills/fix-github-issue/lib/stopping.test.ts skills/carve-github-issue/lib/claims.test.ts skills/burn-down-github-issues/lib/pressure.test.ts",
+  "content_hash": "sha256:1451fedb06cfdb89ed2dd605e47ebf4c92c563a6e4f24428448bee1ee5456783"
+}

@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pool.ts",
+    "skills/carve-github-issue/lib/claims.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts"
+  ],
+  "capture_commit": "dabf046ac728d76442ff9a0d113ceeac8ce75e83",
+  "capture_method": "Preserve supplied gate result for the exact head, inspect package.json and the tracked .github tree, and query branch Actions runs. This is an attestation, not independently captured gate stdout.",
+  "content_hash": "sha256:14528041a4aff41e78f23bb36c87d980fbbb53cc79057f635dd1d5fd17117e7e"
+}

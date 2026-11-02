@@ -1,0 +1,9 @@
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+ 131 pass
+ 0 fail
+ 400 expect() calls
+Ran 131 tests across 4 files. [14.64s]

@@ -1,0 +1,13 @@
+bun test v1.4.2 (744846f84)
+
+.proof-91/transcript.test.ts:
+{"signals":1,"code":130,"lines":["READY","LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims","POOL RETURNED","RELEASED true","BEFORE-EXIT"]}
+{"signals":0,"code":0,"lines":["READY","ITEM 1","ITEM 2","POOL RETURNED","RELEASED true"]}
+{"signals":1,"code":130,"lines":["READY","LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims","FINAL COMMENTS 0","FINAL LABELS 0","RELEASED true","BEFORE-EXIT"]}
+{"signals":0,"code":0,"lines":["READY","CLAIM RETURNED","COMMENTS 1","LABELS 1","FINAL COMMENTS 2","FINAL LABELS 0","RELEASED true"]}
+
+ 2 pass
+ 5 filtered out
+ 0 fail
+ 22 expect() calls
+Ran 2 tests across 1 file. [4.33s]
