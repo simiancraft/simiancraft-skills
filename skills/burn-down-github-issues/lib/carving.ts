@@ -28,8 +28,8 @@ export type CarvingDeps = {
     maxAppraiseAttempts: number;
     sizeCallbackTimeoutMinutes: number;
   };
-  /** `--only`, when given: the sweep restricts itself to these numbers. */
-  only: Set<number> | null;
+  /** Effective `--only` membership, including discovered descendants; shared with the loop. */
+  only: ReadonlySet<number> | null;
   ageDays: number;
   /** Places the trunk's card in a lane (a key from lib/lanes.ts) on every projection the driver keeps. */
   mark: (issue: number, title: string, lane: string, note?: string) => void;

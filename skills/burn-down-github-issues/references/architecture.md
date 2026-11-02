@@ -220,9 +220,17 @@ the rest of the backlog stays newest-first. The appraisers' candidates are the I
 once more by the appraise skill's own selection so its command and the loop agree. An issue with
 a parent is exempt from the age window, since its trunk was selected when it was recent, and so
 is any issue already on the board, since the board is what a burndown resumes from. `--only 12,34`
-restricts the run (placement, appraisal, selection, and the sweep) to those numbers and lifts the
-age window for them; every other rule still applies, and the console says which lane kept each
-one out.
+restricts placement, appraisal, selection, resumption, and the sweep to those roots and their
+tracker descendants, including children of admitted child trunks, and lifts the age window for
+them. Explicitly selected leaves remain selected; unrelated trees remain excluded. Every other
+rule still applies, and the console says which lane kept each one out.
+
+`lib/run-scope.ts` retains explicit roots separately from effective membership. Its `refresh`
+accepts tracker parent facts, expands membership regardless of response order, and returns only
+newly admitted numbers. Repeating the same facts returns none. Every backlog read refreshes the
+shared effective set before scope readers use it. This membership contract does not replace the
+one-pass scheduler or promise dispatch of children created after a queue was consumed. Without
+`--only`, membership stays unrestricted and refresh returns no incremental admissions.
 
 A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
 position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
