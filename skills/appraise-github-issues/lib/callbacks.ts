@@ -72,7 +72,7 @@ export function resolveSizeCallback(dir: string, points: number): string | null 
  * Runs whatever the directory holds for this size. The executable runs first with the payload on
  * stdin; the prompt, when present, is one agent turn in its own scratch directory. Neither can
  * fail the appraisal: the size is already on the issue, and what follows is the producer's
- * business.
+ * business. Throws only for a stop.
  */
 export async function runSizeCallback(
   ctx: Context,
