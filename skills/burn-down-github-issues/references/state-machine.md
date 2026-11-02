@@ -30,7 +30,7 @@ way: a coarse state cannot be disassembled into the fine one it hides.
 
 ```
 burndown (parallel)
-├── line:   active | paused                 the operator's switch
+├── line:   active | paused | finishing                 the operator's switch
 └── ticket: appraisal | ready | carving | work | review | landing | waits | deadLetters | panel | human | terminal
             + reconcile (transient) + offBoard (final)
 ```
@@ -42,6 +42,10 @@ paused line stays in its lane while the board's banner says why. `lib/machine.te
 `lineActive` guards exactly those events and no others. Where the running loop actually holds,
 which includes the merge and does not yet include the knife's sweep, is listed once in
 `operating.md`, "When the line is paused".
+
+`FINISH` enters `line.finishing` from either `active` or `paused`; it has no exit, and
+`lineActive` is false there. This region adds no ticket lane. Runtime refusal and the merge hold
+are described in `operating.md`, "When the line is finishing".
 
 ## Ticket-wide events
 
@@ -284,7 +288,7 @@ The machine is data so it can be checked. `lib/machine.test.ts` asserts:
 - every guarded list of transitions ends in an unguarded fallback, except the four events whose
   verdict sets the pipeline already rejects outside of (`APPRAISED`, `KNIFE_VERDICT`,
   `WORKER_VERDICT`, `HOLD_ADDED_BY_PERSON`);
-- `lineActive` guards exactly the seam events, and the `line` region has its paused state;
+- `lineActive` guards exactly the seam events, and the `line` region has its paused and finishing states;
 - every lane can reach a terminal lane or a human lane with guards treated as optimistic edges
   (a guard only removes an edge at run time), and the lanes that can reach only a human lane are
   the waits and the dead letters, by construction;

@@ -89,8 +89,9 @@ export const MACHINE: StateNode = {
     line: {
       initial: 'active',
       states: {
-        active: { on: { PAUSE: { target: 'line.paused', actions: ['banner'] } } },
-        paused: { on: { GO: { target: 'line.active', actions: ['clearBanner'] } } },
+        active: { on: { PAUSE: { target: 'line.paused', actions: ['banner'] }, FINISH: { target: 'line.finishing', actions: ['banner'] } } },
+        finishing: {},
+        paused: { on: { GO: { target: 'line.active', actions: ['clearBanner'] }, FINISH: { target: 'line.finishing', actions: ['banner'] } } },
       },
     },
 

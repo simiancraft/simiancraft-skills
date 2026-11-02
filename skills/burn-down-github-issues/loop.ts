@@ -47,9 +47,10 @@ import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { issueRefs } from './lib/refs.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
-import { Floor, FLOOR_PAUSE } from './lib/floor/floor.ts';
+import { Floor } from './lib/floor/floor.ts';
 import { INCIDENT_LABEL } from './lib/floor/incident.ts';
-import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
+import { createLine } from './lib/line.ts';
+import { configureStatus, mark, pulse, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
 
@@ -325,41 +326,12 @@ const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 
 const SWITCH_FILE = join(RUN_DIR, 'line-switch');
 const FLOOR_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor');
-const SWITCH_POLL_MS = 30 * 1000;
-
-function readSwitch(): { state: 'go' | 'pause'; reason: string } {
-  if (!existsSync(SWITCH_FILE)) return { state: 'go', reason: '' };
-  const [first = '', ...rest] = readFileSync(SWITCH_FILE, 'utf8').split('\n');
-  const word = first.trim().toLowerCase();
-  return { state: word === 'go' ? 'go' : 'pause', reason: rest.join(' ').trim() || first.trim() };
-}
-
-/**
- * Holds until the switch says go. The log gets one line per pause; the operator board gets the
- * elapsed pause on every poll, so a paused line is never mistaken for a quiet one.
- */
-async function waitForGo(where: string, passFloorPause = false): Promise<void> {
-  let announced = false;
-  for (;;) {
-    // A paused line holds a card for as long as it takes; a stop ends the hold, and the lane with it.
-    if (isStopping()) throw new RunStopping(`the run is stopping; no longer holding ${where}`);
-    const sw = readSwitch();
-    // An incident's fix is the merge that clears the floor's own pause; a person's pause still holds it.
-    if (sw.state === 'go' || (passFloorPause && sw.reason.startsWith(FLOOR_PAUSE))) {
-      if (sw.state === 'go') setLine('active');
-      if (announced) log(`line is go again; resuming ${where}`);
-      return;
-    }
-    setLine('paused', sw.reason);
-    if (!announced) {
-      log(`line is paused (${sw.reason || 'no reason given'}); holding ${where} until ${SWITCH_FILE} says go`);
-      announced = true;
-    } else if (!SILENT) {
-      console.log(`⏸️ paused ${elapsed(lineState().since)}  holding ${where}  ⏱ ${stamp()}`);
-    }
-    await stoppableSleep(SWITCH_POLL_MS);
-  }
-}
+const { holdForDispatch, waitForGo } = createLine({
+  switchFile: SWITCH_FILE,
+  log,
+  sleep: stoppableSleep,
+  silent: () => SILENT,
+});
 
 const args = process.argv.slice(2);
 
@@ -820,7 +792,7 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
 }
 
 async function resumePull({ issue, pull }: { issue: Issue; pull: { number: number; branch: string } }): Promise<void> {
-  await waitForGo(`#${issue.number}`);
+  if (!(await holdForDispatch(`#${issue.number}`))) return;
 
   const holder = claimHolder(ctx, issue.number, new Map());
   if (holder) {
@@ -1301,7 +1273,7 @@ async function main(): Promise<void> {
     candidates,
     CONFIG.concurrency,
     async (issue) => {
-      await waitForGo(`#${issue.number}`);
+      if (!(await holdForDispatch(`#${issue.number}`))) return;
       // The pipeline places the card at every seam from Coding on; the two ways it can decline to
       // start are placed here, since no lane of its own ever saw the issue.
       const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
