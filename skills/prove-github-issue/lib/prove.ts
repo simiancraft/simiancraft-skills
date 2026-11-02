@@ -8,6 +8,7 @@
 
 import { join } from 'node:path';
 import { agentCapMs, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
@@ -26,6 +27,8 @@ export type ProveResult = {
   branch?: string;
   /** The head the proof is pinned to. For `proved`, the lane's head. */
   sha?: string;
+  /** The deciding command run at the lane head, passed through as the prover reports it. */
+  gateRun?: { command: string; sha: string; exitCode: number };
   /** For `unprovable`: what the coder must fix. */
   brief?: string;
   touches?: Touch[];
@@ -42,6 +45,29 @@ export type ProveBrief =
 
 const KNOWN: ProveVerdict[] = ['proved', 'unprovable', 'needs-decision', 'needs-human', 'failed'];
 const TOUCHES: Touch[] = ['code', 'data', 'migration', 'stored-string', 'ci'];
+
+/** The command this proof owes, or null when the coder's gate still stands. */
+export function decidingCommand(project: ProjectConfig, head: string, gated: string): string | null {
+  return project.ciCommand ?? (!gated || head !== gated ? project.checkCommand : null);
+}
+
+/** Render commands directly: inserted template values are not expanded a second time. */
+export function gateText(project: ProjectConfig, head: string, gated: string): string {
+  const command = decidingCommand(project, head, gated);
+  if (command === null) {
+    return `The coder ran \`${project.checkCommand}\` on \`${gated}\`, the head you are proving. Its gate stands and CI is the second opinion; do not run it again.`;
+  }
+  const prerequisite = (!gated || head !== gated) && command !== project.checkCommand
+    ? ` Then run \`${project.checkCommand}\` first; the coder's gate no longer stands on this head.`
+    : '';
+  return `At the lane head \`${head}\`, run \`${project.installCommand}\`.${prerequisite} Then run the deciding command \`${command}\` on this head. If any run fails, return \`unprovable\` with what failed. Record only the deciding command in \`gateRun\`: command exactly as given, the full SHA it ran at, and the numeric exitCode.`;
+}
+
+function ciCoverageText(project: ProjectConfig): string {
+  return project.ciCommand !== undefined
+    ? `The configured CI command is \`${project.ciCommand}\`, named in the gate above; you need not search the workflows to find it.`
+    : 'Read `.github/workflows/`, and make one receipt exercise the command the pipeline uses to decide, not only a focused invocation you chose.';
+}
 
 function briefText(brief: ProveBrief): string {
   switch (brief.kind) {
@@ -76,6 +102,8 @@ export async function runProve(
     HEAD: head,
     GATED: coded.gated,
     BRIEF: briefText(brief),
+    GATE: gateText(ctx.project, head, coded.gated),
+    CI_COVERAGE: ciCoverageText(ctx.project),
   });
   const { logPath, exitCode, notRun, timedOut } = await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the prover was not run' };
