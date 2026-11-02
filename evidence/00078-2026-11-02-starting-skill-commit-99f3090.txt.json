@@ -1,0 +1,17 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/loop.source.test.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/fix-github-issue/lib/context.ts",
+    "skills/fix-github-issue/lib/skill-commit.test.ts",
+    "skills/fix-github-issue/lib/skill-commit.ts",
+    "package.json",
+    "bunfig.toml"
+  ],
+  "capture_commit": "99f3090c90291772c877d5edf14c6a62e9fd0173",
+  "capture_method": "bun install --frozen-lockfile; bun run gate; bun test skills/fix-github-issue/lib/skill-commit.test.ts skills/burn-down-github-issues/loop.source.test.ts; inspect git ls-tree -r HEAD .github and diff",
+  "content_hash": "sha256:a7b7046352e523298b65cae9434a1c3ca718bb32f20a3df55664f1e798dfd435"
+}

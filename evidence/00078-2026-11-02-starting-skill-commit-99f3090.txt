@@ -1,0 +1,44 @@
+Issue #78 proof
+Capture commit: 99f3090c90291772c877d5edf14c6a62e9fd0173
+Scope: code
+
+Sizing: 5 files, 139 added lines; small additive and reversible change.
+Claims: tracked checkout yields root and full HEAD; unknowable checkout yields null; createContext preserves the record and its spread copy; startup logs the recorded commit or one unknown line; standalone drivers leave the record unset.
+
+CI inspection: git ls-tree -r HEAD .github returned no files. No .github/workflows directory exists at this head. package.json defines gate as tsc --noEmit -p . && bun test, and issue #78 requires bun run gate.
+
+$ bun install --frozen-lockfile
+bun install v1.4.2 (744846f84)
+
+Checked 6 installs across 26 packages (no changes) [0.00ms]
+Exit: 0
+
+$ bun run gate
+$ tsc --noEmit -p . && bun test
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+skills/burn-down-github-issues/lib/world-sweep.test.ts:
+world sweep: 40565 cases, 255 disabled events, stale Merging entries: 
+reconcile: 1117 world pairs
+
+ 562 pass
+ 0 fail
+ 44444 expect() calls
+Ran 562 tests across 38 files. [22.32s]
+Exit: 0
+
+$ bun test skills/fix-github-issue/lib/skill-commit.test.ts skills/burn-down-github-issues/loop.source.test.ts
+bun test v1.4.2 (744846f84)
+
+ 13 pass
+ 0 fail
+ 38 expect() calls
+Ran 13 tests across 2 files. [33.00ms]
+Exit: 0
+
+Review: issue #78 and the newest ancestor records on #71 and #36 scope this change to recording and logging. The diff matches that scope. Tests use real temporary Git repositories and context values; source tests check initialization order and both header branches. No live burndown was started. Header evidence is source-level, as requested by the issue. No shared application data was changed.
+
+Judgement: adequate for the scoped change; ready for review. No separate CI workflow command exists in this commit. Evidence-branch integrity protection was not verified; storage is append-only with immutable links.
