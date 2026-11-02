@@ -582,9 +582,9 @@ function requiresUpToDate(ctx: Context): boolean {
 }
 
 /** The status checks the base branch's protection requires; none when the branch has no such rule. */
-function requiredStatusChecks(ctx: Context): string[] {
+export function requiredStatusChecks(ctx: Context, read: (argv: string[]) => string = (argv) => sh(ctx, argv, ctx.repoRoot, 1)): string[] {
   try {
-    return JSON.parse(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/branches/${ctx.project.baseBranch}/protection/required_status_checks`, '--jq', '[.contexts[]?, .checks[]?.context] | unique'], ctx.repoRoot, 1)) as string[];
+    return JSON.parse(read(['gh', 'api', `repos/${ctx.project.repo}/branches/${ctx.project.baseBranch}/protection/required_status_checks`, '--jq', '[.contexts[]?, .checks[]?.context] | unique'])) as string[];
   } catch {
     return []; // no protection, or no right to read it: either way nothing here names a check
   }
