@@ -6,7 +6,7 @@
  */
 
 import { join } from 'node:path';
-import { agentCapMs, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { agentCapMs, logTail, readResult, renderPrompt, runAgent, runAgentOnce } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
@@ -25,7 +25,7 @@ export type CodeResult = {
   closeComment?: string;
   answer?: string;
   branch?: string;
-  /** The pushed head. For `coded`, the remote holds it on `branch`. */
+  /** The coded head; a conflict turn leaves it local for the driver to verify and push. */
   sha?: string;
   /** The commit the check command passed on; the prover reruns the gate only on a head that differs. */
   gated?: string;
@@ -42,7 +42,8 @@ export type CodeBrief =
   | { kind: 'first' }
   | { kind: 'continue'; branch: string; text: string }
   | { kind: 'revision'; branch: string; text: string }
-  | { kind: 'unproved'; branch: string; text: string };
+  | { kind: 'unproved'; branch: string; text: string }
+  | { kind: 'conflict'; branch: string; base: string; paths: string[]; text: string };
 
 const KNOWN: CodeVerdict[] = ['coded', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'out-of-band', 'answered', 'failed'];
 const TOUCHES: Touch[] = ['code', 'data', 'migration', 'stored-string', 'ci'];
@@ -51,6 +52,8 @@ function briefText(brief: CodeBrief): string {
   switch (brief.kind) {
     case 'first':
       return 'This is the first attempt at this issue. Start from the base the lane holds.';
+    case 'conflict':
+      return `This is one conflict turn for branch \`${brief.branch}\`. The driver has already started merging pinned base commit \`${brief.base}\` and stopped on these unmerged paths:\n${brief.paths.map((path) => `- ${path}`).join('\n')}\n\nThe lane is detached on purpose. Stay on it; do not switch to or create a branch. Resolve every path keeping both sides' intent, stage the resolutions, and conclude this merge with a merge commit whose parent is the pinned base commit. Start no other merge; never abort this merge, rebase, or force-push. Run the install and check commands on the result. Do not push: the driver pushes only what it has verified. Answer \`coded\` with branch \`${brief.branch}\`, sha and gated both equal to the lane's final HEAD, and a nonempty handoff; or answer \`failed\` with the reason or the exact question a person must answer. These rules override the ordinary branch, base, push, and verdict instructions below.\n\n${brief.text}`;
     case 'continue':
       return `Branch \`${brief.branch}\` already holds commits for this issue that were never announced as finished: an earlier coder stopped before it could say so. Switch to that branch, read what it holds, finish the change on it, and push to it again; never start a second branch.\n\n${brief.text}`;
     case 'revision':
@@ -81,8 +84,10 @@ export async function runCode(
     MAX_POINTS: String(maxPoints),
     BRIEF: briefText(brief),
   });
-  const role = brief.kind === 'first' ? 'coder' : 'coder-revise';
-  const { logPath, exitCode, notRun, timedOut } = await runAgent(ctx, role, issue.number, cwd, ctx.seats.worker, prompt, onRetry);
+  const role = brief.kind === 'conflict' ? 'coder-conflict' : brief.kind === 'first' ? 'coder' : 'coder-revise';
+  const { logPath, exitCode, notRun, timedOut } = brief.kind === 'conflict'
+    ? await runAgentOnce(ctx, role, issue.number, cwd, ctx.seats.worker, prompt)
+    : await runAgent(ctx, role, issue.number, cwd, ctx.seats.worker, prompt, onRetry);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the coder was not run' };
   if (exitCode !== 0) {
     return fail(
@@ -111,7 +116,7 @@ export async function runCode(
   if (result.verdict === 'answered' && typeof result.answer !== 'string') return fail(issue.number, `answered without an answer; log ends: ${logTail(logPath)}`);
   // A dry run's fixture seat writes an answer and pushes nothing; there is no remote fact to check.
   if (result.verdict === 'coded' && !ctx.dryRun) {
-    const why = unbelievableCoded(ctx, cwd, result);
+    const why = brief.kind === 'conflict' ? unbelievableConflict(ctx, cwd, result, brief.branch) : unbelievableCoded(ctx, cwd, result);
     if (why) return fail(issue.number, `${why}; log ends: ${logTail(logPath)}`);
   }
   return result;
@@ -131,5 +136,15 @@ function unbelievableCoded(ctx: Context, cwd: string, result: CodeResult): strin
   const onRemote = remote.stdout.toString().trim().split(/\s+/)[0] ?? '';
   if (remote.exitCode !== 0) return `could not read ${ctx.project.remote}/${branch}: ${remote.stderr.toString().trim()}`;
   if (onRemote !== sha) return `coded at ${sha.slice(0, 12)}, but ${ctx.project.remote}/${branch} is ${onRemote ? onRemote.slice(0, 12) : 'not there'}; the push is the fact, and it did not happen`;
+  return null;
+}
+
+/** A conflict turn reports a local head; the driver verifies the merge before publishing it. */
+function unbelievableConflict(ctx: Context, cwd: string, result: CodeResult, branch: string): string | null {
+  if (result.branch !== branch) return `coded on ${result.branch}, but the conflict brief names ${branch}`;
+  const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+  if (result.sha !== head) return `coded at ${result.sha}, but the lane's head is ${head}`;
+  if (result.gated !== head) return `coded with gated ${result.gated}, but the lane's head is ${head}`;
+  if (typeof result.handoff !== 'string' || result.handoff.trim() === '') return 'coded without a hand-off';
   return null;
 }

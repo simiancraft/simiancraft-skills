@@ -2,9 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runCode } from '../../code-github-issue/lib/code.ts';
+import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { runProve } from '../../prove-github-issue/lib/prove.ts';
+import { agentCapMs } from './agent.ts';
+import { ENGINES } from './engines.ts';
 import type { ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { placeWork } from './pipeline.ts';
@@ -230,6 +232,108 @@ describe("the coder's answer is believed only as far as the remote bears it out"
     const result = await runCode(context(new FakeTracker(BOT), answer), issue(24), dir, 2, { kind: 'first' });
     expect(result).toMatchObject({ verdict: 'needs-decision', reason: 'which currency?' });
   });
+});
+
+describe('the conflict coder leaves publication to the driver', () => {
+  const brief = (n: number): CodeBrief => ({ kind: 'conflict', branch: `fix/conflict-${n}`, base, paths: ['a.txt'], text: 'resolve the landing conflict' });
+  const script = (answer: string, text: string) => writeFileSync(answer.replace(/(\.json)?$/, '.coder-conflict.sh'), `set -eu\n${text}\n`);
+
+  it('concludes a detached merge locally, clears the old proof, and receives the pinned brief', async () => {
+    const dir = lane(40);
+    git(dir, 'switch', '-q', '-c', 'fix/conflict-40');
+    writeFileSync(join(dir, 'a.txt'), 'branch intent\n');
+    git(dir, 'add', 'a.txt');
+    git(dir, 'commit', '-q', '-m', 'fix: branch intent');
+    git(dir, 'push', '-q', 'origin', 'HEAD');
+    const start = git(dir, 'rev-parse', 'HEAD');
+    git(dir, 'checkout', '-q', '--detach', base);
+    writeFileSync(join(dir, 'a.txt'), 'base intent\n');
+    git(dir, 'add', 'a.txt');
+    git(dir, 'commit', '-q', '-m', 'fix: base intent');
+    const pinned = git(dir, 'rev-parse', 'HEAD');
+    git(dir, 'checkout', '-q', '--detach', start);
+    const merge = Bun.spawnSync(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '--no-edit', pinned], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+    expect(merge.exitCode).toBe(1);
+    writeFileSync(join(dir, 'loop-proof.json'), '{}');
+    const answer = answerFile('conflict-40', { issue: 40, verdict: 'coded', reason: 'resolved', branch: 'fix/conflict-40', handoff: 'kept both intents' });
+    script(answer, `test ! -e loop-proof.json
+printf 'branch intent\\nbase intent\\n' > a.txt
+git add a.txt
+git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --no-edit
+bun -e 'const fs = require("node:fs"); const a = JSON.parse(fs.readFileSync("loop-code.json", "utf8")); a.sha = a.gated = Bun.spawnSync(["git", "rev-parse", "HEAD"]).stdout.toString().trim(); fs.writeFileSync("loop-code.json", JSON.stringify(a));'`);
+    const original = ENGINES.fixture.command;
+    let prompt = '';
+    ENGINES.fixture.command = (cwd, text, model) => { prompt = text; return original(cwd, text, model); };
+    try {
+      const result = await runCode(context(new FakeTracker(BOT), answer), issue(40), dir, 2, { ...brief(40), base: pinned } as CodeBrief);
+      const head = git(dir, 'rev-parse', 'HEAD');
+      expect(result).toMatchObject({ verdict: 'coded', sha: head, gated: head });
+      expect(git(dir, 'rev-list', '--parents', '-n', '1', 'HEAD')).toBe(`${head} ${start} ${pinned}`);
+      expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
+      expect(git(dir, 'ls-remote', 'origin', 'refs/heads/fix/conflict-40').split(/\s/)[0]).toBe(start);
+      for (const text of ['fix/conflict-40', pinned, 'a.txt', 'detached on purpose', 'conclude this merge', 'Do not push', 'resolve the landing conflict']) expect(prompt).toContain(text);
+    } finally {
+      ENGINES.fixture.command = original;
+    }
+  });
+
+  for (const [index, bad] of [{ branch: 'fix/other' }, { sha: 'a'.repeat(40) }, { gated: 'b'.repeat(40) }, { handoff: ' ' }, { handoff: undefined }].entries()) {
+    it(`rejects an invalid conflict answer ${JSON.stringify(bad)}`, async () => {
+      const n = 41 + index;
+      const dir = lane(n);
+      const head = git(dir, 'rev-parse', 'HEAD');
+      const answer = answerFile(`conflict-${n}`, { issue: n, verdict: 'coded', reason: 'done', branch: `fix/conflict-${n}`, sha: head, gated: head, handoff: 'h', ...bad });
+      expect((await runCode(context(new FakeTracker(BOT), answer), issue(n), dir, 2, brief(n))).verdict).toBe('failed');
+    });
+  }
+
+  for (const kind of ['first', 'continue', 'revision', 'unproved'] as const) {
+    it(`still requires a remote head for ${kind}`, async () => {
+      const n = 50 + ['first', 'continue', 'revision', 'unproved'].indexOf(kind);
+      const dir = lane(n);
+      const branch = `fix/unpushed-${n}`;
+      const sha = code(dir, branch, false);
+      const answer = answerFile(`unpushed-${n}`, { issue: n, verdict: 'coded', reason: 'done', branch, sha, gated: sha, handoff: 'h' });
+      const result = await runCode(context(new FakeTracker(BOT), answer), issue(n), dir, 2, { kind, branch, text: 'continue' });
+      expect(result.verdict).toBe('failed');
+      expect(result.reason).toContain('the push is the fact');
+    });
+  }
+
+  it('fails an upstream refusal once, without retrying or backing off', async () => {
+    const dir = lane(46);
+    const head = git(dir, 'rev-parse', 'HEAD');
+    const answer = answerFile('conflict-46', { issue: 46, verdict: 'coded', reason: 'done', branch: 'fix/conflict-46', sha: head, gated: head, handoff: 'h' });
+    script(answer, 'echo "service unavailable"\nexit 1');
+    const ctx = context(new FakeTracker(BOT), answer);
+    const lines: string[] = [];
+    ctx.log = (line) => lines.push(line);
+    let retries = 0;
+    const result = await runCode(ctx, issue(46), dir, 2, brief(46), () => { retries++; });
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain('service unavailable');
+    expect(lines.filter((line) => line.includes('running coder-conflict'))).toHaveLength(1);
+    expect(lines.some((line) => line.includes('retrying'))).toBe(false);
+    expect(retries).toBe(0);
+  }, 5000);
+
+  it('uses the worker cap and distrusts the answer already copied before the kill', async () => {
+    const dir = lane(47);
+    const head = git(dir, 'rev-parse', 'HEAD');
+    const answer = answerFile('conflict-47', { issue: 47, verdict: 'coded', reason: 'done', branch: 'fix/conflict-47', sha: head, gated: head, handoff: 'h' });
+    script(answer, 'echo "answer copied"\nsleep 60');
+    const ctx = context(new FakeTracker(BOT), answer);
+    ctx.knobs.agentTimeoutMinutes = { worker: 0.01, default: 10 };
+    expect(agentCapMs(ctx, 'coder-conflict')).toBe(600);
+    const lines: string[] = [];
+    ctx.log = (line) => lines.push(line);
+    const result = await runCode(ctx, issue(47), dir, 2, brief(47));
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain('timed out at 0.01 minutes');
+    expect(result.reason).toContain('answer copied');
+    expect(existsSync(join(dir, 'loop-code.json'))).toBe(false);
+    expect(lines.filter((line) => line.includes('running coder-conflict'))).toHaveLength(1);
+  }, 5000);
 });
 
 describe("the prover's answer is believed only on the head it was given", () => {
