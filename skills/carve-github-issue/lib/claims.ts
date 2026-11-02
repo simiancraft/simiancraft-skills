@@ -6,7 +6,7 @@
 
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
-import { api, isStopping, mutate, RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { api, mutate, yieldToStop } from '../../fix-github-issue/lib/shell.ts';
 import { type Claim, ghIo, liveClaim, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
 
 export const CLAIM_TTL_MS = 30 * 60 * 1000;
@@ -70,7 +70,7 @@ export async function claim(ctx: Context, io: TrackerIo, issue: number, kind: Cl
   const at = new Date();
   const expires = new Date(at.getTime() + CLAIM_TTL_MS);
   const token = crypto.randomUUID();
-  if (isStopping()) throw new RunStopping(`the run is stopping; #${issue} not claimed`);
+  await yieldToStop(`claim #${issue}`);
   // Held from the moment the claim is posted, not from when it is read back: a stop that lands in
   // between must still wait for it, or report it.
   heldClaims.add(leaseKey(ctx, issue));

@@ -1,4 +1,4 @@
-import { isStopping, RunStopping } from './shell.ts';
+import { RunStopping, yieldToStop } from './shell.ts';
 
 /**
  * The worker pool: bounded concurrency over a list, where one slow item does not hold up the rest.
@@ -18,7 +18,12 @@ export async function pool<T>(
   const queue = [...items];
   const lanes = Array.from({ length: Math.max(1, Math.min(size, queue.length)) }, async () => {
     for (;;) {
-      if (isStopping()) return;
+      try {
+        await yieldToStop('take the next pool item');
+      } catch (error) {
+        if (error instanceof RunStopping) return;
+        throw error;
+      }
       const item = queue.shift();
       if (!item) return;
       try {

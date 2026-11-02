@@ -21,6 +21,7 @@ async function drive(lane: string, signals: number) {
 import { claim } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'claims.ts')}';
 import { stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
 import { installStopHandler } from '${join(HERE, 'stop.ts')}';
+import { pool } from '${join(HERE, 'pool.ts')}';
 import { runAgentOnce } from '${join(HERE, 'agent.ts')}';
 import { createContext } from '${join(HERE, 'context.ts')}';
 import { fixIssue } from '${join(HERE, 'pipeline.ts')}';
@@ -76,6 +77,62 @@ describe('the stop handler, in a process of its own', () => {
     expect(run.code).toBe(130);
     expect(run.lines.some((l) => l.includes('MERGE BEGUN'))).toBe(false);
     expect(run.lines.some((l) => l.includes('RELEASED true'))).toBe(true);
+  }, 20_000);
+
+  it('hears a signal before taking another pool item and ends the lane quietly', async () => {
+    const lane = `
+      console.error = (message) => console.log('ERROR ' + message);
+      await pool([1, 2], 1, async (n) => {
+        console.log('ITEM ' + n);
+        Bun.spawnSync(['sleep', '1']);
+      });
+      console.log('POOL RETURNED');
+    `;
+    const stopped = await drive(lane, 1);
+    expect(stopped.code).toBe(130);
+    expect(stopped.lines).not.toContain('ITEM 2');
+    expect(stopped.lines).toContain('POOL RETURNED');
+    expect(stopped.lines).toContain('RELEASED true');
+    expect(stopped.lines.some((l) => l.startsWith('ERROR '))).toBe(false);
+
+    const control = await drive(lane, 0);
+    expect(control.code).toBe(0);
+    expect(control.lines).toContain('ITEM 1');
+    expect(control.lines).toContain('ITEM 2');
+    expect(control.lines).toContain('POOL RETURNED');
+    expect(control.lines).toContain('RELEASED true');
+    expect(control.lines.some((l) => l.startsWith('ERROR '))).toBe(false);
+  }, 20_000);
+
+  it('hears a signal during reads before posting a claim or its label', async () => {
+    const lane = `
+      io.issues.set(2, fakeIssue(2));
+      Bun.spawnSync(['sleep', '1']);
+      try {
+        const second = await claim(ctx, io, 2, 'working');
+        console.log('CLAIM RETURNED');
+        console.log('COMMENTS ' + io.view(2).comments.length);
+        console.log('LABELS ' + io.view(2).labels.length);
+        if (second !== 'busy') second.release();
+      } finally {
+        console.log('FINAL COMMENTS ' + io.view(2).comments.length);
+        console.log('FINAL LABELS ' + io.view(2).labels.length);
+      }
+    `;
+    const stopped = await drive(lane, 1);
+    expect(stopped.code).toBe(130);
+    expect(stopped.lines).not.toContain('CLAIM RETURNED');
+    expect(stopped.lines).toContain('FINAL COMMENTS 0');
+    expect(stopped.lines).toContain('FINAL LABELS 0');
+    expect(stopped.lines).toContain('RELEASED true');
+    expect(stopped.lines.some((l) => l.includes('still held'))).toBe(false);
+
+    const control = await drive(lane, 0);
+    expect(control.code).toBe(0);
+    expect(control.lines).toContain('CLAIM RETURNED');
+    expect(control.lines).toContain('COMMENTS 1');
+    expect(control.lines).toContain('LABELS 1');
+    expect(control.lines).toContain('RELEASED true');
   }, 20_000);
 
   it('hears a signal during reads before starting an agent turn', async () => {
