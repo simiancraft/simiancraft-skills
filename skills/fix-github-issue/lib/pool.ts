@@ -16,10 +16,14 @@ export async function pool<T>(
   label: (item: T) => string = (item) => String(item),
 ): Promise<void> {
   const queue = [...items];
+  let admission: Promise<unknown> = Promise.resolve();
   const lanes = Array.from({ length: Math.max(1, Math.min(size, queue.length)) }, async () => {
     for (;;) {
       try {
-        await yieldToStop('take the next pool item');
+        // Arm each gate after the previous lane's synchronous work has returned.
+        const turn = admission.then(() => yieldToStop('take the next pool item'));
+        admission = turn.catch(() => {});
+        await turn;
       } catch (error) {
         if (error instanceof RunStopping) return;
         throw error;

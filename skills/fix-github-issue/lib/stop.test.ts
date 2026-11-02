@@ -104,6 +104,32 @@ describe('the stop handler, in a process of its own', () => {
     expect(control.lines.some((l) => l.startsWith('ERROR '))).toBe(false);
   }, 20_000);
 
+  it.each([2, 3, 4])('hears a signal during one item before a sibling lane starts at pool size %i', async (size) => {
+    const lane = (signal: boolean) => `
+      console.error = (message) => console.log('ERROR ' + message);
+      await pool([1, 2, 3, 4], ${size}, async (n) => {
+        console.log('ITEM ' + n);
+        if (n === 1 && ${signal}) process.kill(process.pid, 'SIGINT');
+        Bun.spawnSync(['sleep', '1']);
+      });
+      console.log('POOL RETURNED');
+    `;
+    const stopped = await drive(lane(true), 0);
+    expect(stopped.code).toBe(130);
+    expect(stopped.lines).toContain('ITEM 1');
+    for (const n of [2, 3, 4]) expect(stopped.lines).not.toContain('ITEM ' + n);
+    expect(stopped.lines).toContain('POOL RETURNED');
+    expect(stopped.lines).toContain('RELEASED true');
+    expect(stopped.lines.some((l) => l.startsWith('ERROR '))).toBe(false);
+
+    const control = await drive(lane(false), 0);
+    expect(control.code).toBe(0);
+    for (const n of [1, 2, 3, 4]) expect(control.lines).toContain('ITEM ' + n);
+    expect(control.lines).toContain('POOL RETURNED');
+    expect(control.lines).toContain('RELEASED true');
+    expect(control.lines.some((l) => l.startsWith('ERROR '))).toBe(false);
+  }, 20_000);
+
   it('hears a signal during reads before posting a claim or its label', async () => {
     const lane = `
       io.issues.set(2, fakeIssue(2));
