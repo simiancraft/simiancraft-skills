@@ -127,12 +127,18 @@ export async function stoppableSleep(ms: number, sleep: (ms: number) => Promise<
   if (stopping) throw new RunStopping('the run is stopping; no longer waiting');
 }
 
+let gateTurn: Promise<void> = Promise.resolve();
 /**
  * A signal is only heard when the event loop turns, and a run of synchronous tracker reads does not
  * turn it. Before an act that cannot be taken back, let a signal that arrived meanwhile be heard.
+ * Give each gate its own immediate turn: a sibling can signal during synchronous work after its
+ * gate, so sharing a batch of immediates would let the next gate check before hearing that signal.
  */
 export async function yieldToStop(before: string): Promise<void> {
   await Bun.sleep(0);
+  const turn = gateTurn.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
+  gateTurn = turn;
+  await turn;
   if (stopping) throw new RunStopping(`the run is stopping; not begun: ${before}`);
 }
 

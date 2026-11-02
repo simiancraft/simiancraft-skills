@@ -19,7 +19,7 @@ async function drive(lane: string, signals: number) {
     script,
     `import { FakeTracker, fakeIssue } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'fake-tracker.ts')}';
 import { claim } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'claims.ts')}';
-import { stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
+import { RunStopping, stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
 import { installStopHandler } from '${join(HERE, 'stop.ts')}';
 import { runAgentOnce } from '${join(HERE, 'agent.ts')}';
 import { createContext } from '${join(HERE, 'context.ts')}';
@@ -108,6 +108,152 @@ describe('the stop handler, in a process of its own', () => {
     expect(control.lines).toContain('TURN RETURNED');
     expect(control.lines).toContain('RELEASED true');
     expect(existsSync(join(cwd, 'loop-verdict.json'))).toBe(true);
+  }, 20_000);
+
+  // Leave the sibling timer due when the gate is armed, without yielding to the signal handler.
+  const siblingRead = (read: string, signal: boolean) => `
+    const sibling = Bun.sleep(1).then(() => {
+      console.log('SIGNAL');
+      if (${signal}) process.kill(process.pid, 'SIGINT');
+      ${read}
+    });
+    Bun.spawnSync(['sleep', '0.05']);
+  `;
+
+  for (const [name, read] of [
+    ['no read', ''],
+    ['short read', "Bun.spawnSync(['true']);"],
+    ['long read', "Bun.spawnSync(['sleep', '0.5']);"],
+  ]) {
+    it(`hears a sibling signal before a gate checks after ${name}`, async () => {
+      for (const signal of [true, false]) {
+        const run = await drive(`
+          ${siblingRead(read!, signal)}
+          try {
+            await yieldToStop('sibling act');
+            console.log('ACT');
+          } catch (error) {
+            console.log('STOP TYPE ' + (error instanceof RunStopping));
+            throw error;
+          }
+          await sibling;
+        `, 0);
+        expect(run.code).toBe(signal ? 130 : 0);
+        expect(run.lines).toContain('SIGNAL');
+        expect(run.lines.includes('ACT')).toBe(!signal);
+        expect(run.lines.includes('STOP TYPE true')).toBe(signal);
+        expect(run.lines).toContain('RELEASED true');
+        if (!signal) expect(run.lines.indexOf('SIGNAL')).toBeLessThan(run.lines.indexOf('ACT'));
+      }
+    }, 20_000);
+  }
+
+  it('does not start an agent behind a sibling signal and short read', async () => {
+    const root = mkdtempSync(join(scratch, 'sibling-agent-'));
+    const answer = join(root, 'answer.json');
+    const cwd = join(root, 'lane');
+    writeFileSync(answer, '{}');
+    for (const signal of [true, false]) {
+      const run = await drive(`
+        ${siblingRead("Bun.spawnSync(['true']);", signal)}
+        try {
+          await runAgentOnce({ ...ctx, repoRoot: ${JSON.stringify(root)}, runDir: ${JSON.stringify(join(root, 'runs'))}, log: console.log },
+            'worker', 1, ${JSON.stringify(cwd)}, { engine: 'fixture', model: ${JSON.stringify(answer)} }, 'prompt');
+          console.log('TURN RETURNED');
+        } catch (error) {
+          console.log('REFUSED ' + error.message);
+          throw error;
+        }
+        await sibling;
+      `, 0);
+      expect(run.code).toBe(signal ? 130 : 0);
+      expect(run.lines).toContain('SIGNAL');
+      expect(run.lines.some((l) => l.includes('running worker'))).toBe(!signal);
+      expect(run.lines.some((l) => l.includes('not started'))).toBe(signal);
+      expect(run.lines.includes('TURN RETURNED')).toBe(!signal);
+      expect(run.lines).toContain('RELEASED true');
+      expect(existsSync(join(cwd, 'loop-verdict.json'))).toBe(!signal);
+    }
+  }, 20_000);
+
+  it('gives simultaneous gates separate turns to hear a signal after the first gate', async () => {
+    for (const signal of [true, false]) {
+      const run = await drive(`
+        await Promise.all([
+          (async () => {
+            await yieldToStop('first');
+            console.log('FIRST');
+            console.log('SIGNAL');
+            if (${signal}) process.kill(process.pid, 'SIGINT');
+            Bun.spawnSync(['true']);
+          })(),
+          (async () => {
+            try {
+              await yieldToStop('second');
+              console.log('SECOND');
+            } catch (error) {
+              console.log('STOP TYPE ' + (error instanceof RunStopping));
+              throw error;
+            }
+          })(),
+        ]);
+      `, 0);
+      expect(run.code).toBe(signal ? 130 : 0);
+      expect(run.lines).toContain('FIRST');
+      expect(run.lines).toContain('SIGNAL');
+      expect(run.lines.includes('SECOND')).toBe(!signal);
+      expect(run.lines.includes('STOP TYPE true')).toBe(signal);
+      expect(run.lines).toContain('RELEASED true');
+    }
+  }, 20_000);
+
+  it('hears a signal across seeded lane orderings with timer and I/O waits', async () => {
+    for (let seed = 1; seed <= 12; seed++) {
+      const run = await drive(`
+        let state = ${seed};
+        const pick = (n) => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) % n);
+        const plans = Array.from({ length: 3 }, () =>
+          Array.from({ length: 8 }, () => ({ wait: pick(4), read: pick(3) })));
+        const sender = pick(3);
+        let delivered = false;
+        let misses = 0;
+        let refused = 0;
+        await Promise.all(plans.map(async (plan, lane) => {
+          for (let i = 0; i < plan.length; i++) {
+            const { wait, read } = plan[i];
+            if (wait === 0) await Bun.sleep(0);
+            if (wait === 1) await Bun.sleep(1);
+            if (wait === 2) await Bun.file(import.meta.path).text();
+            if (wait === 3) await Bun.spawn(['true']).exited;
+            if (lane === sender && i === 2) {
+              process.kill(process.pid, 'SIGINT');
+              delivered = true;
+              console.log('SIGNAL');
+            }
+            if (read === 1) {
+              const end = performance.now() + 0.25;
+              while (performance.now() < end) {}
+            }
+            if (read === 2) Bun.spawnSync(['true']);
+            try {
+              await yieldToStop('ordered act');
+              if (delivered) misses++;
+            } catch (error) {
+              if (!(error instanceof RunStopping)) throw error;
+              refused++;
+              return;
+            }
+          }
+        }));
+        console.log('MISSES ' + misses);
+        console.log('REFUSED ' + refused);
+      `, 0);
+      expect(run.code).toBe(130);
+      expect(run.lines).toContain('SIGNAL');
+      expect(run.lines).toContain('MISSES 0');
+      expect(run.lines).not.toContain('REFUSED 0');
+      expect(run.lines).toContain('RELEASED true');
+    }
   }, 20_000);
 
   it('keeps a refused lane stopped without counting an attempt or writing a dead letter', async () => {
