@@ -1,0 +1,13 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "package.json",
+    "tsconfig.json",
+    "skills/"
+  ],
+  "capture_commit": "62838032d29652d1665dd0a926fd412b853adcde",
+  "capture_method": "bun install --frozen-lockfile; bun run gate (combined stdout and stderr, with exit codes)",
+  "content_hash": "sha256:48274fb3731f3596bfc7375b0135da1354f112eaf723bd16a060b49ed07ff267"
+}

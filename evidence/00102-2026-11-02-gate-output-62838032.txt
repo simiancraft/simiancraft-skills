@@ -1,0 +1,27 @@
+Capture SHA: 62838032d29652d1665dd0a926fd412b853adcde
+Captured UTC: 2026-11-02T01:11:36.347303+00:00
+
+$ bun install --frozen-lockfile
+bun install v1.4.2 (744846f84)
+
+Checked 6 installs across 26 packages (no changes) [2.00ms]
+
+Exit code: 0
+
+$ bun run gate
+$ tsc --noEmit -p . && bun test
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+skills/burn-down-github-issues/lib/world-sweep.test.ts:
+world sweep: 40565 cases, 255 disabled events, stale Merging entries: 
+reconcile: 1117 world pairs
+
+ 515 pass
+ 0 fail
+ 44138 expect() calls
+Ran 515 tests across 35 files. [12.16s]
+
+Exit code: 0
