@@ -1,0 +1,10 @@
+{
+  "capture_commit": "30257835db2ba5e6317c38fb0240c8f59ba5d176",
+  "command": "bun run gate",
+  "expansion": "tsc --noEmit -p . && bun test",
+  "passed": 517,
+  "failed": 0,
+  "source": "Existing .gates/change.log and supplied gated-commit record",
+  "gate_rerun": false,
+  "ci_configuration": "git ls-tree -r --name-only HEAD .github returned no entries; no .github/workflows directory exists at this commit. package.json defines the deciding gate command."
+}

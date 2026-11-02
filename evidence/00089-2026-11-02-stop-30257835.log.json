@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "30257835db2ba5e6317c38fb0240c8f59ba5d176",
+  "capture_method": "TMPDIR inside the worktree; bun test skills/fix-github-issue/lib/stop.test.ts",
+  "content_hash": "sha256:832a57f17fa56cf381cf79c73e5ae8c7a1e2cc78fa84c8bf520c3ad11c8b9e75"
+}

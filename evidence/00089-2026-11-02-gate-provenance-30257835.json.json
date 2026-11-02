@@ -1,0 +1,11 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "package.json"
+  ],
+  "capture_commit": "30257835db2ba5e6317c38fb0240c8f59ba5d176",
+  "capture_method": "Read existing gate output, supplied gated-commit record, package.json, and git tree; preserve gate under the explicit same-head reuse rule.",
+  "content_hash": "sha256:aabfcf27175da96cddccf78ae4b60723e5cf168f3d282f20a0b9c2d26f1df8ab"
+}

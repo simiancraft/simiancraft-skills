@@ -1,0 +1,17 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md",
+    "package.json"
+  ],
+  "capture_commit": "30257835db2ba5e6317c38fb0240c8f59ba5d176",
+  "capture_method": "Preserved existing bun run gate output for the unchanged tested tree, attributed to this commit by the supplied gate record; not rerun during proof.",
+  "content_hash": "sha256:fae6c9c0c3ae25aed271e1ce7764753d9b09234f2f4e4c5f5cee9d6ef5da0248"
+}

@@ -1,0 +1,59 @@
+bun test v1.4.2 (744846f84)
+
+.gates/proof-89/receipt.test.ts:
+SIGNALS 1
+READY
+LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims
+RELEASED true
+BEFORE-EXIT
+EXIT 130
+SIGNALS 1
+READY
+LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims
+RELEASED true
+BEFORE-EXIT
+EXIT 130
+SIGNALS 1
+READY
+LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims
+REFUSED the run is stopping; not begun: worker not started on #1
+RELEASED true
+BEFORE-EXIT
+EXIT 130
+SIGNALS 0
+READY
+  running worker on #1 via fixture:$WORKTREE/.gates/proof-89/tmp/stop-BDNGuq/agent-WRfYsC/answer.json (log: $WORKTREE/.gates/proof-89/tmp/stop-BDNGuq/agent-WRfYsC/runs/1-worker-1793592117839.log)
+TURN RETURNED
+RELEASED true
+EXIT 0
+SIGNALS 1
+READY
+LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims
+#7  stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives
+OUTCOME stopped
+WRITES []
+RELEASED true
+BEFORE-EXIT
+EXIT 130
+SIGNALS 0
+READY
+  running coder on #7 via fixture:$WORKTREE/.gates/proof-89/tmp/stop-BDNGuq/settlement-iMLnll/answer.json (log: $WORKTREE/.gates/proof-89/tmp/stop-BDNGuq/settlement-iMLnll/runs/7-coder-1793592119988.log)
+#7  verdict: failed; could not reproduce
+#7  worker failed; leaving it untouched
+  DRY RUN  ensure label loop/attempts: 1 exists
+  DRY RUN  mark #7 at loop/attempts: 1
+#7  attempt 1 of 3 failed
+OUTCOME failed
+WRITES ["ensure label loop/attempts: 1 exists","mark #7 at loop/attempts: 1"]
+RELEASED true
+EXIT 0
+SIGNALS 2
+READY
+LOG received SIGINT; the run is stopping: agents are killed, nothing further is written but the release of its claims
+LOG received SIGINT again; exiting now, abandoning claim(s) that expire on their own: o/r#1
+EXIT 130
+
+ 5 pass
+ 0 fail
+ 35 expect() calls
+Ran 5 tests across 1 file. [6.74s]

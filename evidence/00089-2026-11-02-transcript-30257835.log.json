@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "skills/burn-down-github-issues/references/operating.md"
+  ],
+  "capture_commit": "30257835db2ba5e6317c38fb0240c8f59ba5d176",
+  "capture_method": "Temporary copy of stop.test.ts with HERE set to the original lib directory and drive printing its captured stdout and exit code before returning. All assertions and production sources unchanged. Re-check assertions with bun test skills/fix-github-issue/lib/stop.test.ts.",
+  "content_hash": "sha256:12933c1e801335075d3aa69179fcba3665dc44e09e3e6c10775ef06bffe29ac9"
+}
