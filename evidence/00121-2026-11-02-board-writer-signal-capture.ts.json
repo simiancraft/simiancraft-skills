@@ -1,0 +1,17 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/board-writer.test.ts",
+    "skills/burn-down-github-issues/lib/board-writer.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/loop.source.test.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/carve-github-issue/carve.ts",
+    "skills/fix-github-issue/fix.ts"
+  ],
+  "capture_commit": "408290016787b2137c81e5af886d08c564a1897c",
+  "capture_method": "Extract drive from board-writer.test.ts, resolve imports relative to .proof-85/, and assert and print the three signal cases.",
+  "content_hash": "sha256:a6b32a3e7c50aa829c48077d429e89ada2f00b806bb219a4b945ee0d24522fe0"
+}

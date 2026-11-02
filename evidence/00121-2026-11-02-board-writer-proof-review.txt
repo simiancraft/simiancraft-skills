@@ -1,0 +1,7 @@
+Scope: code. Seven changed files, 163 insertions, eight deletions; four implementation files and three test files. Small, reversible change with ordering coupling across three drivers.
+Claim: settlement waits precede placement completion, normal lock release, normal driver completion, and signal exit within the helper bound.
+Review: compared each wait with issue #85 and the current carving records for #67 and #40. All requested insertion points are present. No replacement remedy or convention exception was used. Existing gh, graphql, onLane, laneOf, snapshot, stop.ts, and pipeline.ts behavior is unchanged. settled() resolves immediately because writes remain synchronous.
+Receipts: 104 focused tests pass, including held placement, idle/no-board, and source wiring checks. Real child processes use the actual stop handler and helper with a stand-in settled promise. Timings show bound expiry, early settlement, and second-signal exit, all with code 143.
+Gate: retained exact-head gate report per proof instructions; not rerun. No workflow directory or remote Actions runs exist for this branch.
+Limits: no live board writes or end-to-end driver execution. The future asynchronous queue and refusal semantics belong to #86 and #87; they are not claimed here. Top-level driver ordering is checked by source assertions and diff inspection, not a full driver run.
+Judgement: adequate for the issue's requested contract and wiring. Retained gate provenance is explicit; the runtime ordering claims have independent receipts.

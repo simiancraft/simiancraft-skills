@@ -1,0 +1,9 @@
+Code commit: 408290016787b2137c81e5af886d08c564a1897c
+Deciding command: bun run gate
+package.json: tsc --noEmit -p . && bun test
+Recorded result supplied for this exact commit: 550 tests passed, zero failed, TypeScript passed.
+Provenance: existing completion record and supplied hand-off, not an independently recaptured gate log.
+The proof instructions expressly preserve this gate result and prohibit rerunning it at this head.
+Workflows: git ls-tree -r --name-only HEAD .github returned no files; .github/workflows does not exist.
+Remote Actions: gh run list -R simiancraft/simiancraft-skills --branch fix/wait-for-board-writer-85 returned [].
+No CI run is claimed.

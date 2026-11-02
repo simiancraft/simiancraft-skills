@@ -1,0 +1,3 @@
+{"name":"timeout","code":143,"out":"READY\nreceived SIGTERM; the run is stopping: agents are killed, nothing further is written but the release of its claims\nWAITING\nDRAINED 300.227489\n","elapsed":301.942271}
+{"name":"settles","code":143,"out":"READY\nreceived SIGTERM; the run is stopping: agents are killed, nothing further is written but the release of its claims\nWAITING\nSETTLED\nDRAINED 100.229662\n","elapsed":101.28434999999996}
+{"name":"second-signal","code":143,"out":"READY\nreceived SIGTERM; the run is stopping: agents are killed, nothing further is written but the release of its claims\nWAITING\nreceived SIGTERM again; exiting now\n","elapsed":0.8031680000000279}

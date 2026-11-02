@@ -1,0 +1,17 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/board-writer.test.ts",
+    "skills/burn-down-github-issues/lib/board-writer.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/loop.source.test.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/carve-github-issue/carve.ts",
+    "skills/fix-github-issue/fix.ts"
+  ],
+  "capture_commit": "408290016787b2137c81e5af886d08c564a1897c",
+  "capture_method": "Read-only comparison of issue #85, ancestor carving records, the committed diff, and captured test results.",
+  "content_hash": "sha256:bdbf317af7040ad14cc4ad8ca7488ad934e1893e0787f2afce39005b1ce330af"
+}
