@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { children, killAgent, readResult, renderTemplate, runAgent, SETSID } from './agent.ts';
 import type { Context } from './context.ts';
 import type { Seat } from './engines.ts';
-import { RunStopping } from './shell.ts';
+import { RunStopping, yieldToStop } from './shell.ts';
 
 /** What a callback prompt may write to `loop-callback.json` to be recorded; optional. */
 export type CallbackVerdict = { outcome: string; reason: string };
@@ -51,7 +51,7 @@ async function drain(stream: ReadableStream<Uint8Array> | null): Promise<string>
 
 /**
  * Runs the executable form of `name` with `payload` on stdin, and returns the prompt form's text
- * when it exists. Never throws: a callback that fails is logged and the caller continues.
+ * when it exists. Throws only for a stop: a callback that fails is logged and the caller continues.
  *
  * The executable leads its own process group where setsid exists and is registered with the
  * agent children, so a timeout or the driver's shutdown takes down whatever it started (a callback
@@ -70,6 +70,7 @@ export async function runCallback(
   if (existsSync(script) && executable(script)) {
     result.found.push(name);
     const timeoutMs = options.timeoutMs ?? CALLBACK_TIMEOUT_MS;
+    await yieldToStop(`callback ${name}`);
     try {
       const proc = Bun.spawn(SETSID ? [SETSID, script] : [script], {
         cwd: dir,

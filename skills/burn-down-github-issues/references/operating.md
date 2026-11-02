@@ -173,6 +173,8 @@ comment or label, and reaches no dead-letter queue. The driver waits up to thirt
 lanes to unwind and release their claims, logs any claim it must abandon (it expires on its own),
 then releases the lock. Everything durable is already on GitHub.
 
+A signal arriving during synchronous reads is heard before a callback process starts.
+
 A callback that is itself a driver of this collection (the knife, through `carve.ts`, started by a
 size callback) is given a minute rather than an agent's ten seconds, since it has its own agent to
 kill and its own claims to release. Its card moves while it runs: a standalone `carve.ts` finds the

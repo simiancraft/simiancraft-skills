@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,7 +19,8 @@ async function drive(lane: string, signals: number) {
     script,
     `import { FakeTracker, fakeIssue } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'fake-tracker.ts')}';
 import { claim } from '${join(HERE, '..', '..', 'carve-github-issue', 'lib', 'claims.ts')}';
-import { stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
+import { RunStopping, stoppableSleep, yieldToStop } from '${join(HERE, 'shell.ts')}';
+import { runCallback } from '${join(HERE, 'callbacks.ts')}';
 import { installStopHandler } from '${join(HERE, 'stop.ts')}';
 const io = new FakeTracker('loop-bot', [fakeIssue(1)]);
 const ctx = { botLogin: 'loop-bot', runId: 'host-1-1', dryRun: false, dryRunLog: [], project: { repo: 'o/r' }, log: () => {}, io } as never;
@@ -74,6 +75,30 @@ describe('the stop handler, in a process of its own', () => {
     expect(run.lines.some((l) => l.includes('MERGE BEGUN'))).toBe(false);
     expect(run.lines.some((l) => l.includes('RELEASED true'))).toBe(true);
   }, 20_000);
+
+  for (const signals of [1, 0]) {
+    it(`checks for a stop before a callback process starts (${signals} signal)`, async () => {
+      const dir = mkdtempSync(join(scratch, 'callback-'));
+      const marker = join(dir, 'started');
+      writeFileSync(join(dir, 'on-test'), '#!/bin/sh\nprintf started > started\n', { mode: 0o755 });
+      const run = await drive(`
+Bun.spawnSync(['sleep', '1']);
+try {
+  const result = await runCallback(${JSON.stringify(dir)}, 'on-test', {}, console.log);
+  console.log('CALLBACK RETURNED ' + result.ran);
+} catch (error) {
+  console.log('RUN STOPPING ' + (error instanceof RunStopping));
+  throw error;
+}`, signals);
+      expect(run.code).toBe(signals ? 130 : 0);
+      expect(existsSync(marker)).toBe(!signals);
+      expect(run.lines.includes('RELEASED true')).toBe(true);
+      expect(run.lines.includes('RUN STOPPING true')).toBe(Boolean(signals));
+      expect(run.lines.includes('CALLBACK RETURNED true')).toBe(!signals);
+      expect(run.lines.some((l) => l.includes('could not run'))).toBe(false);
+      expect(run.lines.some((l) => l.includes('on-test exited'))).toBe(!signals);
+    }, 20_000);
+  }
 
   it('exits at once on a second signal, naming the claim a lane that will not unwind still holds', async () => {
     const run = await drive('await Bun.sleep(600_000);', 2);
