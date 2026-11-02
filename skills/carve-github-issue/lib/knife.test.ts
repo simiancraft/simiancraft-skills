@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Context, createContext } from '../../fix-github-issue/lib/context.ts';
 import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
-import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation } from './carve.ts';
+import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation, validateCarving, validateConfirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { awaitReleases, type ClaimHandle, claim, keepClaimed, leaseLost } from './claims.ts';
@@ -14,6 +14,7 @@ import { type Cut, renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
 import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carving.ts';
 import { laneState, successors } from '../../burn-down-github-issues/lib/simulate.ts';
+import { ENGINES } from '../../fix-github-issue/lib/engines.ts';
 import { runAgent } from '../../fix-github-issue/lib/agent.ts';
 
 const BOT = 'loop-bot';
@@ -409,6 +410,83 @@ describe('the knife writes nothing without the lease', () => {
 });
 
 describe('carveIssue', () => {
+  for (const role of ['carver', 'confirmer'] as const) {
+    for (const repairs of [true, false]) {
+      test(`${role} gets exactly one validation repair; repair succeeds: ${repairs}`, async () => {
+        const io = trunk(); const ctx = ctxFor(io);
+        const good = role === 'carver' ? carving(10) : confirmation(10, 'carve', 'cover', true);
+        const answer = fixture('invalid', {});
+        const k = knobs(role === 'carver' ? answer : fixture('carve', carving(10)), role === 'confirmer' ? answer : fixture('cover', confirmation(10, 'carve', 'cover', true)));
+        const engine = ENGINES[k.seats[role].engine];
+        const original = engine.command;
+        const turns: Array<{ cwd: string; prompt: string }> = [];
+        engine.command = (cwd, prompt, model, effort) => {
+          turns.push({ cwd, prompt });
+          if (turns.length === 2 && repairs) writeFileSync(answer, JSON.stringify(good));
+          return original(cwd, prompt, model, effort);
+        };
+        try {
+          const outcome = await carveIssue(ctx, issue10, k, io);
+          expect(turns).toHaveLength(2);
+          expect(turns[1].cwd).toBe(turns[0].cwd);
+          expect(turns[1].prompt).toContain('Rejected answer:\n{}');
+          const checked = role === 'carver'
+            ? validateCarving({}, { mode: 'carve', knobs: k, tree: readTree(ctx, 10, io), scale: ctx.knobs.pointScale })
+            : validateConfirmation({}, 'carve');
+          expect(checked.ok).toBe(false);
+          if (!checked.ok) expect(turns[1].prompt).toContain(`Validator faults (verbatim):\n${checked.faults.join('\n')}`);
+          expect(turns[1].prompt).toContain('one repair turn');
+          if (repairs) {
+            expect(outcome.outcome).toBe('carve');
+            expect(labels(io, 10).some(l => l.startsWith('loop/carves'))).toBe(false);
+          } else {
+            expect(outcome.outcome).toBe('failed');
+            expect(labels(io, 10)).toContain('loop/carves: 1');
+            expect(records(io, 10)).toEqual([]);
+          }
+        } finally {
+          engine.command = original;
+        }
+      });
+    }
+  }
+
+  for (const role of ['carver', 'confirmer'] as const) {
+    test(`${role} process failure does not receive a validation repair`, async () => {
+      const io = trunk(); const ctx = ctxFor(io);
+      const answer = fixture('crash', {});
+      writeFileSync(answer.replace(/\.json$/, `.${role}.sh`), 'exit 3\n');
+      let turns = 0;
+      ctx.log = message => { if (message.includes(`running ${role}`)) turns++; };
+      const k = knobs(role === 'carver' ? answer : fixture('carve', carving(10)), role === 'confirmer' ? answer : fixture('cover', confirmation(10, 'carve', 'cover', true)));
+      const outcome = await carveIssue(ctx, issue10, k, io);
+      expect(outcome.outcome).toBe('failed');
+      expect(turns).toBe(1);
+      expect(labels(io, 10)).toContain('loop/carves: 1');
+    });
+  }
+
+  test('a revised cut rejected after a confirmer objection is repaired within the same round', async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const carver = fixture('carve', carving(10));
+    const confirmer = fixture('confirm', confirmation(10, 'carve', 'gap', false));
+    let carves = 0; let confirms = 0;
+    ctx.log = message => {
+      if (message.includes('running carver')) {
+        carves++;
+        writeFileSync(carver, JSON.stringify(carves === 2 ? {} : carving(10)));
+      }
+      if (message.includes('running confirmer') && ++confirms === 2) {
+        writeFileSync(confirmer, JSON.stringify(confirmation(10, 'carve', 'cover', true)));
+      }
+    };
+    const outcome = await carveIssue(ctx, issue10, knobs(carver, confirmer, { maxCarveRounds: 2 }), io);
+    expect(outcome.outcome).toBe('carve');
+    expect(carves).toBe(3);
+    expect(confirms).toBe(2);
+    expect(labels(io, 10).some(l => l.startsWith('loop/carves'))).toBe(false);
+  });
+
   test('a carver stopped with the run settles nothing: no count, no record, and the claim released by the lane itself', async () => {
     const io = trunk();
     const ctx = ctxFor(io);
