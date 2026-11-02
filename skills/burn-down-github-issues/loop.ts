@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { agentCapMs, children, killAgent } from '../fix-github-issue/lib/agent.ts';
 import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../fix-github-issue/lib/config.ts';
 import { createContext } from '../fix-github-issue/lib/context.ts';
+import { reportPreflight } from './lib/preflight.ts';
 import { parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
 import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
@@ -1140,7 +1141,10 @@ async function main(): Promise<void> {
     console.error(`these seats must be different engines: ${sharedEngines.join('; ')}`);
     process.exit(2);
   }
-  if (DRY_RUN) log('DRY RUN: no GitHub mutation and no agent will run');
+  if (DRY_RUN) {
+    log('DRY RUN: no GitHub mutation and no agent will run');
+    reportPreflight(ctx);
+  }
 
   let releaseLock: () => void;
   try {

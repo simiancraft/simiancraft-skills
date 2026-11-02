@@ -251,7 +251,9 @@ said so in the log.
 1. Write `burn-down-github-issues.config.ts` from the template above. Copy nothing else.
 2. `bun run <skill-dir>/board.ts`. It finds or creates the operator's board, verifies it by a
    second read, and prints its number and URL; `--dry-run` only reports. See "The board" below.
-3. From the repository root: `bun run <skill-dir>/loop.ts --dry-run --limit 2`. This mutates
+3. Before the first real run, run the preflight from the repository root:
+   `bun run <skill-dir>/loop.ts --dry-run --limit 2`. It reports the required landing checks;
+   resolve an empty required-check list before proceeding. This mutates
    nothing and starts no agent. It prints what it would select and writes each rendered prompt to
    `<worktreeRoot>/runs/<issue>-<role>-<timestamp>.log`.
 4. **Read one rendered prompt.** `grep -oE "\{\{[A-Z_]+\}\}"` against it must return nothing; an
@@ -266,6 +268,10 @@ said so in the log.
    `--dry-run`. Watch it end to end; `fix.ts --help` lists its flags, and Ctrl+C stops it cleanly
    (see Stopping a run).
 7. Then a small batch. `--limit 3` before `--limit 5`.
+
+Changing config requires restarting a running loop; it does not reread the file.
+Set `checksTimeoutMinutes` to cover the slowest required workflow plus runner queue time.
+The default 45 minutes assumes healthy CI.
 
 ## The board
 
