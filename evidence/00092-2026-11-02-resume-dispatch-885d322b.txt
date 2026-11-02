@@ -1,0 +1,39 @@
+Issue #92 proof
+Capture commit: 885d322ba99c350e42097cb4328cc17ec174aeff
+Scope: code. Five files, 276 additions, 16 deletions; two implementation files and three test files.
+
+Command executed independently:
+TMPDIR="$PWD/.proof-92/tmp" bun test skills/fix-github-issue/lib/resume.test.ts skills/fix-github-issue/lib/lane-work.test.ts skills/burn-down-github-issues/lib/pressure.test.ts skills/burn-down-github-issues/loop.source.test.ts
+Exit code: 0
+
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+ 120 pass
+ 0 fail
+ 315 expect() calls
+Ran 120 tests across 4 files. [424.00ms]
+
+Acceptance mapping from executed assertions:
+A1: resume.test.ts covers all five judgements, dirty-before-tracker ordering, status failure, and HEAD failure.
+A7: pressure.test.ts asserts wait, claim, judge, objection, and redrive order; loop.source.test.ts asserts pool wiring and sole automatic redrive ownership.
+A8/A9: resume.test.ts uses real temporary repositories and a bare remote; compares ls-remote before and after judging unpushed work; verifies path and both commit diagnostics, plus FakeTracker work dead letters containing the reason.
+A10: failed head reads return unreadable, a subsequent call returns clean-at-head, and dispatch logs without parking or continuing.
+A11: both permitted outcomes forward the returned objection to redriveIssue.
+A12: rejected outcomes never reach objection or redrive, including throwing dead-letter writes.
+A14: held dispatch places W3 and does not judge, park, or redrive; claimHolder separately fails closed on unreadable claims.
+A16: RunStopping and errors while isStopping propagate; dispatch rejects before parking or redrive.
+Regression: unchanged lane-work.test.ts passes, retaining explicit redrive behavior.
+
+Static review: startup walk, selectResumable, resumeStranded, worktreeAtPullRequest, explicit redrive, lastObjection, redriveIssue, and machine transitions are unchanged. parkForInspection differs only by export. Claim reads gain only stop propagation. No departure from the issue remedy was identified.
+
+git diff --check origin/main...HEAD: exit 0.
+Remote verification: git fetch origin fix/guard-resume-lane-92 and git merge-base --is-ancestor 885d322ba99c350e42097cb4328cc17ec174aeff origin/fix/guard-resume-lane-92: exit 0.
+
+Gate provenance: the supplied hand-off explicitly records bun install --frozen-lockfile and bun run gate passing at this exact head, with 535 tests and zero failures. That gate is accepted under the proof instructions and was not rerun. This is carried-forward evidence, not independently captured gate stdout.
+CI discovery: git ls-tree -r --name-only HEAD .github returned no files; .github/workflows/ does not exist at this head. gh workflow list and gh run list for this branch returned no workflows or runs. Therefore there is no workflow command or CI second opinion to capture. package.json defines gate as tsc --noEmit -p . && bun test; the supplied gate covers that command.
+
+Limits: tracker writes use FakeTracker and head reads use callbacks; no live tracker mutations or production end-to-end run were performed. This matches the issue's specified proof surface. Tests prevent real gh through test/no-real-gh.preload.ts. No new dependencies, schema changes, stored-string migrations, or CI changes.
+Judgement: adequate for the scoped dispatch guard, with gate provenance and absent CI explicitly disclosed.

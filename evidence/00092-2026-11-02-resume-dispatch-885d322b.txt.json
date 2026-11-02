@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/resume.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/fix-github-issue/lib/resume.test.ts",
+    "skills/fix-github-issue/lib/lane-work.test.ts",
+    "skills/burn-down-github-issues/lib/pressure.test.ts",
+    "skills/burn-down-github-issues/loop.source.test.ts"
+  ],
+  "capture_commit": "885d322ba99c350e42097cb4328cc17ec174aeff",
+  "capture_method": "Focused bun test invocation, static review, remote verification, and explicitly identified supplied gate result",
+  "content_hash": "sha256:346b59a8d2688523616d7a241ae18098d9121f95345b1aad9c3da1d4920064cb"
+}

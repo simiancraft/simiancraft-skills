@@ -1,0 +1,10 @@
+{
+  "capture_commit": "885d322ba99c350e42097cb4328cc17ec174aeff",
+  "command": "bun run gate",
+  "expansion": "tsc --noEmit -p . && bun test",
+  "source": "Supplied hand-off and loop-code.json; accepted without rerun by instruction",
+  "independently_captured": false,
+  "tests": 535,
+  "failures": 0,
+  "gated": "885d322ba99c350e42097cb4328cc17ec174aeff"
+}
