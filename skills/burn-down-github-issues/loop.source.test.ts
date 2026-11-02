@@ -51,3 +51,28 @@ describe('drivers drain the board before moving on or exiting', () => {
     expect(fix.trimEnd().endsWith('await BOARD?.settled();')).toBe(true);
   });
 });
+
+describe('the starting skill commit', () => {
+  it('records HERE in the context before the floor copies it', () => {
+    const contextStart = source.indexOf('const ctx = createContext({');
+    const floorStart = source.indexOf('const FLOOR:');
+    expect(contextStart).toBeGreaterThan(-1);
+    expect(floorStart).toBeGreaterThan(contextStart);
+    expect(source.slice(contextStart, floorStart)).toContain('skillCommit: readSkillCommit(HERE),');
+    expect(source.slice(floorStart)).toContain('ctx: { ...ctx, integrationQueue: Promise.resolve(), landingLine: [] }');
+  });
+
+  it('logs the recorded commit or one unknown-commit line in the run header', () => {
+    const header = source.slice(source.indexOf('async function main()'), source.indexOf('let releaseLock:'));
+    expect(header).toContain('if (ctx.skillCommit)');
+    expect(header).toContain('log(`skill commit ${ctx.skillCommit.commit} | checkout ${ctx.skillCommit.root}`)');
+    expect(header).toContain("log('skill commit unknown; a moved checkout cannot be detected here')");
+    expect(source.split('a moved checkout cannot be detected here')).toHaveLength(2);
+  });
+
+  it('leaves standalone drivers without a recorded commit', () => {
+    for (const driver of ['fix-github-issue/fix.ts', 'appraise-github-issues/appraise.ts', 'carve-github-issue/carve.ts']) {
+      expect(readFileSync(join(import.meta.dir, '..', driver), 'utf8')).not.toContain('skillCommit:');
+    }
+  });
+});
