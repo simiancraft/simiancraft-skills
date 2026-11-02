@@ -28,6 +28,10 @@ no branches, and run nothing in it that creates files. Do not edit, label, or co
 
 {{CARVER_REPLY}}
 
+## Sizing
+
+{{SIZING_RUBRIC}}
+
 ## What you check
 
 On a `carve` or `amend`:
@@ -43,7 +47,10 @@ On a `carve` or `amend`:
 4. **Dependencies are necessary and minimal**; every groundwork item has one owner, and no
    groundwork piece lacks a named consumer.
 5. **An adopted or referenced issue really is the piece it stands in for.** Open it and check.
-6. **Sizes are honest**, including tests and proof.
+6. **Sizes are honest** against the sizing rubric above, including tests and proof.
+   Independently size each authored piece before reading its estimate as a conclusion. Reject
+   an understated estimate or a piece over the **{{CEILING}}**-point ceiling on `{{SCALE}}`;
+   name the piece, the proposed points, and your points in `reason`, with `agree: false`.
 7. **A partial cut's deferred criteria are exactly the ones the spike's questions decide.**
 8. **The seam.** Is a higher rung admissible for this issue? A dispute is allowed only when the
    higher seam you see is `domain` or `tier`; between the mechanistic rungs any admissible covering
