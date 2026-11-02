@@ -29,3 +29,25 @@ describe('resume dispatch owns automatic redrive', () => {
     expect(source).toMatch(/await pool\(\s*resumable,\s*CONFIG.concurrency,\s*resumePull,/);
   });
 });
+
+describe('drivers drain the board before moving on or exiting', () => {
+  const fix = readFileSync(join(import.meta.dir, '../fix-github-issue/fix.ts'), 'utf8');
+  const carve = readFileSync(join(import.meta.dir, '../carve-github-issue/carve.ts'), 'utf8');
+  const writer = readFileSync(join(import.meta.dir, 'lib/board-writer.ts'), 'utf8');
+
+  it('uses the bounded wait in every stop handler', () => {
+    expect(writer).toContain('timeoutMs = 10_000');
+    expect(source).toMatch(/installStopHandler\(log, async \(\) => \{\s*FLOOR\?\.stop\(\);\s*await waitForBoard\(BOARD\);\s*releaseLock\(\);/);
+    expect(fix).toContain('installStopHandler(log, () => waitForBoard(BOARD))');
+    expect(carve).toContain('installStopHandler(log, () => waitForBoard(writer))');
+    expect(carve.indexOf('let writer: BoardWriter | undefined')).toBeLessThan(carve.indexOf('installStopHandler(log'));
+  });
+
+  it('waits without a bound before normal lock release and exit', () => {
+    const finish = source.slice(source.indexOf('const finish = async () =>'), source.indexOf('const stopPulse ='));
+    expect(finish).toMatch(/await BOARD\?\.settled\(\);\s*releaseLock\(\);/);
+    expect(source).toMatch(/process.exitCode = await walkTheFloorOnly\(FLOOR_MODE\);\s*await BOARD\?\.settled\(\);\s*releaseLock\(\);/);
+    expect(carve).toMatch(/await writer\?\.settled\(\);\s*process.exit\(result.outcome/);
+    expect(fix.trimEnd().endsWith('await BOARD?.settled();')).toBe(true);
+  });
+});

@@ -42,7 +42,7 @@ import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS, type CarveKnobs } from '../carve-github-issue/lib/carve.ts';
-import { createBoardWriter, placeByFacts, readBoardPointer } from './lib/board-writer.ts';
+import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from './lib/board-writer.ts';
 import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { issueRefs } from './lib/refs.ts';
@@ -815,6 +815,7 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
     });
     settle(number, '', placed.lane, placed.why);
   }
+  await BOARD.settled();
   log(`board: ${moved} card(s) ${DRY_RUN ? 'would be ' : ''}placed by their facts, ${kept} already where the facts put them`);
   return placement;
 }
@@ -1161,6 +1162,7 @@ async function main(): Promise<void> {
     step('done');
     pulse('final');
     stopPulse();
+    await BOARD?.settled();
     releaseLock();
   };
   const stopPulse = startPulse(PULSE_MINUTES);
@@ -1172,10 +1174,12 @@ async function main(): Promise<void> {
   });
   installStopHandler(log, async () => {
     FLOOR?.stop();
+    await waitForBoard(BOARD);
     releaseLock();
   });
   if (FLOOR_MODE) {
     process.exitCode = await walkTheFloorOnly(FLOOR_MODE);
+    await BOARD?.settled();
     releaseLock();
     return;
   }

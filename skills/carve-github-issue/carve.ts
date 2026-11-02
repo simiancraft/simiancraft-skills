@@ -38,7 +38,7 @@ import { carveIssue } from './lib/knife.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
 import type { Board } from '../burn-down-github-issues/board.ts';
-import { createBoardWriter } from '../burn-down-github-issues/lib/board-writer.ts';
+import { type BoardWriter, waitForBoard, createBoardWriter } from '../burn-down-github-issues/lib/board-writer.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -181,7 +181,8 @@ if (DRY_RUN && !(isFixture(SEATS.carver) && isFixture(SEATS.confirmer))) {
   log('DRY RUN: no fixture seats, so anything that needs the carver or the confirmer stops there; an announced generation is still rehearsed to its end');
 }
 
-installStopHandler(log);
+let writer: BoardWriter | undefined;
+installStopHandler(log, () => waitForBoard(writer));
 
 if (!DRY_RUN) ensureLabels(ctx);
 
@@ -192,9 +193,9 @@ if (!DRY_RUN) {
   const pointer = join(resolve(REPO_ROOT, CONFIG.project.worktreeRoot, 'runs'), 'board.json');
   try {
     if (existsSync(pointer)) {
-      const writer = createBoardWriter(JSON.parse(readFileSync(pointer, 'utf8')) as Board, CONFIG.project.repo, log);
+      writer = createBoardWriter(JSON.parse(readFileSync(pointer, 'utf8')) as Board, CONFIG.project.repo, log);
       ctx.onLane = (event) => {
-        writer.onLane(event);
+        writer?.onLane(event);
       };
       log(`board: moving #${ISSUE_NUMBER}'s card on ${pointer}`);
     }
@@ -209,4 +210,5 @@ enrichBlockers(ctx, [issue]);
 const result = await carveIssue(ctx, issue, KNOBS);
 log(`${result.outcome}: ${result.reason}${result.generation !== undefined ? ` (generation ${result.generation})` : ''}${result.children?.length ? ` children ${result.children.map((n) => `#${n}`).join(', ')}` : ''}`);
 step(result.outcome);
+await writer?.settled();
 process.exit(result.outcome === 'failed' ? 1 : result.outcome === 'busy' ? 3 : 0);
