@@ -1,0 +1,181 @@
+Issue 68 assessment at 33409cc9834da116c627d811577df97b66333988
+Scope: code. Four changed files: pipeline.ts, stop.test.ts, pressure.test.ts, and operating.md.
+Physical: small code delta with timing-sensitive coupling across five callers. Reversible code-only change; no schema or data migration.
+Alignment: issue 68 and parent 40 A3; no alternative remedy or convention deviation in the handoff.
+Freshness: incoming knife.ts adds bounded validation-repair turns, plus its tests and prompts. Catch-up functions and tests are unchanged from the previous capture. All receipts reacquired because covered paths conservatively include the tracked tree.
+Required claims and observed evidence:
+1. Real SIGINT during a blocking read before real catchUp: stop.test.ts asserts exit 130, no F2, no tracker writes, unchanged HEAD and remote, absent MERGE_HEAD, and released claim. Same fixture without signal returns conflict and emits F2.
+2. Both helpers at all three boundaries: pressure.test.ts injects RunStopping at each gate; entry prevents fetch, post-read prevents merge and F2, and post-conflict prevents returning conflict.
+3. Callers await the helpers: runWorker, both land sites, reviewAndLand, and redriveIssue inspected below. Tests show no seam failure or attempt, no review deadLetter, and no rejected-landing ready flip after the stopped conflict.
+4. No-signal current and pushed results, no trailing yield after successful catch-up, and review conflict deadLetter are tested.
+5. Stopped and kept: existing real-process dry-run lifecycle test asserts stopped outcome and no failure accounting. recordThrow maps RunStopping to keepLane true; fixIssue and redriveIssue retain that flag and suppress retirement in finally. This is composition of tests and source inspection, not an end-to-end catch-up settlement test.
+6. Full acceptance command: bun install --frozen-lockfile and bun run gate exit 0, 589 tests pass, zero failures. Focused command exits 0, 127 tests pass, zero failures.
+There is no tracked .github/workflows directory and gh pr checks reports no checks. No CI-success claim is made.
+Security: tests use temporary repositories and fake tracker fixtures with the no-real-gh preload. No credentials or live tracker data appear in stored logs.
+Limitations: fetch and conflicting-merge timing use boundary stubs, not timed real signals in those commands. Already-running operations are not interrupted. No live tracker or board exercised; no Q5, labels, or comments is inferred from avoiding deadLetter. A prior draft flip is retained. Child-command errors, process-group signals, and signals inside F2 board writes are outside this change's specified boundaries. Locker protections were not verified; artifact immutability uses commit pinning and content hashes.
+Judgement: adequate for issue 68's specified proof and ready for review, with the above limits. No source changes required.
+
+Source inspection receipt:
+
+218:       code = null;
+219:     }
+220:     if (!coded || !proof) throw new Error(`#${issue.number}: the Work phase reached Proving with nothing coded`);
+221: 
+222:     // No seat begins on a stale lane: the base is merged in at the seam, never inside a turn.
+223:     const seam = ctx.dryRun ? 'current' : await seamCatchUp(ctx, issue, cwd, say, 'before proving');
+224:     if (seam === 'conflict') {
+225:       return { issue: issue.number, verdict: 'failed', reason: `the branch conflicts with ${ctx.project.baseBranch} at the seam before proving`, pr: feedback?.pr, branch: coded.branch };
+226:     }
+227:     // The catch-up pushed a merge, so the announcement must name the new head: placement proves only
+228:     // an announced head, and a prover killed after this seam must be proved again, not coded again.
+229:     if (seam === 'caught-up' && proof.kind === 'handoff') {
+230:       const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+231:       mutate(ctx, `announce #${issue.number} coded at ${head.slice(0, 12)} after catching up`, ['gh', 'issue', 'comment', String(issue.number), '--body', codedComment(ctx.runId, { branch: coded.branch, sha: head, gated: coded.gated, touches: coded.touches }, proof.text)]);
+232:     }
+233:     move(ctx, issue, 'D2', note);
+234:     const p = await runProve(ctx, issue, cwd, coded, proof);
+
+337: async function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (message: string) => void, why: string): Promise<'conflict' | 'current' | 'caught-up'> {
+338:   await yieldToStop(`catch up ${why}`);
+339:   holdLease(ctx, issue.number, `catch up ${why}`);
+340:   const baseSha = fetchBase(ctx, cwd);
+341:   const behind = behindBase(ctx, cwd, baseSha);
+342:   if (behind.length === 0) return 'current';
+343:   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
+344:   await yieldToStop(`catch up ${why}`);
+345:   if (updateFromBase(ctx, cwd, baseSha)) return 'caught-up';
+346:   await yieldToStop(`settle catch-up conflict ${why}`);
+347:   return 'conflict';
+348: }
+349: 
+350: /** The second engine on a worker's close: the appraiser's confirmer for a close, its own prompt for a spike's answer. */
+351: async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void): Promise<{ agree: boolean; reason: string } | null> {
+352:   const confirmer = ctx.seats.confirmer ?? ctx.seats.reviewer;
+
+814: export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean } = {}): Promise<CaughtUp | 'conflict' | null> {
+815:   // A catch-up merges the base in and pushes the lane's branch; every wait in a landing can
+816:   // outlast the lease, so every catch-up asks for it first.
+817:   await yieldToStop(`catch up ${why}`);
+818:   holdLease(ctx, issue.number, `catch up ${why}`);
+819:   if (ctx.dryRun) return null;
+820:   // One fetch, one commit: the behind check, the overlap, the contribution comparison, and the
+821:   // merge all use this base. A base that moves again meanwhile is the next catch-up's business.
+822:   const baseSha = fetchBase(ctx, cwd);
+823:   const behind = behindBase(ctx, cwd, baseSha);
+824:   if (behind.length === 0) return null;
+825:   if (options.skipNoise && behindBeyondNoise(ctx, cwd, baseSha).length === 0) {
+826:     say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up`);
+827:     return null;
+828:   }
+829:   // Both judged before the merge: afterwards the merge base is the base's own tip and every
+830:   // comparison against it is vacuously empty.
+831:   const overlap = staleAgainstBase(ctx, cwd, since, baseSha);
+832:   const before = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+833:   const idBefore = netChangeId(cwd, baseSha, before);
+834:   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
+835:   await yieldToStop(`catch up ${why}`);
+836:   move(ctx, issue, 'F2', `catching up ${why}`);
+837:   if (!updateFromBase(ctx, cwd, baseSha)) {
+838:     await yieldToStop(`settle catch-up conflict ${why}`);
+839:     return 'conflict';
+840:   }
+841:   const after = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+842:   const idAfter = netChangeId(cwd, baseSha, after);
+843:   return { before, after, overlap, netChangeIntact: idBefore !== '' && idBefore === idAfter };
+844: }
+845: 
+846: export type Reviewed = { review: ReviewResult; reviewedSha: string };
+847: /** A review that produced no trusted verdict says which dead-letter queue owns the reason. */
+848: export type DeadLetter = { dlq: DlqPhase; reason: string };
+
+943:     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
+944:     // A revision never begins on a stale lane: whatever the base changed, the author revises
+945:     // against current code rather than against the base as it stood when this branch started.
+946:     if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
+947:       // A dead letter must not sit in draft: the person reading it would find a branch the CI
+948:       // guard is configured to skip, and nothing else would ever flip it back.
+949:       mutate(ctx, `mark PR #${pr} ready again before the dead letter`, ['gh', 'pr', 'ready', String(pr)]);
+950:       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
+951:       return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
+952:     }
+953:     return 'revise';
+954:   }
+
+1009:   /** The base commit this lane held at its last look upstream. */
+1010:   let baseSeen = '';
+1011:   for (let pass = 0; ; pass++) {
+1012:     const caught = await catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
+1013:     if (caught === 'conflict') {
+1014:       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
+1015:       return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
+1016:     }
+1017:     if (caught) {
+1018:       // The catch-up is already merged and pushed, so the next pass's own catch-up finds nothing
+1019:       // behind; it is handed back whole, so the proof is reacquired rather than only re-reviewed.
+
+1462:     // that reached the paths the proof covers means the world moved beneath the proof: the work
+1463:     // goes back to its author to reacquire it, which is upstream churn and spends no round.
+1464:     const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+1465:     const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+1466:     caughtAtLanding = null;
+1467:     if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
+1468:     if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
+1469:       refreshes += 1;
+
+1612:   let keepLane = false;
+1613:   try {
+1614:     // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
+1615:     // learns to treat the main checkout as a valid agent working directory.
+1616:     const cwd = ctx.dryRun
+1617:       ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
+1618:       : worktreeFor(ctx, issue.number);
+1619:     inFlight.set(issue.number, { dir: cwd, busy: false });
+1620:     // Awaited, not returned: a returned promise would run the cleanup below while the work it
+1621:     // guards is still going.
+1622:     return await workIssue(ctx, issue, cwd, maxPoints, ceiling, say);
+1623:   } catch (error) {
+1624:     const recorded = recordThrow(ctx, issue, error as Error, say);
+1625:     keepLane = recorded.keepLane;
+1626:     return recorded.outcome;
+1627:   } finally {
+
+1643:     // so reconcile still owns that case on the next start. A throw that could not be recorded on
+1644:     // the issue keeps its lane too: the worktree is then the only record of what happened.
+1645:     if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
+1646:   }
+
+1737:     return { outcome: { outcome: 'lease-lost', reason: 'this run lost its lease on the issue' }, keepLane: true };
+1738:   }
+1739:   // Nor is a stop, which is the operator's: nothing is counted or queued, and the lane is kept,
+1740:   // since a worker stopped mid-change leaves its only record there.
+1741:   if (error instanceof RunStopping || isStopping()) {
+1742:     say('stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives');
+1743:     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
+1744:   }
+
+1815:     // no CI run. Then the base: a redriven pull request has usually sat, and no revision begins on
+1816:     // a stale lane.
+1817:     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
+1818:     const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+1819:     if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
+1820:       return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pull.number);
+1821:     }
+1822:     const feedback: ReviewResult =
+1823:       objection === null
+
+1851:     return await reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
+1852:   } catch (error) {
+1853:     const recorded = recordThrow(ctx, issue, error as Error, say, pull.number);
+1854:     keepLane = recorded.keepLane;
+1855:     return recorded.outcome;
+1856:   } finally {
+1857:     stopRenewing();
+1858:     try {
+1859:       handle.release();
+1860:     } catch (error) {
+1861:       say(`could not release the claim: ${(error as Error).message}`);
+1862:     }
+1863:     inFlight.delete(issue.number);
+1864:     if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
+1865:   }
+1866: }
