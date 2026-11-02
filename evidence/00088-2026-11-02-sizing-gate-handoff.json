@@ -1,0 +1,13 @@
+{
+  "issue": 88,
+  "verdict": "coded",
+  "points": 2,
+  "reason": "Appraisal, carving, revisits, and carving confirmation now render one sizing rubric that includes proof effort and repository scale precedence. Confirmation explicitly rejects understated or over-ceiling authored pieces.",
+  "branch": "fix/share-sizing-rubric-88",
+  "sha": "25e6aecd325765365d0ff3ff962e88c17a63e2a2",
+  "gated": "25e6aecd325765365d0ff3ff962e88c17a63e2a2",
+  "handoff": "Moved the existing appraisal table and proof rule into skills/fix-github-issue/references/sizing.md, within the dependency both consumers already use. The prompt renderer expands that trusted reference before substituting inert project and issue values. Added the rubric to carve, revisit, and confirmation prompts, and supplied the confirmer with the configured ceiling and scale. Exercise with bun test skills/fix-github-issue/lib/agent.sizing.test.ts or bun run gate. Frozen install and the full gate passed on the committed contents: 548 tests, zero failures; untouched base passed 543 tests. No live model runs or tracker mutations were used to test sizing agreement, so identical instructions cannot guarantee identical estimates. The issue suggested routing a fresh sizing disagreement to the parent; retained recursive carving because skills/carve-github-issue/SKILL.md:52-53 explicitly says a child still over the ceiling is carved again. CONTRIBUTING.md:30-33 requires shared code within an installed skill directory, which determined the shared reference location. No proof captured, pull request opened, or evidence branch touched.",
+  "touches": [
+    "code"
+  ]
+}

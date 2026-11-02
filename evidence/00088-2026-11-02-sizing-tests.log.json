@@ -1,0 +1,18 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/appraise-github-issues/prompts/appraise.md",
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/carve-github-issue/prompts/confirm-carve.md",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/references/sizing.md",
+    "skills/fix-github-issue/lib/agent.sizing.test.ts"
+  ],
+  "capture_commit": "25e6aecd325765365d0ff3ff962e88c17a63e2a2",
+  "capture_method": "bun test skills/fix-github-issue/lib/agent.sizing.test.ts",
+  "content_hash": "sha256:402051a8aceca308bf252f6eda3c6e2c4ab7441f70a5ca0a51b05cb3fd57a61a"
+}

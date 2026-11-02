@@ -1,0 +1,19 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/appraise-github-issues/prompts/appraise.md",
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/carve-github-issue/prompts/confirm-carve.md",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/references/sizing.md",
+    "skills/fix-github-issue/lib/agent.sizing.test.ts",
+    "package.json"
+  ],
+  "capture_commit": "25e6aecd325765365d0ff3ff962e88c17a63e2a2",
+  "capture_method": "Preserved handoff for accepted bun run gate at the identical head; inherited result, not a newly captured execution log",
+  "content_hash": "sha256:74d29400fe418bb8d206459419bf16633019fa70b84d464ac0cb4bdb53098425"
+}

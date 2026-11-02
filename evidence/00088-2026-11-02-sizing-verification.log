@@ -1,0 +1,14 @@
+Captured at 25e6aecd325765365d0ff3ff962e88c17a63e2a2
+BEFORE: appraisal contained the exact rubric; carving did not.
+AFTER appraise.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=2, scale=1, 2, 3, 5.
+AFTER carve.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=2, scale=1, 2, 3, 5.
+AFTER revisit.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=2, scale=1, 2, 3, 5.
+AFTER confirm-carve.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=2, scale=1, 2, 3, 5.
+AFTER appraise.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=3, scale=1, 3, 8.
+AFTER carve.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=3, scale=1, 3, 8.
+AFTER revisit.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=3, scale=1, 3, 8.
+AFTER confirm-carve.md: one identical rubric, repository scale resolved, inserted markers inert; ceiling=3, scale=1, 3, 8.
+SOURCE CHECK: confirmer passes the configured ceiling and point scale to rendering.
+GATE CONFIG: no .github/workflows files at this head; package gate = tsc --noEmit -p . && bun test.
+GATE EXECUTION: inherited accepted result at this exact head: 548 pass, 0 fail. Not rerun under task instruction; this capture does not claim to be its execution log.
+LIMIT: no live sizing agreement measured; oversized children still follow recursive carving.
