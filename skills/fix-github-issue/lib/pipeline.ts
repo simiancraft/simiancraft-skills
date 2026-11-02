@@ -220,7 +220,7 @@ async function runWorker(
     if (!coded || !proof) throw new Error(`#${issue.number}: the Work phase reached Proving with nothing coded`);
 
     // No seat begins on a stale lane: the base is merged in at the seam, never inside a turn.
-    const seam = ctx.dryRun ? 'current' : seamCatchUp(ctx, issue, cwd, say, 'before proving');
+    const seam = ctx.dryRun ? 'current' : await seamCatchUp(ctx, issue, cwd, say, 'before proving');
     if (seam === 'conflict') {
       return { issue: issue.number, verdict: 'failed', reason: `the branch conflicts with ${ctx.project.baseBranch} at the seam before proving`, pr: feedback?.pr, branch: coded.branch };
     }
@@ -334,13 +334,17 @@ function remoteBranchHead(ctx: Context, cwd: string, branch: string): string | n
  * behind, with no card move, since the card is between lanes the driver already owns. A conflict is
  * never resolved here.
  */
-function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (message: string) => void, why: string): 'conflict' | 'current' | 'caught-up' {
+async function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (message: string) => void, why: string): Promise<'conflict' | 'current' | 'caught-up'> {
+  await yieldToStop(`catch up ${why}`);
   holdLease(ctx, issue.number, `catch up ${why}`);
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return 'current';
   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
-  return updateFromBase(ctx, cwd, baseSha) ? 'caught-up' : 'conflict';
+  await yieldToStop(`catch up ${why}`);
+  if (updateFromBase(ctx, cwd, baseSha)) return 'caught-up';
+  await yieldToStop(`settle catch-up conflict ${why}`);
+  return 'conflict';
 }
 
 /** The second engine on a worker's close: the appraiser's confirmer for a close, its own prompt for a spike's answer. */
@@ -807,9 +811,10 @@ function netChangeId(cwd: string, baseSha: string, head: string): string {
 /** Pull requests whose boundary waiver is already on the thread: a reproof re-enters the landing, and the note says it once. */
 const waiverNoted = new Set<number>();
 
-function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean } = {}): CaughtUp | 'conflict' | null {
+export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean } = {}): Promise<CaughtUp | 'conflict' | null> {
   // A catch-up merges the base in and pushes the lane's branch; every wait in a landing can
   // outlast the lease, so every catch-up asks for it first.
+  await yieldToStop(`catch up ${why}`);
   holdLease(ctx, issue.number, `catch up ${why}`);
   if (ctx.dryRun) return null;
   // One fetch, one commit: the behind check, the overlap, the contribution comparison, and the
@@ -827,8 +832,12 @@ function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (m
   const before = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
   const idBefore = netChangeId(cwd, baseSha, before);
   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
+  await yieldToStop(`catch up ${why}`);
   move(ctx, issue, 'F2', `catching up ${why}`);
-  if (!updateFromBase(ctx, cwd, baseSha)) return 'conflict';
+  if (!updateFromBase(ctx, cwd, baseSha)) {
+    await yieldToStop(`settle catch-up conflict ${why}`);
+    return 'conflict';
+  }
   const after = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
   const idAfter = netChangeId(cwd, baseSha, after);
   return { before, after, overlap, netChangeIntact: idBefore !== '' && idBefore === idAfter };
@@ -934,7 +943,7 @@ async function land(
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
     // A revision never begins on a stale lane: whatever the base changed, the author revises
     // against current code rather than against the base as it stood when this branch started.
-    if (catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
+    if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
       // A dead letter must not sit in draft: the person reading it would find a branch the CI
       // guard is configured to skip, and nothing else would ever flip it back.
       mutate(ctx, `mark PR #${pr} ready again before the dead letter`, ['gh', 'pr', 'ready', String(pr)]);
@@ -1000,7 +1009,7 @@ async function land(
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
   for (let pass = 0; ; pass++) {
-    const caught = catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
+    const caught = await catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
     if (caught === 'conflict') {
       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
       return { dlq: `the branch conflicts with ${ctx.project.baseBranch}` };
@@ -1453,7 +1462,7 @@ export async function reviewAndLand(
     // that reached the paths the proof covers means the world moved beneath the proof: the work
     // goes back to its author to reacquire it, which is upstream churn and spends no round.
     const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    const current = caughtAtLanding ?? catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+    const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
     caughtAtLanding = null;
     if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
     if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
@@ -1807,7 +1816,7 @@ export async function redriveIssue(
     // a stale lane.
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
     const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    if (catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
+    if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
       return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pull.number);
     }
     const feedback: ReviewResult =
