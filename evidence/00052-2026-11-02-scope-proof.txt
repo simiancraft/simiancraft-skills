@@ -1,0 +1,47 @@
+Issue #52 proof receipt
+Capture commit: e3a33aa9f960a3bfeae04a59500c306c145f4db0
+Physical: seven changed files, 168 insertions, and 10 deletions. Local membership state and consumer wiring; no schema, dependency, persisted-string, or CI changes. Reversible by reverting the code change.
+Correctness: explicit roots remain independent; effective membership grows to a fixed point, deduplicates, retains selected leaves, excludes unrelated trees, and remains shared across readers. Existing eligibility gates remain authoritative.
+
+Focused command: bun test skills/burn-down-github-issues/lib/run-scope.test.ts skills/burn-down-github-issues/loop.source.test.ts
+bun test v1.4.2 (744846f84)
+
+ 11 pass
+ 0 fail
+ 45 expect() calls
+Ran 11 tests across 2 files. [18.00ms]
+
+Independent fixture command: save the attached check.ts as .proof-52/check.ts and run bun .proof-52/check.ts from the repository root.
+{
+  "permutations": 720,
+  "roots": [
+    10,
+    21
+  ],
+  "effective": [
+    10,
+    11,
+    12,
+    21
+  ],
+  "excluded": [
+    20,
+    22
+  ],
+  "repeatedRefresh": [],
+  "addedDescendant": [
+    13
+  ],
+  "resumptionPredicate": "(issue) => !ONLY || ONLY.has(issue.number)",
+  "result": "PASS"
+}
+
+Deciding-command record:
+package.json defines gate as: tsc --noEmit -p . && bun test
+The supplied execution record certifies bun install --frozen-lockfile and bun run gate passed for this exact capture commit: 578 tests, zero failures. The task explicitly accepts that gate and forbids rerunning it at this unchanged head. This is an accepted prior result, not a newly observed full-gate execution.
+Inspection: git ls-tree -r HEAD .github returned no files; .github/workflows does not exist at this head. gh run list for this branch returned no runs. No GitHub Actions deciding command exists in this code snapshot to capture separately.
+New dependency verification: bun install --frozen-lockfile succeeded with no changes.
+
+Consumer inspection: allOpenIssues(ctx) appears only in allIssues(), which refreshes scope before returning. Placement uses ONLY.has; appraisal uses allAges when restricted; carving holds the stable effective set; panel recovery and findStranded filter after allIssues refreshes. Source assertions and the extracted resumption predicate cover that wiring. No production eligibility predicate was changed.
+Limits: no live tracker writes, real knife execution, live stranded-worktree recovery, or same-process scheduling proof. Real carving sweep was exercised with revisit stubbed. Same-process scheduling is assigned to #54 and expressly outside #52.
+Judgement: adequate for the scoped membership change, with the accepted prior full gate and newly observed fixture evidence. Ready for review.

@@ -1,0 +1,17 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/run-scope.ts",
+    "skills/burn-down-github-issues/lib/run-scope.test.ts",
+    "skills/burn-down-github-issues/lib/carving.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/burn-down-github-issues/loop.source.test.ts",
+    "skills/burn-down-github-issues/references/architecture.md",
+    "skills/burn-down-github-issues/SKILL.md"
+  ],
+  "capture_commit": "e3a33aa9f960a3bfeae04a59500c306c145f4db0",
+  "capture_method": "Focused Bun tests and 720 permutations of tracker facts; reproduction commands in scope-proof.txt. Prior full gate accepted by task instruction.",
+  "content_hash": "sha256:7a4430715d4b3b72dd22b85d35c4f4e8230fd9ad0e03c4576aecc898d35f1790"
+}
