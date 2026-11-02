@@ -8,6 +8,7 @@
 
 import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { issueRefs } from '../../burn-down-github-issues/lib/refs.ts';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
 import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
@@ -159,6 +160,24 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
 export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): Stranded[] {
   const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
   const found: Stranded[] = [];
+  const holders = new Map<number, string | null>();
+  type Pull = { body: string; title: string; headRefName: string; headRefOid: string };
+  let pulls: Pull[] | undefined;
+  let listFailed = false;
+  let listError: unknown;
+  const openPulls = (): Pull[] => {
+    if (listFailed) throw listError;
+    if (!pulls) {
+      try {
+        pulls = JSON.parse(sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'body,title,headRefName,headRefOid'])) as Pull[];
+      } catch (error) {
+        listFailed = true;
+        listError = error;
+        throw error;
+      }
+    }
+    return pulls;
+  };
 
   for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
     if (!line.startsWith('worktree ')) continue;
@@ -176,8 +195,27 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
     if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
 
+    const holder = claimHolder(ctx, issue.number, holders);
+    if (holder) {
+      ctx.log(`#${num}  stranded lane is claimed by ${holder}; leaving it in place`);
+      continue;
+    }
+
     const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
+      let pull: Pull | undefined;
+      const judgement = judgeLane(ctx, issue.number, () => {
+        pull = openPulls().find((candidate) => issueRefs([candidate], 'owning').includes(issue.number));
+        return pull?.headRefOid ?? '';
+      });
+      if (judgement.kind === 'unreadable') {
+        ctx.log(`#${num}  ${judgement.reason}`);
+        continue;
+      }
+      if (judgement.kind === 'dirty' || (judgement.kind === 'off-head' && pull)) {
+        parkForInspection(ctx, issue.number, judgement.reason);
+        continue;
+      }
       ctx.log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
       parkForInspection(ctx, issue.number, `An earlier run died with this issue's lane at ${dir} and left no usable verdict. A person inspects the lane and the pull request, if any.`);
       continue;
@@ -189,12 +227,36 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       ctx.log(`#${num}  stranded verdict names issue ${verdict.issue}; leaving it for a human`);
       continue;
     }
-    const view: { state: string; headRefOid: string } = JSON.parse(
-      sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
-    );
-    if (view.state !== 'OPEN') continue;
-    if (view.headRefOid !== sh(ctx, ['git', 'rev-parse', 'HEAD'], dir)) {
-      ctx.log(`#${num}  stranded worktree head is not the pull request head; leaving it for a human`);
+    let view: { state: string; headRefOid: string } | undefined;
+    const readHead = () => {
+      view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid'])) as { state: string; headRefOid: string };
+      return view.headRefOid;
+    };
+    const judgement = judgeLane(ctx, issue.number, readHead);
+    if (judgement.kind === 'unreadable') {
+      ctx.log(`#${num}  ${judgement.reason}`);
+      continue;
+    }
+    if (judgement.kind === 'no-lane') continue;
+    if (judgement.kind === 'dirty') {
+      // Review refuses dirty work at the head, but catch-up must never publish an off-head lane.
+      try {
+        const remoteHead = readHead();
+        if (view?.state !== 'OPEN') continue;
+        const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
+        if (head !== remoteHead) {
+          parkForInspection(ctx, issue.number, `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.`);
+          continue;
+        }
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        ctx.log(`#${num}  stranded lane head could not be read: ${(error as Error).message}`);
+        continue;
+      }
+    }
+    if (view?.state !== 'OPEN') continue;
+    if (judgement.kind === 'off-head') {
+      parkForInspection(ctx, issue.number, judgement.reason);
       continue;
     }
     found.push({ issue, cwd: dir, result: verdict });
