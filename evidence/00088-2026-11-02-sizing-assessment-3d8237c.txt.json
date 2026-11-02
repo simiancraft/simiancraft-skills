@@ -1,0 +1,21 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/appraise-github-issues/prompts/appraise.md",
+    "skills/carve-github-issue/lib/carve.ts",
+    "skills/carve-github-issue/lib/knife.test.ts",
+    "skills/carve-github-issue/lib/knife.ts",
+    "skills/carve-github-issue/lib/validate.test.ts",
+    "skills/carve-github-issue/prompts/carve.md",
+    "skills/carve-github-issue/prompts/confirm-carve.md",
+    "skills/carve-github-issue/prompts/revisit.md",
+    "skills/fix-github-issue/lib/agent.sizing.test.ts",
+    "skills/fix-github-issue/lib/agent.ts",
+    "skills/fix-github-issue/references/sizing.md"
+  ],
+  "capture_commit": "3d8237c48dae7d0113a9e0816a793e8ca5c16c3a",
+  "capture_method": "Focused Bun tests and read-only source, workflow, and remote-run inspection; see artifact for commands and limitations.",
+  "content_hash": "sha256:ac392fa54f3258c58e2e59304fb6f891c4432ba7a2d8306d6da9a3741f0f5a98"
+}

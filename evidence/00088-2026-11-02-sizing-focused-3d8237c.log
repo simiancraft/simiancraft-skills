@@ -1,0 +1,9 @@
+Capture commit: 3d8237c48dae7d0113a9e0816a793e8ca5c16c3a
+Command: bun test skills/fix-github-issue/lib/agent.sizing.test.ts skills/carve-github-issue/lib/validate.test.ts skills/carve-github-issue/lib/knife.test.ts
+Exit status: 0
+bun test v1.4.2 (744846f84)
+
+ 78 pass
+ 0 fail
+ 283 expect() calls
+Ran 78 tests across 3 files. [1082.00ms]
