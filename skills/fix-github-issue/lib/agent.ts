@@ -292,6 +292,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     // file goes too, or a coder killed mid-revision would be resumed into review on the old proof.
     coder: [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
     'coder-revise': [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
+    'coder-conflict': [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
     prover: [PROOF_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
     carver: [CARVING_FILE, LAST_MESSAGE_FILE],

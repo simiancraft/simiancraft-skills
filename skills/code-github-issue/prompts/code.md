@@ -32,6 +32,8 @@ repository and this same machine.
 
 ## Your brief
 
+Where the brief sets a different rule for the base or the push, the brief wins.
+
 {{BRIEF}}
 
 ## Before the first line: does the appraisal still hold?
@@ -115,7 +117,7 @@ write it even when you failed.
 ```
 
 `branch`, `sha`, `gated`, and `handoff` are required for `coded`. The driver checks that the remote
-holds `sha` on `branch` before it believes you.
+holds `sha` on `branch` before it believes you, unless the brief leaves the push to the driver.
 
 `touches` is how the driver decides whether it may merge without a human. Use every value that
 applies: `code`, `ci`, `data` (any production or seeded record), `migration` (any database schema

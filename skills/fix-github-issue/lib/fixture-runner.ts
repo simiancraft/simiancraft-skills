@@ -16,6 +16,7 @@ const FILE_BY_ROLE: Record<string, string> = {
   'worker-reprove': VERDICT_FILE,
   coder: CODE_FILE,
   'coder-revise': CODE_FILE,
+  'coder-conflict': CODE_FILE,
   prover: PROOF_FILE,
   reviewer: REVIEW_FILE,
   carver: CARVING_FILE,
@@ -37,6 +38,14 @@ const own = answer.replace(/(\.json)?$/, `.${role}.json`);
 const source = existsSync(own) ? own : answer;
 copyFileSync(source, join(cwd, target));
 console.log(`fixture ${role}: ${source} -> ${target}`);
+
+// Optional lane work runs after the answer is copied and may rewrite it with the head it creates.
+// Like verdict.coder.json, verdict.coder.sh sits beside the seat's verdict.json.
+const script = answer.replace(/(\.json)?$/, `.${role}.sh`);
+if (existsSync(script)) {
+  const proc = Bun.spawn(['sh', script], { cwd, stdout: 'inherit', stderr: 'inherit' });
+  process.exit(await proc.exited);
+}
 
 // A test of the driver's cap: write the answer, then hang, and exit 0 when killed, the way an engine
 // that traps SIGTERM does. The answer is on disk by then, which is what must not be trusted.
