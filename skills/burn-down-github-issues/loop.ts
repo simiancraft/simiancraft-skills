@@ -1,3 +1,4 @@
+import { RunScope } from './lib/run-scope.ts';
 /**
  * burn-down-github-issues: a headless loop that triages recent issues, fixes the small ones,
  * proves the work on a PR, and lets a second agent with no shared context decide whether it can
@@ -412,10 +413,10 @@ if (opt('issue') !== undefined) {
 }
 const SKIP_APPRAISAL = flag('no-appraise');
 /**
- * `--only 12,34`: the run restricts itself to these issues, in appraisal, selection, and the sweep,
+ * `--only 12,34`: the run restricts itself to these roots and their descendants in every scope reader,
  * and lifts the age window for them; every other filter still applies and an exclusion is logged.
  */
-const ONLY: Set<number> | null = (() => {
+const SCOPE = new RunScope((() => {
   const raw = opt('only');
   if (raw === undefined) return null;
   try {
@@ -424,7 +425,8 @@ const ONLY: Set<number> | null = (() => {
     console.error((error as Error).message);
     process.exit(1);
   }
-})();
+})());
+const ONLY = SCOPE.effective;
 const APPRAISE_LIMIT = countOption('appraise-limit', CONFIG.appraiseLimit);
 const CLOSURE_PROBE = opt('closure');
 // Operator feedback is on by default: a board line per issue on every change, the whole board on
@@ -630,7 +632,9 @@ const CARVING = new Carving({
 // ---------------------------------------------------------------------------
 
 function allIssues(): Issue[] {
-  return allOpenIssues(ctx);
+  const all = allOpenIssues(ctx);
+  SCOPE.refresh(all);
+  return all;
 }
 
 /** Labels under which an issue is a trunk, a claimed issue, or a paused leaf: never a worker's. */

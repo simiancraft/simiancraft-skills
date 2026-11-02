@@ -77,7 +77,7 @@ bun run <this-skill-dir>/lanes.ts                      # write the 37 lanes and 
 bun run <this-skill-dir>/loop.ts --dry-run             # place every card, print the backlog by lane and what would run; no GitHub or working-tree write
 bun run <this-skill-dir>/loop.ts --limit 3             # work three Ready cards
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
-bun run <this-skill-dir>/loop.ts --only 12,34          # restrict the run to these issues, whatever their age
+bun run <this-skill-dir>/loop.ts --only 12,34          # restrict to these roots and their descendants, whatever their age
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the inbox; --appraise-limit N caps it instead
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
 bun run <this-skill-dir>/loop.ts --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
