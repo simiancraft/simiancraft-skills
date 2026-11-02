@@ -18,3 +18,14 @@ describe('an unreadable thread at startup', () => {
     expect(source).toContain('function threadOf(');
   });
 });
+
+describe('resume dispatch owns automatic redrive', () => {
+  it('calls redriveIssue only inside resumePull, which the pool uses', () => {
+    const start = source.indexOf('async function resumePull(');
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf('\n}', start) + 2;
+    expect(source.slice(start, end)).toContain('redriveIssue(');
+    expect(source.slice(0, start) + source.slice(end)).not.toContain('redriveIssue(');
+    expect(source).toMatch(/await pool\(\s*resumable,\s*CONFIG.concurrency,\s*resumePull,/);
+  });
+});
