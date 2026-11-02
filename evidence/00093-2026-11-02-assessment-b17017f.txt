@@ -1,0 +1,25 @@
+Proof of issue #93
+Code head: b17017ffbbc8a8bb02301b64b01c66d33de0a217
+Scope: code. Two changed files, 266 insertions, 7 deletions against the local origin/main merge base. No dependencies, migrations, or CI configuration changes. Moderate control-flow risk: startup decisions can write inspection labels or return lanes for review.
+
+Required claims and receipts:
+A2/A3: the eight usable/dirty/offHead combinations in resume.test.ts assert returned issue numbers, labels and comments naming dirty paths or both commits, and unchanged git ls-remote results.
+A4: failed PR reads, cached failed list reads, and failed dead-letter writes are isolated; later lanes continue and a later walk retries.
+A5/A6: clean no-verdict lanes preserve the existing park reason, including no PR and missing directory; mismatched verdicts log without writes and closed PRs are skipped.
+A13: live and unreadable claims use dirty no-verdict fixtures and OPEN same-head usable-verdict replies. Assertions require zero PR reads, unchanged tracker writes, and no returned lane. These assertions directly reject entering the judgement branches. No mutation experiment was performed during this capture.
+A15: stopped claim and PR reads throw RunStopping, including dirty usable-verdict lanes, with zero dead-letter writes.
+A17: dirty usable-verdict lanes at the PR head are returned without writes, preserving the existing review path.
+Owning PR selection ignores passing mentions, takes the first owning PR, and caches the list once per walk.
+
+Validation:
+Fresh command: bun test
+Exit code: 0
+569 pass, 0 fail, 44512 expect() calls, 36 files.
+Includes resume.test.ts, lane-work.test.ts, and loop.source.test.ts. The latter two files are unchanged.
+Git diff --check passed. Tracked working tree is unchanged.
+The provided successful bun run gate at this exact head stands as instructed; it was not rerun. The gate command in package.json is tsc --noEmit -p . && bun test. The fresh receipt exercises its full test command, not a focused subset. The provided typecheck result is relied upon, not independently recaptured.
+There is no .github/workflows directory in this commit (git ls-tree returned no files), and PR #119 statusCheckRollup is empty. No CI execution is claimed.
+
+Tests use real temporary Git repositories inside this worktree, FakeTracker, and stubbed gh replies. No shared tracker records or real pull request heads are changed by the tests. Live GitHub writes are not integration-tested.
+Remote code verification: fetched origin fix/judge-stranded-lanes-93, then git merge-base --is-ancestor for the full capture SHA succeeded.
+Judgement: adequate for this code-only change under the supplied gate exemption; ready for review. The parent issue reserves clean no-verdict resumption for #65, so this change intentionally preserves that park.

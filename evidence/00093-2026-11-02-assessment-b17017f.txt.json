@@ -1,0 +1,14 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/resume.ts",
+    "skills/fix-github-issue/lib/resume.test.ts",
+    "package.json",
+    "bunfig.toml"
+  ],
+  "capture_commit": "b17017ffbbc8a8bb02301b64b01c66d33de0a217",
+  "capture_method": "Read issue and ancestor carving records, inspect diff and tests, inspect package.json and git tree, and run git diff --check",
+  "content_hash": "sha256:0b600e2451152ff57a5e40d5102ff29cfc476d977d03b04e8cf6ebc9da2b2146"
+}

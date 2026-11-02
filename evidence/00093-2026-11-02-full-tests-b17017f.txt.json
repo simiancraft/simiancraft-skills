@@ -1,0 +1,14 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/resume.ts",
+    "skills/fix-github-issue/lib/resume.test.ts",
+    "package.json",
+    "bunfig.toml"
+  ],
+  "capture_commit": "b17017ffbbc8a8bb02301b64b01c66d33de0a217",
+  "capture_method": "bun test; exit code 0",
+  "content_hash": "sha256:33673c9f6daeed89397e3505af48a030e893665567ae5803a8af26954247b1da"
+}
