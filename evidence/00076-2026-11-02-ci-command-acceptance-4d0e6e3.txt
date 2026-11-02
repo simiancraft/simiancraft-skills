@@ -1,0 +1,17 @@
+Captured UTC: 2026-11-02T18:47:39.124325+00:00
+Head: 2547abff7f264b4659656989b75568647c306c38
+
+$ bun install --frozen-lockfile
+bun install v1.4.2 (744846f84)
+
+Checked 6 installs across 26 packages (no changes) [1.00ms]
+exitCode: 0
+
+$ bun test skills/fix-github-issue/lib/work-lanes.test.ts
+bun test v1.4.2 (744846f84)
+
+ 47 pass
+ 0 fail
+ 165 expect() calls
+Ran 47 tests across 1 file. [1481.00ms]
+exitCode: 0

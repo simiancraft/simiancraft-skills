@@ -1,0 +1,16 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/config.ts",
+    "skills/fix-github-issue/lib/work-lanes.test.ts",
+    "skills/prove-github-issue/lib/prove.ts",
+    "skills/prove-github-issue/prompts/prove.md",
+    "skills/prove-github-issue/SKILL.md",
+    "skills/burn-down-github-issues/references/adopting.md"
+  ],
+  "capture_commit": "2547abff7f264b4659656989b75568647c306c38",
+  "capture_method": "bun install --frozen-lockfile; bun test skills/fix-github-issue/lib/work-lanes.test.ts; source and workflow inspection",
+  "content_hash": "sha256:4d0e6e3e4f2dc8c2e9abafa688b7bc501e6d7264a2b0716bf080baa1be7503b6"
+}

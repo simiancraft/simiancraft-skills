@@ -1,0 +1,20 @@
+Issue 76 acceptance proof
+Capture commit: 2547abff7f264b4659656989b75568647c306c38
+Scope: code. Six changed files; 137 insertions and 11 deletions. Small, reversible configuration and instruction-generation change; no shared data or migration.
+
+Acceptance inspection:
+A1: ciCommand is optional; ciCommandFault accepts omission and nonblank strings, and rejects blank and non-string values. loadProjectConfig adds the fault to its existing validation.
+A2: decidingCommand and gateText cover configured/unconfigured commands with unchanged, changed, and unknown gated heads. The focused suite checks install ordering, prerequisite check ordering, concrete commands, the lane SHA, failure instructions, and the same-head no-rerun case.
+A3: the answer contract names command, sha, and numeric exitCode. The runProve fixture cases return gateRun unchanged. Existing successful answers without gateRun remain accepted, as issue 76 explicitly requires; enforcement belongs to issue 77.
+A4: focused evidence is explicitly additional to the deciding run. Configured commands replace workflow discovery guidance; unconfigured commands retain it.
+Documentation: the skill gate paragraph and adopting example/table match the rule.
+
+Independent execution: bun install --frozen-lockfile exited 0; bun test skills/fix-github-issue/lib/work-lanes.test.ts exited 0 with 47 pass, 0 fail, and 165 assertions. Full output is in the companion acceptance log.
+
+Gate provenance and limitation: the supplied same-head handoff reports bun run gate passed with 565 tests and zero failures at 2547abff7f264b4659656989b75568647c306c38. The proof instructions explicitly accept that gate and forbid rerunning it. This is an accepted prior result, not an independently captured full-gate transcript.
+CI inspection: git ls-tree -r HEAD .github returns no entries; no .github/workflows directory exists at this commit. gh run list for this branch returned []. There is no repository pipeline command to exercise or CI result to claim. package.json defines gate as tsc --noEmit -p . && bun test.
+No live autonomous execution was exercised; acceptance is the command rule, generated instructions, and fixture record passthrough specified by issue 76.
+
+Remote verification: fetched origin fix/prover-ci-command-76 and verified capture commit ancestry with git merge-base --is-ancestor. No source change or push to the implementation branch.
+Storage: append-only evidence files, immutable commit links, and SHA-256 sidecars. The locker has no branch protection or rulesets; no settings were changed.
+Judgement: acceptance coverage passes for issue 76's limited scope. Full-gate result is inherited under the explicit same-head instruction; CI execution is unavailable because this repository has no workflow.
