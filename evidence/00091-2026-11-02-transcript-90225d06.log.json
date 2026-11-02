@@ -1,0 +1,13 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/pool.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/carve-github-issue/lib/claims.ts"
+  ],
+  "capture_commit": "90225d064f4ea098ccbf9deb4ac6cce6585c6e97",
+  "capture_method": "TMPDIR=$PWD/.proof/tmp bun test ./.proof/transcript.test.ts --test-name-pattern 'pool|claim or its label'; harness copies stop.test.ts, resolves HERE from cwd, and prints subprocess output and exit codes",
+  "content_hash": "sha256:3ebf87591f15e808e085bfce849c09ef8599ce90c6f7e4e75159d423cb60e6cc"
+}
