@@ -1,3 +1,4 @@
+import { fire } from './simulate.ts';
 import { describe, expect, it } from 'bun:test';
 import { LANES } from './lanes.ts';
 import { MACHINE, transitions, walk } from './machine.ts';
@@ -191,6 +192,19 @@ describe('the machine and the lane table agree', () => {
     const seams = transitions().filter((t) => t.transition.guard?.includes('lineActive'));
     const events = new Set(seams.map((t) => t.event));
     expect([...events].sort()).toEqual(['APPRAISER_DISPATCHED', 'DISPATCHED', 'FINGERPRINT_CHANGED', 'ALL_CHILDREN_CLOSED', 'KNIFE_DISPATCHED'].sort());
-    expect(MACHINE.states?.line?.states?.paused).toBeDefined();
+    const line = MACHINE.states?.line?.states;
+    expect(line?.paused).toBeDefined();
+    expect(line?.active?.on?.FINISH).toEqual({ target: 'line.finishing', actions: ['banner'] });
+    expect(line?.paused?.on?.FINISH).toEqual({ target: 'line.finishing', actions: ['banner'] });
+    expect(line?.finishing).toEqual({});
+    expect(fire('ticket.ready.ready', 'DISPATCHED', new Set(['lineActive', 'noOpenPr']))?.state).toBe('ticket.work.coding');
+    for (const from of ['line.active', 'line.paused']) {
+      const finished = fire(from, 'FINISH', new Set())!;
+      expect(finished.state).toBe('line.finishing');
+      expect(fire(finished.state, 'GO', new Set())).toBeNull();
+      const lineActive = finished.state === 'line.active';
+      expect(lineActive).toBe(false);
+      expect(fire('ticket.ready.ready', 'DISPATCHED', new Set(lineActive ? ['lineActive', 'noOpenPr'] : ['noOpenPr']))).toBeNull();
+    }
   });
 });

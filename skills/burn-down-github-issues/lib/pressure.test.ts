@@ -1,3 +1,4 @@
+import { lineFixture } from './line.fixture.ts';
 import '../../../test/no-real-gh.preload.ts';
 import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -758,7 +759,7 @@ describe('resume dispatch judges the lane before continuing', () => {
     const calls: string[] = [];
     const api = loadFunctions('../loop.ts', ['resumePull'], {
       ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' },
-      waitForGo: async () => { calls.push('wait'); },
+      holdForDispatch: async () => { calls.push('wait'); return true; },
       claimHolder: () => { calls.push('claim'); return null; },
       judgeLane: (_ctx: unknown, issue: number, readHead: () => string) => {
         calls.push('judge'); expect(issue).toBe(92); expect(readHead()).toBe('remote-head');
@@ -795,6 +796,18 @@ describe('resume dispatch judges the lane before continuing', () => {
     const d = dispatch(kind);
     await d.run();
     expect(d.calls).toEqual(['wait', 'claim', 'judge', 'objection', 'redrive']);
+  });
+  it('finish leaves the card untouched before inspection, objection, or redrive', async () => {
+    const line = lineFixture(async () => { throw new Error('finish must not hold'); });
+    try {
+      line.write('finish');
+      const d = dispatch('clean-at-head', { holdForDispatch: line.holdForDispatch });
+      await d.run();
+      expect(d.calls).toEqual([]);
+      expect(line.logs).toHaveLength(1);
+    } finally {
+      line.cleanup();
+    }
   });
   it('does not judge or park a held lane', async () => {
     const d = dispatch('dirty', { claimHolder: () => 'held' });

@@ -56,6 +56,7 @@ const EVENT = new RegExp(
     'SyntaxError',
     'line-switch',
     'paused',
+    'finishing',
     'liveness: down',
     ': (present|intact|absent|not-checkable|not-yet-deployed|unverified) by',
     'incident',

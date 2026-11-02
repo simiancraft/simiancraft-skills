@@ -29,3 +29,22 @@ describe('resume dispatch owns automatic redrive', () => {
     expect(source).toMatch(/await pool\(\s*resumable,\s*CONFIG.concurrency,\s*resumePull,/);
   });
 });
+
+describe('finish admission stays at each worker item', () => {
+  it('refuses before any resume inspection or worker dispatch', () => {
+    const start = source.indexOf('async function resumePull(');
+    const resume = source.slice(start, source.indexOf('\n}', start));
+    expect(resume).toMatch(/\{\n  if \(!\(await holdForDispatch\(`#\$\{issue.number\}`\)\)\) return;/);
+    expect(resume.indexOf('holdForDispatch')).toBeLessThan(resume.indexOf('lastObjection('));
+    expect(resume.indexOf('holdForDispatch')).toBeLessThan(resume.indexOf('redriveIssue('));
+    expect(source).toMatch(/async \(issue\) => \{\s*if \(!\(await holdForDispatch\(`#\$\{issue.number\}`\)\)\) return;[\s\S]*?const result = await fixIssue/);
+    expect(source).toContain("await waitForGo('the merge queue',");
+  });
+
+  it('has no stop mutation or child cancellation in the line policy', () => {
+    const line = readFileSync(join(import.meta.dir, 'lib/line.ts'), 'utf8');
+    expect(line).not.toMatch(/beginStop|\.kill\(|killAgent/);
+    const watch = readFileSync(join(import.meta.dir, 'watch.ts'), 'utf8');
+    expect(watch).toContain("'finishing'");
+  });
+});

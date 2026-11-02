@@ -17,7 +17,7 @@ import { type Lane, laneByKey, PHASES } from './lib/lanes.ts';
 
 type Card = { title: string; lane: Lane; note: string; at: Date };
 
-export type LineState = { state: 'active' | 'paused'; since: Date; reason: string };
+export type LineState = { state: 'active' | 'paused' | 'finishing'; since: Date; reason: string };
 
 let silent = false;
 const board = new Map<number, Card>();
@@ -47,6 +47,7 @@ export function elapsed(since: Date, now = new Date()): string {
 }
 
 function lineText(now = new Date()): string {
+  if (line.state === 'finishing') return `🏁 finishing ${elapsed(line.since, now)}`;
   return line.state === 'paused' ? `⏸️ paused ${elapsed(line.since, now)}` : '🟢 active';
 }
 
@@ -73,10 +74,10 @@ export function mark(issue: number, title: string, lane: string, note = ''): voi
 }
 
 /** Records the line state; a change is printed now, unless `--silent`. */
-export function setLine(state: 'active' | 'paused', reason = ''): void {
-  if (line.state === state) return;
+export function setLine(state: 'active' | 'paused' | 'finishing', reason = ''): void {
+  if (line.state === 'finishing' || line.state === state) return;
   line = { state, since: new Date(), reason };
-  if (!silent) console.log(state === 'paused' ? `⏸️ line paused${reason ? `: ${reason}` : ''}` : `🟢 line active again`);
+  if (!silent) console.log(state === 'finishing' ? `🏁 line finishing${reason ? `: ${reason}` : ''}` : state === 'paused' ? `⏸️ line paused${reason ? `: ${reason}` : ''}` : `🟢 line active again`);
 }
 
 export function lineState(): LineState {
@@ -93,7 +94,7 @@ export function pulse(label = 'pulse'): void {
     .filter((phase) => counts.has(phase))
     .map((phase) => `${PHASES[phase].emoji} ${counts.get(phase)} ${PHASES[phase].label.toLowerCase()}`)
     .join('  ');
-  console.log(`\n💓 ${label}  ${lineText(now)}${line.state === 'paused' && line.reason ? ` (${line.reason})` : ''}  ⏱ ${stamp(now)}  ${summary || 'nothing touched yet'}`);
+  console.log(`\n💓 ${label}  ${lineText(now)}${line.state !== 'active' && line.reason ? ` (${line.reason})` : ''}  ⏱ ${stamp(now)}  ${summary || 'nothing touched yet'}`);
   for (const [issue, card] of [...board.entries()].sort((a, b) => b[1].at.getTime() - a[1].at.getTime())) {
     console.log(`   ${cardText(issue, card, now)}`);
   }

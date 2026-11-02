@@ -133,6 +133,25 @@ more, and the floor releases its own pause once nothing on it is wrong. A reason
 prefix was written by a person, and only a person clears it:
 `echo go > <worktreeRoot>/runs/line-switch`.
 
+## When the line is finishing
+
+Write `finish` to `<worktreeRoot>/runs/line-switch` for a planned stop. The first read latches
+finishing for this process: a later `go` does not reopen worker admission. Unlike a signal stop,
+finish kills no child and cancels no admitted work. It is unrelated to `--floor drain`, which
+keeps its floor verification meaning.
+
+Every queued Ready card and driverless pull request refuses dispatch on finish, including a
+worker seam already holding on pause. Each refused item logs once and leaves its card in place.
+An item already admitted runs on.
+
+- The start-of-run stranded resume does not refuse yet.
+- Appraisal does not refuse yet.
+- The knife does not refuse yet.
+
+Merges still hold on `finish` until a person writes `go`; merge passage and automatic exit belong
+to #53. Writing `go` releases that merge hold without reopening worker admission. A `finish` left
+in the file is read by the next run, so write `go` before restarting.
+
 ## What is not a bug
 
 - **`#N not selected: over this run's limit of 5 (--limit raises it)`**, or `not resumed` for a
