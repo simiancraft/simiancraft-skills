@@ -1,0 +1,15 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/stale-stop.fixture.ts",
+    "skills/fix-github-issue/lib/stop.test.ts",
+    "skills/fix-github-issue/lib/shell.ts",
+    "skills/fix-github-issue/lib/stop.ts",
+    "package.json"
+  ],
+  "capture_commit": "7a56df50f4c39d71fa9ad738d1ab408f2bb4d501",
+  "capture_method": "bun test skills/fix-github-issue/lib/stop.test.ts; extracted drive harness for raw SIGINT output; accepted prior gate result identified separately",
+  "content_hash": "sha256:295fed0b49d2ca88dde4ceaf4b2266800f65589f24088a5a86f9e388733c26c1"
+}
