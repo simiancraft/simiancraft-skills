@@ -50,7 +50,7 @@ On a `carve` or `amend`:
 6. **Sizes are honest** against the sizing rubric above, including tests and proof.
    Independently size each authored piece before reading its estimate as a conclusion. Reject
    an understated estimate or a piece over the **{{CEILING}}**-point ceiling on `{{SCALE}}`;
-   name the piece, the proposed points, and your points in `reason`, with `agree: false`.
+   name the piece, the proposed points, and your points in `reason`, with `agree: false` and `finding: "size-mismatch"`.
 7. **A partial cut's deferred criteria are exactly the ones the spike's questions decide.**
 8. **The seam.** Is a higher rung admissible for this issue? A dispute is allowed only when the
    higher seam you see is `domain` or `tier`; between the mechanistic rungs any admissible covering
@@ -75,7 +75,7 @@ Write `{{CONFIRMATION_FILE}}` in your working directory:
   "issue": {{ISSUE}},
   "mode": "{{MODE}}",
   "agree": true,
-  "finding": "cover | gap | overreach | partition-intact | partition-broken | still-good | not-still-good | exhausted | not-exhausted | hand-off-agree | hand-off-disagree",
+  "finding": "cover | gap | overreach | size-mismatch | partition-intact | partition-broken | still-good | not-still-good | exhausted | not-exhausted | hand-off-agree | hand-off-disagree",
   "seam": "agree | higher-available",
   "seamCase": "with higher-available, the higher seam and why it is admissible here; an empty string with agree",
   "reason": "one or two sentences a stranger could re-check"
