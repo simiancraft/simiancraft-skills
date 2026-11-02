@@ -1,0 +1,14 @@
+{
+  "scope_tags": [
+    "code"
+  ],
+  "covered_paths": [
+    "skills/fix-github-issue/lib/resume.ts",
+    "skills/fix-github-issue/lib/resume.test.ts",
+    "package.json",
+    "bunfig.toml"
+  ],
+  "capture_commit": "64b51327e01db5e59b8789e866aeaf7684ddf6eb",
+  "capture_method": "bun test; bun test skills/fix-github-issue/lib/resume.test.ts; code and acceptance review; supplied same-head bun run gate execution record",
+  "content_hash": "sha256:7555b680b5b6c5733fdde65be89ed4d172a040d7a24d1d74d5c67238eb8057c5"
+}

@@ -1,0 +1,48 @@
+Issue #93 startup-walk proof
+Capture commit: 64b51327e01db5e59b8789e866aeaf7684ddf6eb
+Scope: code; resume.ts and resume.test.ts only, 256 insertions and 7 deletions.
+Risk: startup selection can label issues or resume work; proof uses FakeTracker and temporary Git repositories, with gh reads stubbed and remote refs compared before and after.
+
+Acceptance coverage in resume.test.ts:
+A2: dirty no-verdict lane parks with dirty paths and performs zero PR reads.
+A3: off-head clean lanes with and without verdicts, plus dirty usable-verdict lanes, park with both commits; remote refs unchanged.
+A4: failed PR reads and dead-letter writes do not prevent the next lane returning; another walk retries. Failed lists cache only within one walk.
+A5: clean at-head no-verdict lane keeps the full existing dead-letter reason.
+A6: no PR and missing directory keep the existing park; mismatched verdict logs and writes nothing; closed PR skipped.
+A13: live and unreadable claims write nothing and do not read PRs.
+A15: stops in claims and PR reads propagate, including dirty usable-verdict head reads, without writes.
+A17: dirty usable-verdict at-head lane returns with no writes, preserving its existing review route.
+Ownership: one lazy PR list per walk, first owning reference selected, incidental mentions ignored.
+
+Gate provenance:
+package.json defines gate as: tsc --noEmit -p . && bun test
+The supplied execution record says bun install --frozen-lockfile and bun run gate passed at this exact capture commit, with 563 tests. That result is accepted under the proof instructions; the full gate was not rerun.
+Independently executed the exact bun test command from that gate below.
+git ls-tree -r --name-only HEAD .github returned no files. There is no .github/workflows directory at this head. gh run list for this branch returned []. No CI result is claimed.
+git diff --check passed.
+git fetch origin fix/judge-stranded-lanes-93 and git merge-base --is-ancestor <capture commit> origin/fix/judge-stranded-lanes-93 both succeeded.
+
+Independent complete suite receipt:
+bun test v1.4.2 (744846f84)
+
+skills/burn-down-github-issues/lib/pressure.test.ts:
+late CI: result=nothing names the checks this landing must pass: the config lists no requiredChecks and main requires no status checks (a repository that runs no checks says so with checks: 'none'), elapsed=0
+
+skills/burn-down-github-issues/lib/world-sweep.test.ts:
+world sweep: 40565 cases, 255 disabled events, stale Merging entries: 
+reconcile: 1117 world pairs
+
+ 563 pass
+ 0 fail
+ 44383 expect() calls
+Ran 563 tests across 36 files. [17.06s]
+
+Independent focused receipt:
+bun test v1.4.2 (744846f84)
+
+ 33 pass
+ 0 fail
+ 149 expect() calls
+Ran 33 tests across 1 file. [748.00ms]
+
+Judgement: acceptance coverage passes for this two-file behavior change. No production tracker mutation or live end-to-end run was performed. Git operations were exercised against temporary local repositories. Existing lane-work, source, and dispatch tests passed within the complete suite. The full gate's TypeScript result is inherited from the supplied same-head execution record, not independently re-executed here.
