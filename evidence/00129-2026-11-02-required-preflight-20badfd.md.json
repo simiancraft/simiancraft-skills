@@ -1,0 +1,18 @@
+{
+  "scope_tags": [
+    "code",
+    "cli",
+    "documentation"
+  ],
+  "covered_paths": [
+    "skills/burn-down-github-issues/lib/preflight.ts",
+    "skills/burn-down-github-issues/lib/preflight.test.ts",
+    "skills/burn-down-github-issues/loop.ts",
+    "skills/fix-github-issue/lib/pipeline.ts",
+    "skills/burn-down-github-issues/references/adopting.md",
+    "package.json"
+  ],
+  "capture_commit": "20badfd95ad4a101277423172060b6e066708ed9",
+  "capture_method": "Independent focused and regression bun test invocation and fixture output; source review; inherited bun run gate result at the same commit, retained as instructed. Commands and reproduction script included in artifact.",
+  "content_hash": "sha256:40769178d357bc2527e7c1f60ba105873549b776ad6de38740679ac9431c46fe"
+}
