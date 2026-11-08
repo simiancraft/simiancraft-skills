@@ -53,6 +53,7 @@ import { INCIDENT_LABEL } from './lib/floor/incident.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
+import { readSkillCommit } from '../fix-github-issue/lib/skill-commit.ts';
 
 // ---------------------------------------------------------------------------
 // Defaults. Every boundary the loop enforces is here or in the repository's config file; nothing
@@ -537,6 +538,7 @@ const PANEL: PanelSetup = (() => {
 })();
 
 const ctx = createContext({
+  skillCommit: readSkillCommit(HERE),
   project: PROJECT,
   knobs: {
     autoMerge: CONFIG.autoMerge,
@@ -1126,6 +1128,11 @@ async function main(): Promise<void> {
   teeConsole(join(RUN_DIR, 'driver.log'));
   step(`${PROJECT.name} burn-down-github-issues`);
   log(`run pid ${process.pid} started ${new Date().toISOString()}`);
+  if (ctx.skillCommit) {
+    log(`skill commit ${ctx.skillCommit.commit} | checkout ${ctx.skillCommit.root}`);
+  } else {
+    log('skill commit unknown; a moved checkout cannot be detected here');
+  }
   log(`base ${BASE} | last ${CONFIG.ageDays} days | up to ${MAX_POINTS} points | merge: ${CONFIG.autoMerge}`);
   log(`appraiser ${seatLabel(SEATS.appraiser)} | confirmer ${seatLabel(SEATS.confirmer)} | worker ${seatLabel(SEATS.worker)} | reviewer ${seatLabel(SEATS.reviewer)} | carver ${seatLabel(SEATS.carver)} | carve confirmer ${seatLabel(SEATS.carveConfirmer)}`);
   if (SEATS.worker.engine === SEATS.reviewer.engine) {
