@@ -155,6 +155,8 @@ Before the first run, confirm `gh repo set-default` matches `repo`. Every fetch,
 wrong and the import-closure walk silently resolves nothing, which does not error. It degrades to
 filename comparison, so proofs stop being invalidated when they should be and a stale approval can
 merge. Read `tsconfig.json` `compilerOptions.paths` and transcribe it.
+Specifiers written with the extension tsc emits (`./web.js` for `web.ts`, as NodeNext requires)
+resolve to their TypeScript source on their own; no alias is needed for them.
 
 ### `alwaysInvalidates` deserves thought, not copying
 
