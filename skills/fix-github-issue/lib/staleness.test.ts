@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { behindBase, behindBeyondNoise, fetchBase, staleAgainstBase } from './staleness.ts';
+import { behindBase, behindBeyondNoise, fetchBase, importClosure, resolveSpecifier, staleAgainstBase } from './staleness.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const run = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -160,5 +160,36 @@ describe('behindBeyondNoise: what a landing must catch up on', () => {
     landUpstream(other, 'src/version.ts', "export const version = '1.0.1';\n");
     (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['src/version.ts'];
     expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['src/version.ts']);
+  });
+});
+
+describe('importClosure: TypeScript import specifiers', () => {
+  /** A tree whose source imports its siblings the NodeNext way, by the extension tsc emits. */
+  function nodeNextTree() {
+    const root = mkdtempSync(join(tmpdir(), 'closure-'));
+    mkdirSync(join(root, 'src/palettes'), { recursive: true });
+    writeFileSync(join(root, 'src/index.ts'), "export { web } from './palettes/web.js';\nexport { Swatch } from './swatch.jsx';\n");
+    writeFileSync(join(root, 'src/palettes/web.ts'), "import { normalize } from './normalize.js';\nexport const web = normalize;\n");
+    writeFileSync(join(root, 'src/palettes/normalize.ts'), 'export const normalize = 1;\n');
+    writeFileSync(join(root, 'src/swatch.tsx'), 'export const Swatch = 1;\n');
+    writeFileSync(join(root, 'src/vendored.js'), 'export const vendored = 1;\n');
+    writeFileSync(join(root, 'src/vendored.ts'), "import { vendored } from './vendored.js';\nexport const wrapped = vendored;\n");
+    const ctx = { project: { pathAliases: [], sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'] } } as unknown as Context;
+    return { ctx, root };
+  }
+
+  it('follows a .js specifier to the .ts file tsc compiles it from', () => {
+    const { ctx, root } = nodeNextTree();
+    expect([...importClosure(ctx, root, ['src/index.ts'])].sort()).toEqual([
+      'src/index.ts',
+      'src/palettes/normalize.ts',
+      'src/palettes/web.ts',
+      'src/swatch.tsx',
+    ]);
+  });
+
+  it('prefers a .js file that exists over its .ts twin', () => {
+    const { ctx, root } = nodeNextTree();
+    expect(resolveSpecifier(ctx, root, 'src/vendored.ts', './vendored.js')).toBe('src/vendored.js');
   });
 });
