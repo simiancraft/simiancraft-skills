@@ -1,11 +1,11 @@
 ---
 name: zone-composer
-description: React composition pattern for domain features (screens, panels, tools, editors, wizards). Trigger when designing, reviewing, or refactoring a domain-level React component, particularly when a leaf takes flag props like `disabled`, `loading`, `isSubmitting`, `canX`, `submitting`; when JSX has inline ternaries gating UI on state; when platform variance (`.tsx` / `.web.tsx`) is in play; when a hook returns multiple flags being relayed into one leaf; or when the user mentions "chassis", "zone", "layout", "prop drilling", "slop", "named slots", or "well-organized React". Apply BEFORE writing the component, not after. Skip for shadcn-style UI primitives, single-state presentational cards with no hook or branching, and pure utility components; those follow shadcn/ui conventions instead.
+description: React composition pattern for domain features (screens, panels, tools, editors, and wizards), reusable machines, and primitive composition. Trigger when designing, reviewing, or refactoring a domain-level React component, particularly when a leaf takes flag props like `disabled`, `loading`, `isSubmitting`, `canX`, and `submitting`; when JSX has inline ternaries gating UI on state; when platform variance (`.tsx` / `.web.tsx`) is in play; when a hook returns multiple flags being relayed into one leaf; or when the user mentions "chassis", "zone", "layout", "prop drilling", "slop", "named slots", or "well-organized React". Apply BEFORE writing the component, not after. Primitives and single-state presentational components skip data-state branching, not composition; retain shadcn-style variants and named zones where useful. Pure utilities need no React composition.
 ---
 
 # Zone Composer
 
-Zone Composer is a design pattern for constructing **domain-level components** (screens, panels, tools, editors, wizards, and other surfaces a feature owns). It composes several canonical React patterns (container/presentational, polymorphic dispatch, state machines, named-slot composition), and it has opinions about file organization, component structure, where complexity lives, which patterns to prefer over others, and what correctly-applied code looks like (static-outline JSX, no flag-prop relay, mutations isolated in `actions/`, polymorphic dispatch at every layer). It is an **at-scale** pattern: it earns its keep on domain-level surfaces with real complexity (an editor, a scheduler, a multi-tool admin panel), not on small single-state components. Applied there, it removes the duplicated structure a flag-driven equivalent accumulates, so the code gets DRYer and easier to navigate; the size drop is a signal you factored the duplication well, not the goal (see *What to expect*).
+Zone Composer is a design pattern for constructing **domain-level components and reusable machines** (screens, panels, tools, editors, wizards, comboboxes, and rosters). It composes several canonical React patterns (container/presentational, polymorphic dispatch, state machines, and named-slot composition), and it has opinions about file organization, component structure, where complexity lives, which patterns to prefer over others, and what correctly-applied code looks like (static-outline JSX, no flag-prop relay, mutations isolated in `actions/`, and polymorphic dispatch at every layer). It is an **at-scale** pattern: it earns its keep on domain-level surfaces with real complexity (an editor, a scheduler, and a multi-tool admin panel), not on small single-state components. Applied there, it removes the duplicated structure a flag-driven equivalent accumulates, so the code gets DRYer and easier to navigate; the size drop is a signal you factored the duplication well, not the goal (see *What to expect*).
 
 **Zone Composer is structural help for a domain-driven approach.** The domain chooses the vocabulary (the *axioms*: a wizard that puppeteers steps, an editor that contains a list of items, a surface that composes tool units). Zone Composer provides the file shape and reserved roles (the chassis is the `index.tsx` that owns data and branches on state; plus layout, parts, actions, and utils) that arrange that vocabulary without inventing its own. Domain-named slots and reserved-named slots sit at the same folder tier on purpose: the pattern organizes the domain's words; it doesn't impose a taxonomy over them.
 
@@ -19,9 +19,9 @@ Zone Composer is a design pattern for constructing **domain-level components** (
 
 | When you are | Read |
 |---|---|
-| applying the cross-cutting how-to: flag props, controlled/uncontrolled leaves, the actions pattern, editing a collection, platform variance and `.types.ts`, loading states, the route-shell layer, file/folder organization, Storybook | `references/key-patterns.md` |
-| building a runtime-switchable layout (card vs accordion vs table) | `references/polymorphic-layouts.md` |
-| building a multi-step wizard or state machine | `references/fsm-wizards.md` |
+| applying prior art, component-type parts, the collection tier, flag props, controlled/uncontrolled leaves, the actions pattern, editing a collection, platform variance and `.types.ts`, loading states, the route-shell layer, file/folder organization, and Storybook | `references/key-patterns.md` |
+| building runtime-switchable or selection layouts; platform pairs and native portal hosts | `references/polymorphic-layouts.md` |
+| building a wizard; root-composed steps, typed sentinels, and nested query chassis | `references/fsm-wizards.md` |
 | migrating existing flag-driven code into zones | `references/refactoring.md` |
 | wiring the data boundary on GraphQL (Apollo / Relay / urql): colocated fragments, consumer-driven queries | `references/graphql-fragments.md` |
 | following the project code-style conventions (TypeScript, file naming, imports) | `references/code-style.md` |
@@ -52,7 +52,7 @@ Do not think these silently. Write them to the developer. The act of writing the
 
 **Phase 2: Structural application (drop into each folder).** With the domain layout decided, apply the zone composer alphabet inside every folder:
 
-- `index.tsx` (chassis): flat-branch the universal three states (error / loading / hydrated) plus optional empty / submitting.
+- `index.tsx` (chassis): flat-branch the owned states. Data features use error / loading / hydrated plus optional empty / submitting; reusable machines use their own states, and primitives need no data-state branches.
 - `layout.tsx`: zone container. Pair with `.web.tsx` and `.types.ts` if platform diverges.
 - `parts/`: small UI atoms feature-scoped to this folder.
 - `actions/` (folder) or `actions.tsx` (collapsed): transaction hooks.
@@ -71,7 +71,7 @@ Do not think these silently. Write them to the developer. The act of writing the
 
 The pattern speaks to several cross-cutting concerns at once:
 
-- **File organization:** chassis lives in `index.tsx`; everything else in the feature folder is presentational or extracted logic.
+- **File organization:** chassis defaults to `index.tsx`; named query-owning steps are nested chassis, and ordinary leaves stay presentational.
 - **Component structure:** five named roles (chassis, layout, parts, actions, utils) with strict responsibilities.
 - **Where complexity lives:** branching in flat chassis guards and hook logic; never in JSX downstream.
 - **Platform variance:** `.tsx` / `.web.tsx` file pairs, shared `.types.ts`. Runtime polymorphism (theme, role, flag) uses the same dispatch shape.
@@ -83,10 +83,15 @@ The pattern speaks to several cross-cutting concerns at once:
 
 **Default for domain features.** Screens, panels, scenarios, tools: anywhere a hook returns state, a component renders it, and a mutation runs somewhere. Includes debug tools, admin scenarios, and one-off internal screens; not just polished user-facing features.
 
-**Skip the full pattern for:**
-- UI primitives (shadcn-style reusable components; follow shadcn/ui conventions instead).
-- Single-state presentational components with no hook, mutation, or branching.
-- Pure utility components with no domain knowledge.
+**Three tiers; composition applies across them.** Jesse Harlin abstracted these rules from the following prior art. Paths are relative to the named repository's root; examples establish specific boundaries, not compliance with every rule in this skill.
+
+| Tier | Inside and outside | Prior art |
+|---|---|---|
+| **Primitive** | Shadcn-style variants and plain composition; skip data-state branching, not the composition itself. | Lifeguides `components/ui/popover.tsx` composes the platform primitives in `components/primitives/popover/`. |
+| **Reusable machine** | Too complex for a primitive, independent of an industry or a fetch. More composer than not: chassis, layouts, parts, and a shared `.types.ts` inside; a primitive-flavored public surface with variants and pluggable component-type props outside. Branch on the machine's own states. | Lifeguides `components/ui/combobox/index.tsx` owns selection by `mode`; `components/ui/combobox/types.ts` declares its component props (the existing shared file is named `types.ts`). React-native-roster `src/components/roster/index.tsx` and `src/components/roster/roster.types.ts` use `empty` / `ready`, with no fetch lifecycle. |
+| **Domain feature** | Owns application data, actions, and domain transitions; apply the data-state chassis rules. | Lifeguides `components/session/session-scheduler/index.tsx` and `components/admin/admin-actions/index.tsx`. |
+
+Single-state presentational components need only the composition they use; pure utilities need no React composition. Do not invent error / loading / hydrated branches for a combobox or roster. The roster's public contract follows the suffix rule below: `Zone` props are nodes and `Component` props are component types; see `references/key-patterns.md`.
 
 **Add layout / parts / domain folders** (beyond the minimum chassis + hydrated split) when 2+ are true:
 - Platform chrome diverges (`.web.tsx` swap).
@@ -117,9 +122,11 @@ This is unlike frameworks where every folder is a fixed slot (Microsoft-style) o
 
 ### Reserved roles
 
+The data-state vocabulary below describes data-owning features. Reusable machines substitute their own states; primitives skip the data-state branches. Nested query-owning steps are chassis too, even when kept in a named step file.
+
 | Role | What | File/folder |
 |---|---|---|
-| **Chassis** | Owns the data-fetch and mutation lifecycle and flat-branches on chassis state, in order: optional **precondition gates** first (auth, role, feature flag, capability; each an early return rendering a complete "not available" component ahead of the data states, e.g. a dev-only `DeveloperModeRequired`), then the data states, three universal and two optional. **Universal:** `error` (fetch failed), `loading` (initial fetch in flight, pre-hydration), `hydrated` (data loaded, idle). **Optional:** `empty` (data loaded but no rows, rendered by `<Entity>NoData`; only when "no data" is a meaningful state), `submitting` (user-triggered action in flight, post-hydration; only when the surface has interactive submit/in-flight flows). Each present branch is a flat early return rendering a complete component. Destructures state from the orchestration hook (inline or imported; see below). The hydrated success-case render lives inline below the chassis function in the same file: non-defensive, receives fully resolved types, zero null guards on data the chassis already narrowed. Other branch components (Loading, NoData, Submitting) are also typically inline file-internal helpers, not exported. | `index.tsx` |
+| **Chassis** | Owns the data-fetch and mutation lifecycle and flat-branches on chassis state, in order: optional **precondition gates** first (auth, role, feature flag, and capability; each an early return rendering a complete "not available" component ahead of the data states, e.g. a dev-only `DeveloperModeRequired`), then the data states, three universal within a data-owning feature and two optional. **Universal for data features:** `error` (fetch failed), `loading` (initial fetch in flight, pre-hydration), and `hydrated` (data loaded, idle). **Optional:** `empty` (data loaded but no rows, rendered by `<Entity>NoData`; only when "no data" is a meaningful state), `submitting` (user-triggered action in flight, post-hydration; only when the surface has interactive submit/in-flight flows). Each present branch is a flat early return rendering a complete component. Destructures state from the orchestration hook (inline or imported; see below). The hydrated success-case render lives inline below the chassis function in the same file: non-defensive, receiving fully resolved types and using zero null guards on data the chassis already narrowed. Other branch components (Loading, NoData, and Submitting) are also typically inline file-internal helpers, not exported. | `index.tsx` |
 | **Layout** | Zone container; declares `<position>Zone` props (`titleZone`, `contentZone`, `ctaZone`); presentational only. Platform pairs share `.types.ts`. The file is `layout.tsx` when there's only one layout in scope. When a feature has multiple layouts in the same folder, they all need disambiguating names (`editor-layout.tsx`, `viewer-layout.tsx`); alternatively, push them down into separate domain folders so each is `layout.tsx` in its own scope. | `layout.tsx` (single) or `<entity>-layout.tsx` (multiple) / `layout.web.tsx` / `layout.types.ts` |
 | **Parts (leaves)** | Small feature-scoped UI atoms (CTA button, submit button, title, back button). One state per leaf; no internal branching on chassis-decided flags. | `parts/<part>.tsx` |
 | **Actions** | Hooks owning `useMutation` + toasts; return async functions (`Promise<boolean>` or `{ data, error }` tuples). Never relay mutation functions through deps objects. | `actions/use<Noun>Actions.ts` |
@@ -138,6 +145,19 @@ This is unlike frameworks where every folder is a fixed slot (Microsoft-style) o
 | `<Entity>Unauthorized` / `<Entity>Gate` (optional) | Precondition gate: not signed in, missing role, feature flag off, capability absent. A complete "not available" render that flat-branches *before* the data states (e.g. a dev-tools surface returns this before it fetches). |
 
 **Layouts stay small** (~30 lines). If a layout grows, logic is leaking in.
+
+**Pluggable parts and the collection tier.**
+
+| Contract | Rule |
+|---|---|
+| `xxxZone: ReactNode` | A resolved node; layouts only arrange it. |
+| `xxxComponent?: ComponentType<XxxProps>` | Consumer passes a named component type, never a render function. The chassis defaults and binds it once as a JSX component; the chassis or collection mounts it with resolved data. Never pass a `Component` prop through a layout. |
+| `listZone: ReactNode` | The list is its own part. Mount the selected list part at the chassis or collection tier, then pass its node into the layout; the kind of list can change at runtime. |
+| Virtualized `renderItem` | The list part owns the ONE allowed render callback; it returns one item component. No other render-function props or zones, including per-frame fillers. Ordinary local `.map()` composition and event callbacks are not render-prop APIs. |
+
+Lifeguides `components/ui/combobox/types.ts` supplies the public precedent: `listItemComponent?: React.ComponentType<ListItemProps>`. Its `index.tsx` defaults `ListItemComponent`, but threads `listItemNode` through `layout.tsx` and `layout.web.tsx`; that is the named compromise to remove. React-native-roster `src/components/roster/parts/body.tsx` plugs `RosterLaneList` into `RosterBodyLayout.listZone`; `src/components/roster/parts/lane-list.tsx` owns LegendList's row callback returning one `LaneRow` (optionally wrapped in a Profiler). This is the RosterBody/LegendList collection boundary; see `references/key-patterns.md` for the component-type recipe.
+
+**Selection layouts.** Selection stays in chassis state. A `selectionLayout?: ComponentType<SelectionLayoutProps>` chooses popover, inspector column, or bottom sheet at runtime; the chassis mounts it with `anchorZone`, `contentZone`, and `onDismiss`. This layout-strategy prop is the explicit naming exception to the part's `Component` suffix; it never passes through another layout. Platform variants use `.tsx`, `.web.tsx`, and shared `.types.ts`; native mounts one named `PortalHost` at the owning layout, while web uses Radix. Every overlay exposes a `portalHost` override; the native mechanism is Lifeguides `components/primitives/portal.tsx`, connected by `components/ui/popover.tsx`. The selection contract is the recipe abstracted from that infrastructure, not an existing prop in those files. See `references/polymorphic-layouts.md`.
 
 **Parts promotion rule** (prevents `parts/` from becoming a junk drawer):
 - **Default:** reused only inside one feature → `feature/parts/`.
@@ -175,7 +195,7 @@ Beyond the five reserved roles, a feature may add **domain folders** (and domain
 
 **Typical examples of domain folders:**
 
-- `steps/`: when the feature is a multi-step wizard. The folder has its own `steps/layout.tsx` (a StepLayout), and each step file is a mini-composer that fulfills the StepLayout's zones.
+- `steps/`: when the feature is a multi-step wizard. The folder has its own `steps/layout.tsx` (a StepLayout). Either the root composes every StepLayout and hands the wizard resolved nodes, or each step file is a mini-composer that fills its StepLayout; both patterns are valid.
 - `scenarios/`: when the feature is a surface composing many self-contained units. Each scenario file exports its own chassis-leaf split (`<Name>Description`, `<Name>Content`, `<Name>CTA`, `<Name>CTALoading`) plus a hook `use<Name>`. The feature's chassis composes scenarios into the larger surface.
 - `form/`: when "form" is the recurring concept inside the feature (an editor of structured rules, for example). The folder has its own `form/index.tsx`, `form/layout.tsx`, plus feature-local UI files and its own `form/utils/`. Same pattern, one level deeper.
 - `list/` → `list/item/`: two-level recursion. `list/` is the domain folder for the collection; inside, `item/` is itself a domain folder for one element, with its own `index.tsx`, `layout.tsx`, `actions.tsx`, etc. A chassis branch like `loading.tsx` can be broken out to its own file rather than inline when it grows enough to warrant it.
@@ -188,7 +208,17 @@ These names aren't interchangeable or generic; each works only because that name
 
 **Sub-domain prefixing rule.** When one name is overloaded within a feature or scope, qualify it with its sub-domain. This is the universal move any DDD practitioner would agree on: an overloaded `account` in a domain that touches finance, identity, and incident reports doesn't disambiguate on its own; it resolves into `financial-account` / `user-account` / `eyewitness-account`, and every consumer says which it means. The same move applies anywhere a reserved or domain name appears more than once in the same folder. Layout disambiguation (`editor-layout.tsx`, `viewer-layout.tsx` when more than one layout is in scope; see the *Layout* row in the reserved-roles table) is one application of this rule, not its definition. Apply it to parts, actions, hooks, anything: when the bare name is ambiguous, the sub-domain prefix carries the meaning.
 
-**Recursion rule.** Inside a domain folder, the **same reserved roles** repeat, scoped to the sub-domain. Open one and you'll see the familiar machinery: `index.tsx` (mini-chassis with the same universal-three / optional-two branching: always error / loading / hydrated, plus empty and submitting when the sub-surface has those concepts), `layout.tsx`, possibly `parts/`, `actions/` or `actions.tsx`, `utils/`. Each file may itself be a mini-chassis. There's no special "second-level" rulebook; it's the same pattern applied again, one scope deeper. The collapsed form (`actions.tsx` instead of `actions/`) is common at this scale because the sub-domain is smaller.
+**Recursion rule.** Inside a domain folder, the **same reserved roles** repeat, scoped to the sub-domain. Open one and you'll see the familiar machinery: `index.tsx` (mini-chassis with the same universal-three / optional-two branching: error / loading / hydrated for data features, machine states for reusable machines, and optional empty and submitting when owned), `layout.tsx`, possibly `parts/`, `actions/` or `actions.tsx`, and `utils/`. Each file may itself be a mini-chassis. There's no special "second-level" rulebook; it's the same pattern applied again, one scope deeper. The collapsed form (`actions.tsx` instead of `actions/`) is common at this scale because the sub-domain is smaller.
+
+**Step composition choices.** Lifeguides `components/session/session-scheduler/index.tsx` wraps every step in `StepLayout` itself, binding `contentZone`, `submitButton`, and `backButton` as nodes; `schedule-session-wizard.tsx` selects one resolved node.
+
+| Choice | Tradeoff |
+|---|---|
+| Root-composed steps | One file shows every step tree and its external controls; the root grows with the flow. |
+| Step-composed steps | Each step encapsulates its own tree; understanding the whole flow requires opening the step files. |
+| Eager node table | Every render constructs inactive nodes too; required props use inert typed sentinels such as `OFF_SCREEN_DAY` and `OFF_SCREEN_TIME_SLOT` in `components/session/session-scheduler/schedule-session-wizard.tsx`, not optional types or assertions hiding missing values. Only the active step mounts. |
+
+**Nested chassis recipe.** A step that owns a query is a chassis, even if its submit and back controls stay external. Accept resolved query inputs and selection callbacks; call its query hook unconditionally, skip invalid inputs through query options, flat-branch its own error / loading / empty / ready states, and mount a resolved presentational body. Keep wizard transitions and controls in the parent. Lifeguides `components/session/session-scheduler/steps/select-time-step.tsx` (`SelectTimeStep`) supplies this query boundary; the parent `index.tsx` supplies the controls. This is the explicit exception to "queries live in index.tsx"; ordinary leaves still do not query. Details and sentinel invariants: `references/fsm-wizards.md`.
 
 **Nesting is shallow in practice.** Most features stay at one level (`feature/steps/...`, `feature/scenarios/...`). Going deeper is rare and usually a sign the feature should split into sibling features instead.
 
@@ -200,9 +230,10 @@ A stricter React pattern, not a divergent one. The rules below catch patterns th
 |---|---|
 | **Inline JSX conditionals are discouraged.** Use `cn()` for className switching, hoist `ReactNode`s into variables, lift branches to the chassis, or extract a subcomponent that owns its branching internally. | Inline conditionals make JSX a hybrid of outline and control flow; humans can't scan it. Excessive guards/ternaries signal defensive programming under a chassis that didn't narrow enough. The hardest habit to internalize. |
 | **Avoid `children` even for single-slot cases.** Use a named zone prop (`contentZone`, `titleZone`) from the first slot up. | `children` is an implied singleton: pretends to be one slot but breaks if you add a second. Named zones are honest about cardinality, scale to N slots without renaming, and surface composition intent at the call site. |
-| **Chassis-vs-leaf is a file-system rule:** `index.tsx` is the chassis; everything else is presentational. | Guidelines drift; rules don't. Structural enforcement is what produces the line-count reductions. |
+| **Render functions belong only to the virtualized list row callback.** A zone is a `ReactNode`; a pluggable part is `ComponentType<ItemProps>`, defaulted and mounted at the chassis or collection tier. A list part fills `listZone` and owns the ONE allowed `renderItem`, returning one item component. No render functions elsewhere. | Consumers supply component types; layouts receive resolved nodes. The RosterBody/LegendList boundary is the model; combobox relaying `listItemNode` through Layout is a compromise, not permission. |
+| **Chassis-vs-leaf is a file-system rule:** `index.tsx` is the default chassis; a named step owning its query is an explicit nested chassis exception. | Query ownership requires the same flat state branches at every tier; ordinary leaves stay presentational. |
 | **Flag props on leaves for chassis-decided states are smell signals.** Swap zones per state. | A flag prop encodes "chassis already decided, here's the bit." That's relay, not presentation. |
-| **Mutations and toasts go in `actions/use<Noun>Actions.ts`.** Component files don't import `useMutation`, `graphql()`, or `Toast.show()`. Actions return async functions or `{ data, error }` tuples. | "Extract a custom hook" is too vague to produce consistent results. The `actions/` pattern makes mutation logic reusable and testable in isolation. |
+| **Mutations and toasts go in `actions/use<Noun>Actions.ts`.** Component files do not import `useMutation`, declare mutations with `graphql()`, or call `Toast.show()`. Chassis queries and colocated fragments may use `graphql()`. Actions return async functions or `{ data, error }` tuples. | "Extract a custom hook" is too vague to produce consistent results. The `actions/` pattern makes mutation logic reusable and testable in isolation. |
 | **Avoid `useEffect`.** Most side effects belong in handler functions. Genuine lifecycle exceptions exist (canvas / WebRTC / subscriptions / DOM measurement), but reach for it only with reason. | React docs call `useEffect` an "escape hatch." Effects cause stale-closure bugs and re-render storms; most cases are better as handlers, render-time derivation, or `useSyncExternalStore`. |
 | **No `try/catch/finally` in hook bodies.** Use `.then(onSuccess, onError)` or `.catch()`. | React Compiler concession. The compiler bails out of optimizing a hook body containing `try/finally` or `try` without `catch` (it goes un-memoized rather than failing). Method-form (`.catch()`, `.finally()`) is fine. Prefer `await` outside the hook-body boundary. |
 | **Don't use `useMemo` / `useCallback` / `React.memo`.** React Compiler memoizes automatically. | Compiler concession. Manual memoization is redundant under the compiler (it preserves yours; you just don't need it). Off-compiler? Ignore this row. |
@@ -229,8 +260,8 @@ Nuance: **interaction state on the same component** can stay as a flag prop. A `
 - **The hydrated render reads as a declarative outline:** a small DSL over named zones. You can understand the feature by reading `index.tsx` + the orchestration hook (whichever placement it landed in).
 - **Zero null guards in hydrated components.** All existence checks live at the chassis.
 - **No flag props relayed downstream** for chassis-decided states.
-- **No `useMutation` / `graphql()` / `Toast.show()` imports** in scenario or feature files; those live in `actions/`.
-- **Stories ordered by chassis branch:** `ErrorState`, `Loading`, `Hydrated` (always); plus `NoData` and `Submitting` only when those branches are present in this surface. Order matches the trunk early-return order; the sidebar reads like the chassis.
+- **No mutation hooks, mutation declarations, or toast calls** in scenario or feature components; those live in `actions/`. Queries and colocated fragments remain with their consumers.
+- **Stories ordered by chassis branch:** `ErrorState`, `Loading`, and `Hydrated` for data features; machine-state stories for reusable machines; plus `NoData` and `Submitting` only when those branches are present in this surface. Order matches the trunk early-return order; the sidebar reads like the chassis.
 - **Platform pairs share a `.types.ts`** so `.tsx` and `.web.tsx` can't drift on contract.
 - **Duplication collapses** (see *What to expect*). Repeated layout chrome across states and strategies factors into one component fed zones; the code usually gets smaller, but that shrink is the signal, not the target. Per-state accounting: a flag-driven leaf pays for a type, a hook-return field, a prop pass-through, an internal ternary, and the chassis still setting the flag; the zone version is N small leaves the chassis swaps once, with zero downstream branching and O(1) read-time scanning.
 
@@ -274,17 +305,20 @@ Quick smell-to-fix lookup for spotting code that has fallen out of the pattern. 
 | `data && <X/>` or `data?.field` in hydrated | Chassis didn't narrow; lift the guard up |
 | Hook returns `{ canCreate, canDelete }` flags | Return optional handlers (`onCreate?`, `onDelete?`) |
 | `children` prop, even for a single slot | Named zone prop (`contentZone`, `titleZone`) |
-| Layout takes domain values (`selectedDate`, `userId`) | Layouts take `ReactNode` zones + UI booleans only |
+| Layout takes domain values (`selectedDate`, `userId`) | Layouts take `ReactNode` zones and presentation props; layout-owned callbacks such as `onDismiss` are allowed |
 | Skeleton file recreates layout structure | Reuse the Layout; populate zones with skeletons |
-| Props relayed through a layout to a leaf | Bind at the chassis; layout passes only `ReactNode` zones |
+| Props relayed through a layout to a leaf | Bind at the chassis or collection tier; layout passes only resolved `ReactNode` zones |
+| `Pressable` children render callback used only for pressed styling | Use an active or group-active class with static children; do not add a render callback for styling |
+| Render function used where a `ComponentType` would do | Accept `xxxComponent?: ComponentType<XxxProps>`; default and mount it with resolved data at the chassis or collection tier. Only a virtualized list part owns a row render callback, returning one item |
+| Function-typed layout prop used to render content or relay a component | Bind the component at the chassis or collection tier; layout receives a `ReactNode` zone. Layout-owned interaction callbacks such as `onDismiss` are callbacks, not render functions |
 | `Platform.OS` ternary inside one component | Split into `.tsx` / `.web.tsx` with shared `.types.ts` |
 | Platform-split pair without sibling `<base>.types.ts` | Add the shared types file; both variants import contract from it (hard requirement, even for trivial signatures) |
 | Same type/interface declared inline in both `foo.ts` and `foo.web.ts` | Move the type to `foo.types.ts`; both variants `import type` from it |
 | Platform-split pair with mismatched extensions (`foo.ts` + `foo.web.tsx`) | Rename to matching extensions; when they disagree Metro's resolver can pick the wrong variant, silently pulling native code into the web build |
 | `foo.types.ts` imports from a platform-specific package (e.g. `@livekit/react-native-webrtc`) | Hand-define the contract; even `import type` can leak the package into the web Metro bundle |
 | State branching scattered through JSX (`&&` / `?:`) | Pull branching into chassis flat early-returns |
-| `useMutation` / `graphql()` / `Toast.show()` outside `actions/` | Extract to `actions/use<Noun>Actions.ts` |
-| `useQuery` in any file other than `index.tsx` | Chassis owns query lifecycle; move it up |
+| Mutation hooks, mutation declarations, or toast calls outside `actions/` | Extract to `actions/use<Noun>Actions.ts` |
+| `useQuery` in an ordinary leaf | Move it to the owning chassis or its orchestration hook; a named query-owning step is a nested chassis and must flat-branch its own states |
 | `useEffect` for a user-action side effect | Move to a handler function; effects are an escape hatch |
 | Router hook (`useRouter`, `useParams`, `useNavigate`, etc.) downstream of the shell | Push router contact to the shell; pass resolved values + callbacks as props |
 
@@ -299,7 +333,7 @@ components/
       index.tsx              # Chassis
       ...
     <thing>.tsx              # Simple domain components (file = no internal structure)
-  ui/                        # shadcn-style UI primitives, reusable, defensive
+  ui/                        # Shadcn-style primitives and reusable machines, such as combobox
   charts/, datetime/, ...    # Shared language: cross-domain visual vocabulary
   primitives/                # Low-level web↔native interop infrastructure
 ```
@@ -308,4 +342,4 @@ components/
 
 **Cross-domain features** (e.g., a tool relating two domain concepts) live in the **primary** domain folder by ownership of the relationship, not as a separate top-level cross-cutting bucket. A "members-by-company" tool lives under whichever side owns the relationship semantically.
 
-**File vs folder is the intelligence boundary.** A `.tsx` file in a domain folder is presentational and standalone. A folder triggers zone-composer rules: `index.tsx` is the chassis; everything else is presentational or extracted logic.
+**File vs folder is the intelligence boundary.** A `.tsx` file in a domain folder is normally presentational and standalone; a named query-owning step is the explicit nested chassis exception. A folder triggers zone-composer rules: `index.tsx` is the default chassis; the same ownership boundary applies to named nested chassis, presentational leaves, and extracted logic.
