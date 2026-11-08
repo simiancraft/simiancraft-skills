@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -713,6 +713,39 @@ describe('carveIssue', () => {
     };
     await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
     expect(lanes).toEqual(['C2', 'C3', 'C4']);
+  });
+
+  test('a size rejection reaches the next carver round without recording a failed attempt', async () => {
+    const io = trunk();
+    const ctx = ctxFor(io);
+    const reason = '[t] posts: proposed 2 points; independently sized at 3 points including proof.';
+    const rejected = fixture('size', { ...confirmation(10, 'carve', 'size-mismatch', false), reason });
+    const accepted = fixture('cover', confirmation(10, 'carve', 'cover', true));
+    const prompts: string[] = [];
+    let confirmations = 0;
+    const carverCommand = ENGINES.fixture.command;
+    const confirmerCommand = ENGINES.fixture2.command;
+    const carver = spyOn(ENGINES.fixture, 'command').mockImplementation((cwd, prompt, model) => {
+      prompts.push(prompt);
+      return carverCommand(cwd, prompt, model);
+    });
+    const confirmer = spyOn(ENGINES.fixture2, 'command').mockImplementation((cwd, prompt) =>
+      confirmerCommand(cwd, prompt, ++confirmations === 1 ? rejected : accepted));
+    try {
+      const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), rejected), io);
+      expect(out.outcome).toBe('carve');
+      expect(confirmations).toBe(2);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).not.toContain(reason);
+      expect(prompts[1]).toContain("## The confirmer's case against your last answer");
+      expect(prompts[1]).toContain(`size-mismatch: ${reason}`);
+      expect(io.writes.some((op) => op.argv.some((arg) => arg.startsWith('loop/carves:')))).toBe(false);
+      expect(labels(io, 10)).not.toContain('loop/dlq: carve');
+      expect(records(io, 10)).toEqual(['applying', 'live']);
+    } finally {
+      carver.mockRestore();
+      confirmer.mockRestore();
+    }
   });
 
   test('a dispute to the round cap is a carve dead letter, with every open leaf paused and no child created', async () => {
