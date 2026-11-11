@@ -559,7 +559,9 @@ export const MACHINE: StateNode = {
               entry: ['moveCard'],
               on: {
                 BLOCKER_CLOSED: [
-                  { target: 'ticket.ready.ready', guard: 'blockerCompleted' },
+                  // Not straight to Ready: the freed card may be unsized, oversized, or blocked by another
+                  // sibling, so reconcile places it by its facts (realized by the work phase's refill).
+                  { target: 'ticket.reconcile', guard: 'blockerCompleted' },
                   { target: 'ticket.reconcile', guard: 'hasOpenParent', actions: ['revisitParent'] },
                   { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentReason'] },
                 ],
