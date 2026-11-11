@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { readTree } from '../../carve-github-issue/lib/tree.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { appraiseIssue, refusedAsTrunk } from './appraise.ts';
+import { appraiseIssue, refusedAsTrunk, validateAppraisal } from './appraise.ts';
 
 const treeOf = (labels: string[]) => {
   const io = new FakeTracker('loop-bot', [fakeIssue(1, { labels: labels.map((name) => ({ name })) })]);
@@ -33,5 +33,24 @@ describe('the engines an appraisal requires', () => {
   });
   it('does not care which engine the confirmer is when closes are not confirmed', async () => {
     expect(await run(false)).not.toMatch(/must be different engines/);
+  });
+});
+
+describe('an appraisal that closes the issue', () => {
+  const base = { issue: 7, reason: 'the spike measured 0.1 ms; nothing remains', closeComment: 'Nothing to do.' };
+
+  it("reads the scale's zero on a closing verdict as no size, not a malformed answer", () => {
+    const answer = validateAppraisal({ ...base, verdict: 'obsolete', points: 0 }, 7);
+    expect(answer.ok).toBe(true);
+    if (answer.ok) expect(answer.result.points).toBeUndefined();
+  });
+
+  it('still refuses a zero size on work it calls valid', () => {
+    const answer = validateAppraisal({ ...base, verdict: 'valid', points: 0 }, 7);
+    expect(answer.ok).toBe(false);
+  });
+
+  it('still refuses a negative size on any verdict', () => {
+    expect(validateAppraisal({ ...base, verdict: 'already-fixed', points: -1 }, 7).ok).toBe(false);
   });
 });

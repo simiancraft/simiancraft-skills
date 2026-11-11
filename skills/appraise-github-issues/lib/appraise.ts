@@ -186,12 +186,15 @@ export function isHeld(labels: Array<{ name: string }>, skipLabels: string[]): b
 
 const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 
-function validateAppraisal(raw: unknown, issue: number): { ok: true; result: AppraisalResult } | { ok: false; why: string } {
+export function validateAppraisal(raw: unknown, issue: number): { ok: true; result: AppraisalResult } | { ok: false; why: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, why: 'not an object' };
   const r = raw as Record<string, unknown>;
   if (r.issue !== issue) return { ok: false, why: `names issue ${JSON.stringify(r.issue)}, not #${issue}` };
   if (!APPRAISAL_VERDICTS.includes(r.verdict as AppraisalVerdict)) return { ok: false, why: `unknown verdict ${JSON.stringify(r.verdict)}` };
   if (!nonEmptyString(r.reason)) return { ok: false, why: 'no reason' };
+  // A size only means something for work to do. A verdict that closes or hands the issue off may
+  // carry the scale's zero ("nothing to estimate"), which reads as no size rather than a bad answer.
+  if (r.verdict !== 'valid' && r.points === 0) r.points = undefined;
   if (r.points !== undefined && r.points !== null && (!Number.isInteger(r.points) || (r.points as number) <= 0)) {
     return { ok: false, why: `points must be a positive integer, got ${JSON.stringify(r.points)}` };
   }
