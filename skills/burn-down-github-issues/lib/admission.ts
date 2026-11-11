@@ -47,6 +47,9 @@ export type Admission<I extends PlacedIssue> = {
   admit: () => Promise<I[]>;
 };
 
+/** Rounds of sizing one refill makes: freed cards, then children their carving created, and so on. */
+export const MAX_APPRAISAL_PASSES = 4;
+
 export function createAdmission<I extends PlacedIssue>(deps: AdmissionDeps<I>): Admission<I> {
   const dispatched = new Set<number>();
   const appraised = new Set<number>();
@@ -81,16 +84,21 @@ export function createAdmission<I extends PlacedIssue>(deps: AdmissionDeps<I>): 
       deps.fetchBase();
       let placement = await deps.place();
       reportStuck(placement);
-      const budget = deps.appraiseLimit - appraised.size;
-      const unsized = [...placement.values()].some(({ lane, issue }) => lane === 'A1' && !appraised.has(issue.number));
-      if (unsized && budget > 0 && deps.canAppraise() && !deps.stopping()) {
+      // Sizing can create work: an oversized card goes to the knife, whose children arrive unsized.
+      // Size again until nothing new is unsized, so a refill asked at idle does not end the run with
+      // freshly carved children nobody will appraise.
+      for (let pass = 0; pass < MAX_APPRAISAL_PASSES; pass++) {
+        const budget = deps.appraiseLimit - appraised.size;
+        const unsized = [...placement.values()].some(({ lane, issue }) => lane === 'A1' && !appraised.has(issue.number));
+        if (!unsized || budget <= 0 || !deps.canAppraise() || deps.stopping()) break;
         const sized = await deps.appraise(placement, (issue) => appraised.has(issue.number), budget);
         if (sized === null) {
           deps.log('the appraisal lock is held elsewhere; cards freed mid-run are sized by the next run');
-        } else {
-          for (const n of sized) appraised.add(n);
-          placement = await deps.place();
+          break;
         }
+        for (const n of sized) appraised.add(n);
+        placement = await deps.place();
+        if (sized.length === 0) break;
       }
       if (deps.stopping()) return [];
       const admitted = deps

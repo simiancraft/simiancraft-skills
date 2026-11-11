@@ -7,7 +7,7 @@ import { type AdmissionPlacement, createAdmission } from './admission.ts';
  * Placement follows the reconcile order the loop uses: a blocker not closed as completed waits (W1),
  * then no size is the Inbox (A1), over the ceiling is To carve (C1), otherwise Ready (B1).
  */
-type Fake = { number: number; size?: number; blockers: number[]; closed?: 'COMPLETED' | 'NOT_PLANNED'; sizeOnAppraisal?: number };
+type Fake = { number: number; size?: number; blockers: number[]; closed?: 'COMPLETED' | 'NOT_PLANNED'; sizeOnAppraisal?: number; carveInto?: Fake[] };
 type Issue = { number: number; blockedBy: { nodes: Array<{ number: number; state: string; stateReason: string | null }> } };
 const CEILING = 5;
 
@@ -51,7 +51,12 @@ function world(fakes: Fake[], opts: { limit?: number; appraiseLimit?: number; lo
     appraise: async (placement, skip, limit) => {
       if (opts.lockHeld) return null;
       const inbox = [...placement.values()].filter(({ lane, issue }) => lane === 'A1' && !skip(issue)).slice(0, limit);
-      for (const { issue } of inbox) byNumber.get(issue.number)!.size = byNumber.get(issue.number)!.sizeOnAppraisal ?? 3;
+      for (const { issue } of inbox) {
+        const f = byNumber.get(issue.number)!;
+        f.size = f.sizeOnAppraisal ?? 3;
+        // An oversized card goes to the knife, whose children arrive unsized.
+        if (f.size > CEILING) for (const child of f.carveInto ?? []) byNumber.set(child.number, { ...child });
+      }
       return inbox.map(({ issue }) => issue.number);
     },
     select: (placement) => [...placement.values()].filter(({ lane }) => lane === 'B1').map(({ issue }) => issue).sort((a, b) => a.number - b.number),
@@ -91,6 +96,16 @@ describe('mid-run admission', () => {
     await w.run();
     expect(w.worked).toEqual([1]);
     expect(w.fakes.get(2)!.size).toBe(8);
+  });
+
+  it('sizes and works what the knife carved out of a freed card, two levels down, before the run ends', async () => {
+    const grandchild = { number: 20, blockers: [] };
+    const child = { number: 10, blockers: [], sizeOnAppraisal: 8, carveInto: [grandchild] };
+    // No sibling settles after the carving, so only the refill's own repeated sizing reaches #20.
+    const w = world([{ number: 1, size: 3, blockers: [] }, { number: 2, blockers: [1], sizeOnAppraisal: 8, carveInto: [child] }]);
+    await w.run();
+    expect(w.worked).toEqual([1, 20]);
+    expect([...w.admission.appraised].sort((a, b) => a - b)).toEqual([2, 10, 20]);
   });
 
   it('frees a dependent only when every blocker has closed', async () => {
