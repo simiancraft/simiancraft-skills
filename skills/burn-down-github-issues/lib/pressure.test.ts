@@ -615,7 +615,7 @@ describe('safety pressure', () => {
   it('a fast review cannot turn its partially registered check list into the complete expected set', async () => {
     let clock = 0;
     const ctx = context(new FakeTracker(bot));
-    const { checksOn } = loadFunctions(pipeline, ['checksOn'], {
+    const { checksOn } = loadFunctions(pipeline, ['checksOn', 'reviewedChecks'], {
       sh: (_ctx: unknown, argv: string[]) => argv.some(a => a.includes('/check-runs')) ? '{"name":"lint","verdict":"success"}' : '',
     });
     // Review finished at t=0. A second workflow registers at t=60s on this same head.

@@ -547,11 +547,21 @@ function checksOn(ctx: Context, sha: string): { names: string[]; passed: string[
       .map((line) => JSON.parse(line) as { name: string; verdict: string | null });
   const runs = lines(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/check-runs?per_page=100`, '--paginate', '--jq', '.check_runs[] | {name, verdict: .conclusion}']);
   const statuses = lines(['gh', 'api', `repos/${ctx.project.repo}/commits/${sha}/statuses?per_page=100`, '--paginate', '--jq', '.[] | {name: .context, verdict: .state}']);
-  const all = [...runs, ...statuses];
-  // Which of them had passed there is kept too: a check that passed for the reviewer and is only
-  // skipped on the head that would land has stopped running, which a job skipped by design never did.
+  return reviewedChecks([...runs, ...statuses]);
+}
+
+/**
+ * What a landing expects from the checks the reviewed head carried. A name is expected to register
+ * on the landing head only if a node under it ran at review: a name that was only ever skipped (a job
+ * skipped by design, or the jobs of a run made while the pull request was a draft, whose matrix
+ * names are not even expanded, as `Tests (${{ matrix.shard }}/3)`) may never register again, and
+ * waiting for it holds the landing to the timeout. Which names had passed is kept too: a check that
+ * passed for the reviewer and is only skipped on the head that would land has stopped running.
+ */
+export function reviewedChecks(all: Array<{ name: string; verdict: string | null }>): { names: string[]; passed: string[] } {
+  const ran = all.filter((c) => c.verdict !== 'skipped').map((c) => c.name);
   const passed = all.filter((c) => c.verdict === 'success' || c.verdict === 'neutral').map((c) => c.name);
-  return { names: [...new Set(all.map((c) => c.name))], passed: [...new Set(passed)] };
+  return { names: [...new Set(ran)], passed: [...new Set(passed)] };
 }
 
 /**
