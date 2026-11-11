@@ -247,8 +247,12 @@ skill), reached through the size callback the loop renders into the callbacks di
 turns it into a trunk: sub-issues the loop works as leaves, and a carving record on the trunk's
 thread that says their order, their edges, and which are paused.
 
-Every close the loop makes fires the context's close hook: a roll-up comment on the trunk, then one
-revisit of the trunk per run, which asks the knife whether the carving is still good. A revisit
+Every close the loop makes fires the context's close hook: a roll-up comment on the trunk, then a
+revisit of the trunk, which asks the knife whether the carving is still good. A trunk is revisited
+again in the same run only when its tree's fingerprint moved since the last visit (a child closed,
+a hold changed), visits of one trunk run one after another, and a run caps them at
+`MAX_REVISITS_PER_RUN` (`lib/carving.ts`), so the close of a trunk's last child rolls it up in the
+run that merged it. A revisit
 that answers `exhausted` releases the trunk (`loop/released`), and the loop runs the release
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.

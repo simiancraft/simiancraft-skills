@@ -12,7 +12,7 @@ import type { Seat } from '../../fix-github-issue/lib/engines.ts';
 import type { CarveKnobs } from '../../carve-github-issue/lib/carve.ts';
 import { claim, keepClaimed, leaseLost, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { carveIssue, unreleasedPauseMarkers } from '../../carve-github-issue/lib/knife.ts';
-import { liveClaim, needsRevisit, parseMarker, pointsOf, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
+import { fingerprint, liveClaim, needsRevisit, parseMarker, pointsOf, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts';
 import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
@@ -83,9 +83,20 @@ function issueOf(tree: Tree): Issue {
   return { number: tree.issue.number, title: tree.issue.title, createdAt: tree.issue.createdAt, labels: tree.issue.labels, parent: tree.issue.parent, subIssuesSummary: tree.issue.subIssuesSummary, blockedBy: tree.issue.blockedBy };
 }
 
-/** One revisit per trunk per run; later closes in the same run are seen by the next sweep. */
+/** How many times one trunk is revisited in one run, however often its tree moves. */
+export const MAX_REVISITS_PER_RUN = 8;
+
+/**
+ * A trunk is revisited when its tree moved since this run's last visit of it, so a child closing
+ * after the sweep (or after an earlier child's close) still rolls up in the same run. Visits of one
+ * trunk queue rather than race, and each run caps them at MAX_REVISITS_PER_RUN.
+ */
 export class Carving {
-  private readonly revisited = new Set<number>();
+  /** The tree each trunk's last revisit this run left behind, as its fingerprint. */
+  private readonly lastSeen = new Map<number, string>();
+  private readonly visits = new Map<number, number>();
+  /** The revisit in flight per trunk; the next one waits for it. */
+  private readonly inFlight = new Map<number, Promise<void>>();
   private readonly deps: CarvingDeps;
   constructor(deps: CarvingDeps) {
     // Every card this driver places goes through `mark`. A card is a projection of an issue the run
@@ -131,16 +142,51 @@ export class Carving {
     }
   }
 
-  /** Hands a trunk to the knife once per run, and finishes a release when the knife exhausts it. */
+  /**
+   * Hands a trunk to the knife when its tree moved since this run last did, and finishes a release
+   * when the knife exhausts it. Calls for one trunk run one after another.
+   */
   async revisit(number: number, why: string): Promise<void> {
-    const { ctx, knobs, mark, log } = this.deps;
-    if (this.revisited.has(number)) {
-      log(`#${number} already revisited this run (${why}); the next sweep sees the rest`);
-      return;
+    const prior = this.inFlight.get(number) ?? Promise.resolve();
+    const visit = prior.catch(() => {}).then(() => this.revisitOnce(number, why));
+    this.inFlight.set(number, visit);
+    try {
+      await visit;
+    } finally {
+      if (this.inFlight.get(number) === visit) this.inFlight.delete(number);
     }
-    this.revisited.add(number);
+  }
+
+  private async revisitOnce(number: number, why: string): Promise<void> {
+    const { ctx, knobs, mark, log } = this.deps;
     const io = trackerIo(ctx);
     const tree = readTree(ctx, number, io);
+    const facts = JSON.stringify(fingerprint(tree, ctx.botLogin));
+    if (this.lastSeen.get(number) === facts) {
+      log(`#${number} unchanged since its last revisit this run (${why}); nothing to do`);
+      return;
+    }
+    const count = (this.visits.get(number) ?? 0) + 1;
+    if (count > MAX_REVISITS_PER_RUN) {
+      log(`#${number} revisited ${MAX_REVISITS_PER_RUN} times this run (${why}); the next sweep sees the rest`);
+      return;
+    }
+    this.visits.set(number, count);
+    try {
+      await this.visitTree(number, why, tree);
+    } finally {
+      // What the visit left behind, so a later trigger with nothing new does not visit again.
+      try {
+        this.lastSeen.set(number, JSON.stringify(fingerprint(readTree(ctx, number, io), ctx.botLogin)));
+      } catch {
+        this.lastSeen.delete(number);
+      }
+    }
+  }
+
+  private async visitTree(number: number, why: string, tree: Tree): Promise<void> {
+    const { ctx, knobs, mark } = this.deps;
+    const io = trackerIo(ctx);
     const issue = issueOf(tree);
     // The card enters the lane of the work about to happen: an announced generation is finished
     // in Spawning children, a trunk that already has a record or children is visited in
