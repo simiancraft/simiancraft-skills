@@ -138,6 +138,12 @@ prefix was written by a person, and only a person clears it:
 - **`#N not selected: over this run's limit of 5 (--limit raises it)`**, or `not resumed` for a
   pull request waiting on a driver. The issue is Ready; the run took the first `limit` of them (5 by
   default). `--limit` raises it for one run, or the next run takes it.
+- **`#N  admitted mid-run: ...` after a lane settles.** The refill placed the backlog again and
+  found a card this run made eligible (its blocker merged, the knife carved it, its trunk released
+  it). It counts against `--limit` like any other.
+- **`#N  waits on #M, closed without completing; a person decides whether it still applies`.** The
+  blocker closed not planned or as a duplicate; nothing moves the dependent out of Blocked by sibling
+  by itself, so the run says so once.
 - **`board: N card(s) placed by their facts` and a burst of `board:` lines at startup.** The run
   start puts every card in the window where its facts say before any seat moves one; a card a
   person dragged somewhere the facts do not support goes back, with the line saying where and

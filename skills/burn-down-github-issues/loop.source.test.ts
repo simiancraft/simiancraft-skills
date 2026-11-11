@@ -62,3 +62,23 @@ describe('drivers drain the board before moving on or exiting', () => {
     expect(fix.trimEnd().endsWith('await BOARD?.settled();')).toBe(true);
   });
 });
+
+describe('the work phase takes on what the run made eligible', () => {
+  it('works through a refilling pool whose refill is the mid-run admission', () => {
+    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONFIG\.concurrency,[\s\S]*?ADMISSION\.admit,/);
+    expect(source).not.toMatch(/await pool\(\s*candidates,/);
+  });
+
+  it('records the start batch before any lane runs, and reads the same placement and selection', () => {
+    const work = source.indexOf('await refillingPool(');
+    expect(source.indexOf('ADMISSION.start(')).toBeGreaterThan(0);
+    expect(source.indexOf('ADMISSION.start(')).toBeLessThan(work);
+    expect(source).toContain('place: () => placeBacklog(allIssues()),');
+    expect(source).toContain("select: (placement) => selectCandidates(placement as Placement, { quiet: true }),");
+    expect(source).toContain("release = claimLock(ctx, 'appraise.lock');");
+  });
+
+  it('counts the start-of-run appraisals in the run budget', () => {
+    expect(source).toContain('for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);');
+  });
+});

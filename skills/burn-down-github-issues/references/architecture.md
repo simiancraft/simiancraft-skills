@@ -228,9 +228,20 @@ rule still applies, and the console says which lane kept each one out.
 `lib/run-scope.ts` retains explicit roots separately from effective membership. Its `refresh`
 accepts tracker parent facts, expands membership regardless of response order, and returns only
 newly admitted numbers. Repeating the same facts returns none. Every backlog read refreshes the
-shared effective set before scope readers use it. This membership contract does not replace the
-one-pass scheduler or promise dispatch of children created after a queue was consumed. Without
-`--only`, membership stays unrestricted and refresh returns no incremental admissions.
+shared effective set before scope readers use it. Without `--only`, membership stays unrestricted
+and refresh returns no incremental admissions.
+
+The work phase is not a fixed list. `lib/admission.ts` is its refill, and `refillingPool`
+(`fix-github-issue/lib/pool.ts`) asks it after each lane settles and once more before the run calls
+itself idle: the base is fetched, the backlog placed again (which refreshes the scope, so children
+the knife carved meanwhile are in it), unsized cards in the window are appraised under
+`appraise.lock`, and the Ready cards not yet handed to a worker this run join the pool. So a
+dependent whose blocker this run merged, a child carved mid-run, and a trunk's released remainder
+are worked in the run that made them eligible. Every admission counts against `--limit` and every
+appraisal against `--appraise-limit`; an issue is handed to a worker at most once per run, so a lane
+that settles without closing its issue (a busy claim, a failed worker) is not retried until the next
+run. A stopping run admits nothing. Changes made outside the run (a person's close, a hold removed,
+another run's claim released) are seen by the next refill only if this run is still working.
 
 A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
 position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
