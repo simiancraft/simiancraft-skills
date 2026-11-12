@@ -132,6 +132,24 @@ describe('revisiting a trunk within one run', () => {
     expect(calls).toBe(2);
   });
 
+  it('still serves a close that arrived during a visit that threw, and reports the throw', async () => {
+    const io = trunk();
+    let calls = 0;
+    let run: Carving;
+    knife(async () => {
+      calls++;
+      if (calls === 1) {
+        io.close(11);
+        io.close(12);
+        await run.revisit(10, '#12 closed, the last child'); // another lane's close hook, during the visit
+        throw new Error('knife failed');
+      }
+    });
+    run = carving(io);
+    await expect(run.revisit(10, 'the sweep')).rejects.toThrow('knife failed');
+    expect(calls).toBe(2);
+  });
+
   it('retries the same facts after a visit that threw', async () => {
     const io = trunk();
     let calls = 0;

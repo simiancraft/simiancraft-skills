@@ -160,15 +160,24 @@ export class Carving {
       return;
     }
     this.active.add(number);
+    // A visit that throws still serves a note left during it (one recovery pass), then reports the
+    // error; a second failure, or a stop, ends at once.
+    let failure: unknown = null;
     try {
       let reason = why;
       for (;;) {
-        await this.revisitOnce(number, reason);
+        try {
+          await this.revisitOnce(number, reason);
+        } catch (error) {
+          if (error instanceof RunStopping || isStopping() || failure !== null) throw error;
+          failure = error;
+        }
         const again = this.pending.get(number);
         if (again === undefined) break;
         this.pending.delete(number);
         reason = again;
       }
+      if (failure !== null) throw failure;
     } finally {
       this.active.delete(number);
       this.pending.delete(number);
