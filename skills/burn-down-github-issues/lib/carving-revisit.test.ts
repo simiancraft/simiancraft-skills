@@ -100,6 +100,66 @@ describe('revisiting a trunk within one run', () => {
     expect(lines.some((l) => l.includes(`revisited ${MAX_REVISITS_PER_RUN} times this run`))).toBe(true);
   });
 
+  it('finishes when the visit itself closes a child of the trunk, and serves that close with one more pass', async () => {
+    const io = trunk();
+    let calls = 0;
+    let run: Carving;
+    knife(async () => {
+      calls++;
+      if (calls === 1) {
+        // The knife closes a superseded child; its close hook asks for this same trunk.
+        io.close(12);
+        await run.revisit(10, '#12 closed');
+      }
+    });
+    run = carving(io);
+    const done = run.revisit(10, 'the sweep');
+    const outcome = await Promise.race([done.then(() => 'done'), new Promise((resolve) => setTimeout(() => resolve('stuck'), 1000))]);
+    expect(outcome).toBe('done');
+    expect(calls).toBe(2);
+  });
+
+  it('visits again when a child closed during the visit, though the tracker it left shows the close', async () => {
+    const io = trunk();
+    let calls = 0;
+    knife(async () => {
+      calls++;
+      if (calls === 1) io.close(11); // another lane's merge, during the knife's turn
+    });
+    const run = carving(io);
+    await run.revisit(10, 'the sweep');
+    await run.revisit(10, '#11 closed'); // that lane's close hook, after the visit
+    expect(calls).toBe(2);
+  });
+
+  it('retries the same facts after a visit that threw', async () => {
+    const io = trunk();
+    let calls = 0;
+    knife(async () => {
+      calls++;
+      if (calls === 1) throw new Error('knife failed');
+    });
+    const run = carving(io);
+    await expect(run.revisit(10, 'the sweep')).rejects.toThrow('knife failed');
+    await run.revisit(10, 'the next trigger, nothing new');
+    expect(calls).toBe(2);
+  });
+
+  it('never refuses the visit after the last child closes, however many came before', async () => {
+    const io = trunk();
+    const visits = knife();
+    const run = carving(io);
+    for (let i = 0; i <= MAX_REVISITS_PER_RUN; i++) {
+      io.comment(10, 'person', `note ${i}`);
+      await run.revisit(10, `a person commented (${i})`);
+    }
+    expect(visits).toHaveBeenCalledTimes(MAX_REVISITS_PER_RUN);
+    io.close(11);
+    io.close(12);
+    await run.revisit(10, '#12 closed, the last child');
+    expect(visits).toHaveBeenCalledTimes(MAX_REVISITS_PER_RUN + 1);
+  });
+
   it('still visits after a visit that threw, and the throw reaches the caller', async () => {
     const io = trunk();
     let calls = 0;

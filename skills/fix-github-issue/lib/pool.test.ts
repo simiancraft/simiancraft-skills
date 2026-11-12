@@ -103,6 +103,23 @@ describe('refillingPool', () => {
     expect(asks).toBe(0);
   });
 
+  it('starts nothing a refill returned if the run began stopping while the refill was running', async () => {
+    const worked: number[] = [];
+    await refillingPool(
+      [1],
+      2,
+      async (n) => {
+        worked.push(n);
+      },
+      async () => {
+        await tick();
+        beginStop();
+        return [2, 3];
+      },
+    );
+    expect(worked).toEqual([1]);
+  });
+
   it('treats a refill that throws as an empty answer and still ends', async () => {
     const worked: number[] = [];
     await refillingPool(

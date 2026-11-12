@@ -260,10 +260,12 @@ thread that says their order, their edges, and which are paused.
 
 Every close the loop makes fires the context's close hook: a roll-up comment on the trunk, then a
 revisit of the trunk, which asks the knife whether the carving is still good. A trunk is revisited
-again in the same run only when its tree's fingerprint moved since the last visit (a child closed,
-a hold changed), visits of one trunk run one after another, and a run caps them at
-`MAX_REVISITS_PER_RUN` (`lib/carving.ts`), so the close of a trunk's last child rolls it up in the
-run that merged it. A revisit
+again in the same run only when its tree's fingerprint moved since the facts the last visit judged
+(a child closed, a hold changed), so the close of a trunk's last child rolls it up in the run that
+merged it. One call visits a trunk at a time: a trigger that arrives during the visit, including a
+close the visit itself makes, is noted and served by one more pass after it, never awaited inside
+it. A run caps visits at `MAX_REVISITS_PER_RUN` (`lib/carving.ts`) while the trunk has open
+children; the visit after its last child closes is never refused. A revisit
 that answers `exhausted` releases the trunk (`loop/released`), and the loop runs the release
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.
