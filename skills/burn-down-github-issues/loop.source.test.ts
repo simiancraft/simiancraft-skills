@@ -78,6 +78,13 @@ describe('the work phase takes on what the run made eligible', () => {
     expect(source).toContain("release = claimLock(ctx, 'appraise.lock');");
   });
 
+  it('asks the refill before calling a run with nothing Ready idle, so children carved during startup sizing are worked', () => {
+    const ask = source.indexOf('await ADMISSION.admit();');
+    const idle = source.indexOf("log('nothing in Ready;");
+    expect(ask).toBeGreaterThan(0);
+    expect(ask).toBeLessThan(idle);
+  });
+
   it('counts the start-of-run appraisals in the run budget', () => {
     expect(source).toContain('for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);');
   });

@@ -82,6 +82,7 @@ async function dryRunMain(f: ReturnType<typeof fixture>, backlog: unknown[]) {
     FLOOR: null, BOARD: null, ensureLabels: noop, CARVING: { sweep: noop },
     allIssues: () => backlog, placeBacklog: async (issues: unknown[]) => issues,
     SKIP_APPRAISAL: true, LIMIT: 2, selectCandidates: () => [], pulse: noop,
+    ADMISSION: { start: noop, admit: async () => [] },
   };
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(body);
   await new Function(...Object.keys(deps), `${js}\nreturn main();`)(...Object.values(deps));

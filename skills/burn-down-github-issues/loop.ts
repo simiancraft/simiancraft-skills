@@ -1334,16 +1334,14 @@ async function main(): Promise<void> {
       ({ issue }) => `#${issue.number}`,
     );
   }
-  if (candidates.length === 0 && resumable.length === 0) {
-    log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
-    await finish();
-    return;
-  }
   // Recorded before any lane runs, so the refill neither repeats this batch nor leaves it out of `--limit`.
   ADMISSION.start([...resumable.map(({ issue }) => issue.number), ...candidates.map((issue) => issue.number)]);
-  // A resumed pull request that merged may have freed a dependent; ask before calling the run idle.
+  // Nothing Ready yet can still mean work this run made: children the knife carved during the sizing
+  // above (unsized, so the placement after it left them in the Inbox), or a dependent a resumed merge
+  // freed. Ask the refill once before calling the run idle.
   const first = candidates.length > 0 ? candidates : await ADMISSION.admit();
   if (first.length === 0) {
+    if (resumable.length === 0) log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
     await finish();
     return;
   }
