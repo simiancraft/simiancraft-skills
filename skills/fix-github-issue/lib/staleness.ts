@@ -26,6 +26,18 @@ export const MAX_BASE_REFRESHES = 2;
 
 export const CLOSURE_CAP = 3000;
 
+/**
+ * The TypeScript sources an emitted-extension specifier names. Under NodeNext (and Bundler)
+ * resolution, source imports a sibling by the extension tsc will emit, so `./web.js` means
+ * `./web.ts` or `./web.tsx` on disk.
+ */
+const TYPESCRIPT_TWINS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['.js', ['.ts', '.tsx']],
+  ['.jsx', ['.tsx']],
+  ['.mjs', ['.mts']],
+  ['.cjs', ['.cts']],
+];
+
 /** Resolves an import specifier to a repository-relative file, or null when it leaves the tree. */
 export function resolveSpecifier(ctx: Context, cwd: string, fromFile: string, specifier: string): string | null {
   let base: string | undefined;
@@ -41,10 +53,14 @@ export function resolveSpecifier(ctx: Context, cwd: string, fromFile: string, sp
   if (base === undefined) return null; // a bare package; dependency changes are caught by the lockfile above
 
   const stem = base;
+  const twins = TYPESCRIPT_TWINS.flatMap(([emitted, sources]) =>
+    stem.endsWith(emitted) ? sources.map((source) => `${stem.slice(0, -emitted.length)}${source}`) : [],
+  );
   for (const candidate of [
     stem,
     ...ctx.project.sourceExtensions.map((ext) => `${stem}${ext}`),
     ...ctx.project.sourceExtensions.map((ext) => join(stem, `index${ext}`)),
+    ...twins,
   ]) {
     const abs = join(cwd, candidate);
     if (existsSync(abs) && statSync(abs).isFile()) return candidate;
