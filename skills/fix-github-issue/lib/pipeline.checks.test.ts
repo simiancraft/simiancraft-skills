@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { Context } from './context.ts';
-import { awaitGreenChecks } from './pipeline.ts';
+import { awaitGreenChecks, reviewedChecks } from './pipeline.ts';
 import { beginStop, resetStop, RunStopping } from './shell.ts';
 
 type Check = { name: string; conclusion: string };
@@ -226,5 +226,37 @@ describe('the build gate', () => {
   it('waits for the pull request to show the landing head', async () => {
     const w = world('required', () => [GREEN]);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'another', required: ['build'] }, w.io)).toContain('does not show the landing head');
+  });
+});
+
+describe('the checks a landing expects from the reviewed head', () => {
+  // The reviewed head of a real landing: a run made while the pull request was a draft skipped every
+  // job, its matrix name unexpanded; the run made once it was ready passed. The landing head, after a
+  // catch-up, only ever gets the second kind.
+  const reviewed = [
+    { name: 'Install, Codegen', verdict: 'skipped' },
+    { name: 'Install, Codegen', verdict: 'success' },
+    { name: 'Tests (${{ matrix.shard }}/3)', verdict: 'skipped' },
+    { name: 'Tests (1/3)', verdict: 'success' },
+    { name: 'Tests (2/3)', verdict: 'success' },
+    { name: 'Tests (3/3)', verdict: 'success' },
+    { name: 'Story Tests', verdict: 'skipped' },
+    { name: 'Story Tests', verdict: 'skipped' },
+  ];
+
+  it('does not expect a name that was only ever skipped, such as the unexpanded matrix job of a draft run', () => {
+    const { names } = reviewedChecks(reviewed);
+    expect(names).not.toContain('Tests (${{ matrix.shard }}/3)');
+    expect(names).not.toContain('Story Tests');
+  });
+
+  it('expects every name that ran, even when the draft run skipped it too', () => {
+    const { names, passed } = reviewedChecks(reviewed);
+    expect(names.sort()).toEqual(['Install, Codegen', 'Tests (1/3)', 'Tests (2/3)', 'Tests (3/3)']);
+    expect(passed.sort()).toEqual(names.sort());
+  });
+
+  it('still expects a check that ran and failed at review', () => {
+    expect(reviewedChecks([{ name: 'Lint', verdict: 'failure' }]).names).toEqual(['Lint']);
   });
 });

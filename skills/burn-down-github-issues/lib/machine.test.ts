@@ -194,3 +194,12 @@ describe('the machine and the lane table agree', () => {
     expect(MACHINE.states?.line?.states?.paused).toBeDefined();
   });
 });
+
+describe('a blocker that closes', () => {
+  it('sends a completed close through reconcile, never straight to Ready, since the freed card may be unsized, oversized, or still blocked', () => {
+    const closed = transitions().filter(({ from, event }) => from.endsWith('blockedBySibling') && event === 'BLOCKER_CLOSED');
+    const completed = closed.find(({ transition }) => transition.guard === 'blockerCompleted');
+    expect(completed?.transition.target).toBe('ticket.reconcile');
+    expect(closed.some(({ transition }) => transition.target === 'ticket.ready.ready')).toBe(false);
+  });
+});

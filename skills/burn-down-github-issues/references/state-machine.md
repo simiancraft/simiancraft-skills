@@ -167,7 +167,7 @@ the queue, and F5 re-checks freshness on re-entry.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| W1 Blocked by sibling | move card | `BLOCKER_CLOSED`: completed to B1; not completed with an open parent to reconcile (revisit the parent); else H2 |
+| W1 Blocked by sibling | move card | `BLOCKER_CLOSED`: completed to reconcile, which puts it by its facts (Ready, Inbox, To carve, or W1 again on another open blocker), seen by the work phase's refill in the same run; not completed with an open parent to reconcile (revisit the parent); else H2 |
 | W2 Paused by epic | move card | `PAUSE_LIFTED` to reconcile |
 | W3 Claimed elsewhere | move card | `CLAIM_RELEASED`, `CLAIM_EXPIRED` to reconcile |
 
@@ -405,6 +405,9 @@ than to this file:
 - the pipeline runs Coding through Merged in one process, so the Review and Landing phases
   cannot be staffed by a different seat than Work, and there is one WIP limit rather than one
   per phase;
+- `BLOCKER_CLOSED`'s not-completed branch (a blocker closed not planned): the dependent stays in
+  W1 and the run logs it once (`lib/admission.ts`); nothing revisits the parent or holds it for a
+  person yet;
 - a hand move on the board is not read back: the next run's placement overrides it with the
   facts, with a log line saying so, which is right for a forward move and loses a deliberate
   backward one;

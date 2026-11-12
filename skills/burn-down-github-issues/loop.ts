@@ -1,3 +1,4 @@
+import { createAdmission } from './lib/admission.ts';
 import { RunScope } from './lib/run-scope.ts';
 /**
  * burn-down-github-issues: a headless loop that triages recent issues, fixes the small ones,
@@ -36,7 +37,7 @@ import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, re
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
-import { pool } from '../fix-github-issue/lib/pool.ts';
+import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
 import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
@@ -923,11 +924,11 @@ function lastObjection(issue: number, pull: number): string | null {
  * lanes wait for a person. A trunk's leaves are worked in the order its newest carving record
  * says, grouped where the trunk's newest leaf would have sat; the rest stays newest-first.
  */
-function selectCandidates(placement: Placement): Issue[] {
+function selectCandidates(placement: Placement, { quiet = false }: { quiet?: boolean } = {}): Issue[] {
   const io = trackerIo(ctx);
   const orderIn = new Map<number, Map<number, number>>();
   const exclude = (issue: Issue, rule: string): false => {
-    log(`  #${issue.number} not selected: ${rule}`);
+    if (!quiet) log(`  #${issue.number} not selected: ${rule}`);
     return false;
   };
 
@@ -952,7 +953,7 @@ function selectCandidates(placement: Placement): Issue[] {
     })
     .map(({ issue }) => issue);
 
-  if (ONLY) {
+  if (ONLY && !quiet) {
     for (const n of ONLY) if (!placement.has(n)) log(`  #${n} is not an open issue`);
   }
 
@@ -1024,8 +1025,12 @@ function placeSizeCallbacks(): string {
   return dir;
 }
 
-/** The sizing stage: fetch the base ref, take the inbox lane, appraise it through the sibling skill. */
-async function sizeTheWindow(placement: Placement): Promise<void> {
+/**
+ * The sizing stage: fetch the base ref, take the inbox lane, appraise it through the sibling skill.
+ * `skip` leaves out issues already appraised this run, and `limit` is what is left of the run's
+ * appraisal budget. Returns the issues it appraised, so a later pass in the same run does not repeat them.
+ */
+async function sizeTheWindow(placement: Placement, { skip = () => false, limit = APPRAISE_LIMIT }: { skip?: (issue: Issue) => boolean; limit?: number } = {}): Promise<number[]> {
   // Appraisers judge "already in the base" against the fetched base ref, not the main checkout's
   // working state, which may be stale, dirty, or on another branch; give them a fresh ref.
   if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
@@ -1033,8 +1038,8 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
   log(`size callbacks in ${callbacksDir}`);
   // The appraisers' queue is the inbox lane; the appraise skill's own filter runs over it too, so
   // its contract (the window, the holds, the trunks) is honoured by the same code its command uses.
-  const inbox = [...placement.values()].filter(({ lane }) => lane === 'A1').map(({ issue }) => issue);
-  const toAppraise = selectForAppraisal(inbox, CONFIG, { allAges: ONLY !== null }).slice(0, APPRAISE_LIMIT);
+  const inbox = [...placement.values()].filter(({ lane, issue }) => lane === 'A1' && !skip(issue)).map(({ issue }) => issue);
+  const toAppraise = selectForAppraisal(inbox, CONFIG, { allAges: ONLY !== null }).slice(0, Math.max(0, limit));
   if (toAppraise.length === 0) {
     log('nothing to appraise; the window is fully sized');
   } else {
@@ -1107,10 +1112,42 @@ async function sizeTheWindow(placement: Placement): Promise<void> {
       (issue) => `#${issue.number}`,
     );
   }
-
+  return toAppraise.map((issue) => issue.number);
 }
 
 // ---------------------------------------------------------------------------
+// Mid-run admission
+// ---------------------------------------------------------------------------
+
+/**
+ * The work phase's refill (`lib/admission.ts`): after a lane settles, and once more before the run
+ * calls itself idle, the backlog is placed again and what the run itself made eligible joins it.
+ * An unsized card is appraised first, under the appraisal lock, on the base just fetched.
+ */
+const ADMISSION = createAdmission<Issue>({
+  limit: LIMIT,
+  appraiseLimit: APPRAISE_LIMIT,
+  canAppraise: () => !DRY_RUN && !SKIP_APPRAISAL && !SKIP_APPRAISAL_THIS_RUN,
+  stopping: () => DRY_RUN || isStopping(),
+  fetchBase: () => sh(ctx, ['git', 'fetch', REMOTE, BASE]),
+  place: () => placeBacklog(allIssues()),
+  appraise: async (placement, skip, limit) => {
+    await waitForGo('appraisal');
+    let release: () => void;
+    try {
+      release = claimLock(ctx, 'appraise.lock');
+    } catch {
+      return null;
+    }
+    try {
+      return await sizeTheWindow(placement as Placement, { skip, limit });
+    } finally {
+      release();
+    }
+  },
+  select: (placement) => selectCandidates(placement as Placement, { quiet: true }),
+  log,
+});
 
 async function main(): Promise<void> {
   // A read-only probe of the import-closure walk, for verifying a port's `pathAliases` before any
@@ -1268,7 +1305,7 @@ async function main(): Promise<void> {
       SKIP_APPRAISAL_THIS_RUN = true;
     }
     try {
-      if (!SKIP_APPRAISAL_THIS_RUN) await sizeTheWindow(placement);
+      if (!SKIP_APPRAISAL_THIS_RUN) for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);
     } finally {
       releaseAppraisal();
     }
@@ -1297,20 +1334,22 @@ async function main(): Promise<void> {
       ({ issue }) => `#${issue.number}`,
     );
   }
-  if (candidates.length === 0 && resumable.length === 0) {
-    log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
-    await finish();
-    return;
-  }
-  if (candidates.length === 0) {
+  // Recorded before any lane runs, so the refill neither repeats this batch nor leaves it out of `--limit`.
+  ADMISSION.start([...resumable.map(({ issue }) => issue.number), ...candidates.map((issue) => issue.number)]);
+  // Nothing Ready yet can still mean work this run made: children the knife carved during the sizing
+  // above (unsized, so the placement after it left them in the Inbox), or a dependent a resumed merge
+  // freed. Ask the refill once before calling the run idle.
+  const first = candidates.length > 0 ? candidates : await ADMISSION.admit();
+  if (first.length === 0) {
+    if (resumable.length === 0) log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
     await finish();
     return;
   }
 
-  step(`Working ${candidates.length} issue(s), ${Math.min(CONFIG.concurrency, candidates.length)} at a time`);
-  log(candidates.map((i) => `#${i.number}`).join(', '));
-  await pool(
-    candidates,
+  step(`Working ${first.length} issue(s), ${Math.min(CONFIG.concurrency, first.length)} at a time; more join as lanes settle`);
+  log(first.map((i) => `#${i.number}`).join(', '));
+  await refillingPool(
+    first,
     CONFIG.concurrency,
     async (issue) => {
       await waitForGo(`#${issue.number}`);
@@ -1320,6 +1359,7 @@ async function main(): Promise<void> {
       if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
       if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
     },
+    ADMISSION.admit,
     (issue) => `#${issue.number}`,
   );
 

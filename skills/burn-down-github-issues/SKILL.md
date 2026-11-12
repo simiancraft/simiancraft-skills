@@ -125,7 +125,9 @@ the rest); a flag beats the config for the run it is given on.
    through Coding and Proving (two seats, `code-github-issue` then `prove-github-issue`, with the
    driver moving the card from the push and the pull request each leaves), Ready for review, Evidence
    under review, and the landing lanes to Merged; or back to Sent back on a rejection; or into a
-   dead-letter or human lane when a machine gives up or a person is needed.
+   dead-letter or human lane when a machine gives up or a person is needed. As each lane settles,
+   the backlog is placed again and anything the run itself made eligible (a dependent its merge
+   freed, a child the knife carved, a released remainder) joins the run, appraised first if unsized.
 5. **Walks the floor and finishes.** With `floor` configured, every merge went up onto the floor
    as it landed, and the loop has been walking the deployed base on its cadence, pausing the line
    when a walk found it wrong. The run walks on until its merges are verified there (or the drain

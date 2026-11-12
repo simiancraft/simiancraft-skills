@@ -228,9 +228,20 @@ rule still applies, and the console says which lane kept each one out.
 `lib/run-scope.ts` retains explicit roots separately from effective membership. Its `refresh`
 accepts tracker parent facts, expands membership regardless of response order, and returns only
 newly admitted numbers. Repeating the same facts returns none. Every backlog read refreshes the
-shared effective set before scope readers use it. This membership contract does not replace the
-one-pass scheduler or promise dispatch of children created after a queue was consumed. Without
-`--only`, membership stays unrestricted and refresh returns no incremental admissions.
+shared effective set before scope readers use it. Without `--only`, membership stays unrestricted
+and refresh returns no incremental admissions.
+
+The work phase is not a fixed list. `lib/admission.ts` is its refill, and `refillingPool`
+(`fix-github-issue/lib/pool.ts`) asks it after each lane settles and once more before the run calls
+itself idle: the base is fetched, the backlog placed again (which refreshes the scope, so children
+the knife carved meanwhile are in it), unsized cards in the window are appraised under
+`appraise.lock`, and the Ready cards not yet handed to a worker this run join the pool. So a
+dependent whose blocker this run merged, a child carved mid-run, and a trunk's released remainder
+are worked in the run that made them eligible. Every admission counts against `--limit` and every
+appraisal against `--appraise-limit`; an issue is handed to a worker at most once per run, so a lane
+that settles without closing its issue (a busy claim, a failed worker) is not retried until the next
+run. A stopping run admits nothing. Changes made outside the run (a person's close, a hold removed,
+another run's claim released) are seen by the next refill only if this run is still working.
 
 A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
 position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
@@ -247,8 +258,14 @@ skill), reached through the size callback the loop renders into the callbacks di
 turns it into a trunk: sub-issues the loop works as leaves, and a carving record on the trunk's
 thread that says their order, their edges, and which are paused.
 
-Every close the loop makes fires the context's close hook: a roll-up comment on the trunk, then one
-revisit of the trunk per run, which asks the knife whether the carving is still good. A revisit
+Every close the loop makes fires the context's close hook: a roll-up comment on the trunk, then a
+revisit of the trunk, which asks the knife whether the carving is still good. A trunk is revisited
+again in the same run only when its tree's fingerprint moved since the facts the last visit judged
+(a child closed, a hold changed), so the close of a trunk's last child rolls it up in the run that
+merged it. One call visits a trunk at a time: a trigger that arrives during the visit, including a
+close the visit itself makes, is noted and served by one more pass after it, never awaited inside
+it. A run caps visits at `MAX_REVISITS_PER_RUN` (`lib/carving.ts`) while the trunk has open
+children; the visit after its last child closes is never refused. A revisit
 that answers `exhausted` releases the trunk (`loop/released`), and the loop runs the release
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.
