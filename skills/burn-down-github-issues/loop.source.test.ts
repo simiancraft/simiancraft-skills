@@ -5,6 +5,17 @@ import { join } from 'node:path';
 const source = readFileSync(join(import.meta.dir, 'loop.ts'), 'utf8');
 
 describe('--only bounds every pass that can land work', () => {
+  it('refreshes descendant membership before every backlog consumer reads the shared set', () => {
+    expect(source).toContain('const ONLY = SCOPE.effective;');
+    expect(source).toMatch(/function allIssues\(\): Issue\[\] \{\s*const all = allOpenIssues\(ctx\);\s*SCOPE.refresh\(all\);\s*return all;/);
+    expect(source.match(/allOpenIssues\(ctx\)/g)).toHaveLength(1);
+    expect(source).toContain('only: ONLY,');
+    expect(source).toContain('ONLY ? ONLY.has(issue.number)');
+    expect(source).toContain('{ allAges: ONLY !== null }');
+    expect(source).toContain('await CARVING.sweep(allIssues())');
+    expect(source).toContain('await placeBacklog(allIssues())');
+  });
+
   it('restricts startup resumption to the --only issues', () => {
     const call = source.split('\n').find((line) => line.includes('findStranded(ctx,'));
     expect(call).toBeDefined();
