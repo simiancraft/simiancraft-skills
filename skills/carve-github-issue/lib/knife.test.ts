@@ -16,6 +16,7 @@ import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carv
 import { laneState, successors } from '../../burn-down-github-issues/lib/simulate.ts';
 import { ENGINES } from '../../fix-github-issue/lib/engines.ts';
 import { runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { appraiseIssue } from '../../appraise-github-issues/lib/appraise.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -869,6 +870,23 @@ describe('carveIssue', () => {
     expect(io.view(10)!.subIssues).toEqual([]);
     expect(ctx.dryRunLog.some((l) => l.includes('create child'))).toBe(true);
     expect(ctx.dryRunLog.some((l) => l.includes('post the live record'))).toBe(true);
+  });
+});
+
+describe('a disputed appraiser close', () => {
+  test('stands the first time, with no hold, and is a person\'s the second time', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(30, { title: 'maybe done', body: 'Criteria: A1' })]);
+    const issue = { number: 30, title: 'maybe done', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const close = fixture('close', { issue: 30, verdict: 'already-fixed', reason: 'looks done', closeComment: 'Fixed in abc123.' });
+    const disagree = fixture('disagree', { issue: 30, agree: false, reason: 'A1 is still missing on main' });
+    const options = { ageDays: null, seats: { appraiser: { engine: 'fixture', model: close }, confirmer: { engine: 'fixture2', model: disagree } }, confirmCloses: true, skipLabels: ['needs-human', 'needs-decision', 'loop/skip', 'loop/parked'] };
+    const first = await appraiseIssue(ctxFor(io), issue as never, options as never);
+    expect(first.close).toBe('stood');
+    expect(io.view(30)!.state).toBe('OPEN');
+    expect(labels(io, 30)).not.toContain('needs-human');
+    const second = await appraiseIssue(ctxFor(io), issue as never, options as never);
+    expect(second.close).toBe('disputed');
+    expect(labels(io, 30)).toContain('needs-human');
   });
 });
 

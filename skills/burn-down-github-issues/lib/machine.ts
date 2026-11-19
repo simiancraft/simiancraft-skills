@@ -192,7 +192,14 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runConfirmer'],
               on: {
                 CONFIRMED: { target: 'ticket.terminal.closedWithoutCode', actions: ['commentBothReceipts', 'closeIssue'] },
-                DISPUTED: { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions'] },
+                // A disputed close means the issue is not provably dead, so it stands: the first
+                // dispute of an appraiser's close sends it back to be appraised with the objection on
+                // its thread. A second dispute, or a worker's, is a person's.
+                DISPUTED: [
+                  { target: 'ticket.carving.rollingUp', guard: 'closeByAppraiser and firstDisputedClose and releasedLabel', actions: ['commentBothOpinions'] },
+                  { target: 'ticket.appraisal.inbox', guard: 'closeByAppraiser and firstDisputedClose', actions: ['commentBothOpinions'] },
+                  { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions'] },
+                ],
                 // The close is the appraiser's or a worker's. A confirmer that fails is a failed
                 // turn of whichever asked: a worker's attempt, or one more appraisal.
                 AGENT_FAILED: [

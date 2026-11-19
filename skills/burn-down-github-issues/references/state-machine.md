@@ -98,7 +98,7 @@ mirrored to Number fields on the card.
 |---|---|---|
 | A1 Inbox | move card | `APPRAISER_DISPATCHED` [lineActive] to A2 |
 | A2 Appraising | run appraiser | `APPRAISED`: close verdict to A3; needs-decision to P1 when a panel can sit, else H1; needs-human to H2; over ceiling to C1 (size label, size callback); within to B1 (size label). `AGENT_FAILED`: under cap back to A1 (count); else Q1 |
-| A3 Confirming close | run confirmer | `CONFIRMED` to T2 (both receipts, close); `DISPUTED` to H2 (both opinions); `AGENT_FAILED` to Q1 |
+| A3 Confirming close | run confirmer | `CONFIRMED` to T2 (both receipts, close); `DISPUTED` (the issue is not provably dead, so it stands): an appraiser's first disputed close to A1 (C7 for a released trunk) with both opinions on the thread, marked so the next is known (`firstDisputedClose`); a second dispute, or a worker's, to H2; `AGENT_FAILED` to Q1 |
 
 ### Ready
 

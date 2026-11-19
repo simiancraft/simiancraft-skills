@@ -53,7 +53,8 @@ export type AppraisalOutcome = {
   points?: number;
   reason: string;
   /** How the close was settled, when the verdict was a close. */
-  close?: 'confirmed' | 'disputed' | 'unconfirmed' | 'skipped';
+  /** `stood`: the first dispute of this close; the issue stands and is appraised again with the objection on its thread. */
+  close?: 'confirmed' | 'disputed' | 'stood' | 'unconfirmed' | 'skipped';
   /** True when the verdict changed nothing on the issue and the next run should try again. */
   retry?: boolean;
   /** True when the appraisal stopped because the issue changed under it; the tracker, not this outcome, says where the card is. */
@@ -122,6 +123,9 @@ export function assertConfirmCloses(value: unknown, fileName: string): void {
     process.exit(1);
   }
 }
+
+/** Opens the comment that records a disputed close, so a second dispute of the issue is known. */
+export const CLOSE_DISPUTED_MARKER = '<!-- appraise-close-disputed -->';
 
 const SIZE_LABEL = /^size:\s*(\d+)$/;
 
@@ -497,6 +501,10 @@ export async function appraiseIssue(
         outcome.close = 'confirmed';
       } else {
         say(`confirmer disagrees: ${confirmation.reason}`);
+        // A disputed close means the issue is not provably dead, so the first dispute leaves it
+        // standing: no hold, and the next appraisal reads the objection on the thread. A second
+        // dispute of a close is a person's. The marker is how the second one is known.
+        const disputedBefore = readTree(ctx, issue.number, io).issue.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(CLOSE_DISPUTED_MARKER));
         // Comment first, then the label that hides the issue from selection, so a crash between
         // the two leaves an issue that is still selectable rather than one held without a reason.
         mutate(ctx, `comment on #${issue.number}`, [
@@ -506,15 +514,23 @@ export async function appraiseIssue(
           String(issue.number),
           '--body',
           [
-            `Appraisal proposed closing this as \`${result.verdict}\`, and an independent re-check disagreed; a person needs to settle it.`,
+            CLOSE_DISPUTED_MARKER,
+            disputedBefore
+              ? `Appraisal proposed closing this as \`${result.verdict}\`, and an independent re-check disagreed again; a person needs to settle it.`
+              : `Appraisal proposed closing this as \`${result.verdict}\`, and an independent re-check disagreed, so it is not provably done: it stands, and is appraised again with this objection in view.`,
             '',
             `**Proposed close:** ${closeComment}`,
             '',
             `**Re-check:** ${confirmation.reason}`,
           ].join('\n'),
         ]);
-        mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
-        outcome.close = 'disputed';
+        if (disputedBefore) {
+          mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+          outcome.close = 'disputed';
+        } else {
+          outcome.close = 'stood';
+          outcome.retry = true;
+        }
       }
       break;
     }
