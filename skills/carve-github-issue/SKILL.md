@@ -26,6 +26,12 @@ elsewhere in the backlog.
 
 ## What it does
 
+Before a first carving, the **pre-carve guard** asks whether the appraisal the knife is about to
+trust still describes the issue: `fresh` (nothing it judged moved), `stale` (commits on the paths it
+named, or a person wrote on the thread), or `unknowable` (no stamp, no base, no paths). It runs in
+**shadow** for now: it logs its answer, appends to `pre-carve-guard.jsonl` in the run directory, and
+routes nothing.
+
 1. **Inventory.** Every acceptance criterion in the parent's whole thread, numbered. This is the
    100% rule made checkable: the pieces must cover it exactly.
 2. **Normalize.** Each piece is matched against the trunk's own tree first, then the backlog, open

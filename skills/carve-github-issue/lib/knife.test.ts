@@ -853,6 +853,17 @@ describe('carveIssue', () => {
     expect(again.outcome).toBe('left-alone');
   });
 
+  test('a first carving logs, in shadow, whether the pre-carve guard would fire, and still carves', async () => {
+    const io = trunk(); const ctx = ctxFor(io); const said: string[] = [];
+    ctx.log = (m: string) => said.push(m);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    expect(out.outcome).toBe('carve');
+    // The fixture trunk was never appraised, so nothing recorded what its size judged.
+    expect(said.some((m) => m.includes('pre-carve guard (shadow): unknowable; would re-appraise first'))).toBe(true);
+    const lines = readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.some((l) => l.issue === 10 && l.fires === true && l.verdict === 'unknowable')).toBe(true);
+  });
+
   test("a first carving's confirmed nothing-left releases the issue to the appraiser, with no hold", async () => {
     const io = trunk(); const ctx = ctxFor(io);
     const out = await carveIssue(ctx, issue10, knobs(fixture('nl', carving(10, { verdict: 'nothing-left', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);

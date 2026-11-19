@@ -11,7 +11,7 @@
  * are both accounted for.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
@@ -22,6 +22,7 @@ import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { runCarveCallback } from './callbacks.ts';
+import { appraisalFreshness, gitCommitsSince } from '../../appraise-github-issues/lib/freshness.ts';
 import {
   type Carving,
   type CarveKnobs,
@@ -609,6 +610,24 @@ async function applyNothingLeft(k: Knife, tree: Tree, carving: Carving, opinions
   return applyRelease(k, tree, carving, released);
 }
 
+/**
+ * The pre-carve guard in shadow mode: at the moment a first carving is dispatched, says whether the
+ * appraisal it trusts is fresh, stale, or unknowable, and why, and routes nothing. The run log and
+ * `pre-carve-guard.jsonl` in the run directory are what measure how often the live guard would fire.
+ * Nothing here may fail a carving.
+ */
+function shadowPreCarveGuard(k: Knife, tree: Tree): void {
+  try {
+    const freshness = appraisalFreshness(tree.issue, k.ctx.botLogin, gitCommitsSince(k.ctx));
+    const fires = freshness.verdict !== 'fresh';
+    k.say(`pre-carve guard (shadow): ${freshness.verdict}; would ${fires ? 're-appraise first' : 'carve as is'}${freshness.reasons.length ? `: ${freshness.reasons.join('; ')}` : ''}`);
+    mkdirSync(k.ctx.runDir, { recursive: true });
+    appendFileSync(join(k.ctx.runDir, 'pre-carve-guard.jsonl'), `${JSON.stringify({ issue: k.trunk, at: new Date().toISOString(), verdict: freshness.verdict, fires, reasons: freshness.reasons })}\n`);
+  } catch (error) {
+    k.say(`pre-carve guard (shadow) could not run: ${(error as Error).message.split('\n')[0]}`);
+  }
+}
+
 async function applyStillGood(k: Knife, tree: Tree, carving: Carving, redrive: boolean): Promise<CarveOutcome> {
   const previous = tree.record as Record;
   const children = previous.children.map((c) => ({ ...c, paused: false }));
@@ -915,6 +934,9 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
       return applyHandOff(k, tree, carving, [], false, 'indivisible', true);
     }
   }
+
+  // 4b. The pre-carve guard, in shadow: would the appraisal this carving trusts be re-checked first?
+  if (mode === 'carve' && !openChildren) shadowPreCarveGuard(k, tree);
 
   // 5. The carver and the confirmer, for at most maxCarveRounds pairs.
   const previousLedger = record ? buildLedger(record.ledger, carryIds(record.ledger, record.ledger), record, tree) : null;
