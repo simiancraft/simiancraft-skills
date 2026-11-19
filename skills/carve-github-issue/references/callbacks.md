@@ -7,7 +7,7 @@ directory the appraiser's size callbacks live (`callbacksDir`, by default
 | Slot | When |
 |---|---|
 | `on-carve-pass` | a confirmed `carve`, `amend`, `still-good`, or `exhausted` |
-| `on-carve-fail` | a confirmed hand-off (`small-enough`, `indivisible`, `nothing-left`, `too-uncertain`), or a dispute that reached the round cap |
+| `on-carve-fail` | a confirmed `small-enough`, `indivisible`, `nothing-left`, or `too-uncertain` (on a first carving the first three no longer hold the issue: one piece is worked whole, nothing left is released to the appraiser), or a dispute that reached the round cap |
 
 Each may exist as an executable (run by the knife with the payload as one line of JSON on stdin,
 its own process group, no timeout, exit code logged) and as a Markdown prompt `<name>.md` (left

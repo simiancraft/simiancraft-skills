@@ -117,6 +117,7 @@ eq('labelDeliberating', 'deliberating', true); eq('panelStale', 'panelStale', tr
 eq('foreignClaimLive', 'claim', 'foreign'); eq('ownClaimLive', 'claim', 'own'); eq('deadClaim', 'claim', 'dead');
 eq('applyingRecord', 'record', 'applying'); eq('liveRecord', 'record', 'live');
 pred('openChild', ['children'], m => m.children > 0);
+pred('firstCarving', ['children', 'record'], m => m.children === 0 && m.record !== 'live');
 pred('isTrunk', ['children', 'record', 'released'], m => m.children > 0 || m.record !== 'none' || m.released);
 pred('trunkFingerprintMoved', ['fingerprint'], m => m.fingerprint !== m.recordedFingerprint);
 pred('oversizedNoRecord', ['points', 'record'], m => m.points > 2 && m.record === 'none');

@@ -260,8 +260,13 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runCarveConfirmer'],
               on: {
                 CUT_CONFIRMED: { target: 'ticket.carving.spawningChildren' },
-                // The carver's opinion about the issue is confirmed here too, and then it is a person's.
+                // The carver's opinion about the issue is confirmed here too. On a first carving, one
+                // piece is worked whole and nothing left is released to the appraiser to close; a
+                // question, and any opinion on a carved trunk, is a person's.
                 OPINION_CONFIRMED: [
+                  { target: 'ticket.ready.ready', guard: 'verdictSmallEnough and firstCarving', actions: ['labelWorkWhole', 'commentBothOpinions', 'releasedRecord', 'releaseClaim'] },
+                  { target: 'ticket.ready.ready', guard: 'verdictIndivisible and firstCarving', actions: ['labelWorkWhole', 'commentBothOpinions', 'releasedRecord', 'releaseClaim'] },
+                  { target: 'ticket.carving.rollingUp', guard: 'verdictNothingLeft and firstCarving', actions: ['commentBothOpinions', 'releasedRecord', 'releaseSize', 'labelReleased', 'releaseClaim'] },
                   { target: 'ticket.panel.reviewing', guard: 'verdictTooUncertain and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'liveRecord', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions', 'liveRecord', 'releaseClaim'] },

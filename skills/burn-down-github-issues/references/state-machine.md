@@ -112,7 +112,7 @@ mirrored to Number fields on the card.
 |---|---|---|
 | C1 To carve | move card | `KNIFE_DISPATCHED` [lineActive] to C2 (carving claim) |
 | C2 Carving | run carver | `CUT_PROPOSED` to C3; `KNIFE_VERDICT`: too-uncertain to P1 when a panel can sit, else H1, indivisible (small-enough, nothing-left, depth cap) to H2; `AGENT_FAILED`: under cap to C1, else Q2 |
-| C3 Confirming cut | run carve confirmer | `CUT_CONFIRMED` to C4; `OPINION_CONFIRMED` (the carver's opinion confirmed): too-uncertain to P1 when a panel can sit, else H1, anything else to H2; `CUT_DISPUTED`: under the round cap to C2, else Q2; `AGENT_FAILED` to Q2 |
+| C3 Confirming cut | run carve confirmer | `CUT_CONFIRMED` to C4; `OPINION_CONFIRMED` (the carver's opinion confirmed): on a first carving (`firstCarving`: no open child, no live record), small-enough or indivisible to B1 with `loop/work-whole` (worked whole at its own size) and nothing-left to C7 for the release appraisal; too-uncertain to P1 when a panel can sit, else H1; anything else to H2; `CUT_DISPUTED`: under the round cap to C2, else Q2; `AGENT_FAILED` to Q2 |
 | C4 Spawning children | post `applying` record, create children in delivery order, add edges, adopt references, post `live` record, label trunk | `SPAWN_COMPLETE` to C5 (release claim, admit children to the board); `AGENT_FAILED` to Q2 |
 | C5 Epic: children in flight | move card | `FINGERPRINT_CHANGED`, `ALL_CHILDREN_CLOSED` [lineActive] to C6 |
 | C6 Revisiting | run carver, run carve confirmer | `REVISITED`: still-good to C5; amend to C4 (new generation); exhausted to C7; a question to P1 when a panel can sit, else H1 (pause the touched leaves); anything else to Q2. `CAP_REACHED` to Q2; `AGENT_FAILED`: under cap to C5, else Q2 |

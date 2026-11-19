@@ -828,12 +828,36 @@ describe('carveIssue', () => {
     const k = knobs(fixture('indivisible', carving(10, { verdict: 'indivisible', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true)));
     const d = new CarvingDriver({ ctx, knobs: k, appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (_n, _t, l) => lanes.push(l), log: () => {} });
     await d.revisit(10, 'first carving');
-    expect(lanes.at(-1)).toBe('H2');
+    // A first carving the knife judged one piece is worked whole, not handed to a person.
+    expect(lanes.at(-1)).toBe('B1');
     const illegal = lanes.slice(1).flatMap((to, index) => {
       const from = lanes[index];
       return from === to || successors(laneState(from), { ownEventsOnly: true }).has(laneState(to)) ? [] : [`${from}->${to}`];
     });
     expect(illegal).toEqual([]);
+  });
+
+  for (const verdict of ['small-enough', 'indivisible'] as const) test(`a first carving's confirmed ${verdict} is worked whole, with no hold`, async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture(verdict, carving(10, { verdict, cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);
+    expect(out.outcome).toBe('work-whole');
+    expect(labels(io, 10)).toContain('loop/work-whole');
+    expect(labels(io, 10)).toContain('size: 8');
+    expect(labels(io, 10).some((l) => l === 'needs-human' || l === 'loop/handed-off')).toBe(false);
+    expect(records(io, 10).at(-1)).toBe('released');
+    expect(io.view(10)!.comments.some((c) => c.body.startsWith(`<!-- carve-work-whole verdict=${verdict}`))).toBe(true);
+    // The knife leaves a work-whole issue alone from then on, whatever its size.
+    const again = await carveIssue(ctxFor(io), issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    expect(again.outcome).toBe('left-alone');
+  });
+
+  test("a first carving's confirmed nothing-left releases the issue to the appraiser, with no hold", async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('nl', carving(10, { verdict: 'nothing-left', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);
+    expect(out.outcome).toBe('exhausted');
+    expect(labels(io, 10)).toContain('loop/released');
+    expect(labels(io, 10).some((l) => l.startsWith('size:') || l === 'needs-human')).toBe(false);
+    expect(records(io, 10).at(-1)).toBe('released');
   });
 
   test('a dry run with fixture seats lands nothing and logs every write', async () => {

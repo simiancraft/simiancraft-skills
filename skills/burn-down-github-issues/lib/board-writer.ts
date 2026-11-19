@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { LaneEvent } from '../../fix-github-issue/lib/context.ts';
-import { dlqPhase } from '../../fix-github-issue/lib/labels.ts';
+import { ceilingFor, dlqPhase } from '../../fix-github-issue/lib/labels.ts';
 import { isFinishing, isStopping } from '../../fix-github-issue/lib/shell.ts';
 import type { Board } from '../board.ts';
 import { type Lane, laneByKey, laneByLabel, laneLabel, phaseLabel } from './lanes.ts';
@@ -227,7 +227,7 @@ export function placeByFacts(facts: {
   const open = facts.pulls.find((p) => !p.merged);
   if (open) return open.isDraft ? { lane: 'D3', why: `draft PR #${open.number}` } : { lane: 'E1', why: `ready PR #${open.number}` };
   if (facts.blocked) return { lane: 'W1', why: 'a blocker is not closed as completed' };
-  if (facts.points !== undefined && facts.points > facts.ceiling) return { lane: 'C1', why: `size ${facts.points} over the ceiling of ${facts.ceiling}` };
+  if (facts.points !== undefined && facts.points > ceilingFor(facts.labels, facts.points, facts.ceiling)) return { lane: 'C1', why: `size ${facts.points} over the ceiling of ${facts.ceiling}` };
   if (facts.points !== undefined) return { lane: 'B1', why: `size ${facts.points}` };
   return { lane: 'A1', why: 'unsized' };
 }

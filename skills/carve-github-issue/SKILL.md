@@ -41,6 +41,9 @@ elsewhere in the backlog.
    cannot land before an earlier one, references are attached or depended on, and a **carving
    record** lands on the trunk's thread: the cut, the ledger, and what the tracker looked like.
    Grammar in `references/the-record.md`.
+   On a first carving, a confirmed `small-enough` or `indivisible` is an answer, not a question:
+   the issue is worked whole, and `loop/work-whole` makes its own size its ceiling. A confirmed
+   `nothing-left` releases it to the appraiser, whose close goes through the close confirmer.
 6. **Revisit.** Every child close, and every change to the trunk a person makes, brings the knife
    back to ask one question: is this carving still good? `still-good` rolls the ledger forward;
    `amend` is a new generation; `exhausted` releases the trunk to the appraiser; a question pauses

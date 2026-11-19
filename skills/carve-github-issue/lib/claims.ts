@@ -5,7 +5,7 @@
  */
 
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
+import { ceilingFor, HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import { api, isStopping, mutate, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { type Claim, ghIo, liveClaim, pointsOf, readTree, type TrackerIo, type Tree } from './tree.ts';
 
@@ -227,7 +227,7 @@ export function refusal(tree: Tree, ceiling: number): string | null {
   if (pausedAncestor) return `its ancestor #${pausedAncestor.number} is paused`;
   if (isTrunk(tree)) return 'it is a trunk: it has open children or an unreleased carving record';
   const points = pointsOf(issue.labels);
-  if (points !== null && points > ceiling) return `it is sized ${points}, over the ceiling of ${ceiling}`;
+  if (points !== null && points > ceilingFor(labels, points, ceiling)) return `it is sized ${points}, over the ceiling of ${ceiling}`;
   for (const blocker of tree.blockers) {
     if (blocker.state === 'CLOSED' && blocker.stateReason === 'COMPLETED') continue;
     return `it is blocked by #${blocker.number}, which is ${blocker.state === 'CLOSED' ? 'closed not planned' : blocker.state.toLowerCase()}`;

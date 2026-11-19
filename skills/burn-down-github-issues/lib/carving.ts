@@ -14,7 +14,7 @@ import { claim, keepClaimed, leaseLost, trackerIo } from '../../carve-github-iss
 import { carveIssue, unreleasedPauseMarkers } from '../../carve-github-issue/lib/knife.ts';
 import { fingerprint, liveClaim, needsRevisit, parseMarker, pointsOf, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
 import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts';
-import { HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
+import { ceilingFor, HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { isStopping, mutate, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 
@@ -52,7 +52,9 @@ function laneOf(outcome: string): string | null {
   if (outcome === 'carve' || outcome === 'amend' || outcome === 'still-good') return 'C5';
   if (outcome === 'exhausted') return 'C7';
   if (outcome === 'too-uncertain') return 'H1';
-  // The carver's opinions about the issue all take `needs-human`, so the card rests where the label does.
+  // A first carving the knife judged one piece is worked whole; `nothing-left` released the issue
+  // to the appraiser as `exhausted`. Only a revisit's opinions still take `needs-human`.
+  if (outcome === 'work-whole') return 'B1';
   if (outcome === 'indivisible' || outcome === 'nothing-left' || outcome === 'small-enough') return 'H2';
   if (outcome === 'dlq') return 'Q2';
   return null;
@@ -436,7 +438,7 @@ export class Carving {
         const points = pointsOf(issue.labels);
         const summary = issue.subIssuesSummary;
         const openChild = summary !== undefined && summary.total > summary.completed;
-        const oversized = points !== null && points > knobs.ceiling && (only !== null || issue.parent || Date.parse(issue.createdAt) >= cutoff);
+        const oversized = points !== null && points > ceilingFor(labels, points, knobs.ceiling) && (only !== null || issue.parent || Date.parse(issue.createdAt) >= cutoff);
         if (!openChild && !oversized) continue;
         const tree = readTree(ctx, issue.number, io);
         if (liveClaim(tree, new Date().toISOString(), ctx.runId)) continue;

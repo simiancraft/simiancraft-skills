@@ -21,7 +21,7 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
@@ -47,6 +47,12 @@ export type FixOutcome = {
   outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost';
   reason: string;
 };
+
+/** The largest `size: N` on an issue, or null when it carries none. */
+function labelPoints(labels: Array<{ name: string }>): number | null {
+  const sizes = labels.map((l) => /^size:\s*(\d+)$/.exec(l.name)).filter((m): m is RegExpExecArray => m !== null).map((m) => Number(m[1]));
+  return sizes.length ? Math.max(...sizes) : null;
+}
 
 /** What the worker prompt asks for when the caller states no ceiling of its own. */
 const DEFAULT_MAX_POINTS = 2;
@@ -1597,7 +1603,9 @@ export async function fixIssue(
   // shuffled deck of verdicts with no way to tell which belongs to which.
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title}`);
-  const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
+  // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
+  // it under a ceiling the knife already said it cannot be cut to.
+  const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
   const ceiling = options.ceiling ?? maxPoints;
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
@@ -1792,7 +1800,9 @@ export async function redriveIssue(
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
-  const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
+  // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
+  // it under a ceiling the knife already said it cannot be cut to.
+  const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
   const ceiling = options.ceiling ?? maxPoints;
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');

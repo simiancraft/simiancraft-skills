@@ -14,6 +14,23 @@ import { mutate, sh } from './shell.ts';
 export type LabelledIssue = { number: number; labels: Array<{ name: string }> };
 
 /** Every label the collection writes, with its color and description; GitHub caps a description at 100 characters. */
+/**
+ * The knife's confirmed answer that an issue is one piece: `small-enough` (the size was wrong) or
+ * `indivisible` (no admissible cut exists at this ceiling). Either way the issue is worked as it
+ * stands, so the label lifts the size ceiling for this issue alone.
+ */
+export const WORK_WHOLE = 'loop/work-whole';
+
+/**
+ * The ceiling one issue is held to: the run's, unless the knife judged the issue one piece, in
+ * which case its own size is its ceiling. Every gate that compares a size with the ceiling asks
+ * this, so a work-whole issue is never sent back to the knife for its size alone.
+ */
+export function ceilingFor(labels: string[], points: number | null | undefined, ceiling: number): number {
+  if (!labels.includes(WORK_WHOLE) || points === null || points === undefined) return ceiling;
+  return Math.max(ceiling, points);
+}
+
 export function loopLabels(): Array<[string, string, string]> {
   return [
     ['needs-decision', 'ededed', 'Blocked on a product decision, not on effort'],
@@ -27,6 +44,7 @@ export function loopLabels(): Array<[string, string, string]> {
     ['loop/working', '1d76db', 'A worker has this issue; other runs wait'],
     ['loop/paused', 'fbca04', 'Paused by its parent while a question is open'],
     ['loop/handed-off', 'ededed', 'The knife handed this off before carving it; found by the sweep when the hold lifts'],
+    [WORK_WHOLE, '5319e7', 'The knife judged it one piece; worked whole, above the size ceiling if need be'],
     ['loop/deliberating', 'fbca04', 'A panel of frontier models is weighing whether a person must decide'],
     ['spike', '0e8a16', 'Answer a question with evidence; no pull request'],
   ];

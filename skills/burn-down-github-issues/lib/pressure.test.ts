@@ -92,6 +92,13 @@ class World {
   };
 }
 
+describe('placement of a work-whole issue', () => {
+  it('is Ready at any size once the knife judged it one piece', () => {
+    expect(placeByFacts({ state: 'OPEN', labels: ['size: 8', 'loop/work-whole'], pulls: [], points: 8, ceiling: 2 }).lane).toBe('B1');
+    expect(placeByFacts({ state: 'OPEN', labels: ['size: 8'], pulls: [], points: 8, ceiling: 2 }).lane).toBe('C1');
+  });
+});
+
 describe('interpreter combinations', () => {
   for (const initial of ['E1', 'D3']) {
     it(`${initial}: resume conflicts into landing DLQ`, () => {
@@ -330,7 +337,7 @@ describe('runtime moves and settlement', () => {
   for (const initial of ['E1', 'D3']) it(`a resumed ${initial} card with a historical objection has a chart route to its revision`, async () => {
     let lane = initial; const edges: string[] = [];
     const api = loadFunctions(pipeline, ['redriveIssue'], {
-      DEFAULT_MAX_POINTS: 2, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
       runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
