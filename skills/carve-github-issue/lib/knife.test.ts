@@ -17,6 +17,7 @@ import { laneState, successors } from '../../burn-down-github-issues/lib/simulat
 import { ENGINES } from '../../fix-github-issue/lib/engines.ts';
 import { runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { appraiseIssue } from '../../appraise-github-issues/lib/appraise.ts';
+import { latestStamp, threadDigest } from '../../appraise-github-issues/lib/stamp.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -870,6 +871,22 @@ describe('carveIssue', () => {
     expect(io.view(10)!.subIssues).toEqual([]);
     expect(ctx.dryRunLog.some((l) => l.includes('create child'))).toBe(true);
     expect(ctx.dryRunLog.some((l) => l.includes('post the live record'))).toBe(true);
+  });
+});
+
+describe('a valid appraisal', () => {
+  test('stamps the thread with the paths it named and a base it could not read as none', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(31, { title: 'add a palette', body: 'Criteria: A1' })]);
+    const issue = { number: 31, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const answer = fixture('valid', { issue: 31, verdict: 'valid', points: 2, reason: 'one new palette', touches: ['src/palettes/', 42, ''] });
+    const options = { ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] };
+    await appraiseIssue(ctxFor(io), issue as never, options as never);
+    const stamp = latestStamp(io.view(31)!.comments, BOT);
+    expect(stamp?.points).toBe(2);
+    expect(stamp?.touches).toEqual(['src/palettes/']);
+    // The scratch repository is not a git checkout, so the base is unknowable, not invented.
+    expect(stamp?.base).toBeNull();
+    expect(stamp?.thread).toBe(threadDigest(io.view(31)!, BOT));
   });
 });
 
