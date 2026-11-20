@@ -21,7 +21,7 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { type EnvironmentFaultKind, environmentFaultOf, settleEnvironmentFault } from './environment-fault.ts';
+import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from './environment-fault.ts';
 import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
@@ -1606,6 +1606,7 @@ export async function fixIssue(
   // shuffled deck of verdicts with no way to tell which belongs to which.
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title}`);
+  rememberFaultMarkers(ctx, issue.number, issue.labels);
   const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
   const ceiling = options.ceiling ?? maxPoints;
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
@@ -1840,6 +1841,7 @@ export async function redriveIssue(
   options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  rememberFaultMarkers(ctx, issue.number, issue.labels);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
   const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
   const ceiling = options.ceiling ?? maxPoints;

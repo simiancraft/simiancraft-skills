@@ -92,6 +92,43 @@ export function describeFault(fault: Fault): string {
 export const faultMarker = (kind: HostFaultKind): string => `loop/environment-fault: ${kind}`;
 
 /**
+ * The fault markers each issue is known to carry, by repository and issue, as its driver read them
+ * when it took the issue up and as this process has written them since. A clean seat run clears
+ * them without a tracker read: an issue whose labels this process never saw is left alone.
+ */
+const knownMarkers = new Map<string, Set<HostFaultKind>>();
+const markerKey = (ctx: Context, issue: number) => `${ctx.project?.repo ?? ''}#${issue}`;
+
+/** Records the fault markers an issue carries, from the labels its driver read when it took it up. */
+export function rememberFaultMarkers(ctx: Context, issue: number, labels: Array<{ name: string }>): void {
+  const kinds = HOST_FAULT_KINDS.filter((kind) => labels.some((label) => label.name === faultMarker(kind)));
+  knownMarkers.set(markerKey(ctx, issue), new Set(kinds));
+}
+
+/**
+ * A seat ran for the issue and finished without an environment fault, so its work got past the
+ * point a free fault interrupted: the marker comes off, and a later fault of the same code, which
+ * would be a different occasion, is free again. Only an immediate repeat, before any clean seat
+ * run, is charged. A marker that cannot be removed is only logged.
+ */
+export function clearFaultMarkers(ctx: Context, issue: number, say: (message: string) => void): void {
+  const key = markerKey(ctx, issue);
+  const kinds = knownMarkers.get(key);
+  if (!kinds || kinds.size === 0) return;
+  // Known to carry none now, which outranks a snapshot of the labels read before this cleared them.
+  knownMarkers.set(key, new Set());
+  for (const kind of kinds) {
+    const marker = faultMarker(kind);
+    try {
+      mutate(ctx, `unlabel #${issue} ${marker}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', marker]);
+      say(`a seat ran cleanly after the free ${kind} fault; ${marker} comes off`);
+    } catch (error) {
+      say(`could not remove ${marker}: ${(error as Error).message.split('\n')[0]}`);
+    }
+  }
+}
+
+/**
  * What a settled fault came to. `free`: the work was not judged; nothing is counted and the work
  * is rerun later. `charged`: the same host fault came back on the rerun, so the work reproduced it,
  * and the caller settles it as an ordinary failure with `reason`.
@@ -117,7 +154,10 @@ export function settleEnvironmentFault(ctx: Context, issue: { number: number; la
     say(`could not pause the line: ${(hook as Error).message.split('\n')[0]}`);
   }
   const marker = faultMarker(fault.kind);
-  if (issue.labels.some((label) => label.name === marker)) {
+  // What this process knows outranks the caller's snapshot, which can predate a clean run's clear.
+  const known = knownMarkers.get(markerKey(ctx, issue.number));
+  if (known ? known.has(fault.kind) : issue.labels.some((label) => label.name === marker)) {
+    known?.delete(fault.kind);
     const reason = `the work reproduced ${describeFault(fault)} on its rerun after the host was restored${where ? ` (in ${where})` : ''}, so this time it is charged to the work`;
     say(reason);
     try {
@@ -131,6 +171,8 @@ export function settleEnvironmentFault(ctx: Context, issue: { number: number; la
   try {
     ensureLabel(ctx, marker, 'fbca04', 'A run failed on its host and was not judged; the same fault again is charged');
     mutate(ctx, `label #${issue.number} ${marker}`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', marker]);
+    const key = markerKey(ctx, issue.number);
+    knownMarkers.set(key, new Set([...(knownMarkers.get(key) ?? []), fault.kind]));
   } catch (error) {
     say(`could not mark the free fault (${(error as Error).message.split('\n')[0]}); a repeat will be free too`);
   }

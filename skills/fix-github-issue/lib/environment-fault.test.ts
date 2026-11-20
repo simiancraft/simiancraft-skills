@@ -135,6 +135,27 @@ describe('a fix lane that ends on an environment fault', () => {
     expect(paused).toHaveLength(1);
   });
 
+  it('after a seat runs cleanly, the same code again is a new occasion and free again', async () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(60, { labels: [{ name: 'size: 1' }] })]);
+    const ctx = context([], io);
+    const issue = { number: 60, title: 'a fix under review', labels: [{ name: 'size: 1' }], createdAt: '2026-01-01T00:00:00Z' };
+    expect(recordThrow(ctx, issue, diskFull(), () => {}, 3).outcome.outcome).toBe('unjudged');
+    expect(labelsOf(io, 60)).toContain(faultMarker('ENOSPC'));
+
+    // The rerun gets past the faulted point: a seat for the issue finishes without a fault.
+    const answer = join(scratch, 'clean-review.json');
+    writeFileSync(answer, JSON.stringify({ pr: 1, decision: 'merge', blocking: [], adequacy: 'n/a' }));
+    const cwd = join(scratch, 'wt', 'issue-60');
+    mkdirSync(cwd, { recursive: true });
+    expect((await runAgent(ctx, 'reviewer', 60, cwd, { engine: 'fixture2', model: answer }, 'prompt')).exitCode).toBe(0);
+    expect(labelsOf(io, 60)).not.toContain(faultMarker('ENOSPC'));
+
+    // A snapshot read before the clear still shows the marker; what the run knows outranks it.
+    const stale = { ...issue, labels: [{ name: 'size: 1' }, { name: faultMarker('ENOSPC') }] };
+    expect(recordThrow(ctx, stale, diskFull(), () => {}, 3).outcome.outcome).toBe('unjudged');
+    expect(labelsOf(io, 60)).toContain(faultMarker('ENOSPC'));
+  }, 20_000);
+
   it('a different kind of host fault on the rerun is free again', () => {
     const marked = [{ name: 'size: 1' }, { name: faultMarker('ENOSPC') }];
     const io = new FakeTracker('loop-bot', [fakeIssue(19, { labels: marked })]);

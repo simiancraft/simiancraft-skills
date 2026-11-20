@@ -26,7 +26,7 @@ import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } f
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
-import { environmentFaultOf, type Fault, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
+import { environmentFaultOf, type Fault, rememberFaultMarkers, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
 import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
@@ -381,6 +381,7 @@ export async function appraiseIssue(
     return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
   }
 
+  rememberFaultMarkers(ctx, issue.number, before.issue.labels);
   const cwd = join(ctx.runDir, `appraise-${issue.number}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });

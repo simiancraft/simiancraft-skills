@@ -177,7 +177,8 @@ The one exception is a host fault the work itself causes, such as tests that fil
 first host fault on an issue leaves the marker `loop/environment-fault: <code>`; the same code again
 on its rerun, with the marker still on the issue, is the work's doing, and the driver raises
 `AGENT_FAILED` for it, with a reason that says the work reproduced the fault, and takes the marker
-off. A person's stop is never charged. The driver's own kills (the cap, a stop, a lost lease) and a
+off. The first seat for the issue that finishes without a fault takes the marker off too, so only an
+immediate repeat is charged. A person's stop is never charged. The driver's own kills (the cap, a stop, a lost lease) and a
 crash's signals stay `AGENT_FAILED` or the stop they are; see
 `fix-github-issue/references/pipeline.md`.
 

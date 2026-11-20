@@ -17,7 +17,7 @@ import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } f
 import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { environmentFaultOf, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
+import { environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
@@ -770,6 +770,7 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     unlock();
     return { outcome: 'left-alone', reason: `#${issue.number} is ${tree.issue.state.toLowerCase()}` };
   }
+  rememberFaultMarkers(ctx, issue.number, tree.issue.labels);
   const journalPath = ctx.dryRun || ctx.io ? null : join(ctx.runDir, `carve-${issue.number}-gen${tree.generation}.json`);
   // Reading the journal and taking the claim can both throw; the local lock must not outlive them,
   // or every later visit in this process reads its own live pid and calls the issue busy.

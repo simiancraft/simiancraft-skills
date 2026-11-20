@@ -136,7 +136,7 @@ was released and its worktree cleared (unpushed commits are kept under `refs/loo
 the issue carries `loop/environment-fault: <code>`. It replaces a floor pause, so an incident's fix
 is held too, but never a person's. Free the disk or the memory, then release it by hand; the run
 takes the issue up again once the line is resumed, and the next run does if this one has ended. If
-the same issue fails on the same code again, the work itself is taken to be filling the disk or the
+the same issue fails on the same code again before any of its seats finishes cleanly, the work itself is taken to be filling the disk or the
 memory, and that failure is counted as an ordinary one. When the pause itself cannot be written,
 the run stops as on a signal instead. Any other reason was written by a
 person, and only a person clears it, as they clear a `host:` one:

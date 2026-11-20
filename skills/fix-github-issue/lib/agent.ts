@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
-import { describeFault, EnvironmentFault, type Fault, hostFaultInLog } from './environment-fault.ts';
+import { clearFaultMarkers, describeFault, EnvironmentFault, type Fault, hostFaultInLog } from './environment-fault.ts';
 import { LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
 import { beginStop, isStopping, RunStopping, stoppableSleep, yieldToStop } from './shell.ts';
@@ -424,6 +424,8 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     }
     ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
   }
+  // A clean run is past whatever point a free fault interrupted, so its marker comes off.
+  if (exitCode === 0) clearFaultMarkers(ctx, issue, (message) => ctx.log(`  #${issue}  ${message}`));
 
   return { logPath, exitCode };
 }

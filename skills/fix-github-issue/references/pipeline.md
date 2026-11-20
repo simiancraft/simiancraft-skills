@@ -394,8 +394,10 @@ driver settles it through `settleEnvironmentFault`, the one place the rule lives
   leaves the marker label `loop/environment-fault: <code>`, so a restart does not forget it. The
   same code again with the marker on the issue is charged as the ordinary failure it then is (an
   attempt, a review dead letter, a counted appraisal or carve), with a reason that says the work
-  reproduced the fault on its rerun, and the marker comes off. A different code is free again. A
-  person's stop is never charged and leaves no marker.
+  reproduced the fault on its rerun, and the marker comes off. The marker also comes off when any
+  seat for the issue next finishes without a fault (`runAgentOnce` clears it): the work got past the
+  faulted point, so a much later fault of the same code is a new occasion and free again. A
+  different code is free again too. A person's stop is never charged and leaves no marker.
 
 Two endings cannot be told apart from a person's and are left as failures: SIGKILL, which the
 kernel's out-of-memory killer also sends, and an engine that exits 0 when interrupted (`claude -p`
