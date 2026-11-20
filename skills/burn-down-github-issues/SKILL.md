@@ -77,6 +77,7 @@ bun run <this-skill-dir>/lanes.ts                      # write the 37 lanes and 
 bun run <this-skill-dir>/loop.ts --dry-run             # place every card, print the backlog by lane and what would run; no GitHub or working-tree write
 bun run <this-skill-dir>/loop.ts --limit 3             # work three Ready cards
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
+bun run <this-skill-dir>/loop.ts --concurrency 1       # fewer lanes at once for this run only, when something else shares the machine
 bun run <this-skill-dir>/loop.ts --only 12,34          # restrict to these roots and their descendants, whatever their age
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the inbox; --appraise-limit N caps it instead
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
@@ -121,7 +122,7 @@ the rest); a flag beats the config for the run it is given on.
    (a confirmed close with a receipt), or a human lane. The size callback hands an oversized issue
    to the sibling `carve-github-issue` skill, which cuts it into children along its highest
    natural seam and holds the parent as an Epic while they move.
-4. **Works Ready.** Up to `concurrency` cards at once, each in its own worktree, each moving
+4. **Works Ready.** Up to `concurrency` cards at once (`--concurrency <n>` for one run), each in its own worktree, each moving
    through Coding and Proving (two seats, `code-github-issue` then `prove-github-issue`, with the
    driver moving the card from the push and the pull request each leaves), Ready for review, Evidence
    under review, and the landing lanes to Merged; or back to Sent back on a rejection; or into a
