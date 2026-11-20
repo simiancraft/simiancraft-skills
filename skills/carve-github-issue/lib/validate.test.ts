@@ -147,6 +147,13 @@ describe('validateCarving', () => {
 
 describe('validateConfirmation', () => {
   const base = { issue: 10, mode: 'carve', agree: true, finding: 'cover', seam: 'agree', seamCase: '', reason: 'ok' };
+  for (const mode of ['carve', 'revisit'] as const) {
+    test(`${mode} accepts a size rejection but refuses size agreement`, () => {
+      const rejection = { ...base, mode, agree: false, finding: 'size-mismatch' };
+      expect(validateConfirmation(rejection, mode).ok).toBe(true);
+      expect(validateConfirmation({ ...rejection, agree: true }, mode).ok).toBe(false);
+    });
+  }
   test('accepts an agreement and rejects mismatched findings', () => {
     expect(validateConfirmation(base, 'carve').ok).toBe(true);
     expect(validateConfirmation({ ...base, finding: 'gap' }, 'carve').ok).toBe(false);

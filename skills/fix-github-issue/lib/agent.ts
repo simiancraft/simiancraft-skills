@@ -165,7 +165,11 @@ export async function shutdownAgents(graceMs = 10_000): Promise<number> {
 export function renderPrompt(ctx: Context, file: string, vars: Record<string, string>): string {
   const found = ctx.promptsDirs.map((dir) => join(dir, file)).find((path) => existsSync(path));
   if (!found) throw new Error(`no prompt ${file} in ${ctx.promptsDirs.join(', ')}`);
-  return renderTemplate(ctx, readFileSync(found, 'utf8'), vars);
+  let template = readFileSync(found, 'utf8');
+  if (template.includes('{{SIZING_RUBRIC}}')) {
+    template = template.replaceAll('{{SIZING_RUBRIC}}', readFileSync(new URL('../references/sizing.md', import.meta.url), 'utf8').trimEnd());
+  }
+  return renderTemplate(ctx, template, vars);
 }
 
 /** The same rendering for prompt text that did not come from a shipped file: a producer's callback prompt, say. */

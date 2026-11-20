@@ -76,6 +76,15 @@ A technical unknown is not a hand-off: it is a `spike` piece (`role: "spike"`) w
 the questions answered with evidence, and a `partial` cut lists in `deferred` the criteria that
 wait on it. A product ruling nobody has made is `too-uncertain`.
 
+## Sizing
+
+{{SIZING_RUBRIC}}
+
+Size each authored piece independently, including its tests and proof, before comparing it
+to the **{{CEILING}}**-point ceiling on the scale `{{SCALE}}`. The ceiling is a limit on
+scope, not a reason to lower an estimate. Split an oversized piece further, or return
+`indivisible` when no admissible cut fits.
+
 ## Your verdict
 
 - `carve`: the cut above.

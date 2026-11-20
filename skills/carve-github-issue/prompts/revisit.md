@@ -31,6 +31,15 @@ any issue; the driver does every tracker write from your answer.
 
 {{FEEDBACK}}
 
+## Sizing
+
+{{SIZING_RUBRIC}}
+
+Size each authored piece independently, including its tests and proof, before comparing it
+to the **{{CEILING}}**-point ceiling on the scale `{{SCALE}}`. The ceiling is a limit on
+scope, not a reason to lower an estimate. Split an oversized piece further, or return
+`indivisible` when no admissible cut fits.
+
 ## Your verdict
 
 - `still-good`: the carving stands. Return the inventory and the ledger with every criterion's

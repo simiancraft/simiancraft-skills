@@ -695,6 +695,8 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
     ISSUE: String(k.trunk),
     TITLE: tree.issue.title,
     MODE: mode,
+    CEILING: String(k.knobs.ceiling),
+    SCALE: k.ctx.knobs.pointScale.join(', '),
     VERDICT: carving.verdict,
     ROUND: String(round),
     MAX_ROUNDS: String(k.knobs.maxCarveRounds),
