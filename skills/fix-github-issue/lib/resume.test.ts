@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { claimHolder, judgeLane, parkForInspection } from './resume.ts';
+import { claimHolder, judgeLane, managedLanes, parkForInspection } from './resume.ts';
 import { RunStopping } from './shell.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 
@@ -119,4 +119,25 @@ it('records dirty and off-head reasons in the work dead letter', () => {
       expect(io.view(issue)?.comments.at(-1)?.body).toContain(judgement.reason);
     }
   } finally { spy.mockRestore(); }
+});
+
+it('managedLanes lists issue lanes and their scratch siblings, and reads a claim once per issue', () => {
+  const own = lane(61);
+  const sibling = join(repo, 'wt', 'issue-61-evidence');
+  git(repo, 'worktree', 'add', '-q', '--detach', sibling, head);
+  git(repo, 'worktree', 'add', '-q', '--detach', join(repo, 'wt', 'scratch-61'), head);
+  git(repo, 'worktree', 'add', '-q', '--detach', join(scratch, 'issue-62'), head);
+  const io = new FakeTracker('bot', [fakeIssue(61)]);
+  const context = { ...ctx(), io, runId: 'this-run', botLogin: 'bot' } as Context;
+  const view = spyOn(io, 'view');
+  try {
+    const lanes = managedLanes(context).filter((l) => l.issue === 61 || l.issue === 62);
+    expect(lanes.map(({ issue, dir, parent, sibling }) => ({ issue, dir, parent, sibling }))).toEqual([
+      { issue: 61, dir: own, parent: own, sibling: false },
+      { issue: 61, dir: sibling, parent: own, sibling: true },
+    ]);
+    expect(view).not.toHaveBeenCalled();
+    expect(lanes.map((l) => l.holder())).toEqual([null, null]);
+    expect(view).toHaveBeenCalledTimes(1);
+  } finally { view.mockRestore(); }
 });
