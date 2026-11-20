@@ -24,8 +24,9 @@ any issue; the driver does every tracker write from your answer.
 
 {{CHILDREN}}
 
-- The previous ledger, carried forward for you, with each criterion's status as the driver
-  re-derived it from the tree just now:
+- The previous ledger, carried forward for you from the newest live record (not the first
+  carving's inventory), with each criterion's status as the driver re-derived it from the tree
+  just now:
 
 {{PREVIOUS_LEDGER}}
 
@@ -41,8 +42,8 @@ any issue; the driver does every tracker write from your answer.
   replace it and why. A child with work started (a live claim, an open pull request on its
   branch, an assignee, a park, a dead letter, a spent attempt or review) is never superseded; adopt it as a piece (`kind: "child"`). Closed children you adopt do not count toward the fan-out ceiling, which bounds only the open and new pieces. A question
   answered on the thread may require a rollback piece for work that landed on the old premise.
-- `exhausted`: every criterion is `completed` (its owner closed `COMPLETED`) or `withdrawn` (a
-  comment you cite retracts it), and no recorded dependency is open. The trunk goes back to the
+- `exhausted`: every criterion is `completed` (its owner closed `COMPLETED`) or `withdrawn` (an
+  edit you cite retracts it), and no recorded dependency is open. The trunk goes back to the
   appraiser for whatever remains.
 - `indivisible`: what remains cannot be cut at the ceiling by any rung; say which you tried.
 - `too-uncertain`: a product or domain ruling nobody has made decides what remains. State the
@@ -51,6 +52,13 @@ any issue; the driver does every tracker write from your answer.
 
 Criterion ids carry across generations: reuse the previous ledger's id for the same criterion,
 and mint a new one only for a criterion that is new to the thread.
+
+A criterion the previous ledger carries as `withdrawn` stays withdrawn, with the same `cite`: the
+driver has already checked that the edit it cites still stands, and an answer that turns it back
+into an open criterion is refused. If the thread has since asked for it again, that is a new
+criterion with a new id. A criterion the thread withdraws now is `withdrawn` with a `cite` naming
+the edit: the comment's id or link, or `body:{{BODY_HASH}}` when the trunk's current body is what
+withdrew it (a rewrite that drops the ask, or answers it itself).
 
 ## Write the answer
 
