@@ -6,13 +6,13 @@
 
 import { join } from 'node:path';
 import { readResult, renderPrompt, runAgent } from '../../../fix-github-issue/lib/agent.ts';
-import type { Context, MergingIssue } from '../../../fix-github-issue/lib/context.ts';
+import type { BoundaryChange, Context, MergingIssue } from '../../../fix-github-issue/lib/context.ts';
 import type { Seat } from '../../../fix-github-issue/lib/engines.ts';
 import { ensureLabels, parkIssue } from '../../../fix-github-issue/lib/labels.ts';
 import { enrichBlockers } from '../../../fix-github-issue/lib/blockers.ts';
 import { fixIssue, type FixOutcome, type Issue } from '../../../fix-github-issue/lib/pipeline.ts';
 import { sh } from '../../../fix-github-issue/lib/shell.ts';
-import { type LedgerEntry, lastClean, readLedger } from './ledger.ts';
+import { type LedgerEntry, lastClean, pending, readLedger, readList } from './ledger.ts';
 import type { FloorCause } from './line.ts';
 
 type MergedPullRequest = { number: number; title: string; mergedAt: string; mergeCommit: string; paths: string[] };
@@ -33,14 +33,108 @@ export function mergedSince(ctx: Context, since: string): MergedPullRequest[] {
 export const INCIDENT_LABEL = 'floor/incident';
 
 /**
- * The merge boundary's hold for a floor incident's fix: it parks for a person whatever `autoMerge`
- * says, as a data change does. Its premise is a walk of a live environment, which can be wrong (a
- * deploy still running reads as absent), and a code-only fix acting on it could revert reviewed work.
+ * The merge boundary's hold for a floor incident's fix. A fix that repairs forward lands as any
+ * other change does. One that undoes a recently merged pull request parks for a person whatever
+ * `autoMerge` says: its premise is a walk of a live environment, which can be wrong (a deploy still
+ * running reads as absent), and undoing reviewed work on a wrong premise is the costly mistake.
+ * `reverted` says what the fix undoes, or null when it undoes nothing.
  */
-export function incidentHold(issue: MergingIssue): string | null {
-  return issue.labels.some((label) => label.name === INCIDENT_LABEL)
-    ? `a ${INCIDENT_LABEL} fix acts on evidence from a live environment, so a person confirms it`
-    : null;
+export function incidentHold(issue: MergingIssue, reverted: () => string | null): string | null {
+  if (!issue.labels.some((label) => label.name === INCIDENT_LABEL)) return null;
+  const undoes = reverted();
+  return undoes ? `a ${INCIDENT_LABEL} fix that ${undoes} acts on evidence from a live environment, so a person confirms it` : null;
+}
+
+/** A recently merged pull request an incident's fix must not undo unattended. */
+export type RecentMerge = { pullRequest?: number; sha: string };
+
+/** The culprit an incident's body names (`Culprit: #12 (`abc…`)`), or null. */
+export function culpritOf(body: string): RecentMerge | null {
+  const match = /^Culprit: #(\d+) \(`([0-9a-f]{7,40})`\)/m.exec(body);
+  return match ? { pullRequest: Number(match[1]), sha: match[2] } : null;
+}
+
+/**
+ * The merges an incident's fix is checked against: the culprit its diagnosis named, and every merge
+ * still on the floor (owed a verdict, the failing one among them). A tracker that cannot be read
+ * leaves the floor's merges.
+ */
+export function recentMerges(ctx: Context, issue: number, floorDir: string): RecentMerge[] {
+  const out: RecentMerge[] = [];
+  try {
+    const culprit = culpritOf(sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'body', '--jq', '.body']));
+    if (culprit) out.push(culprit);
+  } catch (error) {
+    ctx.log(`could not read incident #${issue}'s culprit: ${(error as Error).message}`);
+  }
+  for (const item of pending(readList(floorDir), readLedger(floorDir))) {
+    if (item.ref?.sha) out.push({ pullRequest: item.ref.pullRequest, sha: item.ref.sha });
+  }
+  return out;
+}
+
+function git(cwd: string, args: string[]): string | null {
+  const proc = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  return proc.exitCode === 0 ? proc.stdout.toString() : null;
+}
+
+/** Lines a diff adds and removes, trimmed, less those with no letter or digit (braces, blank lines). */
+function diffLines(diff: string): { added: Set<string>; removed: Set<string> } {
+  const added = new Set<string>();
+  const removed = new Set<string>();
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    const text = line.slice(1).trim();
+    if (!/[A-Za-z0-9]/.test(text)) continue;
+    if (line.startsWith('+')) added.add(text);
+    else if (line.startsWith('-')) removed.add(text);
+  }
+  return { added, removed };
+}
+
+function nameStatus(out: string | null): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const line of (out ?? '').split('\n')) {
+    const [status, path] = line.split('\t');
+    if (status && path) files.set(path, status[0]);
+  }
+  return files;
+}
+
+/**
+ * What the change on `cwd`'s HEAD (against its merge base with `base`) undoes of these merges, or
+ * null when it moves none of them back toward its parent. It undoes a merge when it is a
+ * `git revert` of it, deletes a file the merge added, restores one it deleted, puts back a line it
+ * removed, or only removes lines it added from a file. A forward repair that rewrites the merge's
+ * lines into new ones undoes nothing. A merge that cannot be read is not counted.
+ */
+export function revertOf(cwd: string, base: string, merges: RecentMerge[]): string | null {
+  const from = git(cwd, ['merge-base', base, 'HEAD'])?.trim();
+  if (!from) return null;
+  const messages = git(cwd, ['log', '--format=%B', `${from}..HEAD`]) ?? '';
+  const reverts = [...messages.matchAll(/This reverts commit ([0-9a-f]{7,40})/g)].map((m) => m[1]);
+  const fixFiles = nameStatus(git(cwd, ['diff', '--no-renames', '--name-status', from, 'HEAD']));
+  const seen = new Set<string>();
+  for (const merge of merges) {
+    const sha = git(cwd, ['rev-parse', '--verify', '--quiet', `${merge.sha}^{commit}`])?.trim();
+    const parent = sha && git(cwd, ['rev-parse', '--verify', '--quiet', `${sha}^1`])?.trim();
+    if (!sha || !parent || seen.has(sha)) continue;
+    seen.add(sha);
+    const name = `${merge.pullRequest ? `#${merge.pullRequest}` : 'the merge'} (${sha.slice(0, 10)})`;
+    if (reverts.some((r) => sha.startsWith(r))) return `reverts ${name}`;
+    const mergeFiles = nameStatus(git(cwd, ['diff', '--no-renames', '--name-status', parent, sha]));
+    for (const [path, status] of fixFiles) {
+      const theirs = mergeFiles.get(path);
+      if (!theirs) continue;
+      if (theirs === 'A' && status === 'D') return `undoes ${name}: deletes ${path}, which it added`;
+      if (theirs === 'D' && status === 'A') return `undoes ${name}: restores ${path}, which it deleted`;
+      const merged = diffLines(git(cwd, ['diff', '--no-renames', '-U0', parent, sha, '--', path]) ?? '');
+      const fixed = diffLines(git(cwd, ['diff', '--no-renames', '-U0', from, 'HEAD', '--', path]) ?? '');
+      if ([...fixed.added].some((line) => merged.removed.has(line))) return `undoes ${name}: puts back lines it removed from ${path}`;
+      if (fixed.added.size === 0 && [...fixed.removed].some((line) => merged.added.has(line))) return `undoes ${name}: only removes lines it added to ${path}`;
+    }
+  }
+  return null;
 }
 const DIAGNOSIS_FILE = 'floor-diagnosis.json';
 

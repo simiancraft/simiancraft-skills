@@ -635,20 +635,33 @@ describe('a floor incident at the merge boundary', () => {
   it('without a hold, autoMerge alone decides', async () => {
     expect((await landWith(undefined)).outcome).toBe('merged');
   });
-  it('parks a code-only incident fix under autoMerge code-only, with a reason --land accepts', async () => {
-    const { outcome, parks } = await landWith(incidentHold);
-    expect(outcome).toEqual({ park: expect.stringMatching(/^autoMerge is code-only and the change touches code; a floor\/incident fix/) });
+  const reverting: Context['holdAtBoundary'] = (issue) => incidentHold(issue, () => 'undoes #12 (abc1234567): puts back lines it removed from src/a.ts');
+  const forward: Context['holdAtBoundary'] = (issue) => incidentHold(issue, () => null);
+  it('lands an incident fix that repairs forward without a person', async () => {
+    const { outcome, parks } = await landWith(forward);
+    expect(outcome).toBe('merged');
+    expect(parks).toHaveLength(0);
+  });
+  it('parks an incident fix that undoes a recent merge, with a reason --land accepts', async () => {
+    const { outcome, parks } = await landWith(reverting);
+    expect(outcome).toEqual({ park: expect.stringMatching(/^autoMerge is code-only and the change touches code; a floor\/incident fix that undoes #12/) });
     expect(parks).toHaveLength(1);
     const body = (outcome as { park: string }).park;
     expect(landBlocker(['loop/parked'], [{ body, createdAt: '2026-09-20T00:00:00Z' }], '2026-09-20T00:00:01Z')).toBeNull();
   });
   it('a person who clears it with --land lands it', async () => {
-    expect((await landWith(incidentHold, incident.number)).outcome).toBe('merged');
+    expect((await landWith(reverting, incident.number)).outcome).toBe('merged');
   });
-  it('holds only incidents, and the loop asks it at every merge', () => {
-    expect(incidentHold({ number: 1, labels: [{ name: 'bug' }] })).toBeNull();
-    expect(incidentHold(incident)).toContain('live environment');
-    expect(readFileSync(new URL('../loop.ts', import.meta.url), 'utf8')).toContain('holdAtBoundary: incidentHold,');
+  it('holds only incidents, asks about a revert only for one, and the loop asks it at every merge', () => {
+    let asked = 0;
+    const ask = () => {
+      asked += 1;
+      return 'reverts #12 (abc1234567)';
+    };
+    expect(incidentHold({ number: 1, labels: [{ name: 'bug' }] }, ask)).toBeNull();
+    expect(asked).toBe(0);
+    expect(incidentHold(incident, ask)).toContain('live environment');
+    expect(readFileSync(new URL('../loop.ts', import.meta.url), 'utf8')).toContain('holdAtBoundary: (issue, change) => incidentHold(issue, () => revertOf(change.cwd, change.base, recentMerges(ctx, issue.number, FLOOR_DIR))),');
   });
 });
 

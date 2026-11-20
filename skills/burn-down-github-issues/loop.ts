@@ -52,7 +52,7 @@ import { issueRefs } from './lib/refs.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
 import { Floor } from './lib/floor/floor.ts';
 import { lineHolds, readSwitch as readLineSwitch, type Seam } from './lib/floor/line.ts';
-import { INCIDENT_LABEL, incidentHold } from './lib/floor/incident.ts';
+import { INCIDENT_LABEL, incidentHold, recentMerges, revertOf } from './lib/floor/incident.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
@@ -566,9 +566,10 @@ const ctx = createContext({
     await waitForGo('the merge queue', 'merge', issue.labels.some((label) => label.name === INCIDENT_LABEL));
     return { ok: true } as const;
   },
-  // Passing the floor's pause is not landing unattended: an incident's fix parks at the merge
-  // boundary whatever autoMerge says, on every path that lands it (the floor's, a resume, a lane).
-  holdAtBoundary: incidentHold,
+  // Passing the floor's pause is not landing unattended when the fix undoes reviewed work: an
+  // incident's fix that reverts a recent merge parks at the merge boundary whatever autoMerge says,
+  // on every path that lands it (the floor's, a resume, a lane). A forward repair lands.
+  holdAtBoundary: (issue, change) => incidentHold(issue, () => revertOf(change.cwd, change.base, recentMerges(ctx, issue.number, FLOOR_DIR))),
   // The pipeline has already placed the card in Merged by the time this fires.
   afterMerge: (event) => FLOOR?.put(event),
 });

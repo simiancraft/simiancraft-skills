@@ -205,11 +205,15 @@ honest confidence. The floor files an issue labelled `floor/incident` with all o
 open one for the item) and hands it to `fix-github-issue` like any other issue. Its fix merges
 through the floor's own pause (it is the merge that makes the next walk come back clean) but still
 waits on a pause a person set; it lands through a pull master of its own, since the lanes' one may
-be held by a lane waiting at that very pause, and its merge goes up onto the floor too. Passing the
-pause is not landing unattended: an incident's fix parks at the merge boundary whatever `autoMerge`
-says, as a data change does, on every path that lands it (the floor's, a resumed lane, an ordinary
-one), because its premise is a walk of a live environment and a walk can be wrong (a deploy still
-running reads as absent). A person confirms it with `fix.ts --land`. The readout lists an incident the floor is
+be held by a lane waiting at that very pause, and its merge goes up onto the floor too. A fix that
+repairs forward lands without a person, as any change `autoMerge` allows does. A fix that undoes a
+recently merged pull request (the culprit the incident names, or any merge still on the floor)
+parks at the merge boundary whatever `autoMerge` says, on every path that lands it (the floor's, a
+resumed lane, an ordinary one), because its premise is a walk of a live environment and a walk can
+be wrong (a deploy still running reads as absent). The fix undoes a merge when it is a `git revert`
+of it, deletes a file the merge added, restores one it deleted, puts back a line the merge removed,
+or only removes lines the merge added from a file; a change that rewrites the merge's lines into
+new ones is a forward repair. A person confirms a parked one with `fix.ts --land`. The readout lists an incident the floor is
 repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it. Its ⛔
 line names the way out: an approved fix parked at the merge boundary is landed with `fix.ts --land
 <n>` (lifting its label would only hand it to a run that parks it again); any other park is handed

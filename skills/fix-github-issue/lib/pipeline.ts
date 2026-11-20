@@ -975,7 +975,7 @@ async function land(
   const touched = effective?.join(', ') ?? 'unstated';
   // A driver can keep an issue's merge for a person whatever autoMerge says; its reason rides on the
   // boundary's own, so the park still reads as the boundary's and `--land` still waives it.
-  const held = ctx.holdAtBoundary?.(issue) ?? null;
+  const held = ctx.holdAtBoundary?.(issue, { cwd, base: `${ctx.project.remote}/${ctx.project.baseBranch}` }) ?? null;
   const heldNote = held ? `; ${held}` : '';
   const allowed = held === null && mergeAllowed(ctx, effective);
   if (!allowed && boundaryWaived(ctx.landPastBoundary, issue.number, effective)) {
