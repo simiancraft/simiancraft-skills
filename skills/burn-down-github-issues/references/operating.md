@@ -198,6 +198,12 @@ under `refs/loop/rescued/issue-<n>/<sha>`, one ref per rescue, so nothing can ma
 another issue's branch is ever published by that cleanup. `git for-each-ref refs/loop/rescued/` lists what
 failed attempts left, and `git log <ref>` reads one; deleting a ref throws that attempt away.
 
+A lane with uncommitted work and no pull request is kept for inspection at the next start while its
+issue is open, and the issue gets a work dead letter. Once the issue is closed, nothing would ever
+come back for it, so `reconcile` commits the lane's working tree, untracked files included, onto its
+HEAD under the same `refs/loop/rescued/issue-<n>/<sha>`, removes the lane, and logs that ref once.
+A lane whose branch still has an open pull request, or whose work cannot be saved, is kept.
+
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
 A signal arriving during synchronous reads is heard before an agent turn starts.
