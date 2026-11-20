@@ -24,7 +24,7 @@ import { isStopping, RunStopping, sh, stoppableSleep } from '../../../fix-github
 import { matchesPath } from '../../../fix-github-issue/lib/staleness.ts';
 import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts';
 import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
-import { handleIncident, mergedSince, openIncidentFor } from './incident.ts';
+import { type Diagnosis, diagnose, handleIncident, mergedSince, openIncidentFor } from './incident.ts';
 import {
   AGENT_RUNGS,
   AGENT_VERDICTS,
@@ -41,6 +41,7 @@ import {
   REPAIR,
   TERMINAL,
 } from './ledger.ts';
+import { ghLineage, type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
 import { classify, deployedRevision, describe, probe } from './probe.ts';
 
 const VERDICT_FILE = 'walk-verdict.json';
@@ -79,9 +80,11 @@ export type FloorOptions = {
   baseUrl?: string;
   /** Where a walk's readout goes; the log, one line at a time, by default. */
   print?: (readout: string) => void;
+  /** Reads where an issue sits in a carved trunk; the forge by default. */
+  lineageOf?: LineageOf;
 };
 
-type AgentVerdictFile = { entries: Array<{ itemId: string; rung: string; verdict: string; reason: string; evidence?: string }> };
+type AgentVerdictFile = { entries: Array<{ itemId: string; rung: string; verdict: string; reason: string; evidence?: string; sibling?: unknown }> };
 
 /** The reason the floor writes when it pauses the line; a pause without this prefix is a person's. */
 export const FLOOR_PAUSE = 'floor:';
@@ -106,12 +109,16 @@ export class Floor {
   private readonly mine = new Set<string>();
   /** Probe, classify, and report only: no ledger, line, callback, checkout, agent, or incident. */
   private readonly rehearsal: boolean;
+  private readonly lineageOf: LineageOf;
+  /** Lineages read during the current walk, by issue; the tracker can change between walks. */
+  private lineages = new Map<number, Lineage | null>();
 
   constructor(options: FloorOptions) {
     this.o = options;
     this.env = { ...options.config.environment, ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}) };
     this.rehearsal = options.ctx.dryRun || options.baseUrl !== undefined;
     this.checkout = resolve(options.ctx.repoRoot, options.ctx.project.worktreeRoot, 'floor-checkout');
+    this.lineageOf = options.lineageOf ?? ghLineage(options.ctx);
   }
 
   /** Merge-up: one list item per merge, so the next walk checks what landed. */
@@ -139,9 +146,16 @@ export class Floor {
     this.timer = null;
   }
 
-  /** Items still owed a terminal verdict, less those a person owns: this run's, or every one. */
+  /**
+   * Items still owed a terminal verdict, less those a person owns and those whose missing effect an
+   * open sibling owns (that sibling's own merge is what settles them): this run's, or every one.
+   */
   owed(scope: 'run' | 'all' = 'all'): ListItem[] {
-    return pending(readList(this.o.dir), readLedger(this.o.dir)).filter((item) => !this.withAPerson.has(item.id) && (scope === 'all' || this.mine.has(item.id)));
+    const ledger = readLedger(this.o.dir);
+    const latest = latestByItem(ledger);
+    return pending(readList(this.o.dir), ledger).filter(
+      (item) => !this.withAPerson.has(item.id) && latest.get(item.id)?.verdict !== 'owed-by-sibling' && (scope === 'all' || this.mine.has(item.id)),
+    );
   }
 
   /**
@@ -276,6 +290,7 @@ export class Floor {
     const items = new Map(readList(this.o.dir).map((item) => [item.id, item]));
     const quiet = inQuietWindow(this.env.quietWindows);
     const notes: string[] = [];
+    this.lineages = new Map();
 
     // The environment can move on its own, so read the deployed revision fresh every walk.
     if (!this.rehearsal) {
@@ -308,7 +323,13 @@ export class Floor {
     if (result.up && !options.livenessOnly) {
       if (this.o.config.forge && !this.rehearsal) this.fromForge(items);
       // 2. Classify. Pending verdicts need no agent; one is recorded only when it changes.
-      for (const item of pending([...items.values()], readLedger(this.o.dir))) {
+      const unsettled = pending([...items.values()], readLedger(this.o.dir));
+      // An issue whose merge is on the floor and not verified yet has not landed where a walk looks.
+      const landing = new Set(unsettled.map((item) => item.ref?.issue).filter((n): n is number => n !== undefined));
+      for (const item of unsettled) {
+        // Owed to a sibling still open, or merged and not yet verified: nothing to look at until it lands.
+        const prior = before.get(item.id);
+        if (prior?.verdict === 'owed-by-sibling' && prior.sibling !== undefined && (landing.has(prior.sibling) || owedTo(this.lineage(item), prior.sibling))) continue;
         const state = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, graceMinutes: this.env.graceMinutes, repoRoot: ctx.repoRoot });
         if (!state) {
           walkable.push(item);
@@ -345,7 +366,29 @@ export class Floor {
     // "Turned" counts from the last handled failure, so an outage that began in a quiet window
     // still pauses the line on the first walk after it.
     const incidents: WalkResult['incidents'] = [];
-    const wrong = entries.filter((entry) => REPAIR.has(entry.verdict));
+    let wrong = entries.filter((entry) => REPAIR.has(entry.verdict));
+    // A carved child that just turned absent, with open siblings under its trunk, is diagnosed
+    // before anything pauses: when an open sibling owns the missing effect, it is owed, not wrong.
+    const diagnoses = new Map<string, Diagnosis | null>();
+    if (wrong.length > 0 && !quiet && !options.livenessOnly && !this.rehearsal) {
+      for (const entry of wrong) {
+        if (entry.verdict !== 'absent' || before.get(entry.itemId)?.verdict === 'absent') continue;
+        const item = items.get(entry.itemId);
+        const lineage = item ? this.lineage(item) : null;
+        if (!lineage || lineage.openSiblings.length === 0) continue;
+        this.checkpoint();
+        const diagnosis = await this.diagnoseAt(entry, deployed, item?.ref?.mergedAt, lineage);
+        const owner = diagnosis?.remedy === 'owed-by-sibling' ? owedTo(lineage, diagnosis.sibling) : null;
+        if (!owner) {
+          diagnoses.set(entry.itemId, diagnosis);
+          continue;
+        }
+        const owed: LedgerEntry = { ...entry, checkedAt: new Date().toISOString(), verdict: 'owed-by-sibling', sibling: owner.number, reason: `${entry.reason} Diagnosis: ${diagnosis?.summary ?? ''}`.trim() };
+        this.record(owed, entries);
+        entries.splice(entries.indexOf(entry), 1);
+      }
+      wrong = entries.filter((entry) => REPAIR.has(entry.verdict));
+    }
     if (wrong.length > 0 && !quiet) {
       const turned = wrong.filter((entry) => {
         const prior = before.get(entry.itemId);
@@ -367,10 +410,10 @@ export class Floor {
             notes.push(`${entry.itemId}: waiting for incident #${fix}'s fix to deploy`);
             continue;
           }
-          const incident = await this.repair(entry, deployed, items.get(entry.itemId)?.ref?.mergedAt);
+          const item = items.get(entry.itemId);
+          const incident = await this.repair(entry, deployed, item?.ref?.mergedAt, item ? this.lineage(item) : null, diagnoses.get(entry.itemId));
           if (incident?.outcome === 'merged') this.fixedBy.set(entry.itemId, incident.issue);
           if (incident) incidents.push({ itemId: entry.itemId, ...incident });
-          const item = items.get(entry.itemId);
           if (item) this.o.onWalked?.(item, entry, incident?.issue);
         }
       }
@@ -463,7 +506,8 @@ export class Floor {
               ? `pull request #${ref.pullRequest}, merge ${ref.sha?.slice(0, 12) ?? '?'}, merged ${ref.mergedAt ?? '?'}; paths: ${(ref.paths ?? []).slice(0, 15).join(', ') || 'none listed'}`
               : 'no reference; treat the text as the instruction';
             const walks = this.walksFor(item).map((w) => w.name).join(', ');
-            return `- **\`${item.id}\`**: ${item.text}\n  ${refText}${walks ? `\n  standing walks: ${walks}` : ''}`;
+            const lineage = this.lineage(item);
+            return `- **\`${item.id}\`**: ${item.text}\n  ${refText}${walks ? `\n  standing walks: ${walks}` : ''}${lineage ? `\n${renderLineage(lineage, '  ')}` : ''}`;
           })
           .join('\n'),
         VERDICT_FILE: join(this.checkout, VERDICT_FILE),
@@ -492,6 +536,16 @@ export class Floor {
           reason: raw.reason,
           evidence: raw.evidence,
         };
+        if (entry.verdict === 'owed-by-sibling') {
+          // Owed only to a sibling that is open under this item's trunk; naming anything else leaves
+          // the effect missing with nobody coming to supply it.
+          const owner = owedTo(this.lineage(item), raw.sibling);
+          if (owner) entry.sibling = owner.number;
+          else {
+            entry.verdict = 'absent';
+            entry.reason = `${raw.reason} (it named ${typeof raw.sibling === 'number' ? `#${raw.sibling}` : 'no sibling'}, which is not an open sibling under this item's trunk)`;
+          }
+        }
         this.record(entry, entries);
         wanted.delete(raw.itemId);
         if (TERMINAL.has(entry.verdict)) this.o.onWalked?.(item, entry);
@@ -513,7 +567,32 @@ export class Floor {
     }
   }
 
-  private async repair(entry: LedgerEntry, deployed: string | null, mergedAt?: string): Promise<{ issue: number; outcome: string } | null> {
+  /** Where an item's issue sits in a carved trunk, read once per walk; null without an issue or a readable one. */
+  private lineage(item: ListItem): Lineage | null {
+    const issue = item.ref?.issue;
+    if (issue === undefined) return null;
+    if (!this.lineages.has(issue)) {
+      try {
+        this.lineages.set(issue, this.lineageOf(issue));
+      } catch (error) {
+        this.o.log(`floor: could not read issue #${issue}'s trunk: ${(error as Error).message}`);
+        this.lineages.set(issue, null);
+      }
+    }
+    return this.lineages.get(issue) ?? null;
+  }
+
+  private async diagnoseAt(entry: LedgerEntry, deployed: string | null, mergedAt: string | undefined, lineage: Lineage): Promise<Diagnosis | null> {
+    const { ctx } = this.o;
+    this.makeCheckout(deployed ?? `${ctx.project.remote}/${ctx.project.baseBranch}`);
+    try {
+      return await diagnose(ctx, { dir: this.o.dir, entry, checkout: this.checkout, walker: this.o.seats.walker, logsCommand: this.env.logsCommand, mergedAt, lineage });
+    } finally {
+      this.removeCheckout();
+    }
+  }
+
+  private async repair(entry: LedgerEntry, deployed: string | null, mergedAt: string | undefined, lineage: Lineage | null, diagnosis: Diagnosis | null | undefined): Promise<{ issue: number; outcome: string } | null> {
     const { ctx } = this.o;
     this.makeCheckout(deployed ?? `${ctx.project.remote}/${ctx.project.baseBranch}`);
     try {
@@ -525,6 +604,8 @@ export class Floor {
         logsCommand: this.env.logsCommand,
         maxPoints: this.o.maxPoints,
         mergedAt,
+        lineage,
+        diagnosis,
       });
       if (result.withAPerson) this.withAPerson.add(entry.itemId);
       else this.withAPerson.delete(entry.itemId);
@@ -557,6 +638,7 @@ export class Floor {
       if (entry.itemId === LIVENESS_ITEM) continue;
       if (entry.verdict === 'present' || entry.verdict === 'intact') verified.push(`${label(entry.itemId)}: ${entry.verdict} (${entry.rung})`);
       else if (entry.verdict === 'not-checkable') headsUp.push(`${label(entry.itemId)}: not checkable; ${entry.reason}`);
+      else if (entry.verdict === 'owed-by-sibling') pendingLines.push(`${label(entry.itemId)}: owed by sibling #${entry.sibling}, walked again once it closes`);
       else if (!REPAIR.has(entry.verdict)) pendingLines.push(`${label(entry.itemId)}: ${entry.verdict.replaceAll('-', ' ')}`);
     }
     // Only what a person must act on is waiting on them, and it stays there every walk until they
