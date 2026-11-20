@@ -54,6 +54,14 @@ export type ProjectConfig = {
    */
   releaseArtifacts?: string[];
   /**
+   * Commit authors (git name or email, compared without case) whose commits are the repository's
+   * own automation: a deploy write-back, a release-version bump. A landing whose base moved only
+   * by such commits, or by commits whose subject carries `[skip ci]`, `[ci skip]`, `[no ci]`,
+   * `[skip actions]`, or `[actions skip]`, still catches up, but the move is not counted against
+   * the base-refresh cap; a separate, larger bound applies to those moves. Optional.
+   */
+  automationAuthors?: string[];
+  /**
    * Run in the lane after the pull request's checks are green and before the merge. A non-zero
    * exit or a timeout sends the landing to `loop/dlq: landing` with the command's tail as the
    * reason. Boot the thing here; a build is not a boot, and a change that compiles, type-checks,
@@ -361,6 +369,10 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   }
   if (project.releaseArtifacts !== undefined && !Array.isArray(project.releaseArtifacts)) {
     faults.push('project.releaseArtifacts must be an array when present');
+  }
+  const automationAuthors = project.automationAuthors;
+  if (automationAuthors !== undefined && !(Array.isArray(automationAuthors) && automationAuthors.every((author) => typeof author === 'string' && author.length > 0))) {
+    faults.push('project.automationAuthors must be an array of author names or emails when present');
   }
   const ciFault = ciCommandFault(project.ciCommand);
   if (ciFault) faults.push(ciFault);
