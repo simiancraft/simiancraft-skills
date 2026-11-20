@@ -18,8 +18,8 @@ export const STAMP_MARKER = '<!-- appraise-stamp';
 export type Stamp = {
   /** The base commit the appraiser read, or null when it could not be read. */
   base: string | null;
-  /** The repository paths the appraiser said the work changes; empty when it named none. */
-  touches: string[];
+  /** The repository paths the appraiser said the work changes: empty when it said none, null when not known. */
+  touches: string[] | null;
   /** A digest of the title, body, and every comment not written by the loop. */
   thread: string;
   points: number;
@@ -85,7 +85,7 @@ export function threadChanges(then: ThreadParts, now: ThreadParts): string[] {
 
 export function renderStamp(stamp: Stamp): string {
   const base = stamp.base ? `\`${stamp.base.slice(0, 12)}\`` : 'an unreadable base';
-  const touches = stamp.touches.length ? stamp.touches.map((t) => `\`${t}\``).join(', ') : 'no paths named';
+  const touches = stamp.touches === null ? 'paths not known' : stamp.touches.length ? stamp.touches.map((t) => `\`${t}\``).join(', ') : 'no repository paths';
   return [
     `${STAMP_MARKER} base=${stamp.base ?? 'none'} thread=${stamp.thread} points=${stamp.points} at=${stamp.at} -->`,
     '```json',
@@ -102,7 +102,7 @@ export function latestStamp(comments: Array<{ author: string; body: string }>, b
     if (c.author !== botLogin || !c.body.startsWith(STAMP_MARKER)) continue;
     const head = /^<!-- appraise-stamp base=(\S+) thread=(\S+) points=(\d+) at=(\S+) -->/.exec(c.body);
     if (!head) continue;
-    let touches: string[] = [];
+    let touches: string[] | null = null;
     let parts: ThreadParts | undefined;
     const json = /```json\n([\s\S]*?)\n```/.exec(c.body);
     try {
@@ -111,7 +111,7 @@ export function latestStamp(comments: Array<{ author: string; body: string }>, b
       const p = parsed.parts as Partial<ThreadParts> | undefined;
       if (p && typeof p.title === 'string' && typeof p.body === 'string' && Array.isArray(p.comments)) parts = { title: p.title, body: p.body, comments: p.comments.filter((x): x is string => typeof x === 'string') };
     } catch {
-      touches = [];
+      touches = null;
     }
     const stamp: Stamp = { base: head[1] === 'none' ? null : (head[1] as string), thread: head[2] as string, points: Number(head[3]), at: head[4] as string, touches };
     if (parts) stamp.parts = parts;

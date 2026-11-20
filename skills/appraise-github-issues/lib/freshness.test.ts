@@ -34,6 +34,7 @@ describe('whether an appraisal still describes its issue', () => {
   });
   it('is unknowable with no base, or a base git cannot compare, and says which', () => {
     expect(appraisalFreshness(stamped({ base: null }), BOT, checks())).toMatchObject({ verdict: 'unknowable', cause: 'stamp-incomplete' });
+    expect(appraisalFreshness(stamped({ touches: null }), BOT, checks())).toMatchObject({ verdict: 'unknowable', cause: 'stamp-incomplete' });
     const broken = appraisalFreshness(stamped(), BOT, checks(() => { throw new Error('bad revision'); }));
     expect(broken).toMatchObject({ verdict: 'unknowable', cause: 'uncheckable' });
   });

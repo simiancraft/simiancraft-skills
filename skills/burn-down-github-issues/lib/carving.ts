@@ -324,6 +324,12 @@ export class Carving {
             throw error;
           }
           this.settle(number, issue.title, outcome);
+          // A remainder the knife judged one piece is worked whole whatever its size: its release is
+          // settled, and a released label left on it would send every sweep back to the knife.
+          if (outcome.outcome === 'work-whole') {
+            mutate(ctx, `unlabel #${number} loop/released`, ['gh', 'issue', 'edit', String(number), '--remove-label', 'loop/released']);
+            return;
+          }
           if (outcome.outcome !== 'carve' && outcome.outcome !== 'resumed') return;
           handle = await claim(ctx, io, number, 'carving');
           if (handle === 'busy') return;

@@ -26,7 +26,7 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
-import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
+import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
 import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
@@ -44,8 +44,11 @@ export type AppraisalResult = {
   points?: number;
   reason: string;
   closeComment?: string;
-  /** For `valid`: the repository paths the appraiser said the work changes; empty when it named none. */
-  touches?: string[];
+  /**
+   * For `valid`: the repository paths the appraiser said the work changes. Empty when it said the
+   * work changes none; null when it could not tell, or gave no usable list.
+   */
+  touches?: string[] | null;
 };
 
 /** What the confirmer writes to `loop-confirmation.json`, after validation. */
@@ -205,11 +208,10 @@ function readBase(ctx: Context, say: (message: string) => void): string | null {
 
 /**
  * Records what this valid appraisal judged (the base it read, the paths it named, the thread as
- * people wrote it), so the knife's dispatch can tell whether the appraisal still describes the
- * issue. A base that could not be read is recorded as none, which a reader treats as unknowable.
+ * people wrote it), so the knife's dispatch can tell whether the appraisal still describes the issue.
+ * The thread is the one read before the appraiser ran, so an edit during its turn reads as a move. A base that could not be read is recorded as none, which a reader treats as unknowable.
  */
-function postStamp(ctx: Context, issue: number, base: string | null, points: number, touches: string[], io: ReturnType<typeof trackerIo>): void {
-  const node = readTree(ctx, issue, io).issue;
+function postStamp(ctx: Context, node: Parameters<typeof threadDigest>[0], issue: number, base: string | null, points: number, touches: string[] | null): void {
   const at = new Date().toISOString();
   const stamp = { base, touches, thread: threadDigest(node, ctx.botLogin), parts: threadParts(node, ctx.botLogin), points, at };
   mutate(ctx, `stamp the appraisal of #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', renderStamp(stamp)]);
@@ -244,8 +246,9 @@ export function validateAppraisal(raw: unknown, issue: number): { ok: true; resu
     return { ok: false, why: 'closeComment must be a string' };
   }
   // `touches` is optional and advisory: a stamp without it is still a stamp, so a malformed list is
-  // dropped rather than costing the appraisal.
-  const touches = Array.isArray(r.touches) ? r.touches.filter(nonEmptyString).map((t) => t.trim()) : [];
+  // dropped rather than costing the appraisal. Dropped reads as not known (null), never as "changes
+  // nothing" ([]): only the appraiser's own empty list says that.
+  const touches = Array.isArray(r.touches) ? r.touches.filter(nonEmptyString).map((t) => t.trim()) : null;
   return {
     ok: true,
     result: {
@@ -624,8 +627,19 @@ export async function appraiseIssue(
             loopNote(`Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`),
           ]);
         }
+        // Worked whole was the knife's judgment of the issue at its old size; a new size asks again.
+        if (issue.labels.some((l) => l.name === WORK_WHOLE)) {
+          mutate(ctx, `unlabel #${issue.number} ${WORK_WHOLE} (re-sized)`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', WORK_WHOLE]);
+        }
       }
-      postStamp(ctx, issue.number, base, result.points, result.touches ?? [], io);
+      // The stamp is a record for the knife's guard; a stamp that cannot be written costs that
+      // record, never the appraisal the size label already settled.
+      try {
+        postStamp(ctx, before.issue, issue.number, base, result.points, result.touches ?? null);
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        say(`the appraisal stamp could not be written (${(error as Error).message.split('\n')[0]}); the guard will read this issue as stamp-missing`);
+      }
       // The size is on the issue; what happens next for an issue of this size is the producer's.
       // A released trunk fires no callback: the burndown that asked for the release appraisal
       // carves an oversized remainder itself, under the claim it already holds.

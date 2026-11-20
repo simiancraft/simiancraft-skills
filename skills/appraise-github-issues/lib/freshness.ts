@@ -17,7 +17,7 @@ import { latestStamp, threadChanges, threadDigest, threadParts } from './stamp.t
  * - `never-stamped`: appraised before this run directory began stamping; no stamp ever existed.
  * - `stamp-missing`: sized after stamping began, so a stamp should be on the thread and is not.
  * - `stamp-unaccounted`: no stamp, and when the issue was sized or when stamping began is not known.
- * - `stamp-incomplete`: a stamp is there, but it names no base.
+ * - `stamp-incomplete`: a stamp is there, but it names no base, or does not know the paths.
  * - `uncheckable`: the stamp is whole, but git could not compare its base with the base now.
  */
 export type UnknowableCause = 'never-stamped' | 'stamp-missing' | 'stamp-unaccounted' | 'stamp-incomplete' | 'uncheckable';
@@ -88,9 +88,12 @@ export function appraisalFreshness(issue: Thread, botLogin: string, checks: Fres
   if (!stamp.base) {
     cause = 'stamp-incomplete';
     reasons.push('the stamp records no base');
+  } else if (stamp.touches === null) {
+    cause = 'stamp-incomplete';
+    reasons.push('the appraisal did not say which paths the work changes, so movement under the issue cannot be scoped');
   } else if (stamp.touches.length === 0) {
     scope = 'thread-only';
-    reasons.push('paths: none; the appraisal named no paths, so the thread alone decides');
+    reasons.push('paths: none; the appraisal said the work changes no repository paths, so the thread alone decides');
   } else {
     try {
       const commits = checks.commitsSince(stamp.base, stamp.touches);

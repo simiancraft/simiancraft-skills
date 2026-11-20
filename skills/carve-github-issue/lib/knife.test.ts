@@ -81,6 +81,18 @@ describe('the carving driver makes only moves the chart allows', () => {
       expect(illegal(lanes)).toEqual([]);
     });
   }
+  test('an oversized release remainder the knife works whole leaves the release settled', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }, { name: 'size: 8' }] })]);
+    const ctx = ctxFor(io); const lanes = ['C7'];
+    const k = knobs(fixture('indivisible', carving(10, { verdict: 'indivisible', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true)));
+    await makeDriver(ctx, k, lanes).releaseAppraisal(10);
+    expect(labels(io, 10)).toContain('loop/work-whole');
+    // A released label left on would send every sweep back to the knife, which leaves it alone.
+    expect(labels(io, 10)).not.toContain('loop/released');
+    expect(lanes.at(-1)).toBe('B1');
+    expect(illegal(lanes)).toEqual([]);
+  });
+
   test('a release appraisal that fails after its lease was lost counts nothing', async () => {
     const released = () => new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
     const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
@@ -1029,6 +1041,40 @@ describe('a valid appraisal', () => {
     expect(git('rev-parse', 'refs/remotes/origin/main')).toBe(later);
     expect(latestStamp(io.view(32)!.comments, BOT)?.base).toBe(judged);
     rmSync(repo, { recursive: true, force: true });
+  });
+});
+
+describe('a valid appraisal, read against the thread it judged', () => {
+  const options = (answer: string) => ({ ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] });
+  const issueOf = (n: number, labels: Array<{ name: string }> = []) => ({ number: n, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels });
+
+  test('stamps the thread as it was before the appraiser ran, so an edit during the turn reads as a move', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(33, { title: 'add a palette', body: 'Criteria: A1' })]);
+    const judged = threadDigest(io.view(33)!, BOT);
+    const addLabel = io.addLabel.bind(io);
+    io.addLabel = (n: number, name: string) => {
+      addLabel(n, name);
+      if (name.startsWith('size:')) io.comment(33, 'person', 'Also cover the dark theme.');
+    };
+    await appraiseIssue(ctxFor(io), issueOf(33) as never, options(fixture('valid', { issue: 33, verdict: 'valid', points: 2, reason: 'one palette', touches: ['src/palettes/'] })) as never);
+    expect(latestStamp(io.view(33)!.comments, BOT)?.thread).toBe(judged);
+  });
+
+  test('stamps paths it was not told as not known, and an empty list as none', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(34, { body: 'Criteria: A1' }), fakeIssue(35, { body: 'Decide: A1' })]);
+    await appraiseIssue(ctxFor(io), issueOf(34) as never, options(fixture('omitted', { issue: 34, verdict: 'valid', points: 2, reason: 'one palette' })) as never);
+    await appraiseIssue(ctxFor(io), issueOf(35) as never, options(fixture('none', { issue: 35, verdict: 'valid', points: 1, reason: 'a decision', touches: [] })) as never);
+    expect(latestStamp(io.view(34)!.comments, BOT)?.touches).toBeNull();
+    expect(latestStamp(io.view(35)!.comments, BOT)?.touches).toEqual([]);
+  });
+
+  test('takes loop/work-whole off an issue it re-sizes, so the knife judges the new size', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(36, { body: 'Criteria: A1', labels: [{ name: 'size: 3' }, { name: 'loop/work-whole' }] })]);
+    await appraiseIssue(ctxFor(io), issueOf(36, [{ name: 'size: 3' }, { name: 'loop/work-whole' }]) as never, options(fixture('bigger', { issue: 36, verdict: 'valid', points: 8, reason: 'larger than it looked', touches: ['src/'] })) as never);
+    expect(labels(io, 36)).not.toContain('loop/work-whole');
+    const same = new FakeTracker(BOT, [fakeIssue(37, { body: 'Criteria: A1', labels: [{ name: 'size: 3' }, { name: 'loop/work-whole' }] })]);
+    await appraiseIssue(ctxFor(same), issueOf(37, [{ name: 'size: 3' }, { name: 'loop/work-whole' }]) as never, options(fixture('same', { issue: 37, verdict: 'valid', points: 3, reason: 'as sized', touches: ['src/'] })) as never);
+    expect(labels(same, 37)).toContain('loop/work-whole');
   });
 });
 

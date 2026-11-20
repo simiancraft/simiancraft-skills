@@ -107,8 +107,9 @@ driver reads, so write it even when you failed.
 
 For `valid`, list in `touches` the repository paths (files, or directories for broad work) the
 change would most likely modify, as you found them in the code. The loop uses them only to notice
-later that the code under this issue moved; name what you saw, and leave the list empty rather than
-guess.
+later that the code under this issue moved; name what you saw. Give `[]` only when the work changes
+no repository paths at all (an investigation, a decision). Give `null` when you could not tell which
+paths it would change; never guess.
 
 Set `disagrees` to true when your points differ from a `size: N` label already on the issue, and say
 why in `reason`. Be accurate rather than generous: a verdict the driver acts on is worth more than

@@ -653,8 +653,10 @@ type GuardMode = 'first-carving' | 'revisit' | 'carve-with-open-children';
  * wrote is marked `samePass`: nothing had time to move, so its `fresh` measures nothing. Nothing
  * here may fail a carving.
  */
-function shadowPreCarveGuard(k: Knife, tree: Tree, mode: GuardMode, point: 'dispatch' | 'carver-answered', carverVerdict?: string): void {
+function shadowPreCarveGuard(k: Knife, read: Tree | (() => Tree), mode: GuardMode, point: 'dispatch' | 'carver-answered', carverVerdict?: string): void {
   try {
+    // Read inside the guard: a tracker read that fails here costs the log line, never the carving.
+    const tree = typeof read === 'function' ? read() : read;
     const io = k.io as TrackerIo;
     const freshness = appraisalFreshness(tree.issue, k.ctx.botLogin, {
       commitsSince: gitCommitsSince(k.ctx),
@@ -1031,7 +1033,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     if (!carved.ok) return carved.notRun ? { outcome: 'not-run', reason: carved.why } : countFailure(k, tree, carved.why, carved.logPath);
     const carving = carved.carving;
     k.say(`carver (round ${round}): ${carving.verdict}; ${carving.reason}`);
-    shadowPreCarveGuard(k, readTree(k.ctx, k.trunk, k.io), guardMode, 'carver-answered', carving.verdict);
+    shadowPreCarveGuard(k, () => readTree(k.ctx, k.trunk, k.io), guardMode, 'carver-answered', carving.verdict);
 
     if (carving.verdict === 'amend' && record && record.generation >= k.knobs.maxGenerations && !redrive) {
       const handOff: Carving = { ...carving, verdict: 'indivisible', reason: `generation ${record.generation} is the cap for epoch ${record.epoch}; the carver wanted to amend again. ${carving.reason}`, affected: [] };
