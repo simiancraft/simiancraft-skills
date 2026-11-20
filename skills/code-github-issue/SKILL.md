@@ -50,6 +50,9 @@ its answer, or `failed` when the answer cannot be believed:
 - `coded` names a commit that is not the lane's head, a branch the remote does not hold at that
   commit, the base branch itself, or carries no hand-off for the prover.
 
+A coder stopped by a signal the driver did not send (a person's `kill`) is not `failed`: `runCode`
+throws `StoppedFromOutside`, and the pipeline holds the issue without counting an attempt.
+
 The control file is `loop-code.json` in the worktree root.
 
 ## Hard dependencies

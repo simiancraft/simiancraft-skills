@@ -15,7 +15,7 @@ import { confirmClose, validateConfirmation } from '../../appraise-github-issues
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { children, killAgent, killAgentsOn, readResult, refuseOutsideStop, renderPrompt, runAgent, SETSID, StoppedFromOutside } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
@@ -394,7 +394,9 @@ async function runReviewer(
     ROUND: String(round),
     MAX_ROUNDS: String(ctx.knobs.maxReviewRounds),
   });
-  const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt);
+  const run = await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt);
+  refuseOutsideStop(run, 'reviewer');
+  const { exitCode } = run;
   holdLease(ctx, issue, 'settle the reviewer');
   // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
   // reviewer's parting words could approve a merge.
@@ -1731,6 +1733,37 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
   }
 }
 
+/**
+ * A seat's agent stopped by a signal this driver did not send: a person's, most likely, who saw it
+ * about to do something wrong. Nothing is counted and nothing goes back to Ready, where the next pass
+ * would start the same work again; the card is held for a person, parked with its pull request when
+ * there is one (H3) and handed to a person otherwise (H2). The lane is kept, as a stopped run's is,
+ * since a change stopped midway leaves its only record there.
+ */
+function holdStoppedSeat(ctx: Context, issue: Issue, error: StoppedFromOutside, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
+  const reason = `The ${error.role} was stopped by ${error.signal} from outside the loop, so this is not counted as a failed attempt. Remove the hold to hand the issue back.`;
+  say(`${error.role} stopped by ${error.signal} from outside the driver; nothing is counted, the lane is kept, and the issue is held for a person`);
+  try {
+    const pr = knownPr ?? (ctx.dryRun ? undefined : openPullFor(ctx, issue.number));
+    holdLease(ctx, issue.number, 'hold the issue its stopped seat was working');
+    if (pr) {
+      parkIssue(ctx, issue.number, reason);
+      mutate(ctx, `park PR #${pr}`, ['gh', 'pr', 'edit', String(pr), '--add-label', 'loop/parked']);
+      move(ctx, issue, 'H3', reason.slice(0, 120));
+      return { outcome: { outcome: 'parked', reason }, keepLane: true };
+    }
+    mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', reason]);
+    mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+    move(ctx, issue, 'H2', reason.slice(0, 120));
+    return { outcome: { outcome: 'handed-off', reason }, keepLane: true };
+  } catch (second) {
+    // Nothing is counted either way: a hold that cannot be written (a stop, a lost lease, a tracker
+    // that will not answer) leaves the lane and the log as the record until a person looks.
+    say(`could not hold the issue (${(second as Error).message.split('\n')[0]}); keeping the lane for inspection`);
+    return { outcome: { outcome: 'stopped', reason }, keepLane: true };
+  }
+}
+
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
   const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
@@ -1752,6 +1785,7 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
     say('stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives');
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
   }
+  if (error instanceof StoppedFromOutside) return holdStoppedSeat(ctx, issue, error, say, knownPr);
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
   try {

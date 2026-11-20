@@ -160,6 +160,14 @@ as a failure: every list that answers a machine's report ends in a branch with n
 agent that fails leaves the card resting in its queue with the failure recorded; no machine
 failure anywhere becomes a person's hold.
 
+A Work or Review seat (coder, prover, reviewer) whose agent ends by a stop signal the driver did
+not send raises `STOPPED_FROM_OUTSIDE` instead, from any lane of those two phases. That is a
+person's stop, not a machine failure: no attempt is counted and the card does not go back to B1,
+where the next pass would start the same work again. With a pull request open it goes to H3 (issue
+and pull request parked), otherwise to H2 (`needs-human`), with the reason on the thread, and the
+lane is kept. The driver's own kills (the cap, a stop, a lost lease) and a crash's signals stay
+`AGENT_FAILED` or the stop they are; see `fix-github-issue/references/pipeline.md`.
+
 Only F5 holds the merge lock; F2, F3, and F4 run outside it so one stale branch does not stall
 the queue, and F5 re-checks freshness on re-entry.
 

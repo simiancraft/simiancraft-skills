@@ -361,3 +361,15 @@ killed because the run lost its lease is settled as `lease-lost`, and nothing is
 asymmetry between the first two is deliberate: a stop interrupts a worker that may have finished,
 while a cap kills one that, by definition, had not.
 
+An agent can also be stopped by a signal the driver did not send: a person's `kill` on a coder about
+to make a wrong change, say. `killAgent` records every process the driver signals, so a run that
+ends by SIGTERM, SIGINT, SIGHUP, or SIGQUIT, or by the exit code an engine that traps one reports
+(128 plus the signal's number; `claude -p` exits 143 on SIGTERM), and that the driver never
+signalled, is marked `outsideSignal`. It is not retried and its answer files are deleted. A coder,
+prover, or reviewer so stopped throws `StoppedFromOutside`, and the pipeline counts nothing: the
+issue is parked with its pull request when one is open (H3), handed to a person otherwise (H2),
+with the signal named on the thread, and the lane is kept. Two endings cannot be told apart from a
+person's and are left as failures: SIGKILL, which the kernel's out-of-memory killer also sends, and
+an engine that exits 0 when interrupted (`claude -p` does on SIGINT). Other seats (the appraiser, the
+carver, a confirmer) still settle such a run as an ordinary failure.
+
