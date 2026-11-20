@@ -55,14 +55,17 @@ const REDRIVE: Transition[] = [
 ];
 
 /**
- * A Work or Review seat whose agent a signal from outside the driver stopped: a person's, most
- * likely, who stopped it for a reason. Nothing is counted and nothing returns to Ready, where the
- * next pass would start the same work again; the card is held for a person, parked with its pull
- * request when there is one. The lane is kept, since a change stopped midway leaves its only record there.
+ * A seat whose run ended on an environment fault: a full disk or exhausted memory (which also send
+ * the line a PAUSE), or a stop signal the driver did not send, a person's most likely. The work was
+ * not judged, so nothing is counted, held, or dead-lettered: a host fault leaves its marker, the
+ * claim is released, the lane is cleared for the rerun, and the card rests where its facts now put
+ * it, from where the work is rerun later. The same host fault again on that rerun, with the marker
+ * on the issue, is the work's own doing, and the driver raises AGENT_FAILED for it instead.
  */
-const STOPPED_FROM_OUTSIDE: Transition[] = [
-  { target: 'ticket.human.parked', guard: 'prExists', actions: ['labelParked', 'parkPr', 'commentReason', 'releaseClaim'] },
-  { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentReason', 'releaseClaim'] },
+const ENVIRONMENT_FAULT_IN_WORK: Transition[] = [
+  { target: 'ticket.ready.ready', guard: 'noOpenPr', actions: ['markFreeFault', 'releaseClaim', 'clearLaneForRerun'] },
+  // A pull request with no driver: the next run resumes it through Proving, as any driverless one.
+  { target: 'ticket.work.drafted', actions: ['markFreeFault', 'releaseClaim', 'clearLaneForRerun'] },
 ];
 
 /**
@@ -159,7 +162,7 @@ export const MACHINE: StateNode = {
           initial: 'inbox',
           // Every phase answers a machine failure in every one of its lanes, into its own queue:
           // a throw between two agent turns is a failure too, and no lane may drop it.
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] }, ENVIRONMENT_FAULT: { target: 'ticket.appraisal.inbox', actions: ['markFreeFault'] } },
           states: {
             inbox: {
               lane: { key: 'A1', name: 'Inbox', description: 'On the board, unsized, not yet looked at' },
@@ -236,7 +239,7 @@ export const MACHINE: StateNode = {
 
         carving: {
           initial: 'toCarve',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] }, ENVIRONMENT_FAULT: { target: 'ticket.carving.toCarve', actions: ['markFreeFault', 'releaseClaim'] } },
           states: {
             toCarve: {
               lane: { key: 'C1', name: 'To carve', description: 'Sized over the ceiling; waiting for the knife' },
@@ -364,9 +367,9 @@ export const MACHINE: StateNode = {
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
               { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
             ],
-            // A seat stopped by a signal the driver did not send, a person's most likely, is not a
-            // failed turn: no attempt is counted, the lane is kept, and a person holds the card.
-            STOPPED_FROM_OUTSIDE: STOPPED_FROM_OUTSIDE,
+            // A seat that ended on an environment fault is not a failed turn: no attempt is counted,
+            // and the work is rerun from where its facts put it.
+            ENVIRONMENT_FAULT: ENVIRONMENT_FAULT_IN_WORK,
             // With a pull request open there is no Ready to return to: that work waits in the queue.
             AGENT_FAILED: [
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
@@ -437,7 +440,7 @@ export const MACHINE: StateNode = {
           initial: 'readyForReview',
           on: {
             AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
-            STOPPED_FROM_OUTSIDE: STOPPED_FROM_OUTSIDE,
+            ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'releaseClaim', 'clearLaneForRerun'] },
           },
           states: {
             readyForReview: {
@@ -714,6 +717,9 @@ export const MACHINE: StateNode = {
                 // a seat cannot decide, so the hold the raising seat asked for stands. A seat failing
                 // is not the machine failing, which is why the panel answers no AGENT_FAILED.
                 PANEL_HOLD: { target: 'ticket.human.needsDecision', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'labelHold'] },
+                // A seat that ended on an environment fault weighed nothing: the round is given back,
+                // no hold is written, and the work that raised the question is rerun later.
+                ENVIRONMENT_FAULT: { target: 'ticket.reconcile', actions: ['unlabelDeliberating', 'restorePanelCount', 'markFreeFault', 'releaseClaim'] },
               },
             },
           },

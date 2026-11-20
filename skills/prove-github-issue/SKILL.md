@@ -47,9 +47,9 @@ instead of it. Like the coder, it never chases the base itself.
 `lib/prove.ts` exports `runProve(ctx, issue, cwd, coded, brief)`. It runs the seat and returns its
 answer, or `failed` when the answer cannot be believed: a crash, a kill at the cap, an unknown
 verdict, a `proved` that names no pull request or is pinned to a head other than the lane's, or an
-`unprovable` that tells the coder nothing to fix. A prover stopped by a signal the driver did not
-send (a person's `kill`) is not `failed`: `runProve` throws `StoppedFromOutside`, and the pipeline
-holds the issue without counting an attempt. The control file is `loop-proof.json`.
+`unprovable` that tells the coder nothing to fix. A prover whose run ends on an environment fault (a
+full disk, exhausted memory, or a person's `kill`) is not `failed`: `runProve` throws an
+`EnvironmentFault`, and the pipeline counts no attempt and reruns the work later. The control file is `loop-proof.json`.
 
 ## Hard dependencies
 

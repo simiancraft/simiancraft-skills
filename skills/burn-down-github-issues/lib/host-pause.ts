@@ -1,7 +1,8 @@
 /**
- * The line's pause for a host error. A lane that failed on a full disk or exhausted memory has
- * counted nothing and kept its worktree; the line is paused so nothing else is dispatched or merged
- * on a host in that state, and only a person releases it, once the host is fixed.
+ * The line's pause for a host fault. A seat that failed on a full disk or exhausted memory has
+ * judged nothing and counted nothing (`settleEnvironmentFault`); the line is paused so nothing else
+ * is dispatched or merged on a host in that state, and only a person releases it, once the host is
+ * fixed. The work the fault interrupted is rerun after that.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

@@ -13,10 +13,11 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
+import { environmentFaultOf, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
@@ -669,7 +670,8 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
   const prompt = renderPrompt(k.ctx, mode === 'carve' ? 'carve.md' : 'revisit.md', vars);
   let turnPrompt = prompt;
   for (let repair = 0; ; repair++) {
-    const run = await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, turnPrompt);
+    // A carver that ended on an environment fault throws, for carveIssue to settle without a count.
+    const run = refuseEnvironmentFault(await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, turnPrompt), 'carver', k.trunk);
     // A dry run rehearses everything up to the first seat it does not run; that is not a failed turn.
     if (run.notRun) return { ok: false, why: 'dry run: the carver was not run', logPath: null, notRun: true };
     if (run.exitCode !== 0) return { ok: false, why: `carver exited ${run.exitCode}`, logPath: run.logPath };
@@ -707,7 +709,7 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
   });
   let turnPrompt = prompt;
   for (let repair = 0; ; repair++) {
-    const run = await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, turnPrompt);
+    const run = refuseEnvironmentFault(await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, turnPrompt), 'confirmer', k.trunk);
     if (run.notRun) return { ok: false, why: 'dry run: the confirmer was not run', logPath: null, notRun: true };
     if (run.exitCode !== 0) return { ok: false, why: `confirmer exited ${run.exitCode}`, logPath: run.logPath };
     const raw = readResult<unknown>(cwd, CONFIRMATION_FILE);
@@ -807,7 +809,14 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
       return { outcome: 'lease-lost', reason: error instanceof LeaseLostError ? 'this run lost its lease on the issue' : `this run lost its lease on the issue, and then threw: ${(error as Error).message.split('\n')[0]}` };
     }
     try {
-      await countFailure(k, readTree(ctx, issue.number, io), `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
+      // An environment fault (a full disk, no memory, a person's stop) is not a failed carve: the
+      // trunk was not judged, nothing is counted, and the next visit carves it again. Only the same
+      // host fault again on that rerun is charged, as the failed turn it then is.
+      const fault = environmentFaultOf(error);
+      const fresh = readTree(ctx, issue.number, io);
+      const settled = fault ? settleEnvironmentFault(ctx, { number: issue.number, labels: fresh.issue.labels }, fault, 'the carve', say) : null;
+      if (!settled) await countFailure(k, fresh, `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
+      else if (settled.charged) await countFailure(k, fresh, settled.reason, null);
     } catch (second) {
       say(`could not count the failed carve: ${(second as Error).message.split('\n')[0]}`);
     }

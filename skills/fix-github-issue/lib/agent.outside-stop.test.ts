@@ -62,7 +62,7 @@ describe('a stop signal the driver did not send', () => {
   it('is named on the run, its answer is removed, and it is not asked again', async () => {
     engineThat('dies-of-sigterm', "process.kill(process.pid, 'SIGTERM'); await Bun.sleep(5000);", true);
     const { run, cwd, lines } = await runIn(11);
-    expect(run.outsideSignal).toBe('SIGTERM');
+    expect(run.fault).toEqual({ kind: 'stopped', signal: 'SIGTERM' });
     expect(run.exitCode).not.toBe(0);
     expect(existsSync(join(cwd, VERDICT_FILE))).toBe(false);
     expect(lines.filter((l) => /running worker/.test(l))).toHaveLength(1);
@@ -70,13 +70,13 @@ describe('a stop signal the driver did not send', () => {
 
   it('is read from the exit code of an engine that traps the signal, as `claude -p` exits 143 on SIGTERM', async () => {
     engineThat('exits-143', 'process.exit(143);');
-    expect((await runIn(12)).run.outsideSignal).toBe('SIGTERM');
+    expect((await runIn(12)).run.fault).toEqual({ kind: 'stopped', signal: 'SIGTERM' });
   }, 20_000);
 
   it('is not a crash: a process that dies of SIGSEGV is an ordinary failed run', async () => {
     engines.fixture.command = () => ['sh', '-c', 'ulimit -c 0; kill -SEGV $$'];
     const { run } = await runIn(13);
-    expect(run.outsideSignal).toBeUndefined();
+    expect(run.fault).toBeUndefined();
     expect(run.exitCode).not.toBe(0);
   }, 20_000);
 
@@ -85,7 +85,7 @@ describe('a stop signal the driver did not send', () => {
     engines.fixture.command = () => ['sleep', '30'];
     const { run } = await runIn(14);
     expect(run.timedOut).toBe(true);
-    expect(run.outsideSignal).toBeUndefined();
+    expect(run.fault).toBeUndefined();
   }, 20_000);
 
   it('is not the driver kill of a lost lease', async () => {
@@ -94,7 +94,7 @@ describe('a stop signal the driver did not send', () => {
     while (![...children].some((proc) => proc.issue === 15)) await Bun.sleep(20);
     expect(killAgentsOn(PROJECT.repo, 15)).toBe(1);
     const { run } = await pending;
-    expect(run.outsideSignal).toBeUndefined();
+    expect(run.fault).toBeUndefined();
     expect(run.exitCode).toBe(143);
   }, 20_000);
 
@@ -113,19 +113,19 @@ describe('a stop signal the driver did not send', () => {
 describe('a coder stopped from outside', () => {
   const issue = { number: 7, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 1' }] };
 
-  it('counts no attempt and goes back to no Ready lane: the issue is held for a person', async () => {
+  it('counts no attempt, writes no hold, and leaves the work to be rerun', async () => {
     engineThat('coder-stopped', "process.kill(process.pid, 'SIGTERM'); await Bun.sleep(5000);");
     const lines: string[] = [];
     const lanes: string[] = [];
     const ctx = context(lines, true);
     ctx.onLane = (event) => lanes.push(event.lane);
     const outcome = await fixIssue(ctx, issue, { maxPoints: 2 });
-    expect(outcome.outcome).toBe('handed-off');
-    expect(outcome.reason).toContain('not counted as a failed attempt');
+    expect(outcome.outcome).toBe('unjudged');
+    expect(outcome.fault).toBe('stopped');
     expect(lines.some((l) => /attempt \d+ of/.test(l))).toBe(false);
+    expect(lanes).not.toContain('H2');
     expect(lanes).not.toContain('B1');
-    expect(lanes.at(-1)).toBe('H2');
-    expect(ctx.dryRunLog).toContain('label #7 needs-human');
+    expect(ctx.dryRunLog.some((line) => /needs-human|loop\/parked|loop\/dlq|environment-fault/.test(line))).toBe(false);
   }, 20_000);
 
   it('unlike a coder that failed, which counts the attempt and goes back to Ready', async () => {

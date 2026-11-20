@@ -159,7 +159,7 @@ never the run its state.
 
 A file switch, `<worktreeRoot>/runs/line-switch`, stops the loop at its seams; `operating.md`,
 "When the line is paused", lists them once. The pull master's seam, before every merge, is the
-fix pipeline's `mayMerge` hook, which the loop answers by waiting until the switch says go; nothing in the pipeline knows a switch exists. The pipeline's one other tie to the line is its `onHostError` hook, which the loop answers by writing a `host:` pause when a lane fails on a full disk or exhausted memory. The seam holds rather
+fix pipeline's `mayMerge` hook, which the loop answers by waiting until the switch says go; nothing in the pipeline knows a switch exists. The pipeline's one other tie to the line is its `onHostFault` hook, which the loop answers by writing a `host:` pause when a seat fails on a full disk or exhausted memory, and by taking that issue up again once the line is resumed. The seam holds rather
 than parks, because a pause is temporary and a parked pull request needs a human.
 
 The floor runs inside the loop's process, so the switch is its whole interlock with the merge

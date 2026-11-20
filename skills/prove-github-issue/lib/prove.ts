@@ -7,7 +7,7 @@
  */
 
 import { join } from 'node:path';
-import { agentCapMs, assertNoHostError, logTail, readResult, refuseOutsideStop, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { agentCapMs, logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
@@ -106,9 +106,9 @@ export async function runProve(
     CI_COVERAGE: ciCoverageText(ctx.project),
   });
   const run = await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt);
-  // A prover someone else stopped did not fail; the pipeline holds the issue rather than counting it.
-  refuseOutsideStop(run, 'prover');
-  const { logPath, exitCode, notRun, timedOut } = assertNoHostError(run, 'prover', issue.number);
+  // A prover stopped from outside, or one that failed on the host, did not fail: the pipeline
+  // settles it as an environment fault, counting nothing.
+  const { logPath, exitCode, notRun, timedOut } = refuseEnvironmentFault(run, 'prover', issue.number);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the prover was not run' };
   if (exitCode !== 0) {
     return fail(

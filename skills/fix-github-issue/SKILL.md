@@ -14,7 +14,7 @@ description: >-
 # Fix GitHub Issue
 
 One issue in, one outcome out: `merged`, `parked`, `handed-off`, `closed`, `dlq`, or `failed`
-when it ran, and `left-alone`, `busy`, `not-run`, `stopped`, `lease-lost`, or `paused` when it
+when it ran, and `left-alone`, `busy`, `not-run`, `stopped`, `lease-lost`, or `unjudged` when it
 did not settle the issue (`references/pipeline.md` says what each means). Internally it is a coder
 (`code-github-issue`), then a prover on a fresh context (`prove-github-issue`), then a review, then
 a landing, revising until the issue's review budget is spent. Each seat ends at a fact on the

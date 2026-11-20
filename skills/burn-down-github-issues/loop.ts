@@ -571,15 +571,15 @@ const ctx = createContext({
   },
   // The pipeline has already placed the card in Merged by the time this fires.
   afterMerge: (event) => FLOOR?.put(event),
-  // A lane that failed on the host pauses the line. A pause that cannot be written (the disk is the
+  // A seat that failed on the host pauses the line. A pause that cannot be written (the disk is the
   // thing that is full) would leave nothing holding the line, so the run stops instead, as on a signal.
-  onHostError: (reason) => {
+  onHostFault: (reason) => {
     if (DRY_RUN) return;
     try {
       const done = pauseForHost(SWITCH_FILE, reason);
-      log(done === 'paused' ? `line paused for a host error (${reason}); fix the host, then write go to ${SWITCH_FILE}` : `host error (${reason}); the line is already paused by a person, whose reason stands`);
+      log(done === 'paused' ? `line paused for ${reason}; fix the host, then write go to ${SWITCH_FILE}` : `${reason}; the line is already paused by a person, whose reason stands`);
     } catch (error) {
-      log(`host error (${reason}), and the pause could not be written (${(error as Error).message.split('\n')[0]}); stopping the run`);
+      log(`${reason}, and the pause could not be written (${(error as Error).message.split('\n')[0]}); stopping the run`);
       process.kill(process.pid, 'SIGTERM');
     }
   },
@@ -1371,6 +1371,10 @@ async function main(): Promise<void> {
       const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
       if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
       if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
+      // A host fault paused the line and judged nothing, so the refill may take the issue up again:
+      // it waits for go like any lane, and so reruns once the host is fixed. A person's stop is
+      // not handed back in this run, or the work they stopped would start again at once.
+      if (result.outcome === 'unjudged' && result.fault && result.fault !== 'stopped') ADMISSION.readmit(issue.number);
     },
     ADMISSION.admit,
     (issue) => `#${issue.number}`,

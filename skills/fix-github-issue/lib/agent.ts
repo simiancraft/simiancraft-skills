@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
-import { HostError, type HostErrorCode, hostErrorInLog } from './host-error.ts';
+import { describeFault, EnvironmentFault, type Fault, hostFaultInLog } from './environment-fault.ts';
 import { LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
 import { beginStop, isStopping, RunStopping, stoppableSleep, yieldToStop } from './shell.ts';
@@ -110,22 +110,14 @@ export function stopSignalOf(signalCode: string | null, exitCode: number): strin
 }
 
 /**
- * Thrown by a Work or Review seat whose agent a signal from outside the driver stopped: a person's,
- * most likely, who stopped it for a reason. That is not a failed attempt, so nothing is counted and
- * the issue is not queued again; the pipeline holds the card for a person and keeps the lane.
+ * Throws an `EnvironmentFault` when the run ended on one: a full disk, exhausted memory, or a stop
+ * signal from outside the driver. Every seat that runs an agent calls this before it reads the run's
+ * exit, so such a run reaches its driver's settlement (`settleEnvironmentFault`) instead of being
+ * read as the seat's failure, a failure that would be counted against the work.
  */
-export class StoppedFromOutside extends Error {
-  constructor(
-    readonly role: string,
-    readonly signal: string,
-  ) {
-    super(`${role} was stopped by ${signal}, which this driver did not send`);
-  }
-}
-
-/** Throws when a signal from outside the driver stopped the run; a seat calls it before reading the run's exit. */
-export function refuseOutsideStop(run: AgentRun, role: string): void {
-  if (run.outsideSignal) throw new StoppedFromOutside(role, run.outsideSignal);
+export function refuseEnvironmentFault(run: AgentRun, role: string, issue: number): AgentRun {
+  if (run.fault) throw new EnvironmentFault(run.fault, role, `${role} on #${issue} ended on ${describeFault(run.fault)}; see ${run.logPath}`);
+  return run;
 }
 
 /** Agents run under setsid where available, so a kill reaches their whole process group. */
@@ -284,9 +276,9 @@ export async function runAgent(
   for (let attempt = 0; ; attempt++) {
     const run = await runAgentOnce(ctx, role, issue, cwd, seat, prompt);
     // A run killed at the cap is not asked again: it spent the cap, and the lane has waited that long.
-    // Nor is one that failed on the host (asking again on a full disk fails the same way), or one a
-    // signal from outside stopped: whoever sent it wanted the agent to stop.
-    if (run.exitCode === 0 || run.timedOut || run.hostError || run.outsideSignal || attempt >= AGENT_RETRIES) return run;
+    // Nor is one that ended on an environment fault: asking again on a full disk fails the same way,
+    // and whoever sent a stop signal wanted the agent to stop.
+    if (run.exitCode === 0 || run.timedOut || run.fault || attempt >= AGENT_RETRIES) return run;
 
     const reason = retryableFailure(run.logPath);
     if (!reason) return run;
@@ -301,20 +293,11 @@ export async function runAgent(
  * What a seat's run came to. `notRun` marks a seat a dry run skipped: exit 0 there means nothing
  * ran, not that an agent succeeded, and no answer file exists to read. `timedOut` marks a run the
  * driver killed at the cap: an engine can exit 0 on its way down with an answer file half meant,
- * so its exit code is never 0 here and no seat reads what it left. `outsideSignal` names a stop
- * signal the run ended by that this driver did not send; its exit code is never 0 either.
+ * so its exit code is never 0 here and no seat reads what it left. `fault` names an environment
+ * fault the run ended on (a host fault in its log, or a stop signal this driver did not send); its
+ * exit code is never 0 either, and what it left is cleared.
  */
-export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true; hostError?: HostErrorCode; outsideSignal?: string };
-
-/**
- * Throws when the run failed on the host. The fix pipeline's seats call this on every run, so a full
- * disk or exhausted memory reaches `recordThrow`, which pauses the line and counts nothing, instead
- * of being settled as the seat's failure.
- */
-export function assertNoHostError(run: AgentRun, role: string, issue: number): AgentRun {
-  if (run.hostError) throw new HostError(run.hostError, `${role} on #${issue} failed on the host (${run.hostError}); see ${run.logPath}`);
-  return run;
-}
+export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true; fault?: Fault };
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
@@ -428,20 +411,16 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     ctx.log(`  #${issue}  ${role} timed out at ${capMs / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
   }
-  if (outsideSignal) {
-    // Whoever stopped it did so before it finished, so what it left is no answer, now or on a resume.
-    for (const left of answers) rmSync(join(cwd, left), { force: true });
-    ctx.log(`  #${issue}  ${role} was stopped by ${outsideSignal}, which this driver did not send; its answer is not trusted`);
-    return { logPath, exitCode, outsideSignal };
-  }
   if (exitCode !== 0) {
-    // A seat that failed on the host (a full disk, no memory) gave no answer and no wrong one: what
-    // it left is cleared like a killed run's, and the run says so for the caller to settle.
-    const hostError = hostErrorInLog(logPath);
-    if (hostError) {
+    // A run that ended on an environment fault (a person's stop, a full disk, no memory) gave no
+    // answer and no wrong one: what it left is cleared like a killed run's, now and for a resume,
+    // and the run says so for the seat to refuse.
+    const host = outsideSignal ? null : hostFaultInLog(logPath);
+    const fault: Fault | null = outsideSignal ? { kind: 'stopped', signal: outsideSignal } : host ? { kind: host } : null;
+    if (fault) {
       for (const left of answers) rmSync(join(cwd, left), { force: true });
-      ctx.log(`  #${issue}  ${role} exited ${exitCode} on a host error (${hostError}); its answer is not trusted`);
-      return { logPath, exitCode, hostError };
+      ctx.log(`  #${issue}  ${role} exited ${exitCode} on ${describeFault(fault)}; the work is not judged by it`);
+      return { logPath, exitCode, fault };
     }
     ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
   }
