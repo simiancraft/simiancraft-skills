@@ -53,7 +53,7 @@ bun run <this-skill-dir>/fix.ts --issue <n> --dry-run
 bun run <this-skill-dir>/fix.ts --issue <n> --max-points 8   # raise the size ceiling for this issue only
 bun run <this-skill-dir>/fix.ts --issue <n> --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
 bun run <this-skill-dir>/fix.ts --issue <n> --confirmer claude:claude-opus-5   # the seat that re-checks a close the worker proposes
-bun run <this-skill-dir>/fix.ts --issue <n> --redrive        # lift a park or a dead letter and continue the issue's pull request
+bun run <this-skill-dir>/fix.ts --issue <n> --redrive        # lift a park, a dead letter, or a held proof and continue the issue's pull request
 bun run <this-skill-dir>/fix.ts --issue <n> --land           # a person's go-ahead past the merge boundary for an approved pull request
 bun run <this-skill-dir>/fix.ts --issue <n> --resume-pr <pr> # continue that open pull request rather than open another
 ```
@@ -63,9 +63,10 @@ or installed; it is a path, not a skill name. `--worker`, `--reviewer`, and `--c
 `engine[:model]` specs resolved against the engine registry in `lib/engines.ts`, and a flag beats
 the config for the run it is given on. Without `--confirmer` the confirmer is the config's, else the config's reviewer
 (`--reviewer` does not change it), and it must be a different engine from the worker. `--redrive`
-removes `loop/parked` and every `loop/dlq: <phase>` label, clears the review and attempt counters,
+removes `loop/parked` and every `loop/dlq: <phase>` label, and `needs-human` when a prover's held
+proof is the newest stop on the thread, clears the review and attempt counters,
 counts the redrive as `loop/redrives: N`, and continues the newest open pull request that
-references the issue; `--resume-pr` names that pull request instead. `--land` is a person's
+references the issue (a held proof's at Proving, with no objection to answer); `--resume-pr` names that pull request instead. `--land` is a person's
 go-ahead past the merge boundary for a pull request it parked: it lifts only that park, and the pull
 request is re-proved, re-reviewed, and landed with every other gate in force; it refuses a dead
 letter or any other park (`references/pipeline.md`, "The merge boundary"). The command exits

@@ -12,7 +12,7 @@
  *   bun run <skill-dir>/fix.ts --issue <n>
  *   bun run <skill-dir>/fix.ts --issue <n> --dry-run
  *   bun run <skill-dir>/fix.ts --issue <n> --worker codex:gpt-5.6-sol --reviewer claude:claude-opus-5
- *   bun run <skill-dir>/fix.ts --issue <n> --redrive          # lift a park or dead letter and continue its pull request
+ *   bun run <skill-dir>/fix.ts --issue <n> --redrive          # lift a park, dead letter, or held proof and continue its PR
  *   bun run <skill-dir>/fix.ts --issue <n> --land             # land an approved pull request the merge boundary parked
  *   bun run <skill-dir>/fix.ts --issue <n> --resume-pr <pr>   # continue that pull request rather than open another
  *
@@ -40,6 +40,7 @@ import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from 
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { landBlocker } from './lib/land.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
+import { standingStop } from './lib/work-markers.ts';
 import { guardCli } from './lib/cli.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
 import { installStopHandler } from './lib/stop.ts';
@@ -67,7 +68,7 @@ export const USAGE = `fix-github-issue: fix one known issue end to end, headless
   --confirmer <seat> engine[:model] for the seat that re-checks a close the worker proposes; without it the
                      config's confirmer, else the config's reviewer (--reviewer does not change this),
                      and it must be a different engine from the worker
-  --redrive          lift a park or a dead letter and continue the issue's pull request
+  --redrive          lift a park, a dead letter, or a held proof and continue the issue's pull request
   --land             a person's go-ahead past the merge boundary for a pull request it parked: lift only
                      that park, re-prove and re-review the pull request, and land it with every other
                      gate in force; refuses a dead letter or any other park (use --redrive)
@@ -201,6 +202,14 @@ const PULLS: Array<{ number: number; isDraft: boolean; merged: boolean; headRefN
     .map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: pr.mergedAt !== null, headRefName: pr.headRefName, state: pr.state }));
 })();
 
+/**
+ * What stopped the work last, from the thread: a park or a dead letter is an objection a redrive
+ * hands a coder; a held proof is a prover's request for a person, and its pull request is proved
+ * again once the hold is lifted, whether or not `--redrive` was given.
+ */
+const STANDING = standingStop(JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | { author: .author.login, body }]'])) as Array<{ author: string; body: string }>);
+const PROOF_HELD = STANDING?.kind === 'proof-held';
+
 // An open pull request to continue: named, or the newest open one that references the issue.
 const RESUME_PR = (() => {
   const raw = opt('resume-pr');
@@ -217,7 +226,7 @@ const RESUME_PR = (() => {
     }
     return found;
   }
-  return REDRIVE || LAND ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
+  return REDRIVE || LAND || PROOF_HELD ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
 })();
 
 // `--land` waives the merge boundary and nothing else, so everything it needs is checked before
@@ -282,10 +291,16 @@ if (REDRIVE) {
     mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (redrive)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
     lifted.push('loop/parked');
   }
+  // A held proof is the one `needs-human` a redrive lifts: the code is done, and the person
+  // running this is the one the prover asked for. Any other `needs-human` stays a person's to lift.
+  if (PROOF_HELD && issue.labels.some((l) => l.name === 'needs-human')) {
+    mutate(ctx, `lift needs-human on #${ISSUE_NUMBER} (redrive of a held proof)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'needs-human']);
+    lifted.push('needs-human');
+  }
   if (lifted.length > 0) recordRedrive(ctx, ISSUE_NUMBER, redriveCount(issue.labels));
   clearCount(ctx, 'reviews', ISSUE_NUMBER);
   clearCount(ctx, 'attempts', ISSUE_NUMBER);
-  issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !/^loop\/(reviews|attempts):/.test(l.name));
+  issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && !lifted.includes(l.name) && !/^loop\/(reviews|attempts):/.test(l.name));
 }
 
 // The pull request carries the same hold its issue did; a redrive lifts both, or a merged pull
@@ -293,15 +308,15 @@ if (REDRIVE) {
 if (REDRIVE && RESUME_PR && !DRY_RUN) {
   const held = sh(ctx, ['gh', 'pr', 'view', String(RESUME_PR.number), '--json', 'labels', '--jq', '.labels[].name'])
     .split('\n')
-    .filter((name) => name === 'loop/parked' || isDlqLabel(name));
+    .filter((name) => name === 'loop/parked' || isDlqLabel(name) || (PROOF_HELD && name === 'needs-human'));
   for (const name of held) mutate(ctx, `lift ${name} on PR #${RESUME_PR.number} (redrive)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', name]);
 }
 
-/** The objection that stopped the work last time: the newest dead-letter or park comment on the thread. */
-const OBJECTION = (() => {
-  const raw = sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
-  return raw.trim() || 'The pull request was stopped before it could land; finish it and re-prove it.';
-})();
+/**
+ * The objection that stopped the work last time: the newest dead-letter or park comment on the
+ * thread. A held proof is none, so its pull request goes to Proving, not to a coder.
+ */
+const OBJECTION: string | null = PROOF_HELD ? null : (STANDING?.kind === 'objection' ? STANDING.text.trim() : '') || 'The pull request was stopped before it could land; finish it and re-prove it.';
 
 // A landing has no objection to answer: the work was approved and only the boundary stopped it,
 // so the pull request goes to Proving and review, not back to a coder.

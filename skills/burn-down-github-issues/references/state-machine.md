@@ -129,8 +129,8 @@ so any run can finish a spawn another run started.
 |---|---|---|
 | D4 Sent back | PR to draft, run a code revision with the reviewer's objection as the brief | `CODED` to D2 (announce the pushed commit, run the prover); `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
 | D1 Coding | run the coder | `CODED` to D2: the coder pushed, and the driver announces the pushed commit on the issue (`loop-step coded`) and runs the prover; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision P1 when a panel can sit, else H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
-| D2 Proving | move card; the transition that enters it runs the prover | `PROVED` to E1 (a ready pull request whose head is the proven commit); `PROOF_REFUSED`: under the attempt cap to D1 (count an attempt; the driver announces `loop-step unproved` with what could not be shown, which is the coder's brief), else Q3; `AGENT_FAILED` to Q3 |
-| D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
+| D2 Proving | move card; the transition that enters it runs the prover | `PROVED` to E1 (a ready pull request whose head is the proven commit); `PROOF_REFUSED`: under the attempt cap to D1 (count an attempt; the driver announces `loop-step unproved` with what could not be shown, which is the coder's brief), else Q3; `WORKER_VERDICT` needs-human to H2 with the pull request left open (label the issue and the pull request `needs-human`, comment `loop-proof-held` with the reason, release, remove the worktree; the branch is on the remote); any other escape as D1; `AGENT_FAILED` to Q3 |
+| D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving; a lifted held proof's `needs-human` mirror comes off the pull request with the reclaim) |
 
 D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
@@ -149,7 +149,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 | F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing request for more evidence to D2 (run the prover); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the prover reacquires the proof on the existing pull request and `PROVED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
 | F3 Checks pending | wait on checks | `CHECKS`: green but behind the base to F2 under the refresh cap, to Q5 past it; green and smoke configured to F4; green to F5; else Q5 |
 | F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap, to Q5 past it; passed to F5; else Q5 (tail as the reason) |
-| F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
+| F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `PR_HELD` to H3 (the pull request carries `needs-human`, `needs-decision`, or `loop/skip`); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
 
 Every phase that runs a machine answers `AGENT_FAILED` in every one of its lanes, into its own
 queue, because a throw between two turns is a failure too: appraisal to Q1, carving to Q2, review
@@ -215,7 +215,7 @@ failing is a seat short, not the machine failing, so the panel answers no `AGENT
 | Lane | Leaves on |
 |---|---|
 | H1 Needs decision | `HOLD_REMOVED`: a trunk to C6 (new epoch, forced revisit); a leaf to A1 (size label off; the answer may change the size) |
-| H2 Needs human | `HOLD_REMOVED` to reconcile (the capped counter cleared first) |
+| H2 Needs human | `HOLD_REMOVED` to reconcile (the capped counter cleared first); a held proof with an open pull request reconciles to D3 or E1 and is resumed at Proving, one without a pull request to B1, where its `coded` announcement is proved rather than coded again |
 | H3 Parked | `HOLD_REMOVED` to B1 (PR unparked and kept for reuse; the redrive continues the branch, never opens a second PR); `LANDED_BY_HAND` to T1 |
 
 ### Terminal
@@ -238,7 +238,8 @@ The escapes either seat may take (a close, a hand-off, out of band) are `WORKER_
 Work phase. A person's `fix.ts --issue N` is `PERSON_DISPATCHED`
 from the Inbox straight to Coding, skipping the sizing pass but not the worker's own appraisal.
 
-Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`). Its
+Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`) or the
+pull request carries a person's hold (`PR_HELD`). Its
 last act before the merge is one more look upstream: `BASE_MOVED_WHILE_WAITING` returns the card
 to F2 under the refresh cap, and to Q5 past it, since a paused line can hold a card here long
 enough for something else to land. Checks and smoke take time too, so upstream is looked at as
