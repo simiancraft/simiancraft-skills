@@ -84,6 +84,49 @@ export function retryableFailure(logPath: string): string | null {
   }
 }
 
+/**
+ * Every process this driver has signalled, so a run's end can tell the driver's own kill (the cap,
+ * a stop, a lost lease) from a signal that came from somewhere else.
+ */
+const killedByDriver = new WeakSet<object>();
+
+/**
+ * The signals a person sends to stop a process. A crash's signals (SIGSEGV, SIGABRT, SIGBUS) are not
+ * among them, and neither is SIGKILL: the kernel's out-of-memory killer sends it too, and the two
+ * cannot be told apart from here.
+ */
+const STOP_SIGNALS = ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM'];
+/**
+ * The same signals as exit codes (128 plus the signal's number). An engine that traps the signal
+ * reports it this way rather than dying of it: `claude -p` exits 143 on SIGTERM.
+ */
+const STOP_EXITS: Record<number, string> = { 129: 'SIGHUP', 130: 'SIGINT', 131: 'SIGQUIT', 143: 'SIGTERM' };
+
+/** The stop signal a process ended by, from its signal or its exit code, or null when it ended some other way. */
+export function stopSignalOf(signalCode: string | null, exitCode: number): string | null {
+  if (signalCode) return STOP_SIGNALS.includes(signalCode) ? signalCode : null;
+  return STOP_EXITS[exitCode] ?? null;
+}
+
+/**
+ * Thrown by a Work or Review seat whose agent a signal from outside the driver stopped: a person's,
+ * most likely, who stopped it for a reason. That is not a failed attempt, so nothing is counted and
+ * the issue is not queued again; the pipeline holds the card for a person and keeps the lane.
+ */
+export class StoppedFromOutside extends Error {
+  constructor(
+    readonly role: string,
+    readonly signal: string,
+  ) {
+    super(`${role} was stopped by ${signal}, which this driver did not send`);
+  }
+}
+
+/** Throws when a signal from outside the driver stopped the run; a seat calls it before reading the run's exit. */
+export function refuseOutsideStop(run: AgentRun, role: string): void {
+  if (run.outsideSignal) throw new StoppedFromOutside(role, run.outsideSignal);
+}
+
 /** Agents run under setsid where available, so a kill reaches their whole process group. */
 export const SETSID = Bun.which('setsid');
 
@@ -94,6 +137,7 @@ export const SETSID = Bun.which('setsid');
  * without it the group kill is a no-op ESRCH and the plain kill still lands.
  */
 export function killAgent(proc: { pid: number; kill: () => void }, escalateMs = 10_000): void {
+  killedByDriver.add(proc);
   const signal = (sig: 'SIGTERM' | 'SIGKILL') => {
     try {
       process.kill(-proc.pid, sig);
@@ -239,7 +283,8 @@ export async function runAgent(
   for (let attempt = 0; ; attempt++) {
     const run = await runAgentOnce(ctx, role, issue, cwd, seat, prompt);
     // A run killed at the cap is not asked again: it spent the cap, and the lane has waited that long.
-    if (run.exitCode === 0 || run.timedOut || attempt >= AGENT_RETRIES) return run;
+    // Nor is one a signal from outside stopped: whoever sent it wanted the agent to stop.
+    if (run.exitCode === 0 || run.timedOut || run.outsideSignal || attempt >= AGENT_RETRIES) return run;
 
     const reason = retryableFailure(run.logPath);
     if (!reason) return run;
@@ -254,9 +299,10 @@ export async function runAgent(
  * What a seat's run came to. `notRun` marks a seat a dry run skipped: exit 0 there means nothing
  * ran, not that an agent succeeded, and no answer file exists to read. `timedOut` marks a run the
  * driver killed at the cap: an engine can exit 0 on its way down with an answer file half meant,
- * so its exit code is never 0 here and no seat reads what it left.
+ * so its exit code is never 0 here and no seat reads what it left. `outsideSignal` names a stop
+ * signal the run ended by that this driver did not send; its exit code is never 0 either.
  */
-export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true };
+export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true; outsideSignal?: string };
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
@@ -346,6 +392,8 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   // The driver killed it, so whatever code the engine chose on its way down says nothing: every
   // seat distrusts a non-zero exit, and that is the branch a killed run belongs in.
   const exitCode = timedOut && exited === 0 ? TIMED_OUT_EXIT : exited;
+  // A stop signal the driver did not send: the driver's own kills are all recorded by killAgent.
+  const outsideSignal = killedByDriver.has(proc) ? null : stopSignalOf(proc.signalCode ?? null, exited);
 
   // `claude -p` prints its final message to stdout and writes no file, so without this the
   // fallback verdict channel would exist only for engines with an --output-last-message flag.
@@ -367,6 +415,12 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     for (const left of answers) rmSync(join(cwd, left), { force: true });
     ctx.log(`  #${issue}  ${role} timed out at ${capMs / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
+  }
+  if (outsideSignal) {
+    // Whoever stopped it did so before it finished, so what it left is no answer, now or on a resume.
+    for (const left of answers) rmSync(join(cwd, left), { force: true });
+    ctx.log(`  #${issue}  ${role} was stopped by ${outsideSignal}, which this driver did not send; its answer is not trusted`);
+    return { logPath, exitCode, outsideSignal };
   }
   if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
 
