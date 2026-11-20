@@ -293,7 +293,10 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     coder: [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
     'coder-revise': [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
     'coder-conflict': [CODE_FILE, PROOF_FILE, VERDICT_FILE, LAST_MESSAGE_FILE],
-    prover: [PROOF_FILE, LAST_MESSAGE_FILE],
+    // The coder's file is spent once the prover starts: runCode read it, and a resume places the lane
+    // from the coded announcement, never from it. Clearing it leaves no stale file for a prover to
+    // write its answer into, and lets the driver tell a misplaced answer from the coder's.
+    prover: [PROOF_FILE, CODE_FILE, LAST_MESSAGE_FILE],
     reviewer: [REVIEW_FILE, LAST_MESSAGE_FILE],
     carver: [CARVING_FILE, LAST_MESSAGE_FILE],
     callback: ['loop-callback.json', LAST_MESSAGE_FILE],

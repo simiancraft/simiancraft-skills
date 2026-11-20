@@ -435,6 +435,40 @@ describe("the prover's answer is believed only on the head it was given", () => 
     expect(result.reason).toContain('is not there');
   });
 
+  it("clears the coder's spent control file before the prover runs", async () => {
+    const dir = lane(36);
+    const sha = code(dir, 'fix/thirtysix-36');
+    writeFileSync(join(dir, 'loop-code.json'), JSON.stringify({ issue: 36, verdict: 'coded', reason: 'coded', sha }));
+    const answer = answerFile('proved-36', { issue: 36, verdict: 'proved', reason: 'proved', pr: 360, sha });
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(36), dir, { branch: 'fix/thirtysix-36', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('proved');
+    expect(existsSync(join(dir, 'loop-code.json'))).toBe(false);
+  });
+
+  it("names an answer the prover wrote into the coder's file in the failure", async () => {
+    const dir = lane(37);
+    const sha = code(dir, 'fix/thirtyseven-37');
+    writeFileSync(join(dir, 'loop-code.json'), JSON.stringify({ issue: 37, verdict: 'coded', reason: 'coded', sha }));
+    const answer = answerFile('unprovable-37', { issue: 37, verdict: 'unprovable', reason: 'no', brief: 'the x test is missing' });
+    writeFileSync(answer.replace(/\.json$/, '.prover.sh'), 'mv loop-proof.json loop-code.json\n');
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(37), dir, { branch: 'fix/thirtyseven-37', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain("loop-proof.json is missing, but loop-code.json was written during the prover's turn");
+    expect(JSON.parse(readFileSync(join(dir, 'loop-code.json'), 'utf8'))).toMatchObject({ verdict: 'unprovable' });
+  });
+
+  it('says nothing of the coder\'s file when the prover left no answer anywhere', async () => {
+    const dir = lane(38);
+    const sha = code(dir, 'fix/thirtyeight-38');
+    writeFileSync(join(dir, 'loop-code.json'), JSON.stringify({ issue: 38, verdict: 'coded', reason: 'coded', sha }));
+    const answer = answerFile('none-38', { issue: 38, verdict: 'proved', reason: 'proved', pr: 380, sha });
+    writeFileSync(answer.replace(/\.json$/, '.prover.sh'), 'rm loop-proof.json\n');
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(38), dir, { branch: 'fix/thirtyeight-38', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain('no verdict from the prover');
+    expect(result.reason).not.toContain('loop-code.json');
+  });
+
   it('refuses an unprovable that tells the coder nothing to fix', async () => {
     const dir = lane(32);
     const sha = code(dir, 'fix/thirtytwo-32');

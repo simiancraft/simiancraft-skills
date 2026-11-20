@@ -59,7 +59,10 @@ on, a hand-off for the prover, and what the change touches. `coded` is believed 
 commit is the lane's head and the remote's head of the branch; the driver then announces it on
 the issue as a `<!-- loop-step coded ... -->` comment carrying the hand-off. The prover
 (`prove-github-issue`, `loop-proof.json`) writes `proved` with the ready pull request and the head
-it proved, `unprovable` with what the coder must fix, a hand-off verdict, or `failed`. Together they
+it proved, `unprovable` with what the coder must fix, a hand-off verdict, or `failed`. The coder's
+file is spent once its verdict is read, so the driver deletes it, with any old proof, before the
+prover starts; a `loop-code.json` found after the prover's turn is the prover's misplaced answer,
+and the failure says so. Together they
 are one `WorkerResult` (`fixed` with the pull request, or the escape either seat took), which is all
 the review and landing read. A verdict outside either set reads as no verdict at all.
 
