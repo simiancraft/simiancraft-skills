@@ -68,3 +68,42 @@ export function latestStep(comments: Array<{ author: string; body: string }>, bo
   }
   return null;
 }
+
+/**
+ * A prover that needs a person holds the work where it stands: the code is pushed, the pull
+ * request (when the prover opened one) stays open, and the issue carries `needs-human`. This
+ * comment is the hold's record, so the pickup after a person lifts it proves the same work again
+ * instead of reading the hold as an objection a coder must answer.
+ */
+export const PROOF_HELD = 'loop-proof-held';
+
+export function proofHeldComment(runId: string, held: { branch: string; pr?: number }, reason: string): string {
+  const where = held.pr ? `pull request #${held.pr} stays open on \`${held.branch}\`` : `the coded commit stays on \`${held.branch}\``;
+  const again = held.pr ? `proves #${held.pr} again` : 'proves the coded commit again';
+  return [
+    `<!-- ${PROOF_HELD} run=${token(runId, 'run')} branch=${token(held.branch, 'branch')}${held.pr ? ` pr=${held.pr}` : ''} -->`,
+    `**Held for a person while proving.** The code is done; ${where}.`,
+    '',
+    reason.trim(),
+    '',
+    `Remove the \`needs-human\` label from this issue once what the proof needs is in place: the next burndown run ${again}, or run the fix command with \`--redrive\` to do it at once.`,
+  ].join('\n');
+}
+
+/** What stopped the work last, read from the loop's comments: an objection a revision answers, or a held proof, which is not one. */
+export type StandingStop = { kind: 'objection'; text: string } | { kind: 'proof-held' } | null;
+
+/**
+ * The newest stop on a thread, oldest comment first. A park or a dead letter is an objection, and
+ * a redrive hands it to a coder; a held proof is the prover's request for a person, and the pickup
+ * after it proves the pull request again. When `botLogin` is given, only its comments count.
+ */
+export function standingStop(comments: Array<{ author?: string; body: string }>, botLogin?: string): StandingStop {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const { author, body } = comments[i];
+    if (botLogin !== undefined && author !== botLogin) continue;
+    if (parseMarker(body)?.name === PROOF_HELD) return { kind: 'proof-held' };
+    if (/dead-letter queue|parked|Parked/.test(body)) return { kind: 'objection', text: body };
+  }
+  return null;
+}

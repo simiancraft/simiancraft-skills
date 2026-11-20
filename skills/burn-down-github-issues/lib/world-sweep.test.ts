@@ -289,7 +289,7 @@ describe('intervention and recovery at every lane', () => {
     expect(dropped).toEqual([]);
     // Moves the drivers make, each of which was once absent from the chart.
     const absent: string[] = [];
-    for (const [from, to] of [['E2', 'F2'], ['E1', 'D3'], ['E1', 'D2'], ['D3', 'D2'], ['F3', 'Q5'], ['A2', 'T2'], ['D1', 'A3'], ['A3', 'T2'], ['C6', 'H2'], ['C6', 'Q2'], ['C7', 'A2'], ['A2', 'B1'], ['F3', 'F2'], ['F4', 'F2']]) {
+    for (const [from, to] of [['E2', 'F2'], ['E1', 'D3'], ['E1', 'D2'], ['D3', 'D2'], ['F3', 'Q5'], ['A2', 'T2'], ['D1', 'A3'], ['A3', 'T2'], ['C6', 'H2'], ['C6', 'Q2'], ['C7', 'A2'], ['A2', 'B1'], ['F3', 'F2'], ['F4', 'F2'], ['D2', 'H2'], ['F5', 'H3']]) {
       if (!successors(laneState(from), { ownEventsOnly: true }).has(laneState(to))) absent.push(`${from}->${to}`);
     }
     expect(absent).toEqual([]);

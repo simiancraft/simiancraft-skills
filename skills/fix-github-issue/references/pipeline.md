@@ -98,8 +98,8 @@ smoke, a conflict, a refused line), which is not an objection a revision could a
 merge, which ends the accounting because the issue is closing.
 
 Parked and dead-lettered are different states. Parked means a person owns the next call, and
-only two things park: the merge boundary refusing an approved change, and the issue changing under
-the review (a hold, a pause, a claim). A dead letter means a machine gave up, and which queue says
+only three things park: the merge boundary refusing an approved change, the issue changing under
+the review (a hold, a pause, a claim), and a person's hold on the pull request itself. A dead letter means a machine gave up, and which queue says
 which machine: `loop/dlq: work` for a worker that failed past its attempts, failed on a revision,
 named no pull request, or left a draft or a dirty tree; `loop/dlq: review` for a spent budget or
 a reviewer with no trusted verdict; `loop/dlq: landing` for a conflict, red or unfinished checks,
@@ -107,6 +107,22 @@ a failed smoke, the refresh cap, a refused line, or an unreported merge. The bur
 and carve queues are its own. Each queue is meant to be triaged differently
 (`burn-down-github-issues/references/state-machine.md`, "Dead letters"); today every one waits
 for a person, and the pull request carries the same label so the branch says what the issue says.
+
+A hand-off is not a park either, and which seat made it decides what happens to a pull request.
+A coder's `needs-human` or `needs-decision`, and a prover's `needs-decision`, close any pull
+request the work had: nothing behind them is proved. A prover's `needs-human` comes after the code
+was pushed and announced, so the work is held where it stands (`WorkerResult.seat` says which seat
+answered): the pull request stays open, the issue and the pull request both carry `needs-human`,
+the issue gets a `<!-- loop-proof-held ... -->` comment with the reason and how the hold comes
+off, and the lane is retired (the branch is on the remote). Removing the issue's label is the whole
+pickup. With a pull request, the facts put the card in Drafted or Ready for review, the burndown
+resumes it with no objection (the held proof is none), and the prover makes the proof current on
+the same pull request; with none, Ready, where the `coded` announcement is proved, not coded again.
+`fix.ts --issue N` continues the pull request of a held proof once the hold is off, and
+`fix.ts --issue N --redrive` lifts that hold itself. The pickup takes `needs-human` off the pull
+request with the issue's, but only while the held proof is the newest stop on the thread; the merge
+gate refuses a pull request that carries `needs-human`, `needs-decision`, or `loop/skip`, and parks
+the issue saying so.
 
 A reviewer rejection, whether `gather-more` or `block`, sends the work back for a revision rather
 than parking it. Both name something a worker can act on, so giving up on the first one throws away
@@ -319,6 +335,11 @@ let a driver shape the merge without the pipeline learning why:
   (`loop/dlq: landing`) without spending a review round. Absent means always allowed.
 - **`ctx.afterMerge`** is told once after every confirmed merge, with the issue, the pull request,
   the merged SHA, the time, and the paths that landed, while the lane still exists.
+- **`project.laneFiles`** lists files the main checkout holds and git ignores (shared test
+  credentials, say) that the driver copies into a lane whenever it makes one, reuses one, or
+  resets one for a retry. A lane is a fresh worktree and sees no untracked file otherwise, and
+  `installCommand` is only text in the prompts, which not every seat runs. A missing source, or a
+  path git does not ignore in the lane, is logged and skipped; the lane is still made.
 - **`project.followBase`** fast-forwards the main checkout to the remote base after every confirmed
   merge, so a dev server running there shows each fix as it lands. Only a fast-forward, and only
   when that checkout has the base branch checked out with a clean tracked tree (untracked files

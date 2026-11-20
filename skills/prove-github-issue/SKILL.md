@@ -25,7 +25,8 @@ remote holds, each covering one thing the change claims.
 |---|---|---|
 | `proved` | a ready pull request, `pr`, whose head is `sha`, the lane's head | the card goes to review |
 | `unprovable` | the change does not do what the issue asks, or what it claims cannot be shown; `brief` says what | the driver announces it (`<!-- loop-step unproved ... -->`), spends an attempt, and a coder fixes it on the same branch |
-| `needs-decision`, `needs-human` | proof needs a ruling, or access an agent lacks | the issue is held with the question stated |
+| `needs-decision` | proof needs a ruling | the issue is held with the question stated |
+| `needs-human` | proof needs access an agent lacks | the work is held where it stands: the pull request stays open, the issue and the pull request carry `needs-human`, and the issue says what is missing; lifting the issue's label proves the same pull request again |
 | `failed` | anything else | the attempt is counted; the coded commit stands |
 
 ## What a prover is told, and what it is not
