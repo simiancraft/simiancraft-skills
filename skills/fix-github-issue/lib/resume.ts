@@ -159,6 +159,7 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
 export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): Stranded[] {
   const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
   const found: Stranded[] = [];
+  const holders = new Map<number, string | null>();
 
   for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
     if (!line.startsWith('worktree ')) continue;
@@ -175,6 +176,14 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
     // budget-exhausted issue belongs to a human even when a worktree still remembers it.
     if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
+
+    // Another run's live claim means its lane is in use: a redrive claims before it lifts its hold,
+    // so an issue read without a hold may still be one a person's redrive is about to work.
+    const holder = claimHolder(ctx, issue.number, holders);
+    if (holder) {
+      ctx.log(`#${num}  stranded lane is claimed by ${holder}; leaving it in place`);
+      continue;
+    }
 
     const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {

@@ -238,8 +238,7 @@ if (LAND) {
     console.error(`--land refuses #${ISSUE_NUMBER}: ${blocker}`);
     process.exit(1);
   }
-  mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (land)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
-  mutate(ctx, `lift loop/parked on PR #${RESUME_PR.number} (land)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', 'loop/parked']);
+  // The park itself comes off under the lane's claim; see LIFT below.
   issue.labels = issue.labels.filter((l) => l.name !== 'loop/parked');
 }
 
@@ -273,29 +272,44 @@ const placed = placeByFacts({
 log(`facts place #${ISSUE_NUMBER} in ${placed.lane} (${placed.why})`);
 if (BOARD && !DRY_RUN) BOARD.onLane({ issue: issue.number, title: issue.title, lane: placed.lane, note: placed.why });
 
-// A redrive is a person's act: lifting the hold is what makes the live gate let the issue through,
-// and the count labels come off with it so the fresh budget is real. The redrive itself is
-// counted, so a thread that keeps coming back shows how many times on its labels.
-if (REDRIVE) {
-  const lifted = liftDlq(ctx, ISSUE_NUMBER, issue.labels);
-  if (issue.labels.some((l) => l.name === 'loop/parked')) {
-    mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (redrive)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
-    lifted.push('loop/parked');
+/**
+ * A redrive or a landing is a person's act: lifting the hold is what makes the live gate let the
+ * issue through. The pipeline runs this under the lane's claim, taken before the hold comes off, so
+ * a run starting in between never finds the issue with neither and judges its lane as stranded.
+ *
+ * A redrive's count labels come off with the hold so the fresh budget is real, and the redrive
+ * itself is counted, so a thread that keeps coming back shows how many times on its labels. The
+ * pull request carries the same hold its issue did; both are lifted, or a merged pull request
+ * keeps saying parked. A landing lifts only the park the boundary wrote.
+ */
+const LIFT = (() => {
+  if (LAND && RESUME_PR) {
+    const pr = RESUME_PR.number;
+    return () => {
+      mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (land)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
+      mutate(ctx, `lift loop/parked on PR #${pr} (land)`, ['gh', 'pr', 'edit', String(pr), '--remove-label', 'loop/parked']);
+    };
   }
-  if (lifted.length > 0) recordRedrive(ctx, ISSUE_NUMBER, redriveCount(issue.labels));
-  clearCount(ctx, 'reviews', ISSUE_NUMBER);
-  clearCount(ctx, 'attempts', ISSUE_NUMBER);
-  issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !/^loop\/(reviews|attempts):/.test(l.name));
-}
-
-// The pull request carries the same hold its issue did; a redrive lifts both, or a merged pull
-// request keeps saying parked.
-if (REDRIVE && RESUME_PR && !DRY_RUN) {
-  const held = sh(ctx, ['gh', 'pr', 'view', String(RESUME_PR.number), '--json', 'labels', '--jq', '.labels[].name'])
-    .split('\n')
-    .filter((name) => name === 'loop/parked' || isDlqLabel(name));
-  for (const name of held) mutate(ctx, `lift ${name} on PR #${RESUME_PR.number} (redrive)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', name]);
-}
+  if (!REDRIVE) return undefined;
+  const labels = issue.labels;
+  return () => {
+    const lifted = liftDlq(ctx, ISSUE_NUMBER, labels);
+    if (labels.some((l) => l.name === 'loop/parked')) {
+      mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (redrive)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
+      lifted.push('loop/parked');
+    }
+    if (lifted.length > 0) recordRedrive(ctx, ISSUE_NUMBER, redriveCount(labels));
+    clearCount(ctx, 'reviews', ISSUE_NUMBER);
+    clearCount(ctx, 'attempts', ISSUE_NUMBER);
+    if (RESUME_PR && !DRY_RUN) {
+      const held = sh(ctx, ['gh', 'pr', 'view', String(RESUME_PR.number), '--json', 'labels', '--jq', '.labels[].name'])
+        .split('\n')
+        .filter((name) => name === 'loop/parked' || isDlqLabel(name));
+      for (const name of held) mutate(ctx, `lift ${name} on PR #${RESUME_PR.number} (redrive)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', name]);
+    }
+  };
+})();
+if (REDRIVE) issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !/^loop\/(reviews|attempts):/.test(l.name));
 
 /** The objection that stopped the work last time: the newest dead-letter or park comment on the thread. */
 const OBJECTION = (() => {
@@ -306,8 +320,8 @@ const OBJECTION = (() => {
 // A landing has no objection to answer: the work was approved and only the boundary stopped it,
 // so the pull request goes to Proving and review, not back to a coder.
 const result = RESUME_PR
-  ? await redriveIssue(ctx, issue, { number: RESUME_PR.number, branch: RESUME_PR.headRefName }, LAND ? null : OBJECTION, { maxPoints: MAX_POINTS, landing: LAND })
-  : await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
+  ? await redriveIssue(ctx, issue, { number: RESUME_PR.number, branch: RESUME_PR.headRefName }, LAND ? null : OBJECTION, { maxPoints: MAX_POINTS, landing: LAND, lift: LIFT })
+  : await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, lift: LIFT });
 step(`${result.outcome}`);
 log(result.reason);
 if (result.outcome === 'failed') process.exitCode = 1;
