@@ -163,8 +163,22 @@ itself is not a callback: an interlock never depends on a file an adopter might 
 
 ## The line
 
-A wrong walk writes `pause` and a reason beginning `floor:` to `<worktreeRoot>/runs/line-switch`,
-naming everything on the floor that is wrong. It never overwrites a pause a person set, and it
+A wrong walk writes `pause` and a reason beginning `floor:<cause>:` to
+`<worktreeRoot>/runs/line-switch`, naming everything on the floor that is wrong. The cause says
+what the floor knows about where the remedy lies, so the kind of pause is readable from the switch
+and survives a restart:
+
+| Cause | What the floor knows |
+|---|---|
+| `undiagnosed` | something is wrong and no diagnosis has answered yet; the walk writes this at once |
+| `cause-unknown` | a diagnosis ran and could not say (it failed, or gave no usable answer) |
+| `in-repository` | the diagnosis places the remedy in this repository (`fix-forward` or `revert`) |
+| `outside-repository` | the diagnosis places the remedy outside it: a vendor or host outage, a reindex, a config value |
+
+Each diagnosis restates the pause as soon as it answers. With several items wrong the pause is
+`outside-repository` only when every one is; any item that is the repository's, or not known to be
+anyone's, makes it the stricter cause. A bare `floor:` reason from an earlier version reads as
+`undiagnosed`. It never overwrites a pause a person set, and it
 releases only its own, on the first walk that finds nothing on the floor wrong. After an incident's
 fix merges, that is the next walk, so a cadence like `wrong ? 2 : …` keeps the wait short. An item
 whose incident a person owns holds the pause until it walks clean or someone clears the switch. A

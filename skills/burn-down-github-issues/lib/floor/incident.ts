@@ -13,6 +13,7 @@ import { enrichBlockers } from '../../../fix-github-issue/lib/blockers.ts';
 import { fixIssue, type FixOutcome, type Issue } from '../../../fix-github-issue/lib/pipeline.ts';
 import { sh } from '../../../fix-github-issue/lib/shell.ts';
 import { type LedgerEntry, lastClean, readLedger } from './ledger.ts';
+import type { FloorCause } from './line.ts';
 
 type MergedPullRequest = { number: number; title: string; mergedAt: string; mergeCommit: string; paths: string[] };
 
@@ -58,7 +59,19 @@ export type IncidentResult = {
   diagnosis: Diagnosis | null;
   /** True when a person now owns the incident, so walking it again should not start another fix. */
   withAPerson: boolean;
+  /** Where the diagnosis places the remedy; null when no diagnosis was asked (a person already owns the incident). */
+  cause: FloorCause | null;
 };
+
+/**
+ * Where a diagnosis places the remedy. No usable answer is a cause nobody knows, which the line
+ * treats as the repository's to repair: not knowing is not knowing it is someone else's.
+ */
+export function causeOf(diagnosis: Diagnosis | null): FloorCause {
+  if (diagnosis?.remedy === 'outside-repository') return 'outside-repository';
+  if (diagnosis?.remedy === 'fix-forward' || diagnosis?.remedy === 'revert') return 'in-repository';
+  return 'cause-unknown';
+}
 
 /** Labels the fix pipeline leaves when it stops and hands an issue to a person. */
 const HUMAN_LABELS = new Set(['loop/parked', 'needs-human', 'needs-decision', 'loop/skip']);
@@ -129,6 +142,8 @@ export async function handleIncident(
     maxPoints: number;
     /** When the failed item merged, for an `absent` item. */
     mergedAt?: string;
+    /** Told where the diagnosis places the remedy as soon as it answers, before anything is filed or fixed. */
+    onDiagnosed?: (cause: FloorCause) => void;
   },
 ): Promise<IncidentResult> {
   const { dir, entry, checkout, walker } = options;
@@ -142,7 +157,7 @@ export async function handleIncident(
   const existing = ctx.dryRun ? null : openIncidentFor(ctx, entry.itemId);
   if (existing?.withAPerson) {
     ctx.log(`incident #${existing.number} is already open for ${entry.itemId} and with a person; not working it again`);
-    return { issue: existing.number, created: false, fix: null, diagnosis: null, withAPerson: true };
+    return { issue: existing.number, created: false, fix: null, diagnosis: null, withAPerson: true, cause: null };
   }
 
   // Diagnosis is one agent turn, read-only, in the checkout at the failing revision.
@@ -159,6 +174,7 @@ export async function handleIncident(
     const run = await runAgent(ctx, 'diagnose', 0, checkout, walker, prompt);
     if (run.exitCode === 0) diagnosis = readResult<Diagnosis>(checkout, DIAGNOSIS_FILE);
     if (!diagnosis) ctx.log('the diagnosis turn produced no usable answer; filing the incident without one');
+    options.onDiagnosed?.(causeOf(diagnosis));
   }
 
   const title = incidentTitle(entry.itemId, entry.verdict);
@@ -198,7 +214,7 @@ export async function handleIncident(
     ].join('\n');
     if (ctx.dryRun) {
       ctx.log(`  DRY RUN  would file incident "${title}"`);
-      return { issue: 0, created: false, fix: null, diagnosis, withAPerson: false };
+      return { issue: 0, created: false, fix: null, diagnosis, withAPerson: false, cause: null };
     }
     ensureIncidentLabel(ctx);
     const url = sh(ctx, ['gh', 'issue', 'create', '--title', title, '--body', body, '--label', INCIDENT_LABEL]);
@@ -221,7 +237,7 @@ export async function handleIncident(
     const where = existing === null ? 'See the diagnosis above.' : `Diagnosis (${diagnosis.confidence}): ${diagnosis.summary}`;
     parkIssue(ctx, issue, `The diagnosis places the remedy outside this repository, so no fix was attempted; a person has to act on the environment. ${where}`);
     ctx.log(`incident #${issue}: parked; the remedy is outside the repository`);
-    return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true };
+    return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true, cause: 'outside-repository' };
   }
 
   // The fix is the pipeline's job, exactly as for any other issue. The issue is read live, labels and
@@ -231,5 +247,5 @@ export async function handleIncident(
   enrichBlockers(ctx, [live]);
   const fix = await fixIssue(ctx, live, { maxPoints: options.maxPoints });
   ctx.log(`incident #${issue}: ${fix.outcome}; ${fix.reason}`);
-  return { issue, created: existing === null, fix, diagnosis, withAPerson: fix.outcome !== 'merged' };
+  return { issue, created: existing === null, fix, diagnosis, withAPerson: fix.outcome !== 'merged', cause: causeOf(diagnosis) };
 }

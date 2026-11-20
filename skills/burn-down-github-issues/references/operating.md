@@ -129,7 +129,8 @@ statechart guards the knife's dispatch and revisit with `lineActive` as well
 A paused seam logs one line, `line is paused (<reason>); holding <where> until <path> says go`,
 and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
 see the state and the reason. A reason beginning `floor:` was written by the floor and names what
-it found wrong; the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
+it found wrong, after the cause it knows (`floor:undiagnosed:`, `floor:cause-unknown:`,
+`floor:in-repository:`, or `floor:outside-repository:`; `floor.md`, "The line"); the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
 more, and the floor releases its own pause once nothing on it is wrong. A reason without that
 prefix was written by a person, and only a person clears it:
 `echo go > <worktreeRoot>/runs/line-switch`.

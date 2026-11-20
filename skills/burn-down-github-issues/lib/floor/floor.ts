@@ -26,6 +26,7 @@ import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts'
 import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
 import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { handleIncident, mergedSince, openIncidentFor } from './incident.ts';
+import { combineCauses, FLOOR_PAUSE, type FloorCause, floorReason, readPause } from './line.ts';
 import {
   AGENT_RUNGS,
   AGENT_VERDICTS,
@@ -80,12 +81,13 @@ export type FloorOptions = {
   baseUrl?: string;
   /** Where a walk's readout goes; the log, one line at a time, by default. */
   print?: (readout: string) => void;
+  /** How a wrong item's incident is diagnosed, filed, and worked; `handleIncident`, unless a test supplies its own. */
+  handleIncident?: typeof handleIncident;
 };
 
 type AgentVerdictFile = { entries: Array<{ itemId: string; rung: string; verdict: string; reason: string; evidence?: string }> };
 
-/** The reason the floor writes when it pauses the line; a pause without this prefix is a person's. */
-export const FLOOR_PAUSE = 'floor:';
+export { FLOOR_PAUSE } from './line.ts';
 
 export class Floor {
   private readonly o: FloorOptions;
@@ -109,12 +111,25 @@ export class Floor {
   private readonly mine = new Set<string>();
   /** Probe, classify, and report only: no ledger, line, callback, checkout, agent, or incident. */
   private readonly rehearsal: boolean;
+  /** What each wrong item's diagnosis said about where its remedy lies; the line's cause is read from these. */
+  private readonly causes = new Map<string, FloorCause>();
+  /** Items that turned wrong and that no diagnosis has answered for yet. */
+  private readonly diagnosing = new Set<string>();
+  /**
+   * The cause on a floor pause an earlier run left, for wrong items this run has no diagnosis of:
+   * an incident a person already owns is not diagnosed again, and its cause should not be lost.
+   */
+  private inherited: FloorCause | null = null;
 
   constructor(options: FloorOptions) {
     this.o = options;
     this.env = { ...options.config.environment, ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}) };
     this.rehearsal = options.ctx.dryRun || options.baseUrl !== undefined;
     this.checkout = resolve(options.ctx.repoRoot, options.ctx.project.worktreeRoot, 'floor-checkout');
+    if (this.ownPause()) {
+      const pause = readPause(this.switchLines()[1]?.trim() ?? '');
+      if (pause.by === 'floor') this.inherited = pause.cause;
+    }
   }
 
   /** Merge-up: one list item per merge, so the next walk checks what landed. */
@@ -240,20 +255,56 @@ export class Floor {
     return [...latestByItem(readLedger(this.o.dir)).values()].filter((entry) => REPAIR.has(entry.verdict) && !entry.quiet);
   }
 
-  /** Pauses for the floor, unless a person already paused the line: their reason stands. */
-  private pauseLine(): void {
-    if (this.rehearsal) return;
-    const lines = this.switchLines();
-    if (this.paused() && !lines[1]?.startsWith(FLOOR_PAUSE)) return;
-    const reason = this.wrongNow().map((e) => `${e.itemId} is ${e.verdict}`).join('; ');
-    writeFileSync(this.o.switchFile, `pause\n${FLOOR_PAUSE} ${reason}; see the ledger on the floor\n`);
-    this.o.log(`floor: line paused (${reason})`);
+  /** The cause the line carries now: what every wrong item's diagnosis said, or that none has yet. */
+  private lineCause(wrong: LedgerEntry[]): FloorCause {
+    if (wrong.length === 0) return 'undiagnosed';
+    return combineCauses(wrong.map((e) => (this.diagnosing.has(e.itemId) ? 'undiagnosed' : (this.causes.get(e.itemId) ?? this.inherited ?? 'undiagnosed'))));
   }
 
-  /** Releases a pause the floor wrote once nothing is wrong; never one a person wrote. */
+  private writePause(): void {
+    const wrong = this.wrongNow();
+    const cause = this.lineCause(wrong);
+    const reason = wrong.map((e) => `${e.itemId} is ${e.verdict}`).join('; ');
+    const text = `pause\n${floorReason(cause, reason)}; see the ledger on the floor\n`;
+    if (existsSync(this.o.switchFile) && readFileSync(this.o.switchFile, 'utf8') === text) return;
+    writeFileSync(this.o.switchFile, text);
+    this.o.log(`floor: line paused, ${cause} (${reason})`);
+  }
+
+  /**
+   * Pauses for the floor at once, before any diagnosis, unless a person already paused the line:
+   * their reason stands. The items that turned are undiagnosed until their diagnosis answers.
+   */
+  private pauseLine(turned: LedgerEntry[]): void {
+    for (const entry of turned) this.diagnosing.add(entry.itemId);
+    if (this.rehearsal) return;
+    if (this.paused() && !this.ownPause()) return;
+    this.writePause();
+  }
+
+  /**
+   * A diagnosis answered for an item: record where its remedy lies and restate the floor's own
+   * pause with it. `null` is no new answer (an incident a person already owns), so what was known stands.
+   */
+  private diagnosed(itemId: string, cause: FloorCause | null): void {
+    this.diagnosing.delete(itemId);
+    if (cause !== null) this.causes.set(itemId, cause);
+    if (this.rehearsal || !this.ownPause()) return;
+    if (this.wrongNow().length > 0) this.writePause();
+  }
+
+  /** Releases a pause the floor wrote once nothing is wrong, or restates its cause; never touches a person's. */
   private releaseLine(): void {
     if (this.rehearsal || !this.ownPause()) return;
-    if (this.wrongNow().length > 0) return;
+    const wrong = this.wrongNow();
+    const stillWrong = new Set(wrong.map((e) => e.itemId));
+    for (const id of [...this.causes.keys()]) if (!stillWrong.has(id)) this.causes.delete(id);
+    for (const id of [...this.diagnosing]) if (!stillWrong.has(id)) this.diagnosing.delete(id);
+    if (wrong.length > 0) {
+      this.writePause();
+      return;
+    }
+    this.inherited = null;
     writeFileSync(this.o.switchFile, 'go\n');
     this.o.log('floor: nothing on the floor is wrong; line released');
   }
@@ -355,7 +406,7 @@ export class Floor {
         return prior?.verdict !== entry.verdict || prior.quiet === true;
       });
       if (turned.length > 0) {
-        this.pauseLine();
+        this.pauseLine(turned);
         for (const entry of turned) await this.onWalkFail(entry, items.get(entry.itemId));
       }
       if (!options.livenessOnly && !this.rehearsal) {
@@ -370,7 +421,10 @@ export class Floor {
             notes.push(`${entry.itemId}: waiting for incident #${fix}'s fix to deploy`);
             continue;
           }
-          const incident = await this.repair(entry, deployed, items.get(entry.itemId)?.ref?.mergedAt);
+          const repaired = await this.repair(entry, deployed, items.get(entry.itemId)?.ref?.mergedAt);
+          // A repair that threw is a diagnosis that could not answer.
+          this.diagnosed(entry.itemId, repaired ? repaired.cause : 'cause-unknown');
+          const incident = repaired && { issue: repaired.issue, outcome: repaired.outcome };
           if (incident?.outcome === 'merged') this.fixedBy.set(entry.itemId, incident.issue);
           if (incident) incidents.push({ itemId: entry.itemId, ...incident });
           const item = items.get(entry.itemId);
@@ -528,11 +582,11 @@ export class Floor {
     }
   }
 
-  private async repair(entry: LedgerEntry, deployed: string | null, mergedAt?: string): Promise<{ issue: number; outcome: string } | null> {
+  private async repair(entry: LedgerEntry, deployed: string | null, mergedAt?: string): Promise<{ issue: number; outcome: string; cause: FloorCause | null } | null> {
     const { ctx } = this.o;
     this.makeCheckout(deployed ?? `${ctx.project.remote}/${ctx.project.baseBranch}`);
     try {
-      const result = await handleIncident(ctx, {
+      const result = await (this.o.handleIncident ?? handleIncident)(ctx, {
         dir: this.o.dir,
         entry,
         checkout: this.checkout,
@@ -540,13 +594,14 @@ export class Floor {
         logsCommand: this.env.logsCommand,
         maxPoints: this.o.maxPoints,
         mergedAt,
+        onDiagnosed: (cause) => this.diagnosed(entry.itemId, cause),
       });
       if (result.withAPerson) this.withAPerson.add(entry.itemId);
       else this.withAPerson.delete(entry.itemId);
       this.incidentOf.set(entry.itemId, result.issue);
       if (result.withAPerson) this.noteLandable(entry.itemId, result.issue);
       else this.landable.delete(entry.itemId);
-      return { issue: result.issue, outcome: result.fix?.outcome ?? (result.withAPerson ? 'with a person' : 'filed') };
+      return { issue: result.issue, outcome: result.fix?.outcome ?? (result.withAPerson ? 'with a person' : 'filed'), cause: result.cause };
     } catch (error) {
       if (error instanceof RunStopping) throw error;
       this.o.log(`floor: incident for ${entry.itemId} failed: ${(error as Error).message}`);
