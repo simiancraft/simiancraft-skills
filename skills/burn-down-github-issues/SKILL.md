@@ -122,7 +122,8 @@ the rest); a flag beats the config for the run it is given on.
    (a confirmed close with a receipt), or a human lane. The size callback hands an oversized issue
    to the sibling `carve-github-issue` skill, which cuts it into children along its highest
    natural seam and holds the parent as an Epic while they move.
-4. **Works Ready.** Up to `concurrency` cards at once, each in its own worktree, each moving
+4. **Works Ready.** From the placement in step 2, while the sweep in step 1 and the appraisal in
+   step 3 run beside it. Up to `concurrency` cards at once, each in its own worktree, each moving
    through Coding and Proving (two seats, `code-github-issue` then `prove-github-issue`, with the
    driver moving the card from the push and the pull request each leaves), Ready for review, Evidence
    under review, and the landing lanes to Merged; or back to Sent back on a rejection; or into a

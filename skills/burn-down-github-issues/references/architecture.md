@@ -188,7 +188,8 @@ only selection of the unsized window and the board lines.
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
 carried on issues by the `size: N` labels. An issue sized above the band, whether by the appraiser
 or already on the tracker, is the knife's (see "Carving and revisits"); an unsized issue is sized
-by the appraiser, which runs as its own cheap population ahead of the workers.
+by the appraiser, which runs as its own cheap population beside the workers: a card is worked only
+once it is sized, and a card already Ready does not wait for the Inbox to be sized.
 
 Where the issue prescribes a remedy that contradicts a written convention (the files
 `conventionDocs` names, or what the surrounding code plainly does), the convention wins and the work continues:
@@ -274,13 +275,18 @@ that answers `exhausted` releases the trunk (`loop/released`), and the loop runs
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.
 
-At the start of every run, the sweep reads the open
+At the start of every run, beside the first lanes, the sweep reads the open
 backlog three times: first every issue carrying a trunk, claim, or pause label (finish an
 unfinished announcement, clear a claim whose run died, remove a torn pause, redrive a trunk whose
 hold a person removed, revisit a trunk whose fingerprint moved); second every unlabelled issue that
 is oversized inside the window or has an open child at any age; third every leaf whose blocker is
 closed not planned or gone (its open parent is revisited, else it goes to a person) and every pause
-a closed trunk left behind. `--only` restricts all three passes.
+a closed trunk left behind. `--only` restricts all three passes. The issues the first lanes and
+resumes took are left out of it, since their lanes own them, and the sizing stage runs after it.
+The first lanes are selected from the placement made before the sweep: a Ready card has been
+judged, and each lane reads its issue again through the live gate before it claims, so a close or
+a hold made outside the loop is still seen. The refill is not asked until the sweep and the sizing
+stage settle; then the children they carved and sized join the pool.
 
 ## The pool
 

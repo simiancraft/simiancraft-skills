@@ -12,7 +12,8 @@ describe('--only bounds every pass that can land work', () => {
     expect(source).toContain('only: ONLY,');
     expect(source).toContain('ONLY ? ONLY.has(issue.number)');
     expect(source).toContain('{ allAges: ONLY !== null }');
-    expect(source).toContain('await CARVING.sweep(allIssues())');
+    expect(source).toContain('const backlog = allIssues();');
+    expect(source).toContain('await CARVING.sweep(backlog.filter(');
     expect(source).toContain('await placeBacklog(allIssues())');
   });
 
@@ -106,6 +107,32 @@ describe('the work phase takes on what the run made eligible', () => {
   });
 
   it('counts the start-of-run appraisals in the run budget', () => {
-    expect(source).toContain('for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);');
+    expect(source).toContain('for (const n of await sizeTheWindow(inbox)) ADMISSION.appraised.add(n);');
+  });
+});
+
+describe('Ready lanes start while the startup sweep and sizing run', () => {
+  const main = source.slice(source.indexOf('async function main():'), source.indexOf('\n}', source.indexOf('async function main():')));
+  const startup = main.slice(main.indexOf('const startup = (async () => {'), main.indexOf('})();', main.indexOf('const startup = (async () => {')));
+
+  it('runs the sweep and the sizing stage inside the startup work, not ahead of the pool', () => {
+    expect(startup).toContain('await CARVING.sweep(');
+    expect(startup).toContain('await sizeTheWindow(inbox)');
+    const outside = main.replace(startup, '');
+    expect(outside).not.toContain('await CARVING.sweep(');
+    expect(outside).not.toContain('await sizeTheWindow(');
+  });
+
+  it('selects the first lanes from the placement made before the sweep', () => {
+    expect(main.indexOf('const placement = await placeBacklog(backlog);')).toBeGreaterThan(-1);
+    expect(main.indexOf('const ready = selectCandidates(placement);')).toBeLessThan(main.indexOf('const startup = (async () => {'));
+  });
+
+  it('holds the refill until the startup work settles, then surfaces its outcome', () => {
+    expect(main).toMatch(/await refillingPool\([\s\S]*?\{ until: startup \},\s*\);\s*await startup;/);
+  });
+
+  it('leaves the issues already in hand out of the sweep', () => {
+    expect(startup).toContain('await CARVING.sweep(backlog.filter((issue) => !inHand.has(issue.number)));');
   });
 });
