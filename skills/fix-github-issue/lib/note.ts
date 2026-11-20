@@ -10,3 +10,9 @@ export const LOOP_NOTE = '<!-- loop-note -->';
 export function loopNote(body: string): string {
   return body.trimStart().startsWith('<!--') ? body : `${LOOP_NOTE}\n${body}`;
 }
+
+/** The body as written, without a leading loop-note marker: what a reader matches a note's words against. */
+export function noteText(body: string): string {
+  const trimmed = body.trim();
+  return trimmed.startsWith(LOOP_NOTE) ? trimmed.slice(LOOP_NOTE.length).trim() : trimmed;
+}

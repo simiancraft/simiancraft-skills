@@ -4,6 +4,8 @@
  * dead letter, a park because the issue changed under the review, or a park with no reason found.
  */
 
+import { noteText } from './note.ts';
+
 /** The reason the merge boundary writes when it parks an approved change (`pipeline.ts`, land). */
 export const BOUNDARY_PARK = /^autoMerge is \S+ and the change touches /;
 
@@ -19,7 +21,7 @@ export function landBlocker(labels: string[], comments: Array<{ body: string; cr
   if (!labels.includes('loop/parked')) return 'it is not parked; there is no boundary to land past';
   if (!parkedAt) return 'no record of when it was parked; --land cannot tell whether the boundary parked it';
   const reason = comments.filter((c) => Date.parse(c.createdAt) <= Date.parse(parkedAt)).at(-1);
-  if (!reason || !BOUNDARY_PARK.test(reason.body.trim())) {
+  if (!reason || !BOUNDARY_PARK.test(noteText(reason.body))) {
     return 'its newest park was not the merge boundary; --land waives only that boundary, so use --redrive';
   }
   // A park for a missing classification is not waivable: the landing would only park it again.

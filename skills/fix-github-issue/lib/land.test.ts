@@ -9,6 +9,9 @@ describe('landBlocker: --land acts only on a park the merge boundary wrote', () 
   it('lets a boundary park through: its reason is the newest comment before the label', () => {
     expect(landBlocker(['loop/parked', 'size: 5'], [comment('an early note', 1), comment(BOUNDARY, 5)], at(5))).toBeNull();
   });
+  it('reads a boundary park through the loop-note marker parkIssue writes', () => {
+    expect(landBlocker(['loop/parked'], [comment(`<!-- loop-note -->\n${BOUNDARY}`, 5)], at(5))).toBeNull();
+  });
   it('ignores comments made after the park', () => {
     expect(landBlocker(['loop/parked'], [comment(BOUNDARY, 5), comment('a person asks a question', 9)], at(5))).toBeNull();
   });
