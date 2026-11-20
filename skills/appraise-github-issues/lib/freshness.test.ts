@@ -30,7 +30,7 @@ describe('whether an appraisal still describes its issue', () => {
   });
   it('is not moved by the loop writing on the thread', () => {
     const later = stamped();
-    later.comments.push({ author: BOT, body: 'a carving record' });
+    later.comments.push({ author: BOT, body: '<!-- carve-record gen=1 -->\na carving record' });
     expect(appraisalFreshness(later, BOT, none).verdict).toBe('fresh');
   });
 });

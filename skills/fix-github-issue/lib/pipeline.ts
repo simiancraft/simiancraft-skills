@@ -28,6 +28,7 @@ import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, st
 import { boundaryWaived } from './land.ts';
 import { behindBase, behindBeyondNoise, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
+import { loopNote } from './note.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -380,7 +381,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
 function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, confirmation: { reason: string }, say: (m: string) => void): FixOutcome {
   holdLease(ctx, issue.number, 'hand the issue to a person');
   const body = `The worker judged this \`${result.verdict}\` (${result.reason}); the second engine disagreed: ${confirmation.reason}. A person decides.`;
-  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', body]);
+  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(body)]);
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
   say('the second engine disputed the close; handed to a person');
   move(ctx, issue, 'H2', `close disputed: ${confirmation.reason}`.slice(0, 120));
@@ -1298,7 +1299,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     case 'needs-decision':
     case 'needs-human': {
       // Comment first, then the label that hides the issue from selection.
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(result.reason)]);
       // A question the worker raised is weighed by a decision panel first, when one can sit; one it
       // settles goes back to be appraised with the receipt as its ruling, and holds nobody up.
       if (result.verdict === 'needs-decision') {

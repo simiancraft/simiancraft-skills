@@ -9,6 +9,7 @@
 
 import type { CloseEvent, Context } from './context.ts';
 import { mutate, sh } from './shell.ts';
+import { loopNote } from './note.ts';
 
 /** The shape every function here reads. Callers carry richer issues; these only need the labels. */
 export type LabelledIssue = { number: number; labels: Array<{ name: string }> };
@@ -240,7 +241,7 @@ export function sendToDlq(ctx: Context, issue: number, phase: DlqPhase, reason: 
     'comment',
     String(issue),
     '--body',
-    `Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`,
+    loopNote(`Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`),
   ]);
   mutate(ctx, `send #${issue} to the ${phase} DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
   const counter = DLQ_COUNTER[phase];
@@ -377,6 +378,6 @@ function pendingClose(ctx: Context, issue: number, marker: string): boolean {
 export function parkIssue(ctx: Context, issue: number, reason: string): void {
   // Comment first, then the label that hides the issue from selection: a crash between the two
   // leaves an issue that is still selectable, never one held without a reason on its thread.
-  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', reason]);
+  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', loopNote(reason)]);
   mutate(ctx, `park #${issue}`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/parked']);
 }

@@ -17,6 +17,7 @@ import type { CloseEvent, Context } from '../../fix-github-issue/lib/context.ts'
 import { ceilingFor, HOLD_LABELS } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { isStopping, mutate, RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { loopNote } from '../../fix-github-issue/lib/note.ts';
 
 export type CarvingDeps = {
   ctx: Context;
@@ -376,7 +377,7 @@ export class Carving {
             log(`DRY RUN  would clear the stale ${label} on #${issue.number}`);
             continue;
           }
-          mutate(ctx, `clear stale ${label} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', `The ${label} label had no live claim behind it (the run died, or was killed); cleared by the sweep.`]);
+          mutate(ctx, `clear stale ${label} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(`The ${label} label had no live claim behind it (the run died, or was killed); cleared by the sweep.`)]);
           mutate(ctx, `unlabel #${issue.number} ${label}`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', label]);
         }
         // A torn loop/paused: no unreleased marker from any trunk.
@@ -392,7 +393,7 @@ export class Carving {
           if (!anyLive) {
             if (ctx.dryRun) log(`DRY RUN  would remove the torn loop/paused on #${issue.number}`);
             else {
-              mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', 'loop/paused with no trunk pausing it; removed by the sweep. A person who wants this held uses loop/skip or a needs-* label.']);
+              mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote('loop/paused with no trunk pausing it; removed by the sweep. A person who wants this held uses loop/skip or a needs-* label.')]);
               mutate(ctx, `unlabel #${issue.number} loop/paused`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', 'loop/paused']);
             }
           }

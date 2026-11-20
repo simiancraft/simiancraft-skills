@@ -32,6 +32,7 @@ import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts'
 import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
 import { renderStamp, threadDigest } from './stamp.ts';
+import { loopNote } from '../../fix-github-issue/lib/note.ts';
 
 export const APPRAISAL_VERDICTS = ['valid', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'failed'] as const;
 export type AppraisalVerdict = (typeof APPRAISAL_VERDICTS)[number];
@@ -601,7 +602,7 @@ export async function appraiseIssue(
             'comment',
             String(issue.number),
             '--body',
-            `Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`,
+            loopNote(`Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`),
           ]);
         }
       }

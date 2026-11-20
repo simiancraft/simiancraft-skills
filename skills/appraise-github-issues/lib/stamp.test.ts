@@ -22,8 +22,15 @@ describe('the appraisal stamp', () => {
   it('digests what people wrote, never what the loop wrote', () => {
     const issue = { title: 't', body: 'b', comments: [{ author: 'person', body: 'please also handle X' }] };
     const digest = threadDigest(issue, BOT);
-    expect(threadDigest({ ...issue, comments: [...issue.comments, { author: BOT, body: 'a record' }] }, BOT)).toBe(digest);
+    expect(threadDigest({ ...issue, comments: [...issue.comments, { author: BOT, body: '<!-- carve-record gen=1 -->\na record' }] }, BOT)).toBe(digest);
+    expect(threadDigest({ ...issue, comments: [...issue.comments, { author: BOT, body: '<!-- appraise-stamp base=none thread=x points=1 at=t -->' }] }, BOT)).toBe(digest);
+    expect(threadDigest({ ...issue, comments: [...issue.comments, { author: BOT, body: '<!-- loop-note -->\ncleared by the sweep' }] }, BOT)).toBe(digest);
     expect(threadDigest({ ...issue, comments: [...issue.comments, { author: 'person', body: 'never mind' }] }, BOT)).not.toBe(digest);
     expect(threadDigest({ ...issue, body: 'b, edited' }, BOT)).not.toBe(digest);
+  });
+  it("counts an unmarked comment from the loop's own account as a person's", () => {
+    const issue = { title: 't', body: 'b', comments: [] };
+    const digest = threadDigest(issue, BOT);
+    expect(threadDigest({ ...issue, comments: [{ author: BOT, body: 'Ruling: the scope narrows to X.' }] }, BOT)).not.toBe(digest);
   });
 });

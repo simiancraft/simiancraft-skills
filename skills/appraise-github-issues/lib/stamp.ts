@@ -9,6 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { MARKER } from '../../carve-github-issue/lib/tree.ts';
 
 export const STAMP_MARKER = '<!-- appraise-stamp';
 
@@ -25,14 +26,18 @@ export type Stamp = {
 
 type Thread = { title: string; body?: string | null; comments: Array<{ author: string; body: string }> };
 
-/** The digest of what people wrote on the issue; the loop's own comments do not move it. */
+/**
+ * The digest of what people wrote on the issue; the loop's own comments do not move it. A loop
+ * comment is one by the loop's account that carries a loop marker, so a loop that runs under a
+ * person's own account still counts that person's unmarked comments as theirs.
+ */
 export function threadDigest(issue: Thread, botLogin: string): string {
   const hash = createHash('sha256');
   hash.update(issue.title);
   hash.update('\0');
   hash.update(issue.body ?? '');
   for (const c of issue.comments) {
-    if (c.author === botLogin) continue;
+    if (c.author === botLogin && MARKER.test(c.body)) continue;
     hash.update('\0');
     hash.update(c.author);
     hash.update('\0');
