@@ -310,6 +310,7 @@ const result = RESUME_PR
   : await fixIssue(ctx, issue, { maxPoints: MAX_POINTS });
 step(`${result.outcome}`);
 log(result.reason);
-if (result.outcome === 'failed') process.exitCode = 1;
+// An environment fault judged nothing, but the run did not do what it was asked.
+if (result.outcome === 'failed' || result.outcome === 'unjudged') process.exitCode = 1;
 
 await BOARD?.settled();

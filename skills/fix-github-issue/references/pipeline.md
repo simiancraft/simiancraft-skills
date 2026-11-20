@@ -44,6 +44,7 @@ commands rather than trusting a claim of green, and returns a verdict.
 | `not-run` | a dry run reached a seat it does not run; nothing was tried, so nothing failed |
 | `stopped` | the operator's stop unwound the lane; nothing was settled, and the lane is kept for the next run |
 | `lease-lost` | this run's lease on the issue ran out unrenewed; its agents were stopped and nothing more was written |
+| `unjudged` | the lane ended on an environment fault (`fault` names it: `ENOSPC`, `ENOMEM`, or `stopped`); nothing was counted or held, the claim is released, the lane cleared, and the work is rerun later; on a host fault the driver's `onHostFault` hook was told, which the burndown answers by pausing the line. The same host fault again on the rerun is charged instead; see "Environment faults" |
 
 ## The verdict-file contract
 
@@ -359,5 +360,48 @@ operator's stop is `stopped`: nothing is settled from it, but its files and its 
 the next run start may resume a `fixed` verdict whose pull request is open at the same head. An agent
 killed because the run lost its lease is settled as `lease-lost`, and nothing is written. The
 asymmetry between the first two is deliberate: a stop interrupts a worker that may have finished,
-while a cap kills one that, by definition, had not.
+while a cap kills one that, by definition, had not. A seat that ends on an environment fault, a
+person's signal among them, was not judged, and settles as `unjudged`; see below.
+
+### Environment faults
+
+An environment fault is a run that ended for a reason outside the work: the host ran out of disk or
+memory, or a person stopped the agent. Such a run says nothing about the work's concept, code, or
+proof, so the work was not judged; that is a different fact from judged and failed, and the pipeline
+never settles it as a failure. `runAgentOnce` marks a run's `fault` when it exits non-zero with
+`ENOSPC` or `ENOMEM` (or their text, `No space left on device`, `Cannot allocate memory`) in the tail
+of its log, or when it ends by SIGTERM, SIGINT, SIGHUP, or SIGQUIT, or the exit code an engine that
+traps one reports (128 plus the signal's number; `claude -p` exits 143 on SIGTERM), that the driver
+never sent: `killAgent` records every process the driver signals. A run with a fault is not retried
+and its answer files are deleted like a killed run's.
+
+Every seat that runs an agent refuses such a run with `refuseEnvironmentFault`, which throws an
+`EnvironmentFault`: the coder, the prover, the reviewer, the answer's confirmer, the appraiser and
+its close confirmer, the carver and its confirmer, and the decision panel's seats. A thrown error
+with either errno code, from the driver's own writes or a command it ran, is the same fault. Each
+driver settles it through `settleEnvironmentFault`, the one place the rule lives:
+
+- Nothing is counted, dead-lettered, or held. The fix pipeline settles the lane as `unjudged`,
+  releases the claim, and clears the lane so the rerun starts clean (commits no remote has are kept
+  under `refs/loop/rescued/`); kept dirty, a later run would have sent it to the work dead letter.
+  The appraisal returns `unjudged` with `retry`, the knife counts no carve, and the panel gives its
+  round back and writes no hold.
+- A host fault calls the driver's `onHostFault` hook, which the burndown answers by pausing the line
+  and, once it is resumed, taking the issue up again in the same run. A person's stop does not
+  pause the line, and the burndown leaves the rerun to the next run, so the work they stopped does
+  not start again at once. To keep it from running again, add a hold label.
+- The exception: a host fault the work itself causes. The first host fault on an issue is free and
+  leaves the marker label `loop/environment-fault: <code>`, so a restart does not forget it. The
+  same code again with the marker on the issue is charged as the ordinary failure it then is (an
+  attempt, a review dead letter, a counted appraisal or carve), with a reason that says the work
+  reproduced the fault on its rerun, and the marker comes off. The marker also comes off when any
+  seat for the issue next finishes without a fault (`runAgentOnce` clears it): the work got past the
+  faulted point, so a much later fault of the same code is a new occasion and free again. A
+  different code is free again too. A person's stop is never charged and leaves no marker.
+
+Two endings cannot be told apart from a person's and are left as failures: SIGKILL, which the
+kernel's out-of-memory killer also sends, and an engine that exits 0 when interrupted (`claude -p`
+does on SIGINT). The floor's walker and diagnosis turns, and a size or carve callback, count nothing
+when they fail, so they are not refused: a failed walk is walked again, and a callback's failure is
+logged with no verdict.
 

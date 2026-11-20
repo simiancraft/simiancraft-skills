@@ -77,6 +77,27 @@ function world(fakes: Fake[], opts: { limit?: number; appraiseLimit?: number; lo
 }
 
 describe('mid-run admission', () => {
+  it('takes up again, within the limit, an issue a host fault handed back unjudged', async () => {
+    const w = world([{ number: 1, size: 3, blockers: [] }], { limit: 1 });
+    let faulted = false;
+    await w.run((n) => {
+      // The first turn ends on a full disk: nothing is settled, and the lane hands the issue back.
+      if (!faulted) {
+        faulted = true;
+        w.admission.readmit(n);
+        return;
+      }
+      w.fakes.get(n)!.closed = 'COMPLETED';
+    });
+    expect(w.worked).toEqual([1, 1]);
+  });
+
+  it('never takes up an issue twice in a run without a readmit', async () => {
+    const w = world([{ number: 1, size: 3, blockers: [] }]);
+    await w.run(() => {});
+    expect(w.worked).toEqual([1]);
+  });
+
   it('works a dependent in the run that merged its blocker', async () => {
     const w = world([{ number: 1, size: 3, blockers: [] }, { number: 2, size: 3, blockers: [1] }]);
     await w.run();

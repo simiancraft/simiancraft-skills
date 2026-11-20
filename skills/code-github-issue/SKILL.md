@@ -50,6 +50,10 @@ its answer, or `failed` when the answer cannot be believed:
 - `coded` names a commit that is not the lane's head, a branch the remote does not hold at that
   commit, the base branch itself, or carries no hand-off for the prover.
 
+A coder whose run ends on an environment fault (a full disk, exhausted memory, or a person's `kill`)
+is not `failed`: `runCode` throws an `EnvironmentFault`, and the pipeline counts no attempt and
+reruns the work later (`fix-github-issue/references/pipeline.md`, "Environment faults").
+
 The control file is `loop-code.json` in the worktree root.
 
 ## Hard dependencies

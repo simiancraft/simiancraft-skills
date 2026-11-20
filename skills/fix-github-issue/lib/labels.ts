@@ -176,15 +176,30 @@ export function recordCount(ctx: Context, kind: Counter, issue: number, previous
 }
 
 /**
- * Takes every `loop/<kind>: N` off an issue, reading the labels live rather than trusting the
- * caller's snapshot, since an earlier add-before-remove crash can have left lower counts behind.
+ * Puts a counter back to `to`, for a count spent on a turn that then judged nothing (an environment
+ * fault ended it). The kept count goes on first and every other count of the kind comes off after,
+ * the same add-before-remove order as `recordCount`, so a crash between them reads the higher one.
  */
-export function clearCount(ctx: Context, kind: Counter, issue: number): void {
+export function restoreCount(ctx: Context, kind: Counter, issue: number, to: number): void {
+  const keep = to > 0 ? `loop/${kind}: ${to}` : null;
+  if (keep) {
+    ensureLabel(ctx, keep, COUNTER_LABEL[kind].color, COUNTER_LABEL[kind].description);
+    mutate(ctx, `mark #${issue} at ${keep}`, ['gh', 'issue', 'edit', String(issue), '--add-label', keep]);
+  }
+  clearCount(ctx, kind, issue, keep);
+}
+
+/**
+ * Takes every `loop/<kind>: N` off an issue, but `keep`, reading the labels live rather than
+ * trusting the caller's snapshot, since an earlier add-before-remove crash can have left lower
+ * counts behind.
+ */
+export function clearCount(ctx: Context, kind: Counter, issue: number, keep: string | null = null): void {
   const prefix = `loop/${kind}:`;
   // Read through the context's tracker when it has one, so a fake tracker under test is the one read.
   const viewed = ctx.io?.view?.(issue) as { labels?: Array<{ name: string }> } | null | undefined;
   const names = ctx.io?.view ? (viewed?.labels ?? []).map((l) => l.name) : sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'labels', '--jq', '.labels[].name']).split('\n');
-  const current = names.filter((name) => name.startsWith(prefix));
+  const current = names.filter((name) => name.startsWith(prefix) && name !== keep);
   for (const label of current) {
     mutate(ctx, `clear ${label} on #${issue}`, ['gh', 'issue', 'edit', String(issue), '--remove-label', label]);
   }

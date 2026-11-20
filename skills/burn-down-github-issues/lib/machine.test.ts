@@ -153,6 +153,23 @@ describe('the machine and the lane table agree', () => {
     expect(silent).toEqual([]);
   });
 
+  it('an environment fault is answered wherever an agent runs, and never counts, dead-letters, or holds', () => {
+    // A full disk, exhausted memory, or a person's stop says nothing about the work: no lane that
+    // runs a seat drops it, and no transition it takes is a judgment of the work.
+    const answers = (path: string): boolean => {
+      const parts = path.split('.');
+      return parts.some((_, depth) => depth >= 1 && Object.keys(states.get(parts.slice(0, depth + 1).join('.'))?.on ?? {}).includes('ENVIRONMENT_FAULT'));
+    };
+    const seatPhases = ['ticket.appraisal.', 'ticket.carving.', 'ticket.work.', 'ticket.review.', 'ticket.panel.'];
+    expect(LANES.map((l) => l.state).filter((path) => seatPhases.some((phase) => path.startsWith(phase)) && !answers(path))).toEqual([]);
+    const faults = transitions().filter(({ event }) => event === 'ENVIRONMENT_FAULT');
+    expect(faults.length).toBeGreaterThan(0);
+    for (const { transition } of faults) {
+      expect(transition.target.startsWith('ticket.deadLetters.') || transition.target.startsWith('ticket.human.')).toBe(false);
+      expect((transition.actions ?? []).filter((a) => /^count|labelDlq|labelHold|labelParked/.test(a))).toEqual([]);
+    }
+  });
+
   it('no agent failure anywhere sends a card to a human lane', () => {
     const parked = transitions().filter(({ event, transition }) => event === 'AGENT_FAILED' && transition.target.startsWith('ticket.human.'));
     expect(parked.map(({ from }) => from)).toEqual([]);
