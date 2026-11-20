@@ -189,17 +189,26 @@ export function isHeld(labels: Array<{ name: string }>, skipLabels: string[]): b
 }
 
 /**
+ * The base as the appraiser will find it, read once before the agent runs. It is the base the
+ * stamp records, so a fetch made while the appraisal runs cannot put a commit on the stamp that
+ * the appraiser never saw. If the ref moves during the turn, the stamp names an older base than
+ * the one read, and a later freshness check errs toward stale. Null when it cannot be read.
+ */
+function readBase(ctx: Context, say: (message: string) => void): string | null {
+  try {
+    return sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], ctx.repoRoot, 1).trim() || null;
+  } catch (error) {
+    say(`the base could not be read for the appraisal stamp (${(error as Error).message.split('\n')[0]}); it will be stamped without one`);
+    return null;
+  }
+}
+
+/**
  * Records what this valid appraisal judged (the base it read, the paths it named, the thread as
  * people wrote it), so the knife's dispatch can tell whether the appraisal still describes the
- * issue. A base that cannot be read is recorded as none, which a reader treats as unknowable.
+ * issue. A base that could not be read is recorded as none, which a reader treats as unknowable.
  */
-function postStamp(ctx: Context, issue: number, points: number, touches: string[], io: ReturnType<typeof trackerIo>, say: (message: string) => void): void {
-  let base: string | null = null;
-  try {
-    base = sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], ctx.repoRoot, 1).trim() || null;
-  } catch (error) {
-    say(`the base could not be read for the appraisal stamp (${(error as Error).message.split('\n')[0]}); stamped without one`);
-  }
+function postStamp(ctx: Context, issue: number, base: string | null, points: number, touches: string[], io: ReturnType<typeof trackerIo>): void {
   const thread = threadDigest(readTree(ctx, issue, io).issue, ctx.botLogin);
   mutate(ctx, `stamp the appraisal of #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', renderStamp({ base, touches, thread, points, at: new Date().toISOString() })]);
 }
@@ -388,6 +397,7 @@ export async function appraiseIssue(
     say('a trunk is not appraised; it is worked by closing its children');
     return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
   }
+  const base = readBase(ctx, say);
 
   const cwd = join(ctx.runDir, `appraise-${issue.number}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
@@ -606,7 +616,7 @@ export async function appraiseIssue(
           ]);
         }
       }
-      postStamp(ctx, issue.number, result.points, result.touches ?? [], io, say);
+      postStamp(ctx, issue.number, base, result.points, result.touches ?? [], io);
       // The size is on the issue; what happens next for an issue of this size is the producer's.
       // A released trunk fires no callback: the burndown that asked for the release appraisal
       // carves an oversized remainder itself, under the claim it already holds.

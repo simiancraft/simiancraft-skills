@@ -899,6 +899,33 @@ describe('a valid appraisal', () => {
     expect(stamp?.base).toBeNull();
     expect(stamp?.thread).toBe(threadDigest(io.view(31)!, BOT));
   });
+
+  test('stamps the base read before the appraiser ran, not one fetched while it ran', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'stamp-base-'));
+    const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]).stdout.toString().trim();
+    git('init', '-q', '-b', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'judged');
+    const judged = git('rev-parse', 'HEAD');
+    git('commit', '-q', '--allow-empty', '-m', 'landed while the appraiser ran');
+    const later = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', judged);
+    const io = new FakeTracker(BOT, [fakeIssue(32, { title: 'add a palette', body: 'Criteria: A1' })]);
+    // The ref moves when the size lands on the issue, after the appraiser answered and before the stamp.
+    const addLabel = io.addLabel.bind(io);
+    io.addLabel = (n: number, name: string) => {
+      addLabel(n, name);
+      if (name.startsWith('size:')) git('update-ref', 'refs/remotes/origin/main', later);
+    };
+    const ctx = ctxFor(io);
+    ctx.repoRoot = repo;
+    const issue = { number: 32, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const answer = fixture('valid', { issue: 32, verdict: 'valid', points: 2, reason: 'one new palette', touches: ['src/palettes/'] });
+    const options = { ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] };
+    await appraiseIssue(ctx, issue as never, options as never);
+    expect(git('rev-parse', 'refs/remotes/origin/main')).toBe(later);
+    expect(latestStamp(io.view(32)!.comments, BOT)?.base).toBe(judged);
+    rmSync(repo, { recursive: true, force: true });
+  });
 });
 
 describe('a disputed appraiser close', () => {

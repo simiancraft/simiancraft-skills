@@ -95,8 +95,9 @@ repository has (`references/adopting.md`). Every run is teed to `<worktreeRoot>/
 - **Closes carry receipts, and receipts get re-checked.** Narrative alone never closes an issue.
 
 - **A size says what it judged.** Every valid appraisal stamps the thread with the base commit it
-  read, the paths it named in `touches`, and a digest of what people wrote (the loop's own comments
-  excluded), so a later reader can tell whether the size still describes the issue
+  read (taken once, before the appraiser runs, so a fetch during the turn cannot change it), the
+  paths it named in `touches`, and a digest of what people wrote (comments the loop marked as its
+  own excluded, whichever account the loop runs under), so a later reader can tell whether the size still describes the issue
   (`lib/stamp.ts`). A missing stamp, or one with no base, is unknowable, never fresh.
 
 ## Hard dependencies
