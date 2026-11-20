@@ -15,12 +15,13 @@ import { confirmClose, validateConfirmation } from '../../appraise-github-issues
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { assertNoHostError, children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
+import { hostErrorOf } from './host-error.ts';
 import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
@@ -44,7 +45,8 @@ export type FixOutcome = {
    * card is no longer this run's to place.
    */
   /** `stopped` is a lane the operator's stop unwound: nothing about it was settled, and the next run takes it up. */
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost';
+  /** `paused` is a lane that failed on the host (a full disk, no memory): nothing was settled, the lane is kept, and the driver was asked to pause the line. */
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost' | 'paused';
   reason: string;
 };
 
@@ -358,7 +360,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
   const prompt = renderPrompt(ctx, 'confirm-answer.md', { ISSUE: String(issue.number), TITLE: issue.title, WORKER_REASON: result.reason, ANSWER: result.answer ?? '' });
-  const run = await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt);
+  const run = assertNoHostError(await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt), 'confirmer', issue.number);
   holdLease(ctx, issue.number, 'settle the confirmer');
   if (run.exitCode !== 0) return null;
   const checked = validateConfirmation(readResult<unknown>(cwd, CONFIRMATION_FILE), issue.number);
@@ -394,7 +396,8 @@ async function runReviewer(
     ROUND: String(round),
     MAX_ROUNDS: String(ctx.knobs.maxReviewRounds),
   });
-  const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt);
+  // A reviewer that failed on the host throws here: a full disk is not a review that failed.
+  const { exitCode } = assertNoHostError(await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt), 'reviewer', issue);
   holdLease(ctx, issue, 'settle the reviewer');
   // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
   // reviewer's parting words could approve a merge.
@@ -1751,6 +1754,20 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
   if (error instanceof RunStopping || isStopping()) {
     say('stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives');
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
+  }
+  // Nor is a host error: a full disk or exhausted memory says nothing about the work, so nothing is
+  // counted or queued, the card stays in its lane, the lane is kept, and the driver pauses the line
+  // until a person has fixed the host.
+  const host = hostErrorOf(error);
+  if (host) {
+    const why = `host error (${host})${lane ? ` in ${lane}` : ''} on #${issue.number}: ${error.message.split('\n')[0]}`;
+    say(`${why}; nothing is written on the issue, the card and the lane stay where they are, and the line is paused`);
+    try {
+      ctx.onHostError?.(why);
+    } catch (hook) {
+      say(`could not pause the line: ${(hook as Error).message.split('\n')[0]}`);
+    }
+    return { outcome: { outcome: 'paused', reason: why }, keepLane: true };
   }
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };

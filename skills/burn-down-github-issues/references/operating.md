@@ -129,8 +129,13 @@ A paused seam logs one line, `line is paused (<reason>); holding <where> until <
 and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
 see the state and the reason. A reason beginning `floor:` was written by the floor and names what
 it found wrong; the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
-more, and the floor releases its own pause once nothing on it is wrong. A reason without that
-prefix was written by a person, and only a person clears it:
+more, and the floor releases its own pause once nothing on it is wrong. A reason beginning `host:`
+was written when a lane failed on the host (`ENOSPC` or `ENOMEM`): the lane counted nothing, wrote
+nothing on the issue, and kept its worktree and its card where they were. It replaces a floor pause,
+so an incident's fix is held too, but never a person's. Free the disk or the memory, then release
+it by hand; the next run start judges the kept lane as it judges one a stop left. When the pause
+itself cannot be written, the run stops as on a signal instead. Any other reason was written by a
+person, and only a person clears it, as they clear a `host:` one:
 `echo go > <worktreeRoot>/runs/line-switch`.
 
 ## What is not a bug

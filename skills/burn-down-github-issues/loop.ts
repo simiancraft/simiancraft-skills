@@ -51,6 +51,7 @@ import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks
 import { issueRefs } from './lib/refs.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
 import { Floor, FLOOR_PAUSE } from './lib/floor/floor.ts';
+import { pauseForHost } from './lib/host-pause.ts';
 import { INCIDENT_LABEL } from './lib/floor/incident.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
@@ -570,6 +571,18 @@ const ctx = createContext({
   },
   // The pipeline has already placed the card in Merged by the time this fires.
   afterMerge: (event) => FLOOR?.put(event),
+  // A lane that failed on the host pauses the line. A pause that cannot be written (the disk is the
+  // thing that is full) would leave nothing holding the line, so the run stops instead, as on a signal.
+  onHostError: (reason) => {
+    if (DRY_RUN) return;
+    try {
+      const done = pauseForHost(SWITCH_FILE, reason);
+      log(done === 'paused' ? `line paused for a host error (${reason}); fix the host, then write go to ${SWITCH_FILE}` : `host error (${reason}); the line is already paused by a person, whose reason stands`);
+    } catch (error) {
+      log(`host error (${reason}), and the pause could not be written (${(error as Error).message.split('\n')[0]}); stopping the run`);
+      process.kill(process.pid, 'SIGTERM');
+    }
+  },
 });
 
 /**

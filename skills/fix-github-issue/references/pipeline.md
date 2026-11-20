@@ -44,6 +44,7 @@ commands rather than trusting a claim of green, and returns a verdict.
 | `not-run` | a dry run reached a seat it does not run; nothing was tried, so nothing failed |
 | `stopped` | the operator's stop unwound the lane; nothing was settled, and the lane is kept for the next run |
 | `lease-lost` | this run's lease on the issue ran out unrenewed; its agents were stopped and nothing more was written |
+| `paused` | the lane failed on the host (`ENOSPC` or `ENOMEM`); nothing was written or counted, the card and the lane stay where they are, and the driver's `onHostError` hook was told, which the burndown answers by pausing the line |
 
 ## The verdict-file contract
 
@@ -357,7 +358,14 @@ An agent killed at its cap (`agentTimeoutMinutes`, 45 by default) is never trust
 deleted, and the failure says it timed out and at how many minutes. An agent that ends under an
 operator's stop is `stopped`: nothing is settled from it, but its files and its lane are kept, because
 the next run start may resume a `fixed` verdict whose pull request is open at the same head. An agent
-killed because the run lost its lease is settled as `lease-lost`, and nothing is written. The
+killed because the run lost its lease is settled as `lease-lost`, and nothing is written. A seat that
+exits non-zero with `ENOSPC` or `ENOMEM` (or their text, `No space left on device`, `Cannot allocate
+memory`) in the tail of its log failed on the host, not on the work: it is not retried, its answer
+files are deleted like a killed run's, and the coder, the prover, the reviewer, and the answer's
+confirmer throw it, so the lane settles as `paused` rather than as a failed seat, a counted attempt,
+or a dead letter. A thrown error with either code, from the driver's own writes or a command it ran,
+settles the same way. The appraisal's close confirmer and the decision panel are shared with the
+appraisal and still settle a host error as a failed seat. The
 asymmetry between the first two is deliberate: a stop interrupts a worker that may have finished,
 while a cap kills one that, by definition, had not.
 

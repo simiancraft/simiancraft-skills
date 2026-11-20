@@ -7,7 +7,7 @@
  */
 
 import { join } from 'node:path';
-import { agentCapMs, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { agentCapMs, assertNoHostError, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
@@ -105,7 +105,7 @@ export async function runProve(
     GATE: gateText(ctx.project, head, coded.gated),
     CI_COVERAGE: ciCoverageText(ctx.project),
   });
-  const { logPath, exitCode, notRun, timedOut } = await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt);
+  const { logPath, exitCode, notRun, timedOut } = assertNoHostError(await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt), 'prover', issue.number);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the prover was not run' };
   if (exitCode !== 0) {
     return fail(

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
+import { HostError, type HostErrorCode, hostErrorInLog } from './host-error.ts';
 import { LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
 import { beginStop, isStopping, RunStopping, stoppableSleep, yieldToStop } from './shell.ts';
@@ -239,7 +240,8 @@ export async function runAgent(
   for (let attempt = 0; ; attempt++) {
     const run = await runAgentOnce(ctx, role, issue, cwd, seat, prompt);
     // A run killed at the cap is not asked again: it spent the cap, and the lane has waited that long.
-    if (run.exitCode === 0 || run.timedOut || attempt >= AGENT_RETRIES) return run;
+    // Nor is one that failed on the host: asking again on a full disk fails the same way.
+    if (run.exitCode === 0 || run.timedOut || run.hostError || attempt >= AGENT_RETRIES) return run;
 
     const reason = retryableFailure(run.logPath);
     if (!reason) return run;
@@ -256,7 +258,17 @@ export async function runAgent(
  * driver killed at the cap: an engine can exit 0 on its way down with an answer file half meant,
  * so its exit code is never 0 here and no seat reads what it left.
  */
-export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true };
+export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true; hostError?: HostErrorCode };
+
+/**
+ * Throws when the run failed on the host. The fix pipeline's seats call this on every run, so a full
+ * disk or exhausted memory reaches `recordThrow`, which pauses the line and counts nothing, instead
+ * of being settled as the seat's failure.
+ */
+export function assertNoHostError(run: AgentRun, role: string, issue: number): AgentRun {
+  if (run.hostError) throw new HostError(run.hostError, `${role} on #${issue} failed on the host (${run.hostError}); see ${run.logPath}`);
+  return run;
+}
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
@@ -368,7 +380,17 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     ctx.log(`  #${issue}  ${role} timed out at ${capMs / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
   }
-  if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
+  if (exitCode !== 0) {
+    // A seat that failed on the host (a full disk, no memory) gave no answer and no wrong one: what
+    // it left is cleared like a killed run's, and the run says so for the caller to settle.
+    const hostError = hostErrorInLog(logPath);
+    if (hostError) {
+      for (const left of answers) rmSync(join(cwd, left), { force: true });
+      ctx.log(`  #${issue}  ${role} exited ${exitCode} on a host error (${hostError}); its answer is not trusted`);
+      return { logPath, exitCode, hostError };
+    }
+    ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
+  }
 
   return { logPath, exitCode };
 }
