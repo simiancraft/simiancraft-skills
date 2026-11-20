@@ -26,10 +26,16 @@ elsewhere in the backlog.
 
 ## What it does
 
-Before a first carving, the **pre-carve guard** asks whether the appraisal the knife is about to
-trust still describes the issue: `fresh` (nothing it judged moved), `stale` (commits on the paths it
-named, or a person wrote on the thread), or `unknowable` (no stamp, no base, no paths). It runs in
-**shadow** for now: it logs its answer, appends to `pre-carve-guard.jsonl` in the run directory, and
+Whenever the knife is dispatched toward a record (a first carving or a revisit), and again each
+time the carver answers, the **pre-carve guard** asks whether the appraisal the knife trusts still
+describes the issue: `fresh` (nothing it judged moved), `stale` (commits on the paths it named, or
+a person edited or wrote on the thread, said by part), or `unknowable`, with its cause:
+`never-stamped` (sized before stamping began), `stamp-missing` (sized since, yet unstamped),
+`stamp-unaccounted` (no stamp, and which of those is not known), `stamp-incomplete` (no base or no
+paths), or `uncheckable` (git could not compare). It runs in **shadow** for now: it logs its answer
+and appends a line to `pre-carve-guard.jsonl` in the run directory with the mode, the point
+(`dispatch` or `carver-answered`), the stamp's time and age, `samePass` when this same run wrote
+the stamp (so a `fresh` there measures nothing), and both the stamp's base and the base now. It
 routes nothing.
 
 1. **Inventory.** Every acceptance criterion in the parent's whole thread, numbered. This is the

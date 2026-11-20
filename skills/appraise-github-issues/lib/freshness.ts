@@ -10,11 +10,26 @@
 
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
-import { latestStamp, threadDigest } from './stamp.ts';
+import { latestStamp, threadChanges, threadDigest, threadParts } from './stamp.ts';
+
+/**
+ * Why a verdict is unknowable, by what is known about the missing knowledge:
+ * - `never-stamped`: appraised before this run directory began stamping; no stamp ever existed.
+ * - `stamp-missing`: sized after stamping began, so a stamp should be on the thread and is not.
+ * - `stamp-unaccounted`: no stamp, and when the issue was sized or when stamping began is not known.
+ * - `stamp-incomplete`: a stamp is there, but it names no base or no paths.
+ * - `uncheckable`: the stamp is whole, but git could not compare its base with the base now.
+ */
+export type UnknowableCause = 'never-stamped' | 'stamp-missing' | 'stamp-unaccounted' | 'stamp-incomplete' | 'uncheckable';
 
 export type Freshness = {
   verdict: 'fresh' | 'stale' | 'unknowable';
   reasons: string[];
+  /** Set only on an unknowable verdict. */
+  cause?: UnknowableCause;
+  /** The stamp the verdict read: when it was written and the base it judged; null with no stamp. */
+  stampAt: string | null;
+  stampBase: string | null;
 };
 
 type Thread = { title: string; body?: string | null; comments: Array<{ author: string; body: string }> };
@@ -29,28 +44,63 @@ export function gitCommitsSince(ctx: Context): CommitsSince {
   };
 }
 
-export function appraisalFreshness(issue: Thread, botLogin: string, commitsSince: CommitsSince): Freshness {
+export type FreshnessChecks = {
+  commitsSince: CommitsSince;
+  /** When the issue's newest size label was applied; throws or answers null when that cannot be read. */
+  sizedAt?: () => string | null;
+  /** When this run directory began stamping appraisals, or null when it never recorded it. */
+  stampingSince?: string | null;
+};
+
+export function appraisalFreshness(issue: Thread, botLogin: string, checks: FreshnessChecks): Freshness {
   const stamp = latestStamp(issue.comments, botLogin);
-  if (!stamp) return { verdict: 'unknowable', reasons: ['no appraisal stamp on the thread'] };
+  if (!stamp) return { verdict: 'unknowable', ...unstamped(checks), stampAt: null, stampBase: null };
   const reasons: string[] = [];
-  let unknowable = false;
-  if (threadDigest(issue, botLogin) !== stamp.thread) reasons.push('the thread changed since the appraisal');
+  let cause: UnknowableCause | undefined;
+  let moved = false;
+  if (threadDigest(issue, botLogin) !== stamp.thread) {
+    moved = true;
+    const changes = stamp.parts ? threadChanges(stamp.parts, threadParts(issue, botLogin)) : [];
+    reasons.push(changes.length ? `since the appraisal, ${changes.join('; ')}` : 'the thread changed since the appraisal');
+  }
   if (!stamp.base) {
-    unknowable = true;
+    cause = 'stamp-incomplete';
     reasons.push('the stamp records no base');
   } else if (stamp.touches.length === 0) {
-    unknowable = true;
+    cause = 'stamp-incomplete';
     reasons.push('the appraisal named no paths, so movement under the issue cannot be scoped');
   } else {
     try {
-      const moved = commitsSince(stamp.base, stamp.touches);
-      if (moved.length) reasons.push(`${moved.length} commit${moved.length === 1 ? '' : 's'} on its paths since the appraisal (${moved.slice(0, 3).join(', ')}${moved.length > 3 ? ', ...' : ''})`);
+      const commits = checks.commitsSince(stamp.base, stamp.touches);
+      if (commits.length) {
+        moved = true;
+        reasons.push(`${commits.length} commit${commits.length === 1 ? '' : 's'} on its paths since the appraisal (${commits.slice(0, 3).join(', ')}${commits.length > 3 ? ', ...' : ''})`);
+      }
     } catch (error) {
-      unknowable = true;
+      cause = 'uncheckable';
       reasons.push(`git could not compare the base: ${(error as Error).message.split('\n')[0]}`);
     }
   }
+  const seen = { stampAt: stamp.at, stampBase: stamp.base };
   // A move that was seen outranks a check that could not run: stale is the stronger statement.
-  if (reasons.some((r) => r.startsWith('the thread changed') || /commits? on its paths/.test(r))) return { verdict: 'stale', reasons };
-  return { verdict: unknowable ? 'unknowable' : 'fresh', reasons };
+  if (moved) return { verdict: 'stale', reasons, ...seen };
+  if (cause) return { verdict: 'unknowable', reasons, cause, ...seen };
+  return { verdict: 'fresh', reasons, ...seen };
+}
+
+/** Why there is no stamp, as far as the size label's date and the start of stamping can say. */
+function unstamped(checks: FreshnessChecks): { reasons: string[]; cause: UnknowableCause } {
+  const since = checks.stampingSince ?? null;
+  let sized: string | null = null;
+  try {
+    sized = checks.sizedAt?.() ?? null;
+  } catch {
+    sized = null;
+  }
+  if (since && sized) {
+    if (Date.parse(sized) < Date.parse(since)) return { cause: 'never-stamped', reasons: [`no appraisal stamp; it was sized at ${sized}, before stamping began at ${since}`] };
+    return { cause: 'stamp-missing', reasons: [`no appraisal stamp, though it was sized at ${sized}, after stamping began at ${since}`] };
+  }
+  const unknown = [since ? null : 'when stamping began', sized ? null : 'when it was sized'].filter(Boolean).join(' or ');
+  return { cause: 'stamp-unaccounted', reasons: [`no appraisal stamp on the thread, and ${unknown} is not known`] };
 }

@@ -778,6 +778,10 @@ describe('carveIssue', () => {
     expect(r.revisits).toBe(1);
     expect(r.ledger.filter((l) => l.status === 'completed').map((l) => l.id)).toEqual(['A1', 'A2']);
     expect(records(io, 10)).toEqual(['applying', 'live', 'live']);
+    // A revisit rewrites a judgment too, so the shadow guard logs it with its mode.
+    const lines = readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.some((l) => l.issue === 10 && l.mode === 'revisit' && l.point === 'dispatch')).toBe(true);
+    expect(lines.some((l) => l.issue === 10 && l.mode === 'revisit' && l.point === 'carver-answered' && l.carverVerdict === 'still-good')).toBe(true);
   });
 
   test('a question pauses exactly the owner of the affected criterion; removing the hold redrives into a new epoch', async () => {
@@ -854,14 +858,20 @@ describe('carveIssue', () => {
   });
 
   test('a first carving logs, in shadow, whether the pre-carve guard would fire, and still carves', async () => {
+    const started = new Date().toISOString();
     const io = trunk(); const ctx = ctxFor(io); const said: string[] = [];
     ctx.log = (m: string) => said.push(m);
     const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
     expect(out.outcome).toBe('carve');
     // The fixture trunk was never appraised, so nothing recorded what its size judged.
-    expect(said.some((m) => m.includes('pre-carve guard (shadow): unknowable; would re-appraise first'))).toBe(true);
+    expect(said.some((m) => m.includes('pre-carve guard (shadow, first-carving dispatch): unknowable (stamp-unaccounted); would re-appraise first'))).toBe(true);
+    expect(said.some((m) => m.includes('pre-carve guard (shadow, first-carving, carver answered carve): unknowable'))).toBe(true);
     const lines = readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(lines.some((l) => l.issue === 10 && l.fires === true && l.verdict === 'unknowable')).toBe(true);
+    const mine = lines.filter((l) => l.issue === 10 && l.at >= started);
+    expect(mine.map((l) => l.point)).toEqual(['dispatch', 'carver-answered']);
+    expect(mine[0]).toMatchObject({ mode: 'first-carving', verdict: 'unknowable', cause: 'stamp-unaccounted', fires: true, samePass: false, stampAt: null, ageSeconds: null, stampBase: null });
+    expect(mine[1]).toMatchObject({ carverVerdict: 'carve' });
+    expect('baseNow' in mine[0]).toBe(true);
   });
 
   test("a first carving's confirmed nothing-left releases the issue to the appraiser, with no hold", async () => {

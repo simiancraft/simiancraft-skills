@@ -31,7 +31,7 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
 import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
-import { renderStamp, threadDigest } from './stamp.ts';
+import { noteStampedHere, noteStampingSince, renderStamp, threadDigest, threadParts } from './stamp.ts';
 import { loopNote } from '../../fix-github-issue/lib/note.ts';
 
 export const APPRAISAL_VERDICTS = ['valid', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'failed'] as const;
@@ -209,8 +209,17 @@ function readBase(ctx: Context, say: (message: string) => void): string | null {
  * issue. A base that could not be read is recorded as none, which a reader treats as unknowable.
  */
 function postStamp(ctx: Context, issue: number, base: string | null, points: number, touches: string[], io: ReturnType<typeof trackerIo>): void {
-  const thread = threadDigest(readTree(ctx, issue, io).issue, ctx.botLogin);
-  mutate(ctx, `stamp the appraisal of #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', renderStamp({ base, touches, thread, points, at: new Date().toISOString() })]);
+  const node = readTree(ctx, issue, io).issue;
+  const at = new Date().toISOString();
+  const stamp = { base, touches, thread: threadDigest(node, ctx.botLogin), parts: threadParts(node, ctx.botLogin), points, at };
+  mutate(ctx, `stamp the appraisal of #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', renderStamp(stamp)]);
+  if (ctx.dryRun) return;
+  noteStampedHere(ctx.project.repo, issue, at);
+  try {
+    noteStampingSince(ctx.runDir, at);
+  } catch {
+    // Only the guard's account of a missing stamp reads this; it says so when it is absent.
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { latestStamp, renderStamp, threadDigest } from './stamp.ts';
+import { latestStamp, noteStampedHere, renderStamp, threadChanges, threadDigest, threadParts, wroteStampHere } from './stamp.ts';
 
 const BOT = 'loop-bot';
 
@@ -32,5 +32,19 @@ describe('the appraisal stamp', () => {
     const issue = { title: 't', body: 'b', comments: [] };
     const digest = threadDigest(issue, BOT);
     expect(threadDigest({ ...issue, comments: [{ author: BOT, body: 'Ruling: the scope narrows to X.' }] }, BOT)).not.toBe(digest);
+  });
+  it('says which part of the thread moved', () => {
+    const then = threadParts({ title: 't', body: 'b', comments: [{ author: 'ann', body: 'one' }, { author: BOT, body: '<!-- loop-note -->\nx' }] }, BOT);
+    const now = threadParts({ title: 't2', body: 'b', comments: [{ author: 'ann', body: 'one, edited' }, { author: 'bo', body: 'two' }] }, BOT);
+    expect(threadChanges(then, now)).toEqual(['the title was edited', '2 comments added or edited (by ann, bo)']);
+    expect(threadChanges(then, then)).toEqual([]);
+    expect(threadChanges(then, threadParts({ title: 't', body: 'b', comments: [] }, BOT))).toEqual(['1 comment removed']);
+  });
+  it('knows a stamp this run wrote by its exact time', () => {
+    noteStampedHere('o/r', 77, '2026-11-19T01:00:00.000Z');
+    expect(wroteStampHere('o/r', 77, '2026-11-19T01:00:00.000Z')).toBe(true);
+    expect(wroteStampHere('o/r', 77, '2026-11-18T01:00:00.000Z')).toBe(false);
+    expect(wroteStampHere('o/r', 77, null)).toBe(false);
+    expect(wroteStampHere('o/other', 77, '2026-11-19T01:00:00.000Z')).toBe(false);
   });
 });

@@ -4,7 +4,7 @@
  * throw, or interleave a second runner, and read the whole write log back.
  */
 
-import { hashText, type Node, type TrackerIo, type TrackerWrite } from './tree.ts';
+import { hashText, type Node, SIZE_LABEL, type TrackerIo, type TrackerWrite } from './tree.ts';
 import { latestRecord } from './tree.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 
@@ -116,9 +116,17 @@ export class FakeTracker implements TrackerIo {
     return databaseId;
   }
 
+  /** When each issue's newest `size:` label was applied, as GitHub's timeline would say. */
+  readonly sizedAtByIssue = new Map<number, string>();
+
   addLabel(n: number, name: string): void {
     const issue = this.must(n);
     if (!issue.labels.some((l) => l.name === name)) issue.labels.push({ name });
+    if (SIZE_LABEL.test(name)) this.sizedAtByIssue.set(n, new Date().toISOString());
+  }
+
+  sizedAt(n: number): string | null {
+    return this.sizedAtByIssue.get(n) ?? null;
   }
 
   removeLabel(n: number, name: string): void {

@@ -18,11 +18,12 @@ import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-gi
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
-import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { isStopping, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { runCarveCallback } from './callbacks.ts';
 import { appraisalFreshness, gitCommitsSince } from '../../appraise-github-issues/lib/freshness.ts';
+import { stampingSince, wroteStampHere } from '../../appraise-github-issues/lib/stamp.ts';
 import {
   type Carving,
   type CarveKnobs,
@@ -610,19 +611,56 @@ async function applyNothingLeft(k: Knife, tree: Tree, carving: Carving, opinions
   return applyRelease(k, tree, carving, released);
 }
 
+/** Which kind of carving a guard check stood in front of. */
+type GuardMode = 'first-carving' | 'revisit' | 'carve-with-open-children';
+
 /**
- * The pre-carve guard in shadow mode: at the moment a first carving is dispatched, says whether the
- * appraisal it trusts is fresh, stale, or unknowable, and why, and routes nothing. The run log and
- * `pre-carve-guard.jsonl` in the run directory are what measure how often the live guard would fire.
- * Nothing here may fail a carving.
+ * The pre-carve guard in shadow mode: whenever the knife is dispatched toward a record, and again
+ * each time the carver answers, says whether the appraisal the carving trusts is fresh, stale, or
+ * unknowable, and why, and routes nothing. The run log and `pre-carve-guard.jsonl` in the run
+ * directory are what measure how often the live guard would fire. A check on a stamp this same run
+ * wrote is marked `samePass`: nothing had time to move, so its `fresh` measures nothing. Nothing
+ * here may fail a carving.
  */
-function shadowPreCarveGuard(k: Knife, tree: Tree): void {
+function shadowPreCarveGuard(k: Knife, tree: Tree, mode: GuardMode, point: 'dispatch' | 'carver-answered', carverVerdict?: string): void {
   try {
-    const freshness = appraisalFreshness(tree.issue, k.ctx.botLogin, gitCommitsSince(k.ctx));
+    const io = k.io as TrackerIo;
+    const freshness = appraisalFreshness(tree.issue, k.ctx.botLogin, {
+      commitsSince: gitCommitsSince(k.ctx),
+      sizedAt: io.sizedAt ? () => (io.sizedAt as (n: number) => string | null)(k.trunk) : undefined,
+      stampingSince: stampingSince(k.ctx.runDir),
+    });
     const fires = freshness.verdict !== 'fresh';
-    k.say(`pre-carve guard (shadow): ${freshness.verdict}; would ${fires ? 're-appraise first' : 'carve as is'}${freshness.reasons.length ? `: ${freshness.reasons.join('; ')}` : ''}`);
+    const at = new Date();
+    const ageSeconds = freshness.stampAt ? Math.round((at.getTime() - Date.parse(freshness.stampAt)) / 1000) : null;
+    const samePass = wroteStampHere(k.ctx.project.repo, k.trunk, freshness.stampAt);
+    let baseNow: string | null = null;
+    try {
+      baseNow = sh(k.ctx, ['git', 'rev-parse', `${k.ctx.project.remote}/${k.ctx.project.baseBranch}`], k.ctx.repoRoot, 1).trim() || null;
+    } catch {
+      baseNow = null;
+    }
+    const where = point === 'dispatch' ? `${mode} dispatch` : `${mode}, carver answered ${carverVerdict}`;
+    const age = ageSeconds === null ? '' : `, stamp ${ageSeconds}s old${samePass ? ', same pass' : ''}`;
+    k.say(`pre-carve guard (shadow, ${where}${age}): ${freshness.verdict}${freshness.cause ? ` (${freshness.cause})` : ''}; would ${fires ? 're-appraise first' : 'carve as is'}${freshness.reasons.length ? `: ${freshness.reasons.join('; ')}` : ''}`);
+    const line = {
+      issue: k.trunk,
+      at: at.toISOString(),
+      point,
+      mode,
+      ...(carverVerdict ? { carverVerdict } : {}),
+      verdict: freshness.verdict,
+      ...(freshness.cause ? { cause: freshness.cause } : {}),
+      fires,
+      samePass,
+      stampAt: freshness.stampAt,
+      ageSeconds,
+      stampBase: freshness.stampBase,
+      baseNow,
+      reasons: freshness.reasons,
+    };
     mkdirSync(k.ctx.runDir, { recursive: true });
-    appendFileSync(join(k.ctx.runDir, 'pre-carve-guard.jsonl'), `${JSON.stringify({ issue: k.trunk, at: new Date().toISOString(), verdict: freshness.verdict, fires, reasons: freshness.reasons })}\n`);
+    appendFileSync(join(k.ctx.runDir, 'pre-carve-guard.jsonl'), `${JSON.stringify(line)}\n`);
   } catch (error) {
     k.say(`pre-carve guard (shadow) could not run: ${(error as Error).message.split('\n')[0]}`);
   }
@@ -936,7 +974,8 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
   }
 
   // 4b. The pre-carve guard, in shadow: would the appraisal this carving trusts be re-checked first?
-  if (mode === 'carve' && !openChildren) shadowPreCarveGuard(k, tree);
+  const guardMode: GuardMode = mode === 'revisit' ? 'revisit' : openChildren ? 'carve-with-open-children' : 'first-carving';
+  shadowPreCarveGuard(k, tree, guardMode, 'dispatch');
 
   // 5. The carver and the confirmer, for at most maxCarveRounds pairs.
   const previousLedger = record ? buildLedger(record.ledger, carryIds(record.ledger, record.ledger), record, tree) : null;
@@ -953,6 +992,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     if (!carved.ok) return carved.notRun ? { outcome: 'not-run', reason: carved.why } : countFailure(k, tree, carved.why, carved.logPath);
     const carving = carved.carving;
     k.say(`carver (round ${round}): ${carving.verdict}; ${carving.reason}`);
+    shadowPreCarveGuard(k, readTree(k.ctx, k.trunk, k.io), guardMode, 'carver-answered', carving.verdict);
 
     if (carving.verdict === 'amend' && record && record.generation >= k.knobs.maxGenerations && !redrive) {
       const handOff: Carving = { ...carving, verdict: 'indivisible', reason: `generation ${record.generation} is the cap for epoch ${record.epoch}; the carver wanted to amend again. ${carving.reason}`, affected: [] };
