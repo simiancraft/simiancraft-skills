@@ -25,7 +25,7 @@ import { RunScope } from './lib/run-scope.ts';
  * references/freshness-and-reproof.md.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentCapMs, children, killAgent } from '../fix-github-issue/lib/agent.ts';
@@ -50,7 +50,8 @@ import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { issueRefs } from './lib/refs.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
-import { Floor, FLOOR_PAUSE } from './lib/floor/floor.ts';
+import { Floor } from './lib/floor/floor.ts';
+import { lineHolds, readSwitch as readLineSwitch, type Seam } from './lib/floor/line.ts';
 import { INCIDENT_LABEL, incidentHold } from './lib/floor/incident.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
@@ -323,34 +324,31 @@ const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 // batch, before each issue is dispatched, and inside the pull master before every merge. The
 // floor, when configured, pauses it when a walk finds the deployed base wrong and releases its own
 // pause once nothing is; a person flips it with `echo pause > <runs>/line-switch`. Absent means
-// go; an unknown word means pause.
+// go; an unknown word means pause. A person's pause, and a floor pause that is a repair, hold all
+// three seams; a floor pause for an outage holds only the merge (`lib/floor/line.ts`).
 // ---------------------------------------------------------------------------
 
 const SWITCH_FILE = join(RUN_DIR, 'line-switch');
 const FLOOR_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor');
 const SWITCH_POLL_MS = 30 * 1000;
 
-function readSwitch(): { state: 'go' | 'pause'; reason: string } {
-  if (!existsSync(SWITCH_FILE)) return { state: 'go', reason: '' };
-  const [first = '', ...rest] = readFileSync(SWITCH_FILE, 'utf8').split('\n');
-  const word = first.trim().toLowerCase();
-  return { state: word === 'go' ? 'go' : 'pause', reason: rest.join(' ').trim() || first.trim() };
-}
+const readSwitch = () => readLineSwitch(SWITCH_FILE);
 
 /**
  * Holds until the switch says go. The log gets one line per pause; the operator board gets the
  * elapsed pause on every poll, so a paused line is never mistaken for a quiet one.
  */
-async function waitForGo(where: string, passFloorPause = false): Promise<void> {
+async function waitForGo(where: string, seam: Seam, incidentFix = false): Promise<void> {
   let announced = false;
   for (;;) {
     // A paused line holds a card for as long as it takes; a stop ends the hold, and the lane with it.
     if (isStopping()) throw new RunStopping(`the run is stopping; no longer holding ${where}`);
     const sw = readSwitch();
     // An incident's fix is the merge that clears the floor's own pause; a person's pause still holds it.
-    if (sw.state === 'go' || (passFloorPause && sw.reason.startsWith(FLOOR_PAUSE))) {
+    // An outage holds only the merge, so work before it goes on.
+    if (!lineHolds(sw, seam, incidentFix)) {
       if (sw.state === 'go') setLine('active');
-      if (announced) log(`line is go again; resuming ${where}`);
+      if (announced) log(sw.state === 'go' ? `line is go again; resuming ${where}` : `the pause now holds only the merge; resuming ${where}`);
       return;
     }
     setLine('paused', sw.reason);
@@ -565,7 +563,7 @@ const ctx = createContext({
   // An incident's fix is the merge that clears the floor's own pause, so it passes that pause;
   // a person's pause holds it like any other.
   mayMerge: async (issue) => {
-    await waitForGo('the merge queue', issue.labels.some((label) => label.name === INCIDENT_LABEL));
+    await waitForGo('the merge queue', 'merge', issue.labels.some((label) => label.name === INCIDENT_LABEL));
     return { ok: true } as const;
   },
   // Passing the floor's pause is not landing unattended: an incident's fix parks at the merge
@@ -596,6 +594,8 @@ const FLOOR: Floor | null =
         log,
         baseUrl: opt('base-url'),
         print: (readout) => console.log(`\n${readout}\n`),
+        // Approved pull requests in the lanes' landing line: what an outage stacks at the merge.
+        waitingAtMerge: () => ctx.landingLine?.length ?? 0,
         // A walk that passes is the machine's WALKED event: the card moves to Verified on the floor.
         onWalked: (item, entry, incident) => {
           if (!item.ref?.issue) return;
@@ -830,7 +830,7 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
 }
 
 async function resumePull({ issue, pull }: { issue: Issue; pull: { number: number; branch: string } }): Promise<void> {
-  await waitForGo(`#${issue.number}`);
+  await waitForGo(`#${issue.number}`, 'dispatch');
 
   const holder = claimHolder(ctx, issue.number, new Map());
   if (holder) {
@@ -1135,7 +1135,7 @@ const ADMISSION = createAdmission<Issue>({
   fetchBase: () => sh(ctx, ['git', 'fetch', REMOTE, BASE]),
   place: () => placeBacklog(allIssues()),
   appraise: async (placement, skip, limit) => {
-    await waitForGo('appraisal');
+    await waitForGo('appraisal', 'appraisal');
     let release: () => void;
     try {
       release = claimLock(ctx, 'appraise.lock');
@@ -1296,7 +1296,7 @@ async function main(): Promise<void> {
   // real and sized, so the expensive population never pays for a worktree to discover an issue was
   // already fixed. This queue drains: once the window is appraised there is nothing here to do.
   if (!SKIP_APPRAISAL) {
-    await waitForGo('appraisal');
+    await waitForGo('appraisal', 'appraisal');
     // The same lock the standalone appraiser holds, so a heartbeat and a burndown never size the
     // same issue at once. Held only around the sizing stage; the lanes hold loop.lock.
     let releaseAppraisal: () => void;
@@ -1355,7 +1355,7 @@ async function main(): Promise<void> {
     first,
     CONFIG.concurrency,
     async (issue) => {
-      await waitForGo(`#${issue.number}`);
+      await waitForGo(`#${issue.number}`, 'dispatch');
       // The pipeline places the card at every seam from Coding on; the two ways it can decline to
       // start are placed here, since no lane of its own ever saw the issue.
       const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });

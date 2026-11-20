@@ -110,7 +110,11 @@ worker failed|reviewer wrote no verdict|exceeded [0-9]+ minutes|refusing to merg
 ## When the line is paused
 
 The line is the file switch `<worktreeRoot>/runs/line-switch`; this is the one list of where the
-running loop reads it, and the other references point here. A paused line holds:
+running loop reads it, and the other references point here. A person's pause, and a floor pause of
+any cause but `outside-repository`, hold every seam below. A floor pause for an outage
+(`floor:outside-repository:`) holds only the merge: appraisal and dispatch go on, and approved pull
+requests wait in the landing line until a walk finds the floor right (`floor.md`, "The line"). A
+paused line holds:
 
 - the appraisal stage, once, before it starts (the knife a size callback starts inside that stage
   runs under the same check, not one of its own);

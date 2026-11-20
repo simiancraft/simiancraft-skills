@@ -26,7 +26,7 @@ import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts'
 import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
 import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { handleIncident, mergedSince, openIncidentFor } from './incident.ts';
-import { combineCauses, FLOOR_PAUSE, type FloorCause, floorReason, readPause } from './line.ts';
+import { combineCauses, FLOOR_PAUSE, type FloorCause, floorReason, isOutage, readPause } from './line.ts';
 import {
   AGENT_RUNGS,
   AGENT_VERDICTS,
@@ -81,6 +81,8 @@ export type FloorOptions = {
   baseUrl?: string;
   /** Where a walk's readout goes; the log, one line at a time, by default. */
   print?: (readout: string) => void;
+  /** How many pull requests wait at the merge, for the readout of an outage; unknown when absent. */
+  waitingAtMerge?: () => number;
   /** How a wrong item's incident is diagnosed, filed, and worked; `handleIncident`, unless a test supplies its own. */
   handleIncident?: typeof handleIncident;
 };
@@ -643,7 +645,7 @@ export class Floor {
       const issue = this.incidentOf.get(itemId);
       waiting.push(incidentWaiting(label(itemId), issue, this.landable.has(itemId)));
     }
-    if (this.ownPause()) headsUp.push('the merge line is paused until a walk finds the floor right again');
+    if (this.ownPause()) headsUp.push(this.pauseReadout());
     if (stillPending > 0) pendingLines.push(`${stillPending} item(s) on the floor still owed a verdict`);
     return renderReadout({
       since: new Date(this.openedAt),
@@ -656,6 +658,18 @@ export class Floor {
       ],
       needsYou: waiting,
     });
+  }
+
+  /** What the floor's own pause holds, for the readout: an outage holds only the merge, and says how many wait there. */
+  private pauseReadout(): string {
+    const pause = readPause(this.switchLines()[1]?.trim() ?? '');
+    if (!isOutage(pause)) {
+      const cause = pause.by === 'floor' ? pause.cause : 'undiagnosed';
+      return `the line is paused (${cause}): merges wait and no new lane starts until a walk finds the floor right again`;
+    }
+    const waiting = this.o.waitingAtMerge?.();
+    const stacked = waiting === undefined ? '' : `; ${waiting} pull request(s) waiting at the merge`;
+    return `outage outside the repository: only merges are held, other work goes on, and they land one at a time when a walk finds it up${stacked}`;
   }
 
   private payloadBase() {

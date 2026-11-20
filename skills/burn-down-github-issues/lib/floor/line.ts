@@ -14,6 +14,8 @@
  * lane starts, so the incident's fix comes first. Not knowing the cause is not knowing it is not ours.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+
 /** The reason the floor writes when it pauses the line; a pause without this prefix is a person's. */
 export const FLOOR_PAUSE = 'floor:';
 
@@ -24,6 +26,16 @@ export type FloorCause = (typeof FLOOR_CAUSES)[number];
 export type Seam = 'appraisal' | 'dispatch' | 'merge';
 
 export type Pause = { by: 'person' } | { by: 'floor'; cause: FloorCause };
+
+export type Switch = { state: 'go' | 'pause'; reason: string };
+
+/** The switch as it stands: absent means go, an unknown first word means pause, the rest is the reason. */
+export function readSwitch(file: string): Switch {
+  if (!existsSync(file)) return { state: 'go', reason: '' };
+  const [first = '', ...rest] = readFileSync(file, 'utf8').split('\n');
+  const word = first.trim().toLowerCase();
+  return { state: word === 'go' ? 'go' : 'pause', reason: rest.join(' ').trim() || first.trim() };
+}
 
 /** The switch's second line for a floor pause of this cause. */
 export function floorReason(cause: FloorCause, text: string): string {
@@ -60,7 +72,7 @@ export function isOutage(pause: Pause): boolean {
  * Whether the switch holds this seam. `incidentFix` is a floor incident's fix at the merge: it is the
  * merge that clears the floor's own pause, so it passes any pause the floor wrote, and never a person's.
  */
-export function lineHolds(sw: { state: 'go' | 'pause'; reason: string }, seam: Seam, incidentFix = false): boolean {
+export function lineHolds(sw: Switch, seam: Seam, incidentFix = false): boolean {
   if (sw.state === 'go') return false;
   const pause = readPause(sw.reason);
   if (pause.by === 'person') return true;

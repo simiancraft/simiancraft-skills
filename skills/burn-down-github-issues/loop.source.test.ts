@@ -89,3 +89,17 @@ describe('the work phase takes on what the run made eligible', () => {
     expect(source).toContain('for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);');
   });
 });
+
+describe('every seam reads the line for what it holds', () => {
+  it('names the seam at each read, so an outage holds only the merge', () => {
+    expect(source.match(/await waitForGo\(`#\$\{issue\.number\}`, 'dispatch'\);/g)).toHaveLength(2);
+    expect(source.match(/await waitForGo\('appraisal', 'appraisal'\);/g)).toHaveLength(2);
+    expect(source).toContain("await waitForGo('the merge queue', 'merge', issue.labels.some((label) => label.name === INCIDENT_LABEL));");
+    expect(source).toContain('if (!lineHolds(sw, seam, incidentFix)) {');
+    expect(source.match(/await waitForGo\(/g)).toHaveLength(5);
+  });
+
+  it('tells the floor how many pull requests wait at the merge', () => {
+    expect(source).toContain('waitingAtMerge: () => ctx.landingLine?.length ?? 0,');
+  });
+});

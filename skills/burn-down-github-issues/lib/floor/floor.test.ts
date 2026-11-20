@@ -8,7 +8,7 @@ import { nextWalkMinutes, resolveFloor } from './config.ts';
 import { Floor, FLOOR_PAUSE, incidentWaiting } from './floor.ts';
 import type { handleIncident } from './incident.ts';
 import { appendEntry, appendItem, readLedger, readList } from './ledger.ts';
-import { type FloorCause, floorReason } from './line.ts';
+import { type FloorCause, floorReason, lineHolds, readSwitch } from './line.ts';
 
 let scratch: string;
 let status = 200;
@@ -65,6 +65,7 @@ function floorFor(name: string, environment: Record<string, unknown> = {}, repai
     log: () => {},
     print: (text) => readouts.push(text),
     handleIncident: repair,
+    waitingAtMerge: () => 2,
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
   const line = () => (existsSync(switchFile) ? readFileSync(switchFile, 'utf8') : 'go\n');
@@ -248,6 +249,24 @@ describe('the cause on the floor\'s pause', () => {
     expect(seen[0]).toStartWith(`pause\n${floorReason('undiagnosed', 'liveness is down')}`);
     expect(seen[1]).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
     expect(f.line()).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    status = 200;
+  });
+
+  it('lets lanes start during an outage, stacks merges, and releases them on the first walk that finds it up', async () => {
+    const { f } = await wrongWalk('cause-outage-release', 'outside-repository');
+    expect(lineHolds(readSwitch(f.switchFile), 'dispatch')).toBe(false);
+    expect(lineHolds(readSwitch(f.switchFile), 'merge')).toBe(true);
+    expect(f.readouts.at(-1)).toContain('only merges are held, other work goes on');
+    expect(f.readouts.at(-1)).toContain('2 pull request(s) waiting at the merge');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(lineHolds(readSwitch(f.switchFile), 'merge')).toBe(false);
+  });
+
+  it('starts no new lane while the floor repairs its own fault', async () => {
+    const { f } = await wrongWalk('cause-repair', 'in-repository');
+    expect(lineHolds(readSwitch(f.switchFile), 'dispatch')).toBe(true);
+    expect(f.readouts.at(-1)).toContain('merges wait and no new lane starts');
     status = 200;
   });
 

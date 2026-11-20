@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { combineCauses, floorReason, readPause } from './line.ts';
+import { combineCauses, type FloorCause, floorReason, lineHolds, readPause } from './line.ts';
 
 describe('reading a pause from the line switch', () => {
   it('reads a reason without the floor prefix as a person\'s', () => {
@@ -20,5 +20,37 @@ describe('the cause over several wrong items', () => {
     expect(combineCauses(['outside-repository', 'in-repository'])).toBe('in-repository');
     expect(combineCauses(['outside-repository', 'cause-unknown'])).toBe('cause-unknown');
     expect(combineCauses(['in-repository', 'undiagnosed'])).toBe('undiagnosed');
+  });
+});
+
+describe('the seams a pause holds', () => {
+  const floor = (cause: FloorCause) => ({ state: 'pause' as const, reason: floorReason(cause, 'liveness is down') });
+  const person = { state: 'pause' as const, reason: 'releasing tonight' };
+
+  it('an outage holds only the merge: new lanes start and appraisal goes on', () => {
+    expect(lineHolds(floor('outside-repository'), 'dispatch')).toBe(false);
+    expect(lineHolds(floor('outside-repository'), 'appraisal')).toBe(false);
+    expect(lineHolds(floor('outside-repository'), 'merge')).toBe(true);
+  });
+
+  it('a repair starts no new lane, whether the cause is ours, unknown, or not yet diagnosed', () => {
+    for (const cause of ['in-repository', 'cause-unknown', 'undiagnosed'] as const) {
+      expect(lineHolds(floor(cause), 'dispatch')).toBe(true);
+      expect(lineHolds(floor(cause), 'appraisal')).toBe(true);
+      expect(lineHolds(floor(cause), 'merge')).toBe(true);
+    }
+    expect(lineHolds({ state: 'pause', reason: 'floor: liveness is down' }, 'dispatch')).toBe(true);
+  });
+
+  it('an incident fix passes the floor\'s own pause of any cause, never a person\'s', () => {
+    for (const cause of ['in-repository', 'cause-unknown', 'undiagnosed', 'outside-repository'] as const) expect(lineHolds(floor(cause), 'merge', true)).toBe(false);
+    expect(lineHolds(person, 'merge', true)).toBe(true);
+  });
+
+  it('a person\'s pause holds every seam; go holds none', () => {
+    for (const seam of ['appraisal', 'dispatch', 'merge'] as const) {
+      expect(lineHolds(person, seam)).toBe(true);
+      expect(lineHolds({ state: 'go', reason: '' }, seam)).toBe(false);
+    }
   });
 });

@@ -183,8 +183,19 @@ releases only its own, on the first walk that finds nothing on the floor wrong. 
 fix merges, that is the next walk, so a cadence like `wrong ? 2 : …` keeps the wait short. An item
 whose incident a person owns holds the pause until it walks clean or someone clears the switch. A
 person who writes `go` while the floor is still wrong is obeyed: the floor pauses again only when
-another item turns wrong. What a paused
-line holds is listed once in `operating.md`, "When the line is paused".
+another item turns wrong.
+
+The cause decides what the pause holds. Every cause but `outside-repository` is a repair: the
+floor's own fault, or one nobody can yet say is not, so merges wait, no new lane starts, and the
+incident's fix runs first. Lanes already under way finish their turn and wait at the merge; nothing
+is stopped. `outside-repository` is an outage: the remedy is not code, so the pause holds only the
+merge (merging is what deploys into the downed environment). Appraisal, carving, coding, proving,
+and review go on, new lanes start, and approved pull requests stack in the landing line. The floor
+keeps walking on its cadence; the first walk that finds the floor right lifts the pause, and the
+stacked pull requests land one at a time through the pull master, each caught up to the one before,
+each walked as it deploys. The readout shows an outage under ⚠️ with the count of pull requests
+waiting at the merge. What a paused line holds, seam by seam, is listed once in `operating.md`,
+"When the line is paused".
 
 ## Incidents
 
