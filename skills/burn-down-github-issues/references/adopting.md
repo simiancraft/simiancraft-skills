@@ -345,7 +345,8 @@ the allowlist.
 ## Boundaries to set deliberately
 
 `autoMerge` defaults to `code-only`: merge code, park anything touching production data, a
-migration, a stored string, or CI. `maxPoints: 2` keeps the loop to work small enough that a bad merge
+migration, a stored string, or CI. A floor incident's fix parks whatever `autoMerge` says, even
+under `always`. `maxPoints: 2` keeps the loop to work small enough that a bad merge
 is cheap. `ageDays: 30` keeps it to issues whose context is still true. Widen after a run has gone
 well, not before.
 

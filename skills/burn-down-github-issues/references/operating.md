@@ -118,7 +118,8 @@ running loop reads it, and the other references point here. A paused line holds:
 - every merge, through the fix pipeline's `mayMerge` hook, which the loop answers by waiting for
   `go`; a stranded pull request resumed at the run's start reaches it here too. The one exception
   is a floor incident's fix, which passes a pause the floor wrote (it is the merge that clears it)
-  and still waits on a person's.
+  and still waits on a person's. It never lands unattended either: it parks at the merge boundary
+  whatever `autoMerge` says, and a person lands it with `fix.ts --land`.
 
 The start-of-run work before those seams is not held: the repair, the stranded-lane resume up to
 its merge, and the knife's sweep (its revisits and redrives included) run on a paused line. The

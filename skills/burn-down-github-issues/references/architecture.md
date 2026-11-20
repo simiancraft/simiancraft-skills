@@ -167,7 +167,8 @@ queue and nothing has to parse a ledger to flip it. Every merge goes up onto the
 pipeline's `afterMerge` hook; a walk of the deployed base that finds something wrong pauses the line
 before it files an incident, and releases its own pause once nothing on the floor is wrong. The
 incident's fix is the one merge a paused line must not hold, so the floor fixes it under the
-loop's context without the `mayMerge` gate. A passing walk is the statechart's `WALKED` event: the
+loop's context without the `mayMerge` gate. It still parks at the merge boundary, whatever
+`autoMerge` says, through the pipeline's `holdAtBoundary` hook; a person lands it. A passing walk is the statechart's `WALKED` event: the
 card moves from Merged to Verified on the floor.
 
 A run is done when its merges are verified, not when they land. They reach the floor seconds

@@ -51,7 +51,7 @@ import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks
 import { issueRefs } from './lib/refs.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
 import { Floor, FLOOR_PAUSE } from './lib/floor/floor.ts';
-import { INCIDENT_LABEL } from './lib/floor/incident.ts';
+import { INCIDENT_LABEL, incidentHold } from './lib/floor/incident.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
@@ -568,6 +568,9 @@ const ctx = createContext({
     await waitForGo('the merge queue', issue.labels.some((label) => label.name === INCIDENT_LABEL));
     return { ok: true } as const;
   },
+  // Passing the floor's pause is not landing unattended: an incident's fix parks at the merge
+  // boundary whatever autoMerge says, on every path that lands it (the floor's, a resume, a lane).
+  holdAtBoundary: incidentHold,
   // The pipeline has already placed the card in Merged by the time this fires.
   afterMerge: (event) => FLOOR?.put(event),
 });

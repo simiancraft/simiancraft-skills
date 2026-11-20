@@ -6,7 +6,7 @@
 
 import { join } from 'node:path';
 import { readResult, renderPrompt, runAgent } from '../../../fix-github-issue/lib/agent.ts';
-import type { Context } from '../../../fix-github-issue/lib/context.ts';
+import type { Context, MergingIssue } from '../../../fix-github-issue/lib/context.ts';
 import type { Seat } from '../../../fix-github-issue/lib/engines.ts';
 import { ensureLabels, parkIssue } from '../../../fix-github-issue/lib/labels.ts';
 import { enrichBlockers } from '../../../fix-github-issue/lib/blockers.ts';
@@ -30,6 +30,17 @@ export function mergedSince(ctx: Context, since: string): MergedPullRequest[] {
 }
 
 export const INCIDENT_LABEL = 'floor/incident';
+
+/**
+ * The merge boundary's hold for a floor incident's fix: it parks for a person whatever `autoMerge`
+ * says, as a data change does. Its premise is a walk of a live environment, which can be wrong (a
+ * deploy still running reads as absent), and a code-only fix acting on it could revert reviewed work.
+ */
+export function incidentHold(issue: MergingIssue): string | null {
+  return issue.labels.some((label) => label.name === INCIDENT_LABEL)
+    ? `a ${INCIDENT_LABEL} fix acts on evidence from a live environment, so a person confirms it`
+    : null;
+}
 const DIAGNOSIS_FILE = 'floor-diagnosis.json';
 
 export type Diagnosis = {

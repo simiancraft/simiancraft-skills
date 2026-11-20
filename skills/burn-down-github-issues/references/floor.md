@@ -180,7 +180,11 @@ honest confidence. The floor files an issue labelled `floor/incident` with all o
 open one for the item) and hands it to `fix-github-issue` like any other issue. Its fix merges
 through the floor's own pause (it is the merge that makes the next walk come back clean) but still
 waits on a pause a person set; it lands through a pull master of its own, since the lanes' one may
-be held by a lane waiting at that very pause, and its merge goes up onto the floor too. The readout lists an incident the floor is
+be held by a lane waiting at that very pause, and its merge goes up onto the floor too. Passing the
+pause is not landing unattended: an incident's fix parks at the merge boundary whatever `autoMerge`
+says, as a data change does, on every path that lands it (the floor's, a resumed lane, an ordinary
+one), because its premise is a walk of a live environment and a walk can be wrong (a deploy still
+running reads as absent). A person confirms it with `fix.ts --land`. The readout lists an incident the floor is
 repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
 
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)

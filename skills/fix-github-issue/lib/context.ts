@@ -97,6 +97,12 @@ export type Context = {
    * other gate still applies; only the autoMerge park is waived, and the waiver is recorded on the PR.
    */
   landPastBoundary?: number;
+  /**
+   * Asked at the merge boundary with the issue about to land: a reason to park its approved change
+   * for a person whatever `autoMerge` says, or null to leave the decision to `autoMerge`. A person's
+   * `--land` still waives the park. Absent means `autoMerge` alone decides.
+   */
+  holdAtBoundary?: (issue: MergingIssue) => string | null;
   /** Told once, after every confirmed merge. */
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
@@ -136,6 +142,7 @@ export function createContext(options: {
   step?: (message: string) => void;
   mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
   landPastBoundary?: number;
+  holdAtBoundary?: (issue: MergingIssue) => string | null;
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;
@@ -166,6 +173,7 @@ export function createContext(options: {
     step: options.step ?? defaultStep,
     mayMerge: options.mayMerge,
     landPastBoundary: options.landPastBoundary,
+    holdAtBoundary: options.holdAtBoundary,
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
     onLane: options.onLane,
