@@ -24,6 +24,7 @@ import { isStopping, RunStopping, sh, stoppableSleep } from '../../../fix-github
 import { matchesPath } from '../../../fix-github-issue/lib/staleness.ts';
 import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts';
 import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
+import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { handleIncident, mergedSince, openIncidentFor } from './incident.ts';
 import {
   AGENT_RUNGS,
@@ -98,6 +99,8 @@ export class Floor {
   /** Items whose incident a person now owns: walked every time, but a drain does not wait on them. */
   private readonly withAPerson = new Set<string>();
   private readonly openedAt = new Date().toISOString();
+  /** Items whose incident is parked at the merge boundary with an approved fix: a person lands it, not lifts it. */
+  private readonly landable = new Set<string>();
   /** Open incidents by item, for the readout. */
   private readonly incidentOf = new Map<string, number>();
   /** Items whose incident's fix merged, by that incident: the fix has to deploy before another try. */
@@ -507,9 +510,21 @@ export class Floor {
       const open = openIncidentFor(this.o.ctx, itemId);
       if (open?.withAPerson) this.withAPerson.add(itemId);
       if (open) this.incidentOf.set(itemId, open.number);
+      if (open?.withAPerson) this.noteLandable(itemId, open.number);
       return open !== null;
     } catch {
       return false;
+    }
+  }
+
+  /** Whether a person lands this incident's fix (`fix.ts --land`) rather than lifting its label; unknown reads as no. */
+  private noteLandable(itemId: string, issue: number): void {
+    this.landable.delete(itemId);
+    if (!issue || this.o.ctx.dryRun) return;
+    try {
+      if (readLandBlocker(this.o.ctx, issue) === null) this.landable.add(itemId);
+    } catch (error) {
+      if (error instanceof RunStopping || isStopping()) throw error;
     }
   }
 
@@ -529,6 +544,8 @@ export class Floor {
       if (result.withAPerson) this.withAPerson.add(entry.itemId);
       else this.withAPerson.delete(entry.itemId);
       this.incidentOf.set(entry.itemId, result.issue);
+      if (result.withAPerson) this.noteLandable(entry.itemId, result.issue);
+      else this.landable.delete(entry.itemId);
       return { issue: result.issue, outcome: result.fix?.outcome ?? (result.withAPerson ? 'with a person' : 'filed') };
     } catch (error) {
       if (error instanceof RunStopping) throw error;
@@ -569,7 +586,7 @@ export class Floor {
     }
     for (const itemId of this.withAPerson) {
       const issue = this.incidentOf.get(itemId);
-      waiting.push(`${label(itemId)} is still wrong and incident ${issue ? `#${issue}` : '(see floor/incident)'} is parked for you: fix it, close it, or lift its label to hand it back`);
+      waiting.push(incidentWaiting(label(itemId), issue, this.landable.has(itemId)));
     }
     if (this.ownPause()) headsUp.push('the merge line is paused until a walk finds the floor right again');
     if (stillPending > 0) pendingLines.push(`${stillPending} item(s) on the floor still owed a verdict`);
@@ -619,4 +636,16 @@ export class Floor {
       FLOOR_DIR: this.o.dir,
     });
   }
+}
+
+/**
+ * The readout's line for an incident a person owns. A fix the merge boundary parked is approved and
+ * waits only on a person's go-ahead: lifting its label would hand it to a run that parks it again,
+ * so the line names the landing instead.
+ */
+export function incidentWaiting(label: string, issue: number | undefined, landable: boolean): string {
+  if (issue && landable) {
+    return `${label} is still wrong and incident #${issue}'s fix is approved and parked at the merge boundary: review its pull request and land it with \`fix.ts --land ${issue}\`, or close it`;
+  }
+  return `${label} is still wrong and incident ${issue ? `#${issue}` : '(see floor/incident)'} is parked for you: fix it, close it, or lift its label to hand it back`;
 }

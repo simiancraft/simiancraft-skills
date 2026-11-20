@@ -4,6 +4,9 @@
  * dead letter, a park because the issue changed under the review, or a park with no reason found.
  */
 
+import type { Context } from './context.ts';
+import { sh } from './shell.ts';
+
 /** The reason the merge boundary writes when it parks an approved change (`pipeline.ts`, land). */
 export const BOUNDARY_PARK = /^autoMerge is \S+ and the change touches /;
 
@@ -27,6 +30,19 @@ export function landBlocker(labels: string[], comments: Array<{ body: string; cr
     return 'the boundary parked it because no classification was stated, which --land never waives; use --redrive so the change is classified';
   }
   return null;
+}
+
+/** `landBlocker` for an issue as the tracker holds it now: its labels, its comments, and when it was last parked. */
+export function readLandBlocker(ctx: Context, issue: number): string | null {
+  const view = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'labels,comments'])) as {
+    labels: Array<{ name: string }>;
+    comments: Array<{ body: string; createdAt: string }>;
+  };
+  const parkedAt = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/issues/${issue}/events`, '--paginate', '--jq', '.[] | select(.event == "labeled" and .label.name == "loop/parked") | .created_at'])
+    .split('\n')
+    .filter(Boolean)
+    .at(-1) ?? null;
+  return landBlocker(view.labels.map((l) => l.name), view.comments.map((c) => ({ body: c.body, createdAt: c.createdAt })), parkedAt);
 }
 
 /**

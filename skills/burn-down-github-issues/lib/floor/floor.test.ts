@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
-import { Floor, FLOOR_PAUSE } from './floor.ts';
+import { Floor, FLOOR_PAUSE, incidentWaiting } from './floor.ts';
 import { appendEntry, appendItem, readLedger, readList } from './ledger.ts';
 
 let scratch: string;
@@ -203,5 +203,17 @@ describe('a merge the forge listed before the loop recorded it', () => {
     expect(item.ref?.issue).toBe(50);
     expect(item.source).toBe('burndown');
     expect(readList(dir)).toHaveLength(1);
+  });
+});
+
+describe('the readout line for an incident a person owns', () => {
+  it('names the landing when the merge boundary parked an approved fix', () => {
+    const line = incidentWaiting('home', 42, true);
+    expect(line).toContain('fix.ts --land 42');
+    expect(line).not.toContain('lift its label');
+  });
+  it('hands any other park back by its label', () => {
+    expect(incidentWaiting('home', 42, false)).toContain('lift its label to hand it back');
+    expect(incidentWaiting('home', undefined, true)).toContain('(see floor/incident)');
   });
 });

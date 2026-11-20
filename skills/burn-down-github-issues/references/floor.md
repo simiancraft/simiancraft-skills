@@ -185,7 +185,10 @@ pause is not landing unattended: an incident's fix parks at the merge boundary w
 says, as a data change does, on every path that lands it (the floor's, a resumed lane, an ordinary
 one), because its premise is a walk of a live environment and a walk can be wrong (a deploy still
 running reads as absent). A person confirms it with `fix.ts --land`. The readout lists an incident the floor is
-repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
+repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it. Its ⛔
+line names the way out: an approved fix parked at the merge boundary is landed with `fix.ts --land
+<n>` (lifting its label would only hand it to a run that parks it again); any other park is handed
+back by lifting its label.
 
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)
 parks the incident for a person instead. An incident with a person, parked or dead-lettered or
