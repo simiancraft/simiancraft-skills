@@ -7,7 +7,7 @@ import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation, validateCarving, validateConfirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/shell.ts';
-import { awaitReleases, type ClaimHandle, claim, keepClaimed, leaseLost } from './claims.ts';
+import { awaitReleases, type ClaimHandle, claim, isTrunk, keepClaimed, leaseLost } from './claims.ts';
 import { loopLabels } from '../../fix-github-issue/lib/labels.ts';
 import { carveIssue, workStarted } from './knife.ts';
 import { type Cut, renderRecord, type Record } from './record.ts';
@@ -892,6 +892,71 @@ describe('carveIssue', () => {
     expect(io.view(10)!.subIssues).toEqual([]);
     expect(ctx.dryRunLog.some((l) => l.includes('create child'))).toBe(true);
     expect(ctx.dryRunLog.some((l) => l.includes('post the live record'))).toBe(true);
+  });
+});
+
+describe('a childless record', () => {
+  /** A first carving handed off with no child; `verdict` rewrites it as an older build's one-piece hand-off. */
+  async function handedOff(verdict?: 'indivisible' | 'small-enough') {
+    const io = trunk(); const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('tu', carving(10, { verdict: 'too-uncertain', cuts: undefined, chosen: undefined, affected: ['A1'] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);
+    expect(out.outcome).toBe('too-uncertain');
+    if (verdict) {
+      for (const c of io.issues.get(10)!.comments) c.body = c.body.replaceAll('too-uncertain', verdict);
+      io.addLabel(10, 'loop/carved');
+      io.addLabel(10, 'loop/carve-gen: 1');
+    }
+    io.removeLabel(10, 'needs-decision');
+    return { io, ctx };
+  }
+  const noAgent = () => knobs(fixture('none', {}), fixture('none2', {}));
+
+  test('is no trunk, so the appraiser sizes it rather than refusing it', async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    const tree = readTree(ctx, 10, io);
+    expect(tree.record?.state).toBe('live');
+    expect(isTrunk(tree)).toBe(false);
+  });
+
+  test("an older build's one-piece hand-off on an untouched thread is worked whole", async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    const out = await carveIssue(ctx, issue10, noAgent(), io);
+    expect(out.outcome).toBe('work-whole');
+    expect(labels(io, 10)).toContain('loop/work-whole');
+    expect(labels(io, 10).some((l) => l === 'loop/carved' || l.startsWith('loop/carve-gen') || l === 'loop/handed-off')).toBe(false);
+    expect(records(io, 10).at(-1)).toBe('released');
+  });
+
+  test('a one-piece hand-off whose thread moved since is released to the appraiser', async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    io.comment(10, 'person', 'The scope changed: also cover the email path.');
+    const out = await carveIssue(ctx, issue10, noAgent(), io);
+    expect(out.outcome).toBe('exhausted');
+    expect(labels(io, 10)).toContain('loop/released');
+    expect(labels(io, 10)).not.toContain('loop/work-whole');
+    expect(labels(io, 10).some((l) => l.startsWith('size:') || l === 'loop/carved')).toBe(false);
+  });
+
+  for (const moved of [false, true]) test(`the driver settles it along legal board edges${moved ? ', thread moved' : ''}`, async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    if (moved) io.comment(10, 'person', 'Also the email path.');
+    const lanes: string[] = ['H1'];
+    ctx.onLane = (e) => lanes.push(e.lane);
+    const d = new CarvingDriver({ ctx, knobs: noAgent(), appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (_n, _t, l) => lanes.push(l), log: () => {} });
+    await d.revisit(10, 'a hold was removed');
+    expect(lanes.at(-1)).toBe(moved ? 'C7' : 'B1');
+    const illegal = lanes.slice(1).flatMap((to, index) => {
+      const from = lanes[index];
+      return from === to || successors(laneState(from), { ownEventsOnly: true }).has(laneState(to)) ? [] : [`${from}->${to}`];
+    });
+    expect(illegal).toEqual([]);
+  });
+
+  test('an answered question is released to the appraiser, never worked whole', async () => {
+    const { io, ctx } = await handedOff();
+    const out = await carveIssue(ctx, issue10, noAgent(), io);
+    expect(out.outcome).toBe('exhausted');
+    expect(labels(io, 10)).toContain('loop/released');
   });
 });
 

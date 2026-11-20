@@ -209,10 +209,18 @@ export type Gate = { ok: true; tree: Tree } | { ok: false; why: string; outcome:
 /**
  * A trunk by the state table: an unreleased record, an open child, or `loop/released`.
  */
+/**
+ * A live record that carved nothing and has no child under it: a hand-off from a first carving.
+ * It owns no work, so it is no trunk; the knife settles it when it next visits.
+ */
+export function childlessRecord(tree: Tree): boolean {
+  return tree.record?.state === 'live' && tree.record.children.length === 0 && tree.children.length === 0;
+}
+
 export function isTrunk(tree: Tree): boolean {
   const labels = tree.issue.labels.map((l) => l.name);
   if (labels.includes('loop/released')) return true;
-  if (tree.record && tree.record.state !== 'released') return true;
+  if (tree.record && tree.record.state !== 'released' && !childlessRecord(tree)) return true;
   return tree.children.some((c) => c.state === 'OPEN');
 }
 

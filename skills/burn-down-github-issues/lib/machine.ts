@@ -312,6 +312,9 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runCarver', 'runCarveConfirmer'],
               on: {
                 REVISITED: [
+                  // A live record with no child is a first carving's hand-off; with its hold lifted, a
+                  // one-piece verdict on an untouched thread is worked whole, and anything else rolls up.
+                  { target: 'ticket.ready.ready', guard: 'verdictIndivisible and childlessRecord', actions: ['labelWorkWhole', 'releasedRecord', 'unlabelTrunk', 'releaseClaim'] },
                   { target: 'ticket.carving.childrenInFlight', guard: 'verdictStillGood', actions: ['postLiveRecord', 'countRevisit', 'releaseClaim'] },
                   { target: 'ticket.carving.spawningChildren', guard: 'verdictAmend', actions: ['countGeneration'] },
                   { target: 'ticket.carving.rollingUp', guard: 'verdictExhausted' },

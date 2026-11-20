@@ -37,7 +37,7 @@ import {
   validateCarving,
   validateConfirmation,
 } from './carve.ts';
-import { claim, keepClaimed, LeaseLostError, leaseLost, trackerIo } from './claims.ts';
+import { childlessRecord, claim, keepClaimed, LeaseLostError, leaseLost, trackerIo } from './claims.ts';
 
 export { LeaseLostError };
 import { buildLedger, carryIds, childMarker, type Ledger, pauseSet, type Record, type RecordChild, renderChildBody, renderRecord, sameBody } from './record.ts';
@@ -594,6 +594,37 @@ async function applyWorkWhole(k: Knife, tree: Tree, carving: Carving, opinions: 
 }
 
 /**
+ * A live record with no child: a first carving's hand-off, made before one-piece verdicts were
+ * worked whole, or a question a person has since answered. With its hold gone it is settled
+ * without an agent. A confirmed one-piece verdict on a thread nobody has touched since stands under
+ * today's rule, and the issue is worked whole. Anything else (a moved thread, a question, a dead
+ * letter) means the judgment no longer holds, so the issue goes back to the appraiser, as an
+ * exhausted trunk does, to be sized and, if need be, carved afresh.
+ */
+async function settleChildlessRecord(k: Knife, tree: Tree): Promise<CarveOutcome> {
+  const record = tree.record as Record;
+  const now = fingerprint(tree, k.ctx.botLogin);
+  const seen = record.seen as Partial<Fingerprint> | undefined;
+  const moved = (['title', 'bodyHash', 'comments'] as const).some((key) => JSON.stringify(now[key]) !== JSON.stringify(seen?.[key]));
+  const handOff = [...tree.intents].reverse().find((i) => i.kind === 'carve-handoff');
+  const deadLetter = Boolean((handOff?.payload as { deadLetter?: boolean } | undefined)?.deadLetter);
+  const onePiece = record.verdict === 'indivisible' || record.verdict === 'small-enough';
+  let labels = labelsOf(tree.issue);
+  if (labels.includes('loop/handed-off')) removeLabel(k, 'release-labels', k.trunk, 'loop/handed-off', labels);
+  if (onePiece && !moved && !deadLetter) {
+    k.say(`a childless ${record.verdict} record from generation ${record.generation}, on a thread unchanged since; worked whole`);
+    labels = labelsOf(readTree(k.ctx, k.trunk, k.io).issue);
+    removeLabel(k, 'release-labels', k.trunk, 'loop/carved', labels);
+    for (const gen of labels.filter((l) => l.startsWith('loop/carve-gen:'))) removeLabel(k, 'release-labels', k.trunk, gen, labels);
+    const carving: Carving = { issue: k.trunk, mode: 'carve', verdict: record.verdict as Carving['verdict'], reason: record.reason ?? '', criteria: [], ledger: record.ledger, affected: [] };
+    return applyWorkWhole(k, readTree(k.ctx, k.trunk, k.io), carving, []);
+  }
+  const why = moved ? 'the thread moved since it' : deadLetter ? 'it was a dead letter' : `its verdict was ${record.verdict}`;
+  k.say(`a childless ${record.verdict} record from generation ${record.generation}; released to the appraiser, since ${why}`);
+  return applyRelease(k, tree, { issue: k.trunk, mode: 'carve', verdict: 'nothing-left', reason: `a childless ${record.verdict} record released to be appraised again, since ${why}`, criteria: [], ledger: record.ledger, affected: [] }, null);
+}
+
+/**
  * A first carving's confirmed `nothing-left`: the knife found every criterion done or withdrawn.
  * That is a close proposal, so the issue is released to the appraiser exactly as an exhausted trunk
  * is (size off, `loop/released` on), and the release appraisal closes it through the close confirmer.
@@ -946,6 +977,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     return { outcome: 'left-alone', reason: `it carries ${hold}` };
   }
   if (tree.record && tree.record.state === 'live') reconcilePauses(k, tree.record);
+  if (childlessRecord(tree)) return settleChildlessRecord(k, tree);
 
   // 3. Mode, from the newest record alone.
   const record = tree.record;
