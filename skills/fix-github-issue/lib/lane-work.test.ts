@@ -194,6 +194,54 @@ describe('reconcile at a loop start', () => {
     reconcile(ctxWith(io, `${hostname()}-${process.pid}-3`), new Set());
     expect(existsSync(dir)).toBe(false);
   });
+
+  it("saves a closed issue's uncommitted work under a ref and removes its lane, saying once where it went", () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(86, { state: 'CLOSED', stateReason: 'COMPLETED' })]);
+    const dir = lane(86, true);
+    const head = git(dir, 'rev-parse', 'HEAD');
+    writeFileSync(join(dir, 'a.txt'), 'edited\n');
+    writeFileSync(join(dir, 'new.txt'), 'never added\n');
+    git(dir, 'rm', '-q', '--cached', 'work-86.txt');
+    const lines: string[] = [];
+    const ctx = { ...ctxWith(io, `${hostname()}-${process.pid}-4`), log: (m: string) => lines.push(m) } as Context;
+    reconcile(ctx, new Set());
+    expect(existsSync(dir)).toBe(false);
+    const [ref] = git(repo, 'for-each-ref', '--format=%(refname)', 'refs/loop/rescued/issue-86/').split('\n');
+    expect(ref).toMatch(/^refs\/loop\/rescued\/issue-86\/[0-9a-f]{12}$/);
+    // The saved commit sits on the lane's HEAD and holds the working tree as it was, untracked files too.
+    expect(git(repo, 'rev-parse', `${ref}^`)).toBe(head);
+    expect(git(repo, 'show', `${ref}:a.txt`)).toBe('edited');
+    expect(git(repo, 'show', `${ref}:new.txt`)).toBe('never added');
+    expect(git(repo, 'show', `${ref}:work-86.txt`)).toBe('a finished change');
+    expect(lines.filter((l) => l.includes(ref))).toHaveLength(1);
+    expect(lines.some((l) => /leaving it for inspection/.test(l))).toBe(false);
+    // Nothing is written on a closed issue, and the next start has nothing to say about it.
+    expect(io.writes).toEqual([]);
+    const again: string[] = [];
+    reconcile({ ...ctx, log: (m: string) => again.push(m) } as Context, new Set());
+    expect(again.filter((l) => l.includes('#86'))).toEqual([]);
+  });
+
+  it("keeps a closed issue's dirty lane while an open pull request is on its branch", () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(87, { state: 'CLOSED', stateReason: 'NOT_PLANNED' })]);
+    io.openPulls = ['fix/work-87'];
+    const dir = lane(87, true);
+    writeFileSync(join(dir, 'half-done.txt'), 'edits nobody committed\n');
+    reconcile(ctxWith(io, `${hostname()}-${process.pid}-5`), new Set());
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(git(repo, 'for-each-ref', 'refs/loop/rescued/issue-87/')).toBe('');
+  });
+
+  it("keeps an open issue's dirty lane for inspection, as before", () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(88)]);
+    const dir = lane(88, false);
+    writeFileSync(join(dir, 'half-done.txt'), 'edits nobody committed\n');
+    const lines: string[] = [];
+    reconcile({ ...ctxWith(io, `${hostname()}-${process.pid}-6`), dryRun: true, log: (m: string) => lines.push(m) } as Context, new Set());
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(git(repo, 'for-each-ref', 'refs/loop/rescued/issue-88/')).toBe('');
+    expect(lines.some((l) => /#88 has uncommitted work and no pull request; leaving it for inspection/.test(l))).toBe(true);
+  });
 });
 
 describe('resuming a pull request in its lane', () => {
