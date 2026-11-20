@@ -12,6 +12,12 @@ describe('landBlocker: --land acts only on a park the merge boundary wrote', () 
   it('reads a boundary park through the loop-note marker parkIssue writes', () => {
     expect(landBlocker(['loop/parked'], [comment(`<!-- loop-note -->\n${BOUNDARY}`, 5)], at(5))).toBeNull();
   });
+  it('reads a boundary note that landed minutes after its label', () => {
+    expect(landBlocker(['loop/parked'], [comment('an early note', 1), comment(`<!-- loop-note -->\n${BOUNDARY}`, 14)], at(11))).toBeNull();
+  });
+  it('does not read a boundary note long after the label as its reason', () => {
+    expect(landBlocker(['loop/parked'], [comment('another park', 1), comment(BOUNDARY, 40)], at(11))).toMatch(/not the merge boundary/);
+  });
   it('ignores comments made after the park', () => {
     expect(landBlocker(['loop/parked'], [comment(BOUNDARY, 5), comment('a person asks a question', 9)], at(5))).toBeNull();
   });
