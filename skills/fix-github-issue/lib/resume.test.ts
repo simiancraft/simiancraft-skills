@@ -2,8 +2,9 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { claimHolder, judgeLane, managedLanes, parkForInspection } from './resume.ts';
+import { claimHolder, findStranded, judgeLane, managedLanes, parkForInspection } from './resume.ts';
 import { RunStopping } from './shell.ts';
+import { claimMarker } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 
 let scratch: string;
@@ -140,4 +141,28 @@ it('managedLanes lists issue lanes and their scratch siblings, and reads a claim
     expect(lanes.map((l) => l.holder())).toEqual([null, null]);
     expect(view).toHaveBeenCalledTimes(1);
   } finally { view.mockRestore(); }
+});
+
+it('findStranded leaves a lane alone while another run claims its issue, as a redrive does before it lifts the hold', () => {
+  lane(41);
+  lane(42);
+  const io = new FakeTracker('bot', [fakeIssue(41), fakeIssue(42)]);
+  // A redrive's claim, taken before its hold came off; the hold is already gone.
+  io.comment(41, 'bot', claimMarker('working', 'redrive-elsewhere', '2026-11-01T00:00:00Z', '2999-01-01T00:00:00Z', 'tok'));
+  const lines: string[] = [];
+  const context = { ...ctx(), io, runId: 'starting-run', botLogin: 'bot', dryRun: false, knobs: { maxReviewRounds: 3 }, log: (m: string) => lines.push(m) } as unknown as Context;
+  const original = Bun.spawnSync;
+  const spy = spyOn(Bun, 'spawnSync').mockImplementation(((args: string[], opts: unknown) => {
+    if (args[0] === 'gh') return { exitCode: 0, stdout: Buffer.from('OPEN'), stderr: Buffer.from('') };
+    return original(args, opts as any);
+  }) as typeof Bun.spawnSync);
+  try {
+    const issues = [41, 42].map((number) => ({ number, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [] }));
+    expect(findStranded(context, issues, [])).toEqual([]);
+    expect(lines).toContain('#41  stranded lane is claimed by redrive-elsewhere; leaving it in place');
+    expect(io.view(41)?.labels.map((l) => l.name)).toEqual([]);
+    expect(io.writes.filter((w) => w.argv.includes('41'))).toEqual([]);
+    // The unclaimed lane beside it is still judged.
+    expect(io.view(42)?.labels.map((l) => l.name)).toContain('loop/dlq: work');
+  } finally { spy.mockRestore(); }
 });

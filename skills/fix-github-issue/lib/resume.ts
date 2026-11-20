@@ -190,8 +190,9 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
 export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): Stranded[] {
   const found: Stranded[] = [];
 
-  for (const { issue: num, dir, sibling } of managedLanes(ctx)) {
-    if (sibling) continue; // reconcile owns scratch siblings
+  for (const lane of managedLanes(ctx)) {
+    const { issue: num, dir } = lane;
+    if (lane.sibling) continue; // reconcile owns scratch siblings
     if (inFlight.has(num)) continue;
 
     const issue = all.find((candidate) => candidate.number === num);
@@ -201,6 +202,14 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
     // budget-exhausted issue belongs to a human even when a worktree still remembers it.
     if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
+
+    // Another run's live claim means its lane is in use: a redrive claims before it lifts its hold,
+    // so an issue read without a hold may still be one a person's redrive is about to work.
+    const holder = lane.holder();
+    if (holder) {
+      ctx.log(`#${num}  stranded lane is claimed by ${holder}; leaving it in place`);
+      continue;
+    }
 
     const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
