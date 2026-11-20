@@ -42,7 +42,8 @@ elsewhere in the backlog.
    record** lands on the trunk's thread: the cut, the ledger, and what the tracker looked like.
    Grammar in `references/the-record.md`.
 6. **Revisit.** Every child close, and every change to the trunk a person makes, brings the knife
-   back to ask one question: is this carving still good? `still-good` rolls the ledger forward;
+   back to ask one question: is this carving still good? It starts from the newest live record's
+   ledger, so a criterion the thread withdrew stays withdrawn. `still-good` rolls the ledger forward;
    `amend` is a new generation; `exhausted` releases the trunk to the appraiser; a question pauses
    exactly the leaves it touches.
 

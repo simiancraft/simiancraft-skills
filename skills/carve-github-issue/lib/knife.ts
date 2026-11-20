@@ -661,7 +661,10 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
     TRIGGER: trigger,
     CHILDREN: describeChildren(tree),
     ANCESTORS: tree.ancestors.length ? `Ancestors: ${tree.ancestors.map((a) => `#${a.number}`).join(', ')}; read each one's newest carving record.` : 'It has no parent.',
-    PREVIOUS_LEDGER: ledger ? `The previous ledger, statuses re-derived from the tree:\n\n\`\`\`json\n${JSON.stringify(ledger, null, 2)}\n\`\`\`` : 'There is no previous carving of this issue.',
+    PREVIOUS_LEDGER: ledger
+      ? `The previous ledger, from the newest live record, statuses re-derived from the tree. A \`withdrawn\` row still stands on the edit it cites; carry it as it is.\n\n\`\`\`json\n${JSON.stringify(ledger, null, 2)}\n\`\`\``
+      : 'There is no previous carving of this issue.',
+    BODY_HASH: tree.issue.bodyHash,
     FEEDBACK: feedback ? `## The confirmer's case against your last answer\n\nAnswer it in this round, or change your cut.\n\n${feedback}` : '',
     SEAMS_PATH,
     CARVING_FILE,
@@ -675,7 +678,7 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
     if (run.exitCode !== 0) return { ok: false, why: `carver exited ${run.exitCode}`, logPath: run.logPath };
     const raw = readResult<unknown>(cwd, CARVING_FILE);
     if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no carver ran', logPath: null };
-    const checked = validateCarving(raw, { mode, knobs: k.knobs, tree, scale: k.ctx.knobs.pointScale });
+    const checked = validateCarving(raw, { mode, knobs: k.knobs, tree, scale: k.ctx.knobs.pointScale, previousLedger: ledger });
     if (!checked.ok) {
       if (repair === 1) return { ok: false, why: `carver's answer is invalid: ${checked.faults.join('; ')}`, logPath: run.logPath };
       turnPrompt = prompt + repairPrompt(cwd, CARVING_FILE, raw, checked.faults);
@@ -700,6 +703,7 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
     MAX_ROUNDS: String(k.knobs.maxCarveRounds),
     CHILDREN: describeChildren(tree),
     PREVIOUS_LEDGER: ledger ? `\`\`\`json\n${JSON.stringify(ledger)}\n\`\`\`` : 'none',
+    BODY_HASH: tree.issue.bodyHash,
     CARVING: JSON.stringify(chosen, null, 2),
     CARVER_REPLY: reply ? `The carver's reply to your last case:\n\n${reply}` : '',
     SEAMS_PATH,
@@ -875,7 +879,8 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     }
   }
 
-  // 5. The carver and the confirmer, for at most maxCarveRounds pairs.
+  // 5. The carver and the confirmer, for at most maxCarveRounds pairs. The ledger they start from
+  // is the newest live record's, re-derived from the tree, so a withdrawal it recorded stands.
   const previousLedger = record ? buildLedger(record.ledger, carryIds(record.ledger, record.ledger), record, tree) : null;
   const before = fingerprint(tree, k.ctx.botLogin);
   let feedback: string | null = null;

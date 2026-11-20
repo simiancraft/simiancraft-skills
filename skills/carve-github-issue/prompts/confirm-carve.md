@@ -33,7 +33,9 @@ no branches, and run nothing in it that creates files. Do not edit, label, or co
 On a `carve` or `amend`:
 
 1. **The inventory is real and complete.** Every criterion in it is in the thread; nothing the
-   thread asks for is missing from it. Ids carried forward name the same criterion as before.
+   thread asks for is missing from it. Ids carried forward name the same criterion as before. A
+   `withdrawn` criterion cites the edit that retracted it: a comment, or `body:<hash>` for the
+   current body (it hashes to `{{BODY_HASH}}`).
 2. **Cover.** The union of the pieces is the parent: no criterion unowned (`gap`), nothing the
    parent did not ask for (`overreach`). For a width cut (interchangeable instances) judge
    partition integrity instead: each instance in exactly one chunk, the manifest stable and
@@ -54,7 +56,8 @@ On `still-good`: the ledger against the tree. Reject when any criterion is `orph
 `deferred` while its spike is closed, or when a child changed in a way the ledger does not reflect.
 
 On `exhausted`: every criterion is `completed` by a child or reference closed `COMPLETED`, or
-`withdrawn` by a comment you can find, and no recorded dependency is open.
+`withdrawn` by the edit it cites (a comment you can find, or the current body), and no recorded
+dependency is open.
 
 On a hand-off (`small-enough`, `indivisible`, `nothing-left`, `too-uncertain`): the reason against
 the thread and the code, and that `affected` is exactly the criteria the question touches.

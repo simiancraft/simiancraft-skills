@@ -55,14 +55,14 @@ type Record = {
 
 ## The ledger
 
-One row per acceptance criterion of the parent: `{ id, text, owner, status, cite?, waitsOn? }`. Ids are stable across generations (`carryIds`: equal or near-equal normalized text keeps its id). Statuses:
+One row per acceptance criterion of the parent: `{ id, text, owner, status, cite?, waitsOn? }`. Ids are stable across generations (`carryIds`: equal or near-equal normalized text keeps its id). `cite` names the edit that withdrew a criterion: a comment on the trunk's thread (stored as its node id; the carver may give the database id or an `#issuecomment-N` link), or `body:<hash>` for the trunk body whose rewrite withdrew it, the hash being the fingerprint's body hash. Records written before body cites existed carry only comment cites and read unchanged. Statuses:
 
 | Status | Meaning |
 |---|---|
 | `open` | not yet done; owned by a piece, or unowned (which only an `amend` may leave) |
 | `completed` | its owner closed `COMPLETED` |
 | `deferred` | waits on a spike (`waitsOn`); a partial cut lists these |
-| `withdrawn` | the thread retracted it (`cite` names the comment); counts as done for exhaustion |
+| `withdrawn` | the thread retracted it (`cite` names the comment or the body edit); counts as done for exhaustion |
 | `orphaned` | its owner closed `NOT_PLANNED`, was superseded and closed, or was deleted; must be re-owned |
 
 Transitions, one row per event:
@@ -74,7 +74,8 @@ Transitions, one row per event:
 | a completed child reopened | its criteria `open` |
 | a superseded child reopened | an unexpected open child; the revisit adopts it or hands off |
 | a spike closed | its deferred criteria `open` and unowned; only an `amend` settles them |
-| a withdrawing comment removed or edited | the criterion `open` |
+| a withdrawing comment removed | the criterion `open` |
+| the trunk body edited again after a body withdrawal | the criterion `open`; the revisit re-judges it against the new body, and withdraws it again citing the new hash when the new body still does |
 | a child's body, title, or comments changed since the record | re-judged by the confirmer at the next revisit |
 | supersession | criteria move to the replacement as `open`; `superseded` is a child status, not a criterion status |
 
@@ -87,5 +88,5 @@ What the record saw: the trunk's title, body hash, size, non-loop labels, hold l
 ## Readers
 
 - **Workers.** A leaf with a parent reads its parent's newest record, and every ancestor's, before starting: which piece it is, what it may assume has landed (a `layers` relation), what it must not touch (a `shards` relation), and whether it waits on a spike.
-- **Revisits.** The knife reads the newest `live` record to answer "is this carving still good", carrying its ledger forward.
+- **Revisits.** The knife reads the newest `live` record to answer "is this carving still good", carrying its ledger forward: the carver and the confirmer both start from that ledger as `buildLedger` re-derives it from the tree, never from the first carving's inventory. A withdrawal that still stands is carried as it is; a carver answer that drops it or turns it back into an open criterion fails validation (`validateCarving` with `previousLedger`), and an ask the thread reinstates is a new criterion with a new id.
 - **People.** The table. Nothing in the JSON is needed to understand the state of a trunk.
