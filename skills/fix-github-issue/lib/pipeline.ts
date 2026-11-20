@@ -973,10 +973,15 @@ async function land(
   // The boundary is a fact about the change itself, so it is asked once, before anything waits.
   const effective = effectiveTouches(ctx, touches, verdict.touches, cwd);
   const touched = effective?.join(', ') ?? 'unstated';
-  if (!mergeAllowed(ctx, effective) && boundaryWaived(ctx.landPastBoundary, issue.number, effective)) {
+  // A driver can keep an issue's merge for a person whatever autoMerge says; its reason rides on the
+  // boundary's own, so the park still reads as the boundary's and `--land` still waives it.
+  const held = ctx.holdAtBoundary?.(issue, { cwd, base: `${ctx.project.remote}/${ctx.project.baseBranch}` }) ?? null;
+  const heldNote = held ? `; ${held}` : '';
+  const allowed = held === null && mergeAllowed(ctx, effective);
+  if (!allowed && boundaryWaived(ctx.landPastBoundary, issue.number, effective)) {
     // A person cleared this landing past the boundary; every gate below still holds, and a missing
     // classification is not waived (boundaryWaived fails closed on it).
-    say(`the merge boundary would park this (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}); a person cleared it with --land`);
+    say(`the merge boundary would park this (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}${heldNote}); a person cleared it with --land`);
     if (!waiverNoted.has(pr)) {
       waiverNoted.add(pr);
       mutate(ctx, `note the boundary waiver on PR #${pr}`, [
@@ -985,11 +990,11 @@ async function land(
         'comment',
         String(pr),
         '--body',
-        `Cleared by a person to land past the merge boundary (\`fix.ts --land\`): autoMerge is ${ctx.knobs.autoMerge} and this change touches ${touched}. It merges only if the freshness, check, smoke, and line gates all pass.`,
+        `Cleared by a person to land past the merge boundary (\`fix.ts --land\`): autoMerge is ${ctx.knobs.autoMerge} and this change touches ${touched}${heldNote}. It merges only if the freshness, check, smoke, and line gates all pass.`,
       ]);
     }
-  } else if (!mergeAllowed(ctx, effective)) {
-    mutate(ctx, `park PR #${pr} (autoMerge: ${ctx.knobs.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
+  } else if (!allowed) {
+    mutate(ctx, `park PR #${pr} (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}${heldNote})`, [
       'gh',
       'pr',
       'edit',
@@ -997,7 +1002,7 @@ async function land(
       '--add-label',
       'loop/parked',
     ]);
-    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}` };
+    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}${heldNote}` };
   }
 
   // The approval is pinned to the commit the reviewer read. Anything pushed to the lane since then

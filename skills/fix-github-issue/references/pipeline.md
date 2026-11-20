@@ -132,6 +132,12 @@ than trusting a classifier. A missing classification from either agent fails clo
 runtime-effect categories the reviewer's report is the only independent check on the worker's, and a
 merge without it would rest on one self-report.
 
+A driver can hold an issue at the boundary whatever `autoMerge` says, through the context's
+`holdAtBoundary` hook: given the issue about to land and its change (the lane's worktree and the
+base ref it lands on), it returns a reason or null. A held change parks like any other boundary
+park, its reason appended to the boundary's, so `fix.ts --land` still waives it. The burndown holds
+a floor incident's fix this way when the fix undoes a recently merged pull request.
+
 Two boundaries are not knobs, deliberately. The worker never edits production data, and it never
 makes a product decision: an issue whose body asks a person to decide, settle, or rule on something
 comes back as `needs-decision` with the question stated, however small the diff would have been.
