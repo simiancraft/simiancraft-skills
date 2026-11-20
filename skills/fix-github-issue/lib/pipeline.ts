@@ -14,7 +14,8 @@ import { join, resolve } from 'node:path';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
-import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { claim, type ClaimHandle, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import type { TrackerIo } from '../../carve-github-issue/lib/tree.ts';
 import { children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
@@ -1583,6 +1584,63 @@ export async function reviewAndLand(
 }
 
 /**
+ * The live gate and the claim a lane starts under, or the outcome that stops it before it starts.
+ *
+ * Without `lift`, the gate comes first and nothing is claimed for an issue it refuses. A person's
+ * redrive or landing passes `lift`, which removes the hold that stopped the issue. The gate refuses
+ * a held issue, so there the claim is taken first and the hold lifted under it: a run that reads
+ * the issue between those writes sees the hold or the claim, never neither, and leaves its lane
+ * alone. A refusal, or a lift that throws, releases the claim.
+ */
+export async function claimLane(
+  ctx: Context,
+  io: TrackerIo,
+  issue: number,
+  ceiling: number,
+  say: (message: string) => void,
+  lift?: () => void,
+): Promise<ClaimHandle | FixOutcome> {
+  if (!lift) {
+    const gate = liveGate(ctx, io, issue, ceiling);
+    if (!gate.ok) {
+      say(`left alone: ${gate.why}`);
+      return { outcome: gate.outcome, reason: gate.why };
+    }
+    const handle = await claim(ctx, io, issue, 'working');
+    return handle === 'busy' ? { outcome: 'busy', reason: 'another run holds this issue' } : handle;
+  }
+  // Read before the claim: a claim that succeeds clears the record of a lease this run lost.
+  if (leaseLost(ctx, issue)) {
+    const why = 'this run lost its lease on the issue: its renewals failed until the claim ran out';
+    say(`left alone: ${why}`);
+    return { outcome: 'busy', reason: why };
+  }
+  const handle = await claim(ctx, io, issue, 'working');
+  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
+  const letGo = () => {
+    try {
+      handle.release();
+    } catch (error) {
+      say(`could not release the claim: ${(error as Error).message}`);
+    }
+  };
+  let gate: ReturnType<typeof liveGate>;
+  try {
+    lift();
+    gate = liveGate(ctx, io, issue, ceiling);
+  } catch (error) {
+    letGo();
+    throw error;
+  }
+  if (!gate.ok) {
+    say(`left alone: ${gate.why}`);
+    letGo();
+    return { outcome: gate.outcome, reason: gate.why };
+  }
+  return handle;
+}
+
+/**
  * Fixes one issue end to end and says how it ended.
  *
  * The lane is created here and removed here, whatever the outcome, so no exit leaks a worktree.
@@ -1591,7 +1649,8 @@ export async function reviewAndLand(
 export async function fixIssue(
   ctx: Context,
   issue: Issue,
-  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat } = {},
+  /** `lift`: a person's redrive, which removes the hold under this run's claim; see `claimLane`. */
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; lift?: () => void } = {},
 ): Promise<FixOutcome> {
   // Lanes interleave, so every line an issue emits names the issue. Without this the console is a
   // shuffled deck of verdicts with no way to tell which belongs to which.
@@ -1602,15 +1661,10 @@ export async function fixIssue(
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
 
-  // The live gate, then the claim, then the lane: nothing is created for an issue this run may not work.
+  // The live gate and the claim, then the lane: nothing is created for an issue this run may not work.
   const io = trackerIo(ctx);
-  const gate = liveGate(ctx, io, issue.number, ceiling);
-  if (!gate.ok) {
-    say(`left alone: ${gate.why}`);
-    return { outcome: gate.outcome, reason: gate.why };
-  }
-  const handle = await claim(ctx, io, issue.number, 'working');
-  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
+  const handle = await claimLane(ctx, io, issue.number, ceiling, say, options.lift);
+  if ('outcome' in handle) return handle;
   const stopRenewing = keepClaimed(handle, () => {
     // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
     const killed = killAgentsOn(ctx.project.repo, issue.number);
@@ -1788,7 +1842,8 @@ export async function redriveIssue(
    */
   objection: string | null,
   /** `landing`: a person's --land; with no objection, the brief says the change was approved and parked by policy. */
-  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean } = {},
+  /** `lift`: the person's removal of the hold, made under this run's claim; see `claimLane`. */
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean; lift?: () => void } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
@@ -1798,13 +1853,8 @@ export async function redriveIssue(
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
 
   const io = trackerIo(ctx);
-  const gate = liveGate(ctx, io, issue.number, ceiling);
-  if (!gate.ok) {
-    say(`left alone: ${gate.why}`);
-    return { outcome: gate.outcome, reason: gate.why };
-  }
-  const handle = await claim(ctx, io, issue.number, 'working');
-  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
+  const handle = await claimLane(ctx, io, issue.number, ceiling, say, options.lift);
+  if ('outcome' in handle) return handle;
   const stopRenewing = keepClaimed(handle, () => {
     // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
     const killed = killAgentsOn(ctx.project.repo, issue.number);
