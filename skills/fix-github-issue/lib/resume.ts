@@ -16,7 +16,6 @@ import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight } from './lane.ts';
 import { type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
-import { pool } from './pool.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
@@ -215,12 +214,6 @@ function strandedVerdict(dir: string): WorkerResult | null {
 }
 
 /**
- * Lands what a dead run left finished, before anything new is selected.
- *
- * A stranded pull request is finished work, and landing it first also moves the base before fresh
- * lanes cut their branches from it.
- */
-/**
  * What a dead run left behind is a machine's failure, so it is a work dead letter (the machine's
  * "run died with undeclared work"), written once: an issue already held is not commented on again.
  */
@@ -235,63 +228,57 @@ export function parkForInspection(ctx: Context, issue: number, reason: string): 
   }
 }
 
-export async function resumeStranded(
+/**
+ * Lands one pull request a dead run left finished: the live gate, a fresh claim, then review and
+ * landing from the lane's verdict. The caller runs these in its work pool beside new lanes, so a
+ * resume waiting on checks holds one slot, not the run; a lane cut while it waits catches up with
+ * the base it moves at its own seams.
+ */
+export async function resumeOneStranded(
   ctx: Context,
-  stranded: Stranded[],
-  concurrency: number,
+  entry: Stranded,
   maxPoints: number,
   ceiling: number = maxPoints,
 ): Promise<void> {
-  if (stranded.length === 0) return;
-  ctx.step(`Resuming ${stranded.length} stranded pull request(s) from an earlier run`);
-  ctx.log(stranded.map((s) => `#${s.issue.number} (PR #${s.result.pr})`).join(', '));
-  await pool(
-    stranded.map((s) => s.issue),
-    concurrency,
-    async (issue) => {
-      const entry = stranded.find((s) => s.issue.number === issue.number);
-      if (!entry) return;
-      const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
-      // A fresh claim, never the dead run's, and the live gate first: the issue may have been
-      // held, paused, carved, or claimed elsewhere since the run died.
-      const io = trackerIo(ctx);
-      const gate = liveGate(ctx, io, issue.number, ceiling);
-      if (!gate.ok) {
-        say(`not resuming: ${gate.why}`);
-        if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
-        return;
-      }
-      const handle = await claim(ctx, io, issue.number, 'working');
-      if (handle === 'busy') {
-        say('not resuming: another run holds it');
-        return;
-      }
-      const stopRenewing = keepClaimed(handle, () => {
+  const { issue } = entry;
+  const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  // A fresh claim, never the dead run's, and the live gate first: the issue may have been
+  // held, paused, carved, or claimed elsewhere since the run died.
+  const io = trackerIo(ctx);
+  const gate = liveGate(ctx, io, issue.number, ceiling);
+  if (!gate.ok) {
+    say(`not resuming: ${gate.why}`);
+    if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
+    return;
+  }
+  const handle = await claim(ctx, io, issue.number, 'working');
+  if (handle === 'busy') {
+    say('not resuming: another run holds it');
+    return;
+  }
+  const stopRenewing = keepClaimed(handle, () => {
     // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
     const killed = killAgentsOn(ctx.project.repo, issue.number);
     ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
   });
-      inFlight.set(issue.number, { dir: entry.cwd, busy: false });
-      // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
-      // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.
-      let keepLane = false;
-      try {
-        await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
-      } catch (error) {
-        keepLane = recordThrow(ctx, issue, error as Error, say, entry.result.pr).keepLane;
-      } finally {
-        stopRenewing();
-        try {
-          handle.release();
-        } catch (error) {
-          say(`could not release the claim: ${(error as Error).message}`);
-        }
-        inFlight.delete(issue.number);
-        // The same rule as any other exit: a revision that committed and died before its push has
-        // its only copy in this lane, and a resume must not be where that goes.
-        if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
-      }
-    },
-    (issue) => `#${issue.number}`,
-  );
+  inFlight.set(issue.number, { dir: entry.cwd, busy: false });
+  // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
+  // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.
+  let keepLane = false;
+  try {
+    await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
+  } catch (error) {
+    keepLane = recordThrow(ctx, issue, error as Error, say, entry.result.pr).keepLane;
+  } finally {
+    stopRenewing();
+    try {
+      handle.release();
+    } catch (error) {
+      say(`could not release the claim: ${(error as Error).message}`);
+    }
+    inFlight.delete(issue.number);
+    // The same rule as any other exit: a revision that committed and died before its push has
+    // its only copy in this lane, and a resume must not be where that goes.
+    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
+  }
 }

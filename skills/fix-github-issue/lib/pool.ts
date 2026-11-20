@@ -40,6 +40,11 @@ export async function pool<T>(
  * nothing is queued, nothing is in flight, and a refill asked after the last settle returned
  * nothing; a stopping run starts nothing new, asks for nothing, and ends when its items in flight
  * have settled. A refill that throws is reported and counts as an empty answer.
+ *
+ * `until` is work the caller runs beside the pool whose results the refill reads (the run's startup
+ * sweep and sizing). Until it settles the refill is not asked, a settle frees its slot for the queue
+ * alone, and the pool does not end; once it settles, fulfilled or not, the refill is asked at once.
+ * Its outcome is the caller's to await.
  */
 export async function refillingPool<T>(
   items: T[],
@@ -47,9 +52,12 @@ export async function refillingPool<T>(
   work: (item: T) => Promise<void>,
   refill: () => Promise<T[]>,
   label: (item: T) => string = (item) => String(item),
+  { until }: { until?: Promise<unknown> } = {},
 ): Promise<void> {
   const queue = [...items];
   const limit = Math.max(1, size);
+  const opened = Symbol('until settled');
+  let gate: Promise<symbol> | null = until ? until.then(() => opened, () => opened) : null;
   const running = new Map<symbol, Promise<symbol>>();
   const start = (item: T) => {
     const token = Symbol(label(item));
@@ -64,7 +72,7 @@ export async function refillingPool<T>(
     running.set(token, settled);
   };
   const ask = async (): Promise<T[]> => {
-    if (isStopping()) return [];
+    if (isStopping() || gate) return [];
     try {
       return await refill();
     } catch (error) {
@@ -74,8 +82,10 @@ export async function refillingPool<T>(
   };
   for (;;) {
     while (!isStopping() && running.size < limit && queue.length > 0) start(queue.shift() as T);
-    if (running.size > 0) {
-      running.delete(await Promise.race(running.values()));
+    if (running.size > 0 || gate) {
+      const next = await Promise.race(gate ? [...running.values(), gate] : running.values());
+      if (next === opened) gate = null;
+      else running.delete(next);
       queue.push(...(await ask()));
       continue;
     }

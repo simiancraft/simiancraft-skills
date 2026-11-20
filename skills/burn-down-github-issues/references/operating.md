@@ -116,12 +116,13 @@ running loop reads it, and the other references point here. A paused line holds:
   runs under the same check, not one of its own);
 - every Ready card before its dispatch, and every pull request with no driver before its resume;
 - every merge, through the fix pipeline's `mayMerge` hook, which the loop answers by waiting for
-  `go`; a stranded pull request resumed at the run's start reaches it here too. The one exception
+  `go`; a stranded pull request resumed in the work pool reaches it here too. The one exception
   is a floor incident's fix, which passes a pause the floor wrote (it is the merge that clears it)
   and still waits on a person's.
 
-The start-of-run work before those seams is not held: the repair, the stranded-lane resume up to
-its merge, and the knife's sweep (its revisits and redrives included) run on a paused line. The
+The start-of-run work before those seams is not held: the repair and the knife's sweep (its
+revisits and redrives included) run on a paused line, and a stranded-lane resume runs up to its
+merge. The
 statechart guards the knife's dispatch and revisit with `lineActive` as well
 (`state-machine.md`); the loop does not yet hold there.
 
