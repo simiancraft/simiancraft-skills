@@ -109,8 +109,9 @@ the rest); a flag beats the config for the run it is given on.
 ## What a run does
 
 1. **Repairs and reconciles.** Half-written label transitions, merges a dead run never recorded,
-   stranded pull requests with a trusted verdict, torn claims and pauses, and trunks whose tree
-   moved outside the loop are all settled before anything new is selected.
+   torn claims and pauses, and trunks whose tree moved outside the loop are all settled before
+   anything new is selected. Stranded pull requests with a trusted verdict are found here and
+   resumed in step 4's pool.
 2. **Places every card.** Each open issue in the window, and each card already on the board, is
    put where its facts say: closed is Done, a hold label is its human lane, a `loop/dlq: <phase>`
    label is that phase's dead-letter lane, an open pull request is Drafted or Ready for review, a
@@ -128,6 +129,8 @@ the rest); a flag beats the config for the run it is given on.
    dead-letter or human lane when a machine gives up or a person is needed. As each lane settles,
    the backlog is placed again and anything the run itself made eligible (a dependent its merge
    freed, a child the knife carved, a released remainder) joins the run, appraised first if unsized.
+   The pull requests a dead run stranded and the loop's own pull requests with no driver are first
+   in the same queue; a resume holds one slot while it waits on its checks, never the whole run.
 5. **Walks the floor and finishes.** With `floor` configured, every merge went up onto the floor
    as it landed, and the loop has been walking the deployed base on its cadence, pausing the line
    when a walk found it wrong. The run walks on until its merges are verified there (or the drain

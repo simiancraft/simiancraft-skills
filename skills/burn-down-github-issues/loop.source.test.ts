@@ -31,13 +31,33 @@ describe('an unreadable thread at startup', () => {
 });
 
 describe('resume dispatch owns automatic redrive', () => {
-  it('calls redriveIssue only inside resumePull, which the pool uses', () => {
+  it('calls redriveIssue only inside resumePull, which the work pool uses', () => {
     const start = source.indexOf('async function resumePull(');
     expect(start).toBeGreaterThan(-1);
     const end = source.indexOf('\n}', start) + 2;
     expect(source.slice(start, end)).toContain('redriveIssue(');
     expect(source.slice(0, start) + source.slice(end)).not.toContain('redriveIssue(');
-    expect(source).toMatch(/await pool\(\s*resumable,\s*CONFIG.concurrency,\s*resumePull,/);
+    expect(source).toContain("if (item.kind === 'driverless') return resumePull(item);");
+  });
+});
+
+describe('resumes run beside new work, not ahead of it', () => {
+  it('waits on no resume before the work pool starts', () => {
+    expect(source).not.toContain('await resumeStranded(');
+    expect(source).not.toMatch(/await pool\(\s*resumable,/);
+    expect(source).toContain("if (item.kind === 'stranded') return resumeOneStranded(ctx, item.entry, MAX_POINTS);");
+  });
+
+  it('queues stranded and driverless resumes first, then Ready, in one pool sized by concurrency', () => {
+    const first = source.slice(source.indexOf('const first: WorkItem[] = ['), source.indexOf('];', source.indexOf('const first: WorkItem[] = [')));
+    expect(first.indexOf("kind: 'stranded'")).toBeGreaterThan(-1);
+    expect(first.indexOf("kind: 'stranded'")).toBeLessThan(first.indexOf("kind: 'driverless'"));
+    expect(first.indexOf("kind: 'driverless'")).toBeLessThan(first.indexOf("kind: 'ready'"));
+    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONFIG\.concurrency,/);
+  });
+
+  it('never resumes one pull request twice: a stranded lane is left out of the driverless list', () => {
+    expect(source).toContain('selectResumable(placement).filter(({ issue }) => !strandedHere.has(issue.number))');
   });
 });
 
@@ -65,7 +85,7 @@ describe('drivers drain the board before moving on or exiting', () => {
 
 describe('the work phase takes on what the run made eligible', () => {
   it('works through a refilling pool whose refill is the mid-run admission', () => {
-    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONFIG\.concurrency,[\s\S]*?ADMISSION\.admit,/);
+    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONFIG\.concurrency,[\s\S]*?ADMISSION\.admit\(\)/);
     expect(source).not.toMatch(/await pool\(\s*candidates,/);
   });
 
@@ -79,7 +99,7 @@ describe('the work phase takes on what the run made eligible', () => {
   });
 
   it('asks the refill before calling a run with nothing Ready idle, so children carved during startup sizing are worked', () => {
-    const ask = source.indexOf('await ADMISSION.admit();');
+    const ask = source.indexOf('(await ADMISSION.admit())');
     const idle = source.indexOf("log('nothing in Ready;");
     expect(ask).toBeGreaterThan(0);
     expect(ask).toBeLessThan(idle);

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
+import { refillingPool } from '../../fix-github-issue/lib/pool.ts';
 import { reportPreflight } from './preflight.ts';
 
 function fixture(protection: string[] | Error, requiredChecks: string[] = [], checks = 'required') {
@@ -82,7 +83,7 @@ async function dryRunMain(f: ReturnType<typeof fixture>, backlog: unknown[]) {
     FLOOR: null, BOARD: null, ensureLabels: noop, CARVING: { sweep: noop },
     allIssues: () => backlog, placeBacklog: async (issues: unknown[]) => issues,
     SKIP_APPRAISAL: true, LIMIT: 2, selectCandidates: () => [], pulse: noop,
-    ADMISSION: { start: noop, admit: async () => [] },
+    ADMISSION: { start: noop, admit: async () => [] }, refillingPool,
   };
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(body);
   await new Function(...Object.keys(deps), `${js}\nreturn main();`)(...Object.values(deps));

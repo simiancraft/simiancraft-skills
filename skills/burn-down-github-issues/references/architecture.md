@@ -237,7 +237,11 @@ itself idle: the base is fetched, the backlog placed again (which refreshes the 
 the knife carved meanwhile are in it), unsized cards in the window are appraised under
 `appraise.lock`, and the Ready cards not yet handed to a worker this run join the pool. So a
 dependent whose blocker this run merged, a child carved mid-run, and a trunk's released remainder
-are worked in the run that made them eligible. Every admission counts against `--limit` and every
+are worked in the run that made them eligible. The pool's first queue holds the resumes ahead of
+the Ready cards: pull requests a dead run stranded in a lane here, then the loop's own pull requests
+with no driver. Each holds one of `concurrency`'s slots while it waits on its checks, so a slow
+resume costs one slot rather than every Ready card's start; a lane cut meanwhile catches up with
+the base the resume's merge moves at its own seams. Every admission counts against `--limit` and every
 appraisal against `--appraise-limit`; an issue is handed to a worker at most once per run, so a lane
 that settles without closing its issue (a busy claim, a failed worker) is not retried until the next
 run. A stopping run admits nothing. Changes made outside the run (a person's close, a hold removed,
@@ -270,7 +274,7 @@ that answers `exhausted` releases the trunk (`loop/released`), and the loop runs
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.
 
-At the start of every run, after stranded pull requests are resumed, the sweep reads the open
+At the start of every run, the sweep reads the open
 backlog three times: first every issue carrying a trunk, claim, or pause label (finish an
 unfinished announcement, clear a claim whose run died, remove a torn pause, redrive a trunk whose
 hold a person removed, revisit a trunk whose fingerprint moved); second every unlabelled issue that
