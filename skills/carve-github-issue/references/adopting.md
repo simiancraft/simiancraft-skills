@@ -62,6 +62,7 @@ Created on first run, alongside the burndown's:
 | `loop/paused` | paused by its parent while a question is open; owned by trunks only |
 | `loop/released` | the carving is exhausted; the burndown's release appraisal finishes it |
 | `loop/handed-off` | the knife handed it off before carving it; found by the sweep when the hold lifts |
+| `loop/work-whole` | the knife confirmed the issue is one piece (`small-enough` or `indivisible`); it is worked whole whatever its size, and the knife leaves it alone. An appraisal that re-sizes the issue takes it off; a person removes it to have the knife judge the issue again |
 | `loop/carves: N` | failed carve attempts, cleared by a confirmed verdict or by the carve dead letter |
 | `spike` | a child that answers a question with evidence; no pull request |
 
