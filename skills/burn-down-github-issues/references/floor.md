@@ -182,6 +182,10 @@ through the floor's own pause (it is the merge that makes the next walk come bac
 waits on a pause a person set; it lands through a pull master of its own, since the lanes' one may
 be held by a lane waiting at that very pause, and its merge goes up onto the floor too. The readout lists an incident the floor is
 repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
+Resolved is read fresh on every walk, not remembered from when the incident was filed: the ⛔ line
+stays only while the item's newest ledger verdict is still wrong and its incident is still open with
+a person. An item that walks right, or whose incident is closed or handed back, leaves it (and the
+drain stops treating it as a person's); a tracker that cannot be read leaves the line standing.
 
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)
 parks the incident for a person instead. An incident with a person, parked or dead-lettered or
