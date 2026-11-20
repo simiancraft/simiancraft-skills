@@ -26,7 +26,7 @@ import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
-import { behindBase, behindBeyondNoise, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_AUTOMATION_REFRESHES, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
 
 /**
@@ -1018,7 +1018,13 @@ async function land(
   const skipNoise = !ctx.dryRun && !requiresUpToDate(ctx);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
-  for (let pass = 0; ; pass++) {
+  /** The base commit of the last look upstream; its commits were judged then. */
+  let lastLook: string | undefined;
+  /** Moves counted against the refresh cap, moves made only by known automation, and every commit that moved the base. */
+  let refreshes = 0;
+  let automationMoves = 0;
+  const movers: BaseCommit[] = [];
+  for (;;) {
     const caught = await catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
     if (caught === 'conflict') {
       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
@@ -1059,12 +1065,27 @@ async function land(
       const checked = fetchBase(ctx, cwd);
       if ((skipNoise ? behindBeyondNoise(ctx, cwd, checked) : behindBase(ctx, cwd, checked)).length === 0) {
         baseSeen = checked;
+        lastLook = checked;
         return 'fresh';
       }
-      if (pass >= MAX_BASE_REFRESHES) {
-        return { dlq: `the base moved ${pass + 1} times while this landing waited on its gates; it needs a quiet base or a person` };
+      // Who moved the base decides what the move costs. Release and deploy machinery follows every
+      // merge, so a move made only of its commits still catches up but is not counted against the
+      // refresh cap; it has a larger bound of its own, so a stream of them cannot loop forever.
+      const moved = commitsBehind(ctx, cwd, checked, lastLook);
+      lastLook = checked;
+      movers.unshift(...moved);
+      const byAutomation = moved.length > 0 && moved.every((commit) => commit.automation);
+      if (byAutomation) automationMoves += 1;
+      else refreshes += 1;
+      const total = refreshes + automationMoves;
+      const named = movers.length > 0 ? `; the commits that moved it: ${describeCommits(movers)}` : '';
+      if (refreshes > MAX_BASE_REFRESHES) {
+        return { dlq: `the base moved ${total} times while this landing waited on its gates (${refreshes} past known automation)${named}; it needs a quiet base or a person` };
       }
-      say(`the base moved ${after}; catching up again before anything else`);
+      if (automationMoves > MAX_AUTOMATION_REFRESHES) {
+        return { dlq: `the base moved ${total} times while this landing waited on its gates (${automationMoves} only by known automation, past that bound of ${MAX_AUTOMATION_REFRESHES})${named}; it needs a quiet base or a person` };
+      }
+      say(`the base moved ${after}${byAutomation ? ' by known automation only, not counted against the refresh cap' : ''}; catching up again before anything else`);
       return 'again';
     };
 
