@@ -23,6 +23,9 @@ const FILE_BY_ROLE: Record<string, string> = {
   'panel-framer': PANEL_QUESTIONS_FILE,
   panelist: PANEL_REVIEW_FILE,
   'panel-judge': PANEL_JUDGMENT_FILE,
+  // The floor's two turns (burn-down-github-issues/lib/floor), which name their own files.
+  walker: 'walk-verdict.json',
+  diagnose: 'floor-diagnosis.json',
 };
 
 const [cwd, answer] = process.argv.slice(2);
