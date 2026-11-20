@@ -192,7 +192,11 @@ same board pointer `card.ts` reads, so a carve nobody dispatched from the loop i
 A failed turn is not lost work. An agent killed at its cap, and one that exited badly, are counted
 and written on the issue, and each says the same thing there: what the lane holds is not trusted, and
 anything already pushed survives. A stop and a lost lease write nothing on the issue at all, by
-design; their record is the kept lane and the log. In every one of the four cases, read the issue's
+design; their record is the kept lane and the log. To stop one lane's coder, prover, or reviewer
+without stopping the run, `kill` its agent's pid (SIGTERM, not `kill -9`): the turn is not counted
+as an attempt, the lane is kept, and the issue is held (`loop/parked` with a pull request,
+`needs-human` without) until you remove the hold. A `kill -9` cannot be told from the kernel's
+out-of-memory kill and counts as a failed attempt. In every one of these cases, read the issue's
 pull requests before deciding what to do with the card: a redrive continues from the pushed head,
 while carving or re-working starts again from nothing. `gh pr list --search <issue>` answers that in
 one line.

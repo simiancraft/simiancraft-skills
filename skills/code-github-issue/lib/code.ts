@@ -6,7 +6,7 @@
  */
 
 import { join } from 'node:path';
-import { agentCapMs, assertNoHostError, logTail, readResult, renderPrompt, runAgent, runAgentOnce } from '../../fix-github-issue/lib/agent.ts';
+import { agentCapMs, assertNoHostError, logTail, readResult, refuseOutsideStop, renderPrompt, runAgent, runAgentOnce } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
@@ -88,6 +88,8 @@ export async function runCode(
   const run = brief.kind === 'conflict'
     ? await runAgentOnce(ctx, role, issue.number, cwd, ctx.seats.worker, prompt)
     : await runAgent(ctx, role, issue.number, cwd, ctx.seats.worker, prompt, onRetry);
+  // A coder someone else stopped did not fail; the pipeline holds the issue rather than counting it.
+  refuseOutsideStop(run, role);
   const { logPath, exitCode, notRun, timedOut } = assertNoHostError(run, role, issue.number);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the coder was not run' };
   if (exitCode !== 0) {

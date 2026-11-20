@@ -55,6 +55,17 @@ const REDRIVE: Transition[] = [
 ];
 
 /**
+ * A Work or Review seat whose agent a signal from outside the driver stopped: a person's, most
+ * likely, who stopped it for a reason. Nothing is counted and nothing returns to Ready, where the
+ * next pass would start the same work again; the card is held for a person, parked with its pull
+ * request when there is one. The lane is kept, since a change stopped midway leaves its only record there.
+ */
+const STOPPED_FROM_OUTSIDE: Transition[] = [
+  { target: 'ticket.human.parked', guard: 'prExists', actions: ['labelParked', 'parkPr', 'commentReason', 'releaseClaim'] },
+  { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentReason', 'releaseClaim'] },
+];
+
+/**
  * A pull request of the loop's own whose driver is gone, with no hold on it: a run that died on
  * another machine, a lane that was removed. Nobody objected to the work, so it is not a revision.
  * It catches up, then goes to the closest lane that can carry it on: Proving, where its author
@@ -353,6 +364,9 @@ export const MACHINE: StateNode = {
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
               { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
             ],
+            // A seat stopped by a signal the driver did not send, a person's most likely, is not a
+            // failed turn: no attempt is counted, the lane is kept, and a person holds the card.
+            STOPPED_FROM_OUTSIDE: STOPPED_FROM_OUTSIDE,
             // With a pull request open there is no Ready to return to: that work waits in the queue.
             AGENT_FAILED: [
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
@@ -421,7 +435,10 @@ export const MACHINE: StateNode = {
 
         review: {
           initial: 'readyForReview',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] } },
+          on: {
+            AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
+            STOPPED_FROM_OUTSIDE: STOPPED_FROM_OUTSIDE,
+          },
           states: {
             readyForReview: {
               lane: { key: 'E1', name: 'Ready for review', description: 'PR ready; CI running; no reviewer has started' },
