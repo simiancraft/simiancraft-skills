@@ -6,7 +6,7 @@
  * it. The main checkout is never one.
  */
 
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Context } from './context.ts';
 import { CONTROL_FILES } from './control-files.ts';
@@ -45,6 +45,8 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
     // Ignored files go too, so a half-written artifact cannot be read as this attempt's, but the
     // installed dependencies stay: reinstalling them is minutes of nothing.
     sh(ctx, ['git', 'clean', '-fdx', '-e', 'node_modules'], cwd);
+    // The clean took the lane files with the rest of the ignored files.
+    copyLaneFiles(ctx, issue, cwd);
     if (branch && branch !== 'HEAD') {
       try {
         sh(ctx, ['git', 'branch', '-D', branch], cwd);
@@ -65,13 +67,45 @@ export function worktreeFor(ctx: Context, issue: number): string {
     if (dirtyPaths(ctx, dir).length > 0) {
       throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
     }
+    copyLaneFiles(ctx, issue, dir);
     return dir;
   }
 
   mkdirSync(dirname(dir), { recursive: true });
   sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch]);
   sh(ctx, ['git', 'worktree', 'add', '--detach', dir, `${ctx.project.remote}/${ctx.project.baseBranch}`]);
+  copyLaneFiles(ctx, issue, dir);
   return dir;
+}
+
+/**
+ * Copies `project.laneFiles` from the main checkout into a lane, overwriting what the lane holds,
+ * so every seat finds them without running a command for it. A lane is a fresh worktree and never
+ * sees an untracked file such as shared test credentials otherwise.
+ *
+ * Only a path the lane's git ignores is copied: an untracked file git does not ignore would make
+ * the lane dirty and could be committed with the fix. A missing source, a path that is not
+ * ignored, or a failed copy is logged and skipped; the lane is still made.
+ */
+export function copyLaneFiles(ctx: Context, issue: number, dir: string): void {
+  for (const path of ctx.project.laneFiles ?? []) {
+    const source = resolve(ctx.repoRoot, path);
+    if (!existsSync(source)) {
+      ctx.log(`  #${issue}  lane file ${path} is not in ${ctx.repoRoot}; the lane goes without it`);
+      continue;
+    }
+    if (Bun.spawnSync(['git', 'check-ignore', '-q', path], { cwd: dir }).exitCode !== 0) {
+      ctx.log(`  #${issue}  lane file ${path} is not ignored by git in the lane; not copied, since it could be committed`);
+      continue;
+    }
+    try {
+      const target = resolve(dir, path);
+      mkdirSync(dirname(target), { recursive: true });
+      cpSync(source, target, { recursive: true, force: true });
+    } catch (error) {
+      ctx.log(`  #${issue}  could not copy lane file ${path}: ${(error as Error).message}`);
+    }
+  }
 }
 
 /*
@@ -121,6 +155,7 @@ export function worktreeAtPullRequest(ctx: Context, issue: number, branch: strin
   sh(ctx, ['git', 'fetch', ctx.project.remote, `${branch}:refs/remotes/${ctx.project.remote}/${branch}`]);
   sh(ctx, ['git', 'worktree', 'add', '-B', branch, dir, `${ctx.project.remote}/${branch}`]);
   sh(ctx, ['git', 'branch', `--set-upstream-to=${ctx.project.remote}/${branch}`, branch], dir);
+  copyLaneFiles(ctx, issue, dir);
   return dir;
 }
 

@@ -39,6 +39,7 @@ export default {
     evidenceBranch: '__evidence_locker__',
     checkCommand: 'bun run verify',
     installCommand: 'bun install --frozen-lockfile',
+    laneFiles: ['.env.test.local'] /* optional; ignored files copied from the main checkout into every lane */,
     conventionDocs: ['AGENTS.md', 'CLAUDE.md'],
     sizingScale: 'where your point scale is documented',
     sharedServices: ['the local database', 'the shared staging environment'],
@@ -119,6 +120,7 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `checkCommand` | the local gate | `bun run lint && bun run test` | `bun run verify` (a script fanning out to many checks) |
 | `ciCommand` | optional non-empty string; the prover always runs it and records command, full SHA, and exit code in `gateRun`. If unset, it records `checkCommand` only when the head moved or the gated commit is unknown; otherwise no rerun. A moved or unknown head still owes `checkCommand` first. | `bun run test:ci` | omit when `checkCommand` is also CI's deciding command |
 | `installCommand` | frozen-lockfile install | `bun install --frozen-lockfile` | the same |
+| `laneFiles` | optional; files the main checkout holds and git ignores (shared test credentials, a local env file) that the driver copies into each lane when it makes or resets one, so every seat has them without running a command. Relative to the repository root. A missing source is logged and skipped; a path git does not ignore is logged and not copied, since a seat could commit it. | `['.env.test.local']` | omit |
 | `conventionDocs` | what a prescribed remedy is read against | `CONTRIBUTING.md` | `AGENTS.md` |
 | `sizingScale` | where the point scale is written | a docs page | an issue template |
 | `pathAliases` | **check this**, alias to directory | `@/` to `src` | `~/` to `.` |

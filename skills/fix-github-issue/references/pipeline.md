@@ -319,6 +319,11 @@ let a driver shape the merge without the pipeline learning why:
   (`loop/dlq: landing`) without spending a review round. Absent means always allowed.
 - **`ctx.afterMerge`** is told once after every confirmed merge, with the issue, the pull request,
   the merged SHA, the time, and the paths that landed, while the lane still exists.
+- **`project.laneFiles`** lists files the main checkout holds and git ignores (shared test
+  credentials, say) that the driver copies into a lane whenever it makes one, reuses one, or
+  resets one for a retry. A lane is a fresh worktree and sees no untracked file otherwise, and
+  `installCommand` is only text in the prompts, which not every seat runs. A missing source, or a
+  path git does not ignore in the lane, is logged and skipped; the lane is still made.
 - **`project.followBase`** fast-forwards the main checkout to the remote base after every confirmed
   merge, so a dev server running there shows each fix as it lands. Only a fast-forward, and only
   when that checkout has the base branch checked out with a clean tracked tree (untracked files

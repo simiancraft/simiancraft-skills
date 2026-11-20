@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ProjectConfig } from './config.ts';
+import { laneFilesFault, type ProjectConfig } from './config.ts';
 import type { Context } from './context.ts';
 import { claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
 import { reconcile } from './resume.ts';
-import { resetLane, worktreeAtPullRequest } from './lane.ts';
+import { resetLane, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -230,5 +230,60 @@ describe('resetting a lane for a retry', () => {
     resetLane(ctxFor([]), 85, dir);
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
     expect(git(repo, 'rev-parse', `refs/loop/rescued/issue-85/${sha.slice(0, 12)}`)).toBe(sha);
+  });
+});
+
+describe('lane files: untracked files the main checkout holds and every lane needs', () => {
+  const laneCtx = (lines: string[]) =>
+    ({ project: { ...PROJECT, laneFiles: ['.env.test.local', 'config/secret.json', 'absent.env', 'loose.txt'] }, repoRoot: repo, dryRun: false, log: (m: string) => lines.push(m) }) as unknown as Context;
+  beforeAll(() => {
+    // Ignored in every worktree, as a committed .gitignore entry would be, without moving the base.
+    appendFileSync(join(repo, '.git', 'info', 'exclude'), '.env.test.local\nconfig/secret.json\n');
+    writeFileSync(join(repo, '.env.test.local'), 'TEST_USER=shared\n');
+    mkdirSync(join(repo, 'config'), { recursive: true });
+    writeFileSync(join(repo, 'config', 'secret.json'), '{"k":1}\n');
+    writeFileSync(join(repo, 'loose.txt'), 'untracked and not ignored\n');
+  });
+  afterAll(() => {
+    for (const file of ['.env.test.local', 'config', 'loose.txt']) rmSync(join(repo, file), { recursive: true, force: true });
+  });
+
+  it('copies each ignored lane file into a new lane, and warns past a missing or unignored one', () => {
+    const lines: string[] = [];
+    rmSync(join(repo, 'wt', 'issue-90'), { recursive: true, force: true });
+    const dir = worktreeFor(laneCtx(lines), 90);
+    expect(readFileSync(join(dir, '.env.test.local'), 'utf8')).toBe('TEST_USER=shared\n');
+    expect(readFileSync(join(dir, 'config', 'secret.json'), 'utf8')).toBe('{"k":1}\n');
+    expect(existsSync(join(dir, 'absent.env'))).toBe(false);
+    expect(existsSync(join(dir, 'loose.txt'))).toBe(false);
+    expect(lines.some((l) => l.includes('absent.env') && l.includes('goes without it'))).toBe(true);
+    expect(lines.some((l) => l.includes('loose.txt') && l.includes('not ignored'))).toBe(true);
+    // Copied files are ignored, so the lane stays clean and is reusable.
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+    rmSync(join(dir, '.env.test.local'));
+    worktreeFor(laneCtx([]), 90);
+    expect(existsSync(join(dir, '.env.test.local'))).toBe(true);
+  });
+
+  it('puts the lane files back after a reset cleans the ignored files away', () => {
+    const dir = lane(91, true);
+    resetLane(laneCtx([]), 91, dir);
+    expect(readFileSync(join(dir, '.env.test.local'), 'utf8')).toBe('TEST_USER=shared\n');
+  });
+
+  it('copies the lane files into a lane made on a pull request\'s branch', () => {
+    const dir = lane(92, true, 'fix/lane-files-92');
+    git(dir, 'push', '-q', 'origin', 'HEAD:refs/heads/fix/lane-files-92');
+    git(repo, 'worktree', 'remove', '--force', dir);
+    const out = worktreeAtPullRequest(laneCtx([]), 92, 'fix/lane-files-92');
+    expect(existsSync(join(out, '.env.test.local'))).toBe(true);
+  });
+
+  it('accepts only relative paths that stay inside the repository', () => {
+    expect(laneFilesFault(undefined)).toBeNull();
+    expect(laneFilesFault(['.env.test.local', 'config/secret.json'])).toBeNull();
+    for (const value of [null, '.env', [''], ['/etc/passwd'], ['../outside'], ['a/../../b'], ['.'], [3]]) {
+      expect(laneFilesFault(value)).toContain('project.laneFiles');
+    }
   });
 });
