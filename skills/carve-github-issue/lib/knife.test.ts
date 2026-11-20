@@ -17,7 +17,7 @@ import { laneState, successors } from '../../burn-down-github-issues/lib/simulat
 import { ENGINES } from '../../fix-github-issue/lib/engines.ts';
 import { runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { appraiseIssue } from '../../appraise-github-issues/lib/appraise.ts';
-import { latestStamp, threadDigest } from '../../appraise-github-issues/lib/stamp.ts';
+import { latestStamp, renderStamp, threadDigest, threadParts } from '../../appraise-github-issues/lib/stamp.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -872,6 +872,35 @@ describe('carveIssue', () => {
     expect(mine[0]).toMatchObject({ mode: 'first-carving', verdict: 'unknowable', cause: 'stamp-unaccounted', fires: true, samePass: false, stampAt: null, ageSeconds: null, stampBase: null });
     expect(mine[1]).toMatchObject({ carverVerdict: 'carve' });
     expect('baseNow' in mine[0]).toBe(true);
+  });
+
+  /** Stamps the trunk as an appraisal would, against the thread as it stands now. */
+  function stampTrunk(io: FakeTracker, touches: string[]): void {
+    const view = io.view(10)!;
+    const thread = { title: view.title, body: view.body, comments: view.comments };
+    io.comment(10, BOT, renderStamp({ base: 'b'.repeat(40), touches, thread: threadDigest(thread, BOT), parts: threadParts(thread, BOT), points: 13, at: new Date().toISOString() }));
+  }
+  const guardLines = (ctx: Context, since: string) =>
+    readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.issue === 10 && l.at >= since);
+
+  test('a stamp that named no paths is read from its thread alone, not as unknowable', async () => {
+    const started = new Date().toISOString();
+    const io = trunk(); const ctx = ctxFor(io);
+    stampTrunk(io, []);
+    await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    const [dispatch] = guardLines(ctx, started);
+    expect(dispatch).toMatchObject({ point: 'dispatch', verdict: 'fresh', scope: 'thread-only', fires: false });
+    expect(dispatch.reasons[0]).toMatch(/^paths: none/);
+  });
+
+  test("a carver's still-good that meets a stale verdict is logged as settling it", async () => {
+    const { io, ctx } = await carved();
+    stampTrunk(io, []);
+    io.comment(10, 'person', 'One more detail about the existing flow.');
+    const started = new Date().toISOString();
+    await carveIssue(ctx, issue10, knobs(fixture('sg', revisit(10, 'still-good')), fixture('yes', confirmation(10, 'revisit', 'still-good', true))), io);
+    const answered = guardLines(ctx, started).find((l) => l.point === 'carver-answered');
+    expect(answered).toMatchObject({ verdict: 'stale', carverVerdict: 'still-good', carverSettles: true });
   });
 
   test("a first carving's confirmed nothing-left releases the issue to the appraiser, with no hold", async () => {

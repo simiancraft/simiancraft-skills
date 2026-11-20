@@ -31,12 +31,16 @@ time the carver answers, the **pre-carve guard** asks whether the appraisal the 
 describes the issue: `fresh` (nothing it judged moved), `stale` (commits on the paths it named, or
 a person edited or wrote on the thread, said by part), or `unknowable`, with its cause:
 `never-stamped` (sized before stamping began), `stamp-missing` (sized since, yet unstamped),
-`stamp-unaccounted` (no stamp, and which of those is not known), `stamp-incomplete` (no base or no
-paths), or `uncheckable` (git could not compare). It runs in **shadow** for now: it logs its answer
-and appends a line to `pre-carve-guard.jsonl` in the run directory with the mode, the point
-(`dispatch` or `carver-answered`), the stamp's time and age, `samePass` when this same run wrote
-the stamp (so a `fresh` there measures nothing), and both the stamp's base and the base now. It
-routes nothing.
+`stamp-unaccounted` (no stamp, and which of those is not known), `stamp-incomplete` (no base), or
+`uncheckable` (git could not compare). A stamp whose appraisal named no paths (a spike) is read
+from its thread alone, with `scope: thread-only` and the reason `paths: none`; there is no movement
+under it to ask about. It runs in **shadow** for now: it logs its answer and appends a line to
+`pre-carve-guard.jsonl` in the run directory with the mode, the point (`dispatch` or
+`carver-answered`), the scope, the stamp's time and age, `samePass` when this same run wrote the
+stamp (so a `fresh` there measures nothing), both the stamp's base and the base now, the files the
+commits on its paths changed (`movedFiles`), and, at the carver's answer, `carverSettles` when a
+`still-good` answer met a `stale` verdict (a live guard that took that answer as the re-appraisal
+would not fire). It routes nothing.
 
 1. **Inventory.** Every acceptance criterion in the parent's whole thread, numbered. This is the
    100% rule made checkable: the pieces must cover it exactly.

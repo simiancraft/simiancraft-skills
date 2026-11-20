@@ -22,7 +22,7 @@ import { isStopping, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { runCarveCallback } from './callbacks.ts';
-import { appraisalFreshness, gitCommitsSince } from '../../appraise-github-issues/lib/freshness.ts';
+import { appraisalFreshness, gitCommitsSince, gitFilesSince } from '../../appraise-github-issues/lib/freshness.ts';
 import { stampingSince, wroteStampHere } from '../../appraise-github-issues/lib/stamp.ts';
 import {
   type Carving,
@@ -658,10 +658,14 @@ function shadowPreCarveGuard(k: Knife, tree: Tree, mode: GuardMode, point: 'disp
     const io = k.io as TrackerIo;
     const freshness = appraisalFreshness(tree.issue, k.ctx.botLogin, {
       commitsSince: gitCommitsSince(k.ctx),
+      filesSince: gitFilesSince(k.ctx),
       sizedAt: io.sizedAt ? () => (io.sizedAt as (n: number) => string | null)(k.trunk) : undefined,
       stampingSince: stampingSince(k.ctx.runDir),
     });
     const fires = freshness.verdict !== 'fresh';
+    // A carver that read the issue now and answered still-good with a reason has re-judged it; a
+    // live guard that took that answer as the re-appraisal would not fire here. Logged to measure.
+    const carverSettles = point === 'carver-answered' && carverVerdict === 'still-good' && freshness.verdict === 'stale';
     const at = new Date();
     const ageSeconds = freshness.stampAt ? Math.round((at.getTime() - Date.parse(freshness.stampAt)) / 1000) : null;
     const samePass = wroteStampHere(k.ctx.project.repo, k.trunk, freshness.stampAt);
@@ -682,13 +686,16 @@ function shadowPreCarveGuard(k: Knife, tree: Tree, mode: GuardMode, point: 'disp
       ...(carverVerdict ? { carverVerdict } : {}),
       verdict: freshness.verdict,
       ...(freshness.cause ? { cause: freshness.cause } : {}),
+      ...(freshness.scope ? { scope: freshness.scope } : {}),
       fires,
+      ...(point === 'carver-answered' ? { carverSettles } : {}),
       samePass,
       stampAt: freshness.stampAt,
       ageSeconds,
       stampBase: freshness.stampBase,
       baseNow,
       reasons: freshness.reasons,
+      ...(freshness.movedFiles ? { movedFiles: freshness.movedFiles.slice(0, 50), movedFileCount: freshness.movedFiles.length } : {}),
     };
     mkdirSync(k.ctx.runDir, { recursive: true });
     appendFileSync(join(k.ctx.runDir, 'pre-carve-guard.jsonl'), `${JSON.stringify(line)}\n`);

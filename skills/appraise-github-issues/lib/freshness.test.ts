@@ -16,11 +16,24 @@ const checks = (commitsSince: CommitsSince = none) => ({ commitsSince });
 
 describe('whether an appraisal still describes its issue', () => {
   it('is fresh when nothing it judged moved, and names the stamp it read', () => {
-    expect(appraisalFreshness(stamped(), BOT, checks())).toEqual({ verdict: 'fresh', reasons: [], stampAt: '2026-11-01T00:00:00.000Z', stampBase: 'a'.repeat(40) });
+    expect(appraisalFreshness(stamped(), BOT, checks())).toEqual({ verdict: 'fresh', reasons: [], scope: 'thread-and-paths', stampAt: '2026-11-01T00:00:00.000Z', stampBase: 'a'.repeat(40) });
   });
-  it('is unknowable with no base, no paths, or a base git cannot compare, and says which', () => {
+  it('reads a stamp that named no paths from its thread alone, and says so', () => {
+    const asked: string[][] = [];
+    const spike = appraisalFreshness(stamped({ touches: [] }), BOT, checks((_, paths) => { asked.push(paths); return ['abc1234']; }));
+    expect(spike).toMatchObject({ verdict: 'fresh', scope: 'thread-only' });
+    expect(spike.reasons[0]).toMatch(/^paths: none/);
+    expect(asked).toEqual([]);
+    const edited = stamped({ touches: [] });
+    edited.body = 'b, rewritten';
+    expect(appraisalFreshness(edited, BOT, checks())).toMatchObject({ verdict: 'stale', scope: 'thread-only' });
+  });
+  it('names the files the commits on its paths changed, when it can read them', () => {
+    const moved = appraisalFreshness(stamped(), BOT, { commitsSince: () => ['abc1234'], filesSince: () => ['src/x.ts'] });
+    expect(moved).toMatchObject({ verdict: 'stale', movedFiles: ['src/x.ts'] });
+  });
+  it('is unknowable with no base, or a base git cannot compare, and says which', () => {
     expect(appraisalFreshness(stamped({ base: null }), BOT, checks())).toMatchObject({ verdict: 'unknowable', cause: 'stamp-incomplete' });
-    expect(appraisalFreshness(stamped({ touches: [] }), BOT, checks())).toMatchObject({ verdict: 'unknowable', cause: 'stamp-incomplete' });
     const broken = appraisalFreshness(stamped(), BOT, checks(() => { throw new Error('bad revision'); }));
     expect(broken).toMatchObject({ verdict: 'unknowable', cause: 'uncheckable' });
   });

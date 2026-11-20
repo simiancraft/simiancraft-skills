@@ -4,7 +4,7 @@
  * wrote it. No agent runs here; it is a few git and tracker reads.
  *
  * The answer is a verdict with reasons, in the Rumsfeld sense: `fresh` means every check ran and
- * found nothing moved; `stale` means something the appraisal judged has moved; `unknowable` means the
+ * found nothing moved (a stamp that named no paths is checked on its thread alone, and says so); `stale` means something the appraisal judged has moved; `unknowable` means the
  * stamp is missing or incomplete, so nobody can say the appraisal still holds.
  */
 
@@ -17,16 +17,27 @@ import { latestStamp, threadChanges, threadDigest, threadParts } from './stamp.t
  * - `never-stamped`: appraised before this run directory began stamping; no stamp ever existed.
  * - `stamp-missing`: sized after stamping began, so a stamp should be on the thread and is not.
  * - `stamp-unaccounted`: no stamp, and when the issue was sized or when stamping began is not known.
- * - `stamp-incomplete`: a stamp is there, but it names no base or no paths.
+ * - `stamp-incomplete`: a stamp is there, but it names no base.
  * - `uncheckable`: the stamp is whole, but git could not compare its base with the base now.
  */
 export type UnknowableCause = 'never-stamped' | 'stamp-missing' | 'stamp-unaccounted' | 'stamp-incomplete' | 'uncheckable';
+
+/**
+ * What a stamped verdict was read from. `thread-only` is a stamp whose appraisal named no paths (a
+ * spike that edits nothing, say): there is no movement under the issue to ask about, so the thread
+ * alone decides, and that is a full answer, not a missing one.
+ */
+export type FreshnessScope = 'thread-and-paths' | 'thread-only';
 
 export type Freshness = {
   verdict: 'fresh' | 'stale' | 'unknowable';
   reasons: string[];
   /** Set only on an unknowable verdict. */
   cause?: UnknowableCause;
+  /** Set when a stamp was read. */
+  scope?: FreshnessScope;
+  /** The files the commits on its paths changed, when they were read; what moved, not only that something did. */
+  movedFiles?: string[];
   /** The stamp the verdict read: when it was written and the base it judged; null with no stamp. */
   stampAt: string | null;
   stampBase: string | null;
@@ -44,12 +55,21 @@ export function gitCommitsSince(ctx: Context): CommitsSince {
   };
 }
 
+export function gitFilesSince(ctx: Context): (from: string, paths: string[]) => string[] {
+  return (from, paths) => {
+    const out = sh(ctx, ['git', 'diff', '--name-only', `${from}..${ctx.project.remote}/${ctx.project.baseBranch}`, '--', ...paths], ctx.repoRoot, 1);
+    return out.split('\n').map((l) => l.trim()).filter(Boolean);
+  };
+}
+
 export type FreshnessChecks = {
   commitsSince: CommitsSince;
   /** When the issue's newest size label was applied; throws or answers null when that cannot be read. */
   sizedAt?: () => string | null;
   /** When this run directory began stamping appraisals, or null when it never recorded it. */
   stampingSince?: string | null;
+  /** The files changed on the base since `from` under `paths`; read only when commits moved them. */
+  filesSince?: (from: string, paths: string[]) => string[];
 };
 
 export function appraisalFreshness(issue: Thread, botLogin: string, checks: FreshnessChecks): Freshness {
@@ -58,6 +78,8 @@ export function appraisalFreshness(issue: Thread, botLogin: string, checks: Fres
   const reasons: string[] = [];
   let cause: UnknowableCause | undefined;
   let moved = false;
+  let scope: FreshnessScope = 'thread-and-paths';
+  let movedFiles: string[] | undefined;
   if (threadDigest(issue, botLogin) !== stamp.thread) {
     moved = true;
     const changes = stamp.parts ? threadChanges(stamp.parts, threadParts(issue, botLogin)) : [];
@@ -67,21 +89,26 @@ export function appraisalFreshness(issue: Thread, botLogin: string, checks: Fres
     cause = 'stamp-incomplete';
     reasons.push('the stamp records no base');
   } else if (stamp.touches.length === 0) {
-    cause = 'stamp-incomplete';
-    reasons.push('the appraisal named no paths, so movement under the issue cannot be scoped');
+    scope = 'thread-only';
+    reasons.push('paths: none; the appraisal named no paths, so the thread alone decides');
   } else {
     try {
       const commits = checks.commitsSince(stamp.base, stamp.touches);
       if (commits.length) {
         moved = true;
         reasons.push(`${commits.length} commit${commits.length === 1 ? '' : 's'} on its paths since the appraisal (${commits.slice(0, 3).join(', ')}${commits.length > 3 ? ', ...' : ''})`);
+        try {
+          if (checks.filesSince) movedFiles = checks.filesSince(stamp.base, stamp.touches);
+        } catch {
+          movedFiles = undefined;
+        }
       }
     } catch (error) {
       cause = 'uncheckable';
       reasons.push(`git could not compare the base: ${(error as Error).message.split('\n')[0]}`);
     }
   }
-  const seen = { stampAt: stamp.at, stampBase: stamp.base };
+  const seen = { scope, ...(movedFiles ? { movedFiles } : {}), stampAt: stamp.at, stampBase: stamp.base };
   // A move that was seen outranks a check that could not run: stale is the stronger statement.
   if (moved) return { verdict: 'stale', reasons, ...seen };
   if (cause) return { verdict: 'unknowable', reasons, cause, ...seen };
