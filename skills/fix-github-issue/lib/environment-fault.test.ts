@@ -10,7 +10,7 @@ import { refuseEnvironmentFault, runAgent } from './agent.ts';
 import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
 import { REVIEW_FILE } from './control-files.ts';
-import { EnvironmentFault, environmentFaultOf, faultMarker, hostFaultIn } from './environment-fault.ts';
+import { EnvironmentFault, environmentFaultOf, faultMarker, hostFaultIn, rememberFaultMarkers } from './environment-fault.ts';
 import { weighHold } from './panel.ts';
 import { move, recordThrow } from './pipeline.ts';
 
@@ -64,7 +64,7 @@ describe('an environment fault', () => {
     expect(hostFaultIn('the reviewer found the checks red')).toBeNull();
   });
   it('is read from a thrown error by its type, its errno code, or its message', () => {
-    expect(environmentFaultOf(new EnvironmentFault({ kind: 'stopped', signal: 'SIGINT' }, 'coder', 'stopped'))).toEqual({ kind: 'stopped', signal: 'SIGINT' });
+    expect(environmentFaultOf(new EnvironmentFault({ kind: 'stopped', signal: 'SIGINT' }, 'coder', 'stopped'))).toEqual({ kind: 'stopped', signal: 'SIGINT', role: 'coder' });
     expect(environmentFaultOf(Object.assign(new Error('write failed'), { code: 'ENOSPC' }))).toEqual({ kind: 'ENOSPC' });
     expect(environmentFaultOf(new Error('git push failed: fatal: No space left on device'))).toEqual({ kind: 'ENOSPC' });
     expect(environmentFaultOf(Object.assign(new Error('missing'), { code: 'ENOENT' }))).toBeNull();
@@ -82,7 +82,7 @@ describe('a seat whose run fails on the host', () => {
     const lines: string[] = [];
     const run = await runAgent(context(lines, new FakeTracker('loop-bot')), 'reviewer', 7, cwd, { engine: 'fixture2', model: answer }, 'prompt');
     expect(run.exitCode).toBe(1);
-    expect(run.fault).toEqual({ kind: 'ENOSPC' });
+    expect(run.fault).toEqual({ kind: 'ENOSPC', role: 'reviewer' });
     expect(existsSync(join(cwd, REVIEW_FILE))).toBe(false);
     expect(lines.filter((l) => /running reviewer/.test(l))).toHaveLength(1);
     expect(lines.some((l) => /host fault \(ENOSPC\)/.test(l))).toBe(true);
@@ -107,7 +107,7 @@ describe('a fix lane that ends on an environment fault', () => {
     const recorded = recordThrow(ctx, issue, diskFull(), () => {}, 3);
     expect(recorded.outcome.outcome).toBe('unjudged');
     expect(recorded.outcome.fault).toBe('ENOSPC');
-    expect(labelsOf(io, 8)).toEqual(['size: 1', faultMarker('ENOSPC')]);
+    expect(labelsOf(io, 8)).toEqual(['size: 1', faultMarker('ENOSPC', 'reviewer')]);
     expect(lanes).toEqual(['E2']);
     expect(paused).toHaveLength(1);
     expect(paused[0]).toContain('ENOSPC');
@@ -140,7 +140,7 @@ describe('a fix lane that ends on an environment fault', () => {
     const ctx = context([], io);
     const issue = { number: 60, title: 'a fix under review', labels: [{ name: 'size: 1' }], createdAt: '2026-01-01T00:00:00Z' };
     expect(recordThrow(ctx, issue, diskFull(), () => {}, 3).outcome.outcome).toBe('unjudged');
-    expect(labelsOf(io, 60)).toContain(faultMarker('ENOSPC'));
+    expect(labelsOf(io, 60)).toContain(faultMarker('ENOSPC', 'reviewer'));
 
     // The rerun gets past the faulted point: a seat for the issue finishes without a fault.
     const answer = join(scratch, 'clean-review.json');
@@ -148,12 +148,60 @@ describe('a fix lane that ends on an environment fault', () => {
     const cwd = join(scratch, 'wt', 'issue-60');
     mkdirSync(cwd, { recursive: true });
     expect((await runAgent(ctx, 'reviewer', 60, cwd, { engine: 'fixture2', model: answer }, 'prompt')).exitCode).toBe(0);
-    expect(labelsOf(io, 60)).not.toContain(faultMarker('ENOSPC'));
+    expect(labelsOf(io, 60)).not.toContain(faultMarker('ENOSPC', 'reviewer'));
 
     // A snapshot read before the clear still shows the marker; what the run knows outranks it.
-    const stale = { ...issue, labels: [{ name: 'size: 1' }, { name: faultMarker('ENOSPC') }] };
+    const stale = { ...issue, labels: [{ name: 'size: 1' }, { name: faultMarker('ENOSPC', 'reviewer') }] };
     expect(recordThrow(ctx, stale, diskFull(), () => {}, 3).outcome.outcome).toBe('unjudged');
-    expect(labelsOf(io, 60)).toContain(faultMarker('ENOSPC'));
+    expect(labelsOf(io, 60)).toContain(faultMarker('ENOSPC', 'reviewer'));
+  }, 20_000);
+
+  /** Runs `role` cleanly for `issue`, as the seat would on a rerun that gets past its fault. */
+  async function cleanRun(ctx: ReturnType<typeof context>, role: string, issue: number) {
+    const answer = join(scratch, `clean-${role}-${issue}.json`);
+    writeFileSync(answer, JSON.stringify({ pr: 1, decision: 'merge', blocking: [], adequacy: 'n/a' }));
+    const cwd = join(scratch, 'wt', `issue-${issue}-${role}`);
+    mkdirSync(cwd, { recursive: true });
+    expect((await runAgent(ctx, role, issue, cwd, { engine: 'fixture2', model: answer }, 'prompt')).exitCode).toBe(0);
+  }
+  const proverDiskFull = (issue: number) => new EnvironmentFault({ kind: 'ENOSPC' }, 'prover', `prover on #${issue} ended on a host fault (ENOSPC)`);
+
+  it("another seat's clean run leaves the marker, so the prover's repeat is charged", async () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(61, { labels: [{ name: 'size: 1' }] })]);
+    const ctx = context([], io);
+    const issue = { number: 61, title: 'a fix being proved', labels: [{ name: 'size: 1' }], createdAt: '2026-01-01T00:00:00Z' };
+    expect(recordThrow(ctx, issue, proverDiskFull(61), () => {}).outcome.outcome).toBe('unjudged');
+    expect(labelsOf(io, 61)).toContain(faultMarker('ENOSPC', 'prover'));
+
+    await cleanRun(ctx, 'coder', 61);
+    expect(labelsOf(io, 61)).toContain(faultMarker('ENOSPC', 'prover'));
+
+    const again = recordThrow(ctx, issue, proverDiskFull(61), () => {});
+    expect(again.outcome.outcome).not.toBe('unjudged');
+    expect(again.outcome.reason).toContain('reproduced');
+    expect(labelsOf(io, 61)).not.toContain(faultMarker('ENOSPC', 'prover'));
+  }, 20_000);
+
+  it("the faulted seat's own clean run clears the marker, so its next fault is free", async () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(62, { labels: [{ name: 'size: 1' }] })]);
+    const ctx = context([], io);
+    const issue = { number: 62, title: 'a fix being proved', labels: [{ name: 'size: 1' }], createdAt: '2026-01-01T00:00:00Z' };
+    expect(recordThrow(ctx, issue, proverDiskFull(62), () => {}).outcome.outcome).toBe('unjudged');
+
+    await cleanRun(ctx, 'prover', 62);
+    expect(labelsOf(io, 62)).not.toContain(faultMarker('ENOSPC', 'prover'));
+
+    expect(recordThrow(ctx, issue, proverDiskFull(62), () => {}).outcome.outcome).toBe('unjudged');
+    expect(labelsOf(io, 62)).toContain(faultMarker('ENOSPC', 'prover'));
+  }, 20_000);
+
+  it('a marker that names no seat, as written before markers named one, is cleared by any clean seat', async () => {
+    const legacy = [{ name: 'size: 1' }, { name: faultMarker('ENOSPC') }];
+    const io = new FakeTracker('loop-bot', [fakeIssue(63, { labels: legacy })]);
+    const ctx = context([], io);
+    rememberFaultMarkers(ctx, 63, legacy);
+    await cleanRun(ctx, 'coder', 63);
+    expect(labelsOf(io, 63)).toEqual(['size: 1']);
   }, 20_000);
 
   it('a different kind of host fault on the rerun is free again', () => {
@@ -195,7 +243,7 @@ describe('an appraiser that fails on the host', () => {
     const first = await appraiseIssue(ctx, issue, options(appraiser));
     expect(first.unjudged).toBe(true);
     expect(first.retry).toBe(true);
-    expect(labelsOf(io, 30)).toEqual([faultMarker('ENOSPC')]);
+    expect(labelsOf(io, 30)).toEqual([faultMarker('ENOSPC', 'appraiser')]);
 
     const rerun = await appraiseIssue(ctx, { ...issue, labels: io.view(30)!.labels }, options(appraiser));
     expect(rerun.unjudged).toBeUndefined();
@@ -212,12 +260,12 @@ describe('a carver that fails on the host', () => {
     const knobs: CarveKnobs = { ceiling: 2, ...CARVE_DEFAULTS, callbacksDir: join(scratch, 'callbacks'), seats: { carver, confirmer: { engine: 'fixture2', model: carver.model } } };
     const issue = { number: 40, title: '[t] big', createdAt: '2026-09-01T00:00:00Z', labels: [{ name: 'size: 8' }] };
     await expect(carveIssue(ctx, issue, knobs, io)).rejects.toThrow(EnvironmentFault);
-    expect(labelsOf(io, 40)).toContain(faultMarker('ENOSPC'));
+    expect(labelsOf(io, 40)).toContain(faultMarker('ENOSPC', 'carver'));
     expect(labelsOf(io, 40).some((l) => l.startsWith('loop/carves:'))).toBe(false);
 
     await expect(carveIssue(ctx, issue, knobs, io)).rejects.toThrow(EnvironmentFault);
     expect(labelsOf(io, 40)).toContain('loop/carves: 1');
-    expect(labelsOf(io, 40)).not.toContain(faultMarker('ENOSPC'));
+    expect(labelsOf(io, 40)).not.toContain(faultMarker('ENOSPC', 'carver'));
   }, 20_000);
 });
 

@@ -62,7 +62,7 @@ describe('a stop signal the driver did not send', () => {
   it('is named on the run, its answer is removed, and it is not asked again', async () => {
     engineThat('dies-of-sigterm', "process.kill(process.pid, 'SIGTERM'); await Bun.sleep(5000);", true);
     const { run, cwd, lines } = await runIn(11);
-    expect(run.fault).toEqual({ kind: 'stopped', signal: 'SIGTERM' });
+    expect(run.fault).toEqual({ kind: 'stopped', signal: 'SIGTERM', role: 'worker' });
     expect(run.exitCode).not.toBe(0);
     expect(existsSync(join(cwd, VERDICT_FILE))).toBe(false);
     expect(lines.filter((l) => /running worker/.test(l))).toHaveLength(1);
@@ -70,7 +70,7 @@ describe('a stop signal the driver did not send', () => {
 
   it('is read from the exit code of an engine that traps the signal, as `claude -p` exits 143 on SIGTERM', async () => {
     engineThat('exits-143', 'process.exit(143);');
-    expect((await runIn(12)).run.fault).toEqual({ kind: 'stopped', signal: 'SIGTERM' });
+    expect((await runIn(12)).run.fault).toEqual({ kind: 'stopped', signal: 'SIGTERM', role: 'worker' });
   }, 20_000);
 
   it('is not a crash: a process that dies of SIGSEGV is an ordinary failed run', async () => {

@@ -391,12 +391,15 @@ driver settles it through `settleEnvironmentFault`, the one place the rule lives
   pause the line, and the burndown leaves the rerun to the next run, so the work they stopped does
   not start again at once. To keep it from running again, add a hold label.
 - The exception: a host fault the work itself causes. The first host fault on an issue is free and
-  leaves the marker label `loop/environment-fault: <code>`, so a restart does not forget it. The
+  leaves the marker label `loop/environment-fault: <code>@<seat>` (the seat that hit it; the
+  driver's own fault names none), so a restart does not forget it. The
   same code again with the marker on the issue is charged as the ordinary failure it then is (an
   attempt, a review dead letter, a counted appraisal or carve), with a reason that says the work
-  reproduced the fault on its rerun, and the marker comes off. The marker also comes off when any
-  seat for the issue next finishes without a fault (`runAgentOnce` clears it): the work got past the
-  faulted point, so a much later fault of the same code is a new occasion and free again. A
+  reproduced the fault on its rerun, and the marker comes off. The marker also comes off when the
+  seat that hit it next finishes without a fault (`runAgentOnce` clears it): that seat's work got
+  past the faulted point, so a much later fault of the same code is a new occasion and free again.
+  Another seat's clean run leaves it: a clean coder run says nothing about the prover's disk. A
+  marker that names no seat is cleared by any seat's clean run. A
   different code is free again too. A person's stop is never charged and leaves no marker.
 
 Two endings cannot be told apart from a person's and are left as failures: SIGKILL, which the

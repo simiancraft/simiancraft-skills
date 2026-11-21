@@ -416,7 +416,7 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     // answer and no wrong one: what it left is cleared like a killed run's, now and for a resume,
     // and the run says so for the seat to refuse.
     const host = outsideSignal ? null : hostFaultInLog(logPath);
-    const fault: Fault | null = outsideSignal ? { kind: 'stopped', signal: outsideSignal } : host ? { kind: host } : null;
+    const fault: Fault | null = outsideSignal ? { kind: 'stopped', signal: outsideSignal, role } : host ? { kind: host, role } : null;
     if (fault) {
       for (const left of answers) rmSync(join(cwd, left), { force: true });
       ctx.log(`  #${issue}  ${role} exited ${exitCode} on ${describeFault(fault)}; the work is not judged by it`);
@@ -424,8 +424,8 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     }
     ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
   }
-  // A clean run is past whatever point a free fault interrupted, so its marker comes off.
-  if (exitCode === 0) clearFaultMarkers(ctx, issue, (message) => ctx.log(`  #${issue}  ${message}`));
+  // A clean run is past whatever point its seat's free fault interrupted, so that marker comes off.
+  if (exitCode === 0) clearFaultMarkers(ctx, issue, role, (message) => ctx.log(`  #${issue}  ${message}`));
 
   return { logPath, exitCode };
 }
