@@ -63,6 +63,14 @@ export type ProjectConfig = {
   /** The command CI decides with, when it differs from checkCommand; the prover always runs it. */
   ciCommand?: string;
   /**
+   * The CI job's environment shape: variables the job has and a lane may not (a linked resource, a
+   * stage name). When set, every gate the seats run (`checkCommand`, and `ciCommand` for the
+   * prover) runs inside a subshell that exports them, and the gate is named `ci-shaped` instead of
+   * `lane`. Values are written into prompts and logs, so a secret is given as a stub with the same
+   * shape, never its real value. Optional.
+   */
+  ciEnvironment?: Record<string, string>;
+  /**
    * After every confirmed merge, fast-forward the main checkout (the one the driver was invoked
    * from, or that its worktree belongs to) to the remote base branch, so a person watching a dev
    * server there sees each fix as it lands. Only a fast-forward, and only when that checkout has
@@ -94,6 +102,36 @@ export function agentCapFault(cap: unknown): string | null {
 export function ciCommandFault(command: unknown): string | null {
   if (command === undefined || (typeof command === 'string' && command.trim() !== '')) return null;
   return 'project.ciCommand must be a non-empty string when present';
+}
+
+/** An absent CI environment keeps the lane's; a supplied one is a map of shell-safe names to strings. */
+export function ciEnvironmentFault(environment: unknown): string | null {
+  if (environment === undefined) return null;
+  const valid =
+    typeof environment === 'object' &&
+    environment !== null &&
+    !Array.isArray(environment) &&
+    Object.entries(environment).every(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof value === 'string');
+  return valid ? null : 'project.ciEnvironment must be a map of environment variable names to string values when present';
+}
+
+/** Which environment a seat's gate runs in: the lane's own, or the CI job's shape layered over it. */
+export type GateEnvironment = 'lane' | 'ci-shaped';
+
+export function gateEnvironment(project: ProjectConfig): GateEnvironment {
+  return project.ciEnvironment && Object.keys(project.ciEnvironment).length > 0 ? 'ci-shaped' : 'lane';
+}
+
+/**
+ * A gate command as a seat runs it. With a CI environment configured, the command runs in a
+ * subshell that exports those variables first, so a compound command sees them in every part and
+ * the seat's own shell is left as it was.
+ */
+export function gateCommand(project: ProjectConfig, command: string): string {
+  if (gateEnvironment(project) === 'lane') return command;
+  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+  const exports = Object.entries(project.ciEnvironment ?? {}).map(([name, value]) => `${name}=${quote(value)}`);
+  return `(export ${exports.join(' ')}; ${command})`;
 }
 
 /** The knobs the fix pipeline itself enforces. A driver may carry more; the pipeline reads these. */
@@ -364,6 +402,8 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   }
   const ciFault = ciCommandFault(project.ciCommand);
   if (ciFault) faults.push(ciFault);
+  const environmentFault = ciEnvironmentFault(project.ciEnvironment);
+  if (environmentFault) faults.push(environmentFault);
   if (project.followBase !== undefined && typeof project.followBase !== 'boolean') {
     faults.push('project.followBase must be a boolean when present');
   }
