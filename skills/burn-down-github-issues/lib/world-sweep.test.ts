@@ -62,6 +62,7 @@ class Model {
   panelStale = false;
   panelAvailable = false;
   panels = 0;
+  disputes = 0;
   incoming() { return this.world.base.slice(this.head).flat(); }
   behind() { return this.head < this.world.base.length; }
 }
@@ -72,6 +73,7 @@ function axis(key: keyof Model, values: unknown[]) {
 }
 for (const key of ['closed', 'paused', 'active', 'parentOpen', 'released', 'trusted', 'resuming', 'confirmCloses', 'deliberating', 'panelStale', 'panelAvailable'] as const) axis(key, [false, true]);
 axis('closeBy', ['appraiser', 'worker']);
+axis('disputes', [0, 1]);
 for (const key of ['attempts', 'appraisals', 'carves', 'carveRounds', 'reviewRounds', 'refreshes', 'redrives', 'panels'] as const) axis(key, [0, 3]);
 axis('pr', ['none', 'draft', 'ready', 'merged']);
 axis('verdict', ['none', 'merge', 'reject', 'gather']);
@@ -100,7 +102,7 @@ const predicates: Record<string, Predicate> = {};
 function pred(name: string, dependencies: string[], read: Predicate['read']) { predicates[name] = { axes: dependencies, read }; }
 function eq(name: string, key: keyof Model, value: unknown) { pred(name, [key], m => m[key] === value); }
 eq('lineActive', 'active', true);
-eq('resuming', 'resuming', true); eq('closeByWorker', 'closeBy', 'worker'); eq('closesUnconfirmed', 'confirmCloses', false);
+eq('resuming', 'resuming', true); eq('closeByWorker', 'closeBy', 'worker'); eq('closeByAppraiser', 'closeBy', 'appraiser'); eq('firstDisputedClose', 'disputes', 0); eq('closesUnconfirmed', 'confirmCloses', false);
 eq('noOpenPr', 'pr', 'none');
 pred('prExists', ['pr'], m => m.pr === 'draft' || m.pr === 'ready');
 eq('readyPr', 'pr', 'ready'); eq('draftPr', 'pr', 'draft');
@@ -117,6 +119,8 @@ eq('labelDeliberating', 'deliberating', true); eq('panelStale', 'panelStale', tr
 eq('foreignClaimLive', 'claim', 'foreign'); eq('ownClaimLive', 'claim', 'own'); eq('deadClaim', 'claim', 'dead');
 eq('applyingRecord', 'record', 'applying'); eq('liveRecord', 'record', 'live');
 pred('openChild', ['children'], m => m.children > 0);
+pred('firstCarving', ['children', 'record'], m => m.children === 0 && m.record !== 'live');
+pred('childlessRecord', ['children', 'record'], m => m.children === 0 && m.record === 'live');
 pred('isTrunk', ['children', 'record', 'released'], m => m.children > 0 || m.record !== 'none' || m.released);
 pred('trunkFingerprintMoved', ['fingerprint'], m => m.fingerprint !== m.recordedFingerprint);
 pred('oversizedNoRecord', ['points', 'record'], m => m.points > 2 && m.record === 'none');

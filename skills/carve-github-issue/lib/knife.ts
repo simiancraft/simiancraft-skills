@@ -11,17 +11,19 @@
  * are both accounted for.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve } from '../../fix-github-issue/lib/labels.ts';
-import { isStopping, RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
+import { isStopping, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { runCarveCallback } from './callbacks.ts';
+import { appraisalFreshness, gitCommitsSince, gitFilesSince } from '../../appraise-github-issues/lib/freshness.ts';
+import { stampingSince, wroteStampHere } from '../../appraise-github-issues/lib/stamp.ts';
 import {
   type Carving,
   type CarveKnobs,
@@ -35,7 +37,7 @@ import {
   validateCarving,
   validateConfirmation,
 } from './carve.ts';
-import { claim, keepClaimed, LeaseLostError, leaseLost, trackerIo } from './claims.ts';
+import { childlessRecord, claim, keepClaimed, LeaseLostError, leaseLost, trackerIo } from './claims.ts';
 
 export { LeaseLostError };
 import { buildLedger, carryIds, childMarker, type Ledger, pauseSet, type Record, type RecordChild, renderChildBody, renderRecord, sameBody } from './record.ts';
@@ -571,6 +573,139 @@ async function applyHandOff(k: Knife, tree: Tree, carving: Carving, opinions: Ar
   return { outcome: deadLetter ? 'dlq' : (verdict as CarveOutcome['outcome']), reason: carving.reason, generation: tree.generation };
 }
 
+/**
+ * A first carving's confirmed `small-enough` or `indivisible`: the issue is one piece and is worked
+ * whole. The label goes on first, so a run that dies after it already places the card in Ready; the
+ * comment and the released record then keep the verdict and both opinions on the thread.
+ */
+async function applyWorkWhole(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>): Promise<CarveOutcome> {
+  addLabel(k, 'hold-label', k.trunk, WORK_WHOLE, labelsOf(tree.issue));
+  const marker = `<!-- carve-work-whole verdict=${carving.verdict} gen=${tree.generation} -->`;
+  if (!tree.issue.comments.some((c) => c.author === k.ctx.botLogin && c.body.startsWith(marker))) {
+    const body = [marker, `**${carving.verdict}**, confirmed: ${carving.reason}`, `Worked as one piece; \`${WORK_WHOLE}\` lifts the size ceiling for this issue alone.`, ...opinions.map((o, i) => `\nRound ${i + 1}. Carver: ${o.carver}\nConfirmer: ${o.confirmer}`)].join('\n');
+    comment(k, 'handoff-comment', k.trunk, body, `mark #${k.trunk} ${carving.verdict}, worked whole`);
+  }
+  const record = newRecord(k, tree, { state: 'released', verdict: carving.verdict, reason: carving.reason, ledger: carving.ledger });
+  await callback(k, tree, 'on-carve-fail', record, record.children);
+  const after = readTree(k.ctx, k.trunk, k.io);
+  postRecord(k, { ...record, seen: fingerprint(after, k.ctx.botLogin), at: new Date().toISOString() });
+  k.journal.finish();
+  return { outcome: 'work-whole', reason: carving.reason, generation: tree.generation };
+}
+
+/**
+ * A live record with no child: a first carving's hand-off, made before one-piece verdicts were
+ * worked whole, or a question a person has since answered. With its hold gone it is settled
+ * without an agent. A confirmed one-piece verdict on a thread nobody has touched since stands under
+ * today's rule, and the issue is worked whole. Anything else (a moved thread, a question, a dead
+ * letter) means the judgment no longer holds, so the issue goes back to the appraiser, as an
+ * exhausted trunk does, to be sized and, if need be, carved afresh.
+ */
+async function settleChildlessRecord(k: Knife, tree: Tree): Promise<CarveOutcome> {
+  const record = tree.record as Record;
+  const now = fingerprint(tree, k.ctx.botLogin);
+  const seen = record.seen as Partial<Fingerprint> | undefined;
+  const moved = (['title', 'bodyHash', 'comments'] as const).some((key) => JSON.stringify(now[key]) !== JSON.stringify(seen?.[key]));
+  const handOff = [...tree.intents].reverse().find((i) => i.kind === 'carve-handoff');
+  const deadLetter = Boolean((handOff?.payload as { deadLetter?: boolean } | undefined)?.deadLetter);
+  const onePiece = record.verdict === 'indivisible' || record.verdict === 'small-enough';
+  let labels = labelsOf(tree.issue);
+  if (labels.includes('loop/handed-off')) removeLabel(k, 'release-labels', k.trunk, 'loop/handed-off', labels);
+  if (onePiece && !moved && !deadLetter) {
+    k.say(`a childless ${record.verdict} record from generation ${record.generation}, on a thread unchanged since; worked whole`);
+    labels = labelsOf(readTree(k.ctx, k.trunk, k.io).issue);
+    removeLabel(k, 'release-labels', k.trunk, 'loop/carved', labels);
+    for (const gen of labels.filter((l) => l.startsWith('loop/carve-gen:'))) removeLabel(k, 'release-labels', k.trunk, gen, labels);
+    const carving: Carving = { issue: k.trunk, mode: 'carve', verdict: record.verdict as Carving['verdict'], reason: record.reason ?? '', criteria: [], ledger: record.ledger, affected: [] };
+    return applyWorkWhole(k, readTree(k.ctx, k.trunk, k.io), carving, []);
+  }
+  const why = moved ? 'the thread moved since it' : deadLetter ? 'it was a dead letter' : `its verdict was ${record.verdict}`;
+  k.say(`a childless ${record.verdict} record from generation ${record.generation}; released to the appraiser, since ${why}`);
+  return applyRelease(k, tree, { issue: k.trunk, mode: 'carve', verdict: 'nothing-left', reason: `a childless ${record.verdict} record released to be appraised again, since ${why}`, criteria: [], ledger: record.ledger, affected: [] }, null);
+}
+
+/**
+ * A first carving's confirmed `nothing-left`: the knife found every criterion done or withdrawn.
+ * That is a close proposal, so the issue is released to the appraiser exactly as an exhausted trunk
+ * is (size off, `loop/released` on), and the release appraisal closes it through the close confirmer.
+ */
+async function applyNothingLeft(k: Knife, tree: Tree, carving: Carving, opinions: Array<{ carver: string; confirmer: string }>): Promise<CarveOutcome> {
+  const marker = `<!-- carve-nothing-left gen=${tree.generation} -->`;
+  if (!tree.issue.comments.some((c) => c.author === k.ctx.botLogin && c.body.startsWith(marker))) {
+    const body = [marker, `**nothing-left**, confirmed: ${carving.reason}`, 'Released to the appraiser, whose close goes through the close confirmer.', ...opinions.map((o, i) => `\nRound ${i + 1}. Carver: ${o.carver}\nConfirmer: ${o.confirmer}`)].join('\n');
+    comment(k, 'handoff-comment', k.trunk, body, `mark #${k.trunk} nothing-left`);
+  }
+  const released = newRecord(k, tree, { state: 'released', verdict: 'nothing-left', reason: carving.reason, ledger: carving.ledger });
+  // The hand-off slot fires for `nothing-left` as before; the release below then skips its pass slot.
+  await callback(k, tree, 'on-carve-fail', released, released.children);
+  postRecord(k, released);
+  return applyRelease(k, tree, carving, released);
+}
+
+/** Which kind of carving a guard check stood in front of. */
+type GuardMode = 'first-carving' | 'revisit' | 'carve-with-open-children';
+
+/**
+ * The pre-carve guard in shadow mode: whenever the knife is dispatched toward a record, and again
+ * each time the carver answers, says whether the appraisal the carving trusts is fresh, stale, or
+ * unknowable, and why, and routes nothing. The run log and `pre-carve-guard.jsonl` in the run
+ * directory are what measure how often the live guard would fire. A check on a stamp this same run
+ * wrote is marked `samePass`: nothing had time to move, so its `fresh` measures nothing. Nothing
+ * here may fail a carving.
+ */
+function shadowPreCarveGuard(k: Knife, read: Tree | (() => Tree), mode: GuardMode, point: 'dispatch' | 'carver-answered', carverVerdict?: string): void {
+  try {
+    // Read inside the guard: a tracker read that fails here costs the log line, never the carving.
+    const tree = typeof read === 'function' ? read() : read;
+    const io = k.io as TrackerIo;
+    const freshness = appraisalFreshness(tree.issue, k.ctx.botLogin, {
+      commitsSince: gitCommitsSince(k.ctx),
+      filesSince: gitFilesSince(k.ctx),
+      sizedAt: io.sizedAt ? () => (io.sizedAt as (n: number) => string | null)(k.trunk) : undefined,
+      stampingSince: stampingSince(k.ctx.runDir),
+    });
+    const fires = freshness.verdict !== 'fresh';
+    // A carver that read the issue now and answered still-good with a reason has re-judged it; a
+    // live guard that took that answer as the re-appraisal would not fire here. Logged to measure.
+    const carverSettles = point === 'carver-answered' && carverVerdict === 'still-good' && freshness.verdict === 'stale';
+    const at = new Date();
+    const ageSeconds = freshness.stampAt ? Math.round((at.getTime() - Date.parse(freshness.stampAt)) / 1000) : null;
+    const samePass = wroteStampHere(k.ctx.project.repo, k.trunk, freshness.stampAt);
+    let baseNow: string | null = null;
+    try {
+      baseNow = sh(k.ctx, ['git', 'rev-parse', `${k.ctx.project.remote}/${k.ctx.project.baseBranch}`], k.ctx.repoRoot, 1).trim() || null;
+    } catch {
+      baseNow = null;
+    }
+    const where = point === 'dispatch' ? `${mode} dispatch` : `${mode}, carver answered ${carverVerdict}`;
+    const age = ageSeconds === null ? '' : `, stamp ${ageSeconds}s old${samePass ? ', same pass' : ''}`;
+    k.say(`pre-carve guard (shadow, ${where}${age}): ${freshness.verdict}${freshness.cause ? ` (${freshness.cause})` : ''}; would ${fires ? 're-appraise first' : 'carve as is'}${freshness.reasons.length ? `: ${freshness.reasons.join('; ')}` : ''}`);
+    const line = {
+      issue: k.trunk,
+      at: at.toISOString(),
+      point,
+      mode,
+      ...(carverVerdict ? { carverVerdict } : {}),
+      verdict: freshness.verdict,
+      ...(freshness.cause ? { cause: freshness.cause } : {}),
+      ...(freshness.scope ? { scope: freshness.scope } : {}),
+      fires,
+      ...(point === 'carver-answered' ? { carverSettles } : {}),
+      samePass,
+      stampAt: freshness.stampAt,
+      ageSeconds,
+      stampBase: freshness.stampBase,
+      baseNow,
+      reasons: freshness.reasons,
+      ...(freshness.movedFiles ? { movedFiles: freshness.movedFiles.slice(0, 50), movedFileCount: freshness.movedFiles.length } : {}),
+    };
+    mkdirSync(k.ctx.runDir, { recursive: true });
+    appendFileSync(join(k.ctx.runDir, 'pre-carve-guard.jsonl'), `${JSON.stringify(line)}\n`);
+  } catch (error) {
+    k.say(`pre-carve guard (shadow) could not run: ${(error as Error).message.split('\n')[0]}`);
+  }
+}
+
 async function applyStillGood(k: Knife, tree: Tree, carving: Carving, redrive: boolean): Promise<CarveOutcome> {
   const previous = tree.record as Record;
   const children = previous.children.map((c) => ({ ...c, paused: false }));
@@ -855,12 +990,16 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     return { outcome: 'left-alone', reason: `it carries ${hold}` };
   }
   if (tree.record && tree.record.state === 'live') reconcilePauses(k, tree.record);
+  if (childlessRecord(tree)) return settleChildlessRecord(k, tree);
 
   // 3. Mode, from the newest record alone.
   const record = tree.record;
   const mode: 'carve' | 'revisit' = record && record.state === 'live' ? 'revisit' : 'carve';
   const points = pointsOf(tree.issue.labels);
   const openChildren = tree.children.some((c) => c.state === 'OPEN');
+  if (mode === 'carve' && !openChildren && labelsOf(tree.issue).includes(WORK_WHOLE)) {
+    return { outcome: 'left-alone', reason: `it carries ${WORK_WHOLE}: the knife judged it one piece` };
+  }
   if (mode === 'carve' && !(points !== null && points > k.knobs.ceiling) && !openChildren) {
     return { outcome: 'left-alone', reason: points === null ? 'it is unsized' : `it is sized ${points}, not over the ceiling ${k.knobs.ceiling}, and has no open child` };
   }
@@ -879,6 +1018,10 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     }
   }
 
+  // 4b. The pre-carve guard, in shadow: would the appraisal this carving trusts be re-checked first?
+  const guardMode: GuardMode = mode === 'revisit' ? 'revisit' : openChildren ? 'carve-with-open-children' : 'first-carving';
+  shadowPreCarveGuard(k, tree, guardMode, 'dispatch');
+
   // 5. The carver and the confirmer, for at most maxCarveRounds pairs. The ledger they start from
   // is the newest live record's, re-derived from the tree, so a withdrawal it recorded stands.
   const previousLedger = record ? buildLedger(record.ledger, carryIds(record.ledger, record.ledger), record, tree) : null;
@@ -895,6 +1038,7 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     if (!carved.ok) return carved.notRun ? { outcome: 'not-run', reason: carved.why } : countFailure(k, tree, carved.why, carved.logPath);
     const carving = carved.carving;
     k.say(`carver (round ${round}): ${carving.verdict}; ${carving.reason}`);
+    shadowPreCarveGuard(k, () => readTree(k.ctx, k.trunk, k.io), guardMode, 'carver-answered', carving.verdict);
 
     if (carving.verdict === 'amend' && record && record.generation >= k.knobs.maxGenerations && !redrive) {
       const handOff: Carving = { ...carving, verdict: 'indivisible', reason: `generation ${record.generation} is the cap for epoch ${record.epoch}; the carver wanted to amend again. ${carving.reason}`, affected: [] };
@@ -931,6 +1075,12 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
     const now = fingerprint(tree, k.ctx.botLogin);
     if (JSON.stringify(now) !== JSON.stringify(before)) {
       return { outcome: 'failed', reason: 'the tracker changed while the cut was being confirmed; the next visit starts over' };
+    }
+    // A first carving's answer that the issue is one piece, or has nothing left, is not a question
+    // for a person: one piece is worked whole, and nothing left is the appraiser's to close.
+    if (mode === 'carve' && !tree.children.some((c) => c.state === 'OPEN')) {
+      if (carving.verdict === 'small-enough' || carving.verdict === 'indivisible') return applyWorkWhole(k, tree, carving, opinions);
+      if (carving.verdict === 'nothing-left') return applyNothingLeft(k, tree, carving, opinions);
     }
     if (carving.verdict in HAND_OFFS) return applyHandOff(k, tree, carving, opinions, false, carving.verdict);
     if (carving.verdict === 'still-good') return applyStillGood(k, tree, carving, redrive);
