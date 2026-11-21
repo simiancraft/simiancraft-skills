@@ -8,7 +8,7 @@
  */
 
 import type { Seat } from '../../fix-github-issue/lib/engines.ts';
-import type { Cut, Ledger, Piece, Record } from './record.ts';
+import { type Cut, type Ledger, type Piece, type Record, withdrawalCite } from './record.ts';
 import type { OrderRung, Relation, Seam, Tree, TrackerIo } from './tree.ts';
 
 export const SEAMS: Seam[] = ['domain', 'tier', 'route', 'area', 'file', 'unit', 'material'];
@@ -311,7 +311,14 @@ function validateCut(cut: unknown, faults: string[], where: string, options: { c
  */
 export function validateCarving(
   raw: unknown,
-  options: { mode: 'carve' | 'revisit'; knobs: Pick<CarveKnobs, 'ceiling' | 'maxChildren'>; tree: Tree; scale: number[] },
+  options: {
+    mode: 'carve' | 'revisit';
+    knobs: Pick<CarveKnobs, 'ceiling' | 'maxChildren'>;
+    tree: Tree;
+    scale: number[];
+    /** The newest live record's ledger as the driver re-derived it; its standing withdrawals are carried, never re-derived. */
+    previousLedger?: Ledger | null;
+  },
 ): { ok: true; carving: Carving } | { ok: false; faults: string[] } {
   const faults: string[] = [];
   if (!isObject(raw)) return { ok: false, faults: ['not an object'] };
@@ -344,10 +351,24 @@ export function validateCarving(
       seen.add(row.id);
       if (!STATUSES.includes(row.status as string)) faults.push(`ledger ${row.id} has status ${JSON.stringify(row.status)}`);
       if (row.owner !== null && row.owner !== undefined && !Number.isInteger(row.owner)) faults.push(`ledger ${row.id} owner must be a piece index or null`);
-      if (row.status === 'withdrawn' && !nonEmpty(row.cite)) faults.push(`ledger ${row.id} is withdrawn without citing a comment`);
+      if (row.status === 'withdrawn') {
+        if (!nonEmpty(row.cite)) faults.push(`ledger ${row.id} is withdrawn without citing the edit that withdrew it`);
+        else if (!withdrawalCite(row.cite, options.tree.issue)) {
+          faults.push(`ledger ${row.id} is withdrawn citing ${JSON.stringify(row.cite)}, which is neither a comment on #${options.tree.issue.number} nor its current body (body:${options.tree.issue.bodyHash})`);
+        }
+      }
       if (row.status === 'deferred' && !Number.isInteger(row.waitsOn)) faults.push(`ledger ${row.id} is deferred without a spike to wait on`);
     }
     for (const id of criteriaIds) if (!seen.has(id)) faults.push(`ledger has no row for ${id}`);
+    // A withdrawal the previous ledger still stands on is carried as it is: the thread withdrew
+    // it, and an ask the thread later reinstates is a new criterion with a new id.
+    const answered = new Map((raw.ledger as Array<{ id?: unknown; status?: unknown; cite?: unknown }>).filter(isObject).map((row) => [row.id, row]));
+    for (const prior of options.previousLedger ?? []) {
+      if (prior.status !== 'withdrawn') continue;
+      const row = answered.get(prior.id);
+      const same = row && row.status === 'withdrawn' && typeof row.cite === 'string' && withdrawalCite(row.cite, options.tree.issue) === prior.cite;
+      if (!same) faults.push(`ledger ${prior.id} was withdrawn by ${prior.cite}; carry it as withdrawn with that cite (an ask the thread reinstated is a new criterion)`);
+    }
   }
 
   const withCut = verdict === 'carve' || verdict === 'amend';
@@ -400,7 +421,10 @@ export function validateCarving(
     if (!Array.isArray(raw.affected) || !(raw.affected as unknown[]).every((a) => typeof a === 'string' && criteriaIds.has(a))) faults.push('a hand-off needs affected: the criterion ids the question touches (may be empty)');
   }
   if (faults.length > 0) return { ok: false, faults };
-  return { ok: true, carving: raw as unknown as Carving };
+  const carving = raw as unknown as Carving;
+  // Cites are stored in their canonical form, so the next revisit compares like with like.
+  const ledger = carving.ledger.map((row) => (row.status === 'withdrawn' ? { ...row, owner: null, cite: withdrawalCite(row.cite, options.tree.issue) ?? row.cite } : row));
+  return { ok: true, carving: { ...carving, ledger } };
 }
 
 // ---------------------------------------------------------------------------
