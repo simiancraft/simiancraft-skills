@@ -71,12 +71,17 @@ anything that looks like a value, and the values live only in the shell that sta
    that does not answer 2xx or 3xx is `down`, and nothing else is walked this time.
 2. **Classify.** Each pending item with a merge SHA is checked against the deployed revision:
    `not-yet-deployed` when it is not an ancestor, `unverified` inside the grace window when there
-   is no revision signal. Recorded only when the verdict changes.
+   is no revision signal. Recorded only when the verdict changes. An item `owed-by-sibling` is not
+   walked while that sibling is open, or merged with its own floor item not yet verified.
 3. **Walk.** One agent turn for every remaining item, in a read-only checkout at the deployed
-   revision, with the standing walks whose paths match the item's. The driver validates each
-   verdict against the vocabulary below before it reaches the ledger. A passing item's card moves
-   to **Verified on the floor**.
-4. **On a failure.** An item that has just turned `down` or `absent` pauses the line and runs
+   revision, with the standing walks whose paths match the item's. An item whose issue is known
+   carries that issue's body, and the walker judges the item against that acceptance, not against
+   the outcome of the trunk it was carved from; a carved child also carries the trunk's open
+   children. The driver validates each verdict against the vocabulary below before it reaches the
+   ledger. A passing item's card moves to **Verified on the floor**.
+4. **On a failure.** A carved child that has just turned `absent` while its trunk has open
+   children is diagnosed first, before anything pauses (see "Owed by a sibling" below). Then an
+   item that has just turned `down` or `absent` pauses the line and runs
    `on-walk-fail`; an item that stays wrong does neither again on later walks, so a notifier in
    `on-walk-fail` hears about an outage once, not every walk. Then each wrong item is diagnosed and its
    incident filed (or found) and worked; see below.
@@ -118,7 +123,8 @@ list, so a crash mid-write loses at most one line and the next walk re-derives i
 `id` and `text` are required; the first item with an id wins, so producers append blindly. Without
 `ref` an item is free text the walker reads as an instruction ("the header now shows the new
 logo"). The ledger entry carries `itemId`, `checkedAt`, `deployedRevision`, `rung`, `verdict`,
-`reason`, and optionally `evidence`, plus `quiet` on an entry recorded inside a quiet window.
+`reason`, and optionally `evidence`, plus `quiet` on an entry recorded inside a quiet window and
+`sibling` on an `owed-by-sibling` entry.
 
 | Rung | Meaning |
 |---|---|
@@ -138,9 +144,31 @@ logo"). The ledger entry carries `itemId`, `checkedAt`, `deployedRevision`, `run
 | `down` | wrong | liveness failed |
 | `not-yet-deployed` | pending | walked again next time |
 | `unverified` | pending | walked again next time |
+| `owed-by-sibling` | pending | the missing effect belongs to the open sibling issue in `sibling`; walked again once that sibling lands |
 
 `not-checkable` is a known unknown kept honest by its reason, never a default; an item the walker
 did not reach gets no entry and is walked again.
+
+## Owed by a sibling
+
+A trunk carved into children has its outcome spread across them: one child changes what new
+installs create while its sibling migrates the rows that already exist. The first child's merge
+can be correct while the trunk's outcome is still missing, and that missing part is the open
+sibling's work, not a failure. Two checks keep it that way.
+
+- **The walker.** It sees the item's own acceptance and the trunk's open children, and records
+  `owed-by-sibling` with `sibling` set when what it finds missing is an effect an open sibling
+  owns. The driver keeps that verdict only when `sibling` names a child open under the same trunk;
+  naming anything else leaves the effect with nobody coming to supply it, so it is recorded
+  `absent`.
+- **The diagnosis.** A carved child that turns `absent` with open siblings is diagnosed before the
+  line pauses. A diagnosis whose remedy is `owed-by-sibling` and names an open sibling is recorded
+  as that verdict after the `absent`, so the item is not wrong: nothing pauses, `on-walk-fail` does
+  not run, and no incident is filed or fixed. Any other diagnosis is the one the incident uses.
+
+An item owed by a sibling is not walked again while that sibling is open, or while the sibling's
+own merge is on the floor and not yet verified; then it is walked again against its acceptance.
+The drain does not wait on it, since the sibling's merge, not this run's, is what settles it.
 
 ## The callbacks
 
@@ -183,6 +211,7 @@ waits on a pause a person set; it lands through a pull master of its own, since 
 be held by a lane waiting at that very pause, and its merge goes up onto the floor too. The readout lists an incident the floor is
 repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
 
+A diagnosis whose remedy is `owed-by-sibling` files nothing; see "Owed by a sibling" above.
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)
 parks the incident for a person instead. An incident with a person, parked or dead-lettered or
 held, is not worked again, and neither is one still open in the pipeline; the item is still

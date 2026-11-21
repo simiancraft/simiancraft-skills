@@ -57,6 +57,18 @@ match a walk gets that walk performed as its `exercise` rung, whatever else you 
 
 {{ITEMS}}
 
+## Judge each item against its own promise
+
+An item that closes an issue is judged against that issue's acceptance, quoted under it, and not
+against anything larger. An issue carved from a trunk promises one slice of the trunk's outcome;
+the rest belongs to its siblings. When the item's own acceptance holds, it is `present` (or
+`intact`) even if the trunk's outcome as a whole is not there yet.
+
+When what you find missing is an effect an open sibling listed under the item owns (the sibling's
+title and acceptance say it will deliver exactly that), the verdict is `owed-by-sibling` and
+`sibling` names that sibling's issue number. Use it only for a sibling listed as open under the
+item; an effect the item's own acceptance promised, or one no open sibling owns, is `absent`.
+
 ## What to write
 
 When every item has an answer, write `{{VERDICT_FILE}}` as JSON:
@@ -64,9 +76,10 @@ When every item has an answer, write `{{VERDICT_FILE}}` as JSON:
 ```json
 { "entries": [
   { "itemId": "<id>", "rung": "look|exercise|fallback|exists-in-git",
-    "verdict": "present|intact|absent|not-checkable",
+    "verdict": "present|intact|absent|not-checkable|owed-by-sibling",
     "reason": "<one or two sentences: what you did and what you saw>",
-    "evidence": "<path under the evidence directory, or omit>" }
+    "evidence": "<path under the evidence directory, or omit>",
+    "sibling": <the open sibling's issue number, for owed-by-sibling only> }
 ] }
 ```
 
