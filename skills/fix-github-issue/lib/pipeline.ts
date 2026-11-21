@@ -22,13 +22,14 @@ import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from './environment-fault.ts';
-import { attemptCount, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
+import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { behindBase, behindBeyondNoise, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
+import { loopNote } from './note.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -54,6 +55,12 @@ export type FixOutcome = {
   reason: string;
   fault?: EnvironmentFaultKind;
 };
+
+/** The largest `size: N` on an issue, or null when it carries none. */
+function labelPoints(labels: Array<{ name: string }>): number | null {
+  const sizes = labels.map((l) => /^size:\s*(\d+)$/.exec(l.name)).filter((m): m is RegExpExecArray => m !== null).map((m) => Number(m[1]));
+  return sizes.length ? Math.max(...sizes) : null;
+}
 
 /** What the worker prompt asks for when the caller states no ceiling of its own. */
 const DEFAULT_MAX_POINTS = 2;
@@ -381,7 +388,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
 function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, confirmation: { reason: string }, say: (m: string) => void): FixOutcome {
   holdLease(ctx, issue.number, 'hand the issue to a person');
   const body = `The worker judged this \`${result.verdict}\` (${result.reason}); the second engine disagreed: ${confirmation.reason}. A person decides.`;
-  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', body]);
+  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(body)]);
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
   say('the second engine disputed the close; handed to a person');
   move(ctx, issue, 'H2', `close disputed: ${confirmation.reason}`.slice(0, 120));
@@ -1301,7 +1308,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     case 'needs-decision':
     case 'needs-human': {
       // Comment first, then the label that hides the issue from selection.
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', result.reason]);
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(result.reason)]);
       // A question the worker raised is weighed by a decision panel first, when one can sit; one it
       // settles goes back to be appraised with the receipt as its ruling, and holds nobody up.
       if (result.verdict === 'needs-decision') {
@@ -1607,7 +1614,9 @@ export async function fixIssue(
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title}`);
   rememberFaultMarkers(ctx, issue.number, issue.labels);
-  const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
+  // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
+  // it under a ceiling the knife already said it cannot be cut to.
+  const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
   const ceiling = options.ceiling ?? maxPoints;
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
@@ -1843,7 +1852,9 @@ export async function redriveIssue(
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   rememberFaultMarkers(ctx, issue.number, issue.labels);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
-  const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
+  // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
+  // it under a ceiling the knife already said it cannot be cut to.
+  const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
   const ceiling = options.ceiling ?? maxPoints;
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');

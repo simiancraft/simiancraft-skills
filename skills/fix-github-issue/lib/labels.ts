@@ -9,11 +9,29 @@
 
 import type { CloseEvent, Context } from './context.ts';
 import { mutate, sh } from './shell.ts';
+import { loopNote } from './note.ts';
 
 /** The shape every function here reads. Callers carry richer issues; these only need the labels. */
 export type LabelledIssue = { number: number; labels: Array<{ name: string }> };
 
 /** Every label the collection writes, with its color and description; GitHub caps a description at 100 characters. */
+/**
+ * The knife's confirmed answer that an issue is one piece: `small-enough` (the size was wrong) or
+ * `indivisible` (no admissible cut exists at this ceiling). Either way the issue is worked as it
+ * stands, so the label lifts the size ceiling for this issue alone.
+ */
+export const WORK_WHOLE = 'loop/work-whole';
+
+/**
+ * The ceiling one issue is held to: the run's, unless the knife judged the issue one piece, in
+ * which case its own size is its ceiling. Every gate that compares a size with the ceiling asks
+ * this, so a work-whole issue is never sent back to the knife for its size alone.
+ */
+export function ceilingFor(labels: string[], points: number | null | undefined, ceiling: number): number {
+  if (!labels.includes(WORK_WHOLE) || points === null || points === undefined) return ceiling;
+  return Math.max(ceiling, points);
+}
+
 export function loopLabels(): Array<[string, string, string]> {
   return [
     ['needs-decision', 'ededed', 'Blocked on a product decision, not on effort'],
@@ -27,6 +45,7 @@ export function loopLabels(): Array<[string, string, string]> {
     ['loop/working', '1d76db', 'A worker has this issue; other runs wait'],
     ['loop/paused', 'fbca04', 'Paused by its parent while a question is open'],
     ['loop/handed-off', 'ededed', 'The knife handed this off before carving it; found by the sweep when the hold lifts'],
+    [WORK_WHOLE, '5319e7', 'The knife judged it one piece; worked whole, above the size ceiling if need be'],
     ['loop/deliberating', 'fbca04', 'A panel of frontier models is weighing whether a person must decide'],
     ['spike', '0e8a16', 'Answer a question with evidence; no pull request'],
   ];
@@ -237,7 +256,7 @@ export function sendToDlq(ctx: Context, issue: number, phase: DlqPhase, reason: 
     'comment',
     String(issue),
     '--body',
-    `Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`,
+    loopNote(`Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`),
   ]);
   mutate(ctx, `send #${issue} to the ${phase} DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
   const counter = DLQ_COUNTER[phase];
@@ -374,6 +393,6 @@ function pendingClose(ctx: Context, issue: number, marker: string): boolean {
 export function parkIssue(ctx: Context, issue: number, reason: string): void {
   // Comment first, then the label that hides the issue from selection: a crash between the two
   // leaves an issue that is still selectable, never one held without a reason on its thread.
-  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', reason]);
+  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', loopNote(reason)]);
   mutate(ctx, `park #${issue}`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/parked']);
 }
