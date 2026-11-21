@@ -17,11 +17,12 @@
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { LeaseLostError, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { readResult, renderPrompt, runAgent } from './agent.ts';
+import { readResult, refuseEnvironmentFault, renderPrompt, runAgent } from './agent.ts';
 import type { Context } from './context.ts';
 import { PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
-import { countOf, ensureLabel, recordCount } from './labels.ts';
+import { environmentFaultOf } from './environment-fault.ts';
+import { countOf, ensureLabel, recordCount, restoreCount } from './labels.ts';
 import { mutate, RunStopping } from './shell.ts';
 
 const PROMPTS = join(import.meta.dir, '..', 'prompts');
@@ -306,6 +307,9 @@ async function turn<T>(ctx: Context, request: HoldRequest, role: string, tag: st
   const run = await runAgent(ctx, role, request.issue, cwd, seat, prompt);
   const answer = run.exitCode === 0 && !run.notRun ? readResult<T>(cwd, file) : null;
   rmSync(cwd, { recursive: true, force: true });
+  // A seat that ended on an environment fault wrote no review, but the question was not weighed
+  // either: it throws, and the panel ends without a ruling and without spending its round.
+  refuseEnvironmentFault(run, role, request.issue);
   return answer;
 }
 
@@ -361,6 +365,14 @@ export async function weighHold(ctx: Context, request: HoldRequest, deps: PanelD
       mutate(ctx, `unlabel #${request.issue} ${DELIBERATING_LABEL}`, ['gh', 'issue', 'edit', String(request.issue), '--remove-label', DELIBERATING_LABEL], { whileStopping: true });
       throw error;
     }
+    // Nor is an environment fault (a full disk, no memory, a person's stop): the question was not
+    // weighed, so the round is given back and no hold is written; the fault goes on to the seat's
+    // driver, which settles it without a count and reruns the work, panel included, later.
+    if (environmentFaultOf(error)) {
+      mutate(ctx, `unlabel #${request.issue} ${DELIBERATING_LABEL}`, ['gh', 'issue', 'edit', String(request.issue), '--remove-label', DELIBERATING_LABEL]);
+      restoreCount(ctx, 'panels', request.issue, spent);
+      throw error;
+    }
     // Whatever else broke, the raising seat's hold stands; the reviews already posted are the research.
     say(`the panel could not finish: ${(error as Error).message.split('\n')[0]}`);
     const receipt = [marker('receipt', ' outcome=hold'), '**Decision review.** The review was interrupted before it finished; the reviews above are what it gathered, and a person decides.'].join('\n');
@@ -382,8 +394,9 @@ async function convene(ctx: Context, request: HoldRequest, seats: Seat[], marker
   const questions = framed ?? [{ id: 'Q1', text: request.question }];
   if (!framed) say('the question could not be framed; the panel answers it whole');
 
-  // The seats answer concurrently, and each review lands on the issue the moment it is in.
-  const reviews: SeatReview[] = await Promise.all(
+  // The seats answer concurrently, and each review lands on the issue the moment it is in. Every
+  // seat finishes before a throw is passed on, so no agent outlives the panel that started it.
+  const settledReviews = await Promise.allSettled(
     seats.map(async (seat, index): Promise<SeatReview> => {
       const number = index + 1;
       const raw = await turn<unknown>(ctx, request, 'panelist', `seat${number}`, seat, PANEL_REVIEW_FILE, {
@@ -415,6 +428,9 @@ async function convene(ctx: Context, request: HoldRequest, seats: Seat[], marker
       return { seat, number, answers: checked.answers, review: checked.review };
     }),
   );
+  const thrown = settledReviews.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (thrown) throw thrown.reason;
+  const reviews: SeatReview[] = settledReviews.map((r) => (r as PromiseFulfilledResult<SeatReview>).value);
 
   // Agreement is judged only where every seat decided; an owner answer or a missing one is open already.
   const contested = questions.filter((q) => reviews.every((r) => r.answers?.find((a) => a.id === q.id)?.kind === 'decide'));

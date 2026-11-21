@@ -15,12 +15,13 @@ import { confirmClose, validateConfirmation } from '../../appraise-github-issues
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
 import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { children, killAgent, killAgentsOn, readResult, refuseEnvironmentFault, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
 import { CONFIRMATION_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
+import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
@@ -45,8 +46,14 @@ export type FixOutcome = {
    * card is no longer this run's to place.
    */
   /** `stopped` is a lane the operator's stop unwound: nothing about it was settled, and the next run takes it up. */
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost';
+  /**
+   * `unjudged` is a lane that ended on an environment fault (a full disk, no memory, a person's
+   * stop): the work was not judged, nothing was counted, the lane was cleared, and the work is rerun
+   * later; on a host fault the driver was asked to pause the line. `fault` names which.
+   */
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost' | 'unjudged';
   reason: string;
+  fault?: EnvironmentFaultKind;
 };
 
 /** The largest `size: N` on an issue, or null when it carries none. */
@@ -365,7 +372,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
   const prompt = renderPrompt(ctx, 'confirm-answer.md', { ISSUE: String(issue.number), TITLE: issue.title, WORKER_REASON: result.reason, ANSWER: result.answer ?? '' });
-  const run = await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt);
+  const run = refuseEnvironmentFault(await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt), 'confirmer', issue.number);
   holdLease(ctx, issue.number, 'settle the confirmer');
   if (run.exitCode !== 0) return null;
   const checked = validateConfirmation(readResult<unknown>(cwd, CONFIRMATION_FILE), issue.number);
@@ -401,7 +408,9 @@ async function runReviewer(
     ROUND: String(round),
     MAX_ROUNDS: String(ctx.knobs.maxReviewRounds),
   });
-  const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt);
+  // A reviewer stopped from outside, or one that failed on the host, throws here: a full disk is
+  // not a review that failed, and the work it was to review was not judged.
+  const { exitCode } = refuseEnvironmentFault(await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt), 'reviewer', issue);
   holdLease(ctx, issue, 'settle the reviewer');
   // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
   // reviewer's parting words could approve a merge.
@@ -1604,6 +1613,7 @@ export async function fixIssue(
   // shuffled deck of verdicts with no way to tell which belongs to which.
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   ctx.step(`#${issue.number} ${issue.title}`);
+  rememberFaultMarkers(ctx, issue.number, issue.labels);
   // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
   // it under a ceiling the knife already said it cannot be cut to.
   const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
@@ -1740,9 +1750,34 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
   }
 }
 
+/**
+ * Clears a lane an environment fault interrupted, so the rerun starts clean. Kept dirty, it would
+ * be judged after all: a fresh worker refuses a dirty lane, and a later run's reconcile sends one
+ * with no pull request to the work dead letter. Commits no remote has get a ref of their own first,
+ * so nothing committed is lost; what is uncommitted was the interrupted run's, whose answer is not
+ * trusted. A lane that cannot be cleared is left where it is, and said so.
+ */
+export function clearLaneForRerun(ctx: Context, issue: number, say: (message: string) => void): void {
+  if (ctx.dryRun) return;
+  const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(cwd)) return;
+  try {
+    if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
+      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
+      sh(ctx, ['git', 'update-ref', rescued, head], cwd);
+      say(`saved the lane's unpushed commits as ${rescued}`);
+    }
+    removeWorktree(ctx, issue);
+    say('cleared the lane for the rerun');
+  } catch (error) {
+    say(`could not clear the lane for the rerun (${(error as Error).message.split('\n')[0]}); it is kept`);
+  }
+}
+
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
-  const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
+  let reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
   // After the merge there is nothing to retry and nothing to queue: the change landed. The run
   // start reconciles a merged pull request against an open issue, so the card stays where it is.
   if (lane?.startsWith('T')) {
@@ -1760,6 +1795,21 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
   if (error instanceof RunStopping || isStopping()) {
     say('stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives');
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
+  }
+  // Nor is an environment fault: a full disk, exhausted memory, or a person's stop says nothing
+  // about the work, which was not judged. It is settled in one place (`settleEnvironmentFault`):
+  // nothing is counted or held, the next placement puts the card by its facts, the lane is cleared
+  // for the rerun here (so the cleanup below has nothing left to retire), and a host fault pauses
+  // the line. The one charged case, the same host fault again on the rerun, falls through and is
+  // settled below as the ordinary failure it then is.
+  const fault = environmentFaultOf(error);
+  if (fault) {
+    const settled = settleEnvironmentFault(ctx, issue, fault, lane ?? '', say);
+    if (!settled.charged) {
+      clearLaneForRerun(ctx, issue.number, say);
+      return { outcome: { outcome: 'unjudged', reason: settled.reason, fault: fault.kind }, keepLane: true };
+    }
+    reason = `The pipeline threw${lane ? ` in ${lane}` : ''}, and ${settled.reason}: ${error.message.split('\n')[0]}`;
   }
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
@@ -1800,6 +1850,7 @@ export async function redriveIssue(
   options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  rememberFaultMarkers(ctx, issue.number, issue.labels);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
   // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
   // it under a ceiling the knife already said it cannot be cut to.

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
+import { clearFaultMarkers, describeFault, EnvironmentFault, type Fault, hostFaultInLog } from './environment-fault.ts';
 import { LeaseLostError, leaseLost } from '../../carve-github-issue/lib/claims.ts';
 import { assertNotMainCheckout, inFlight } from './lane.ts';
 import { beginStop, isStopping, RunStopping, stoppableSleep, yieldToStop } from './shell.ts';
@@ -84,6 +85,41 @@ export function retryableFailure(logPath: string): string | null {
   }
 }
 
+/**
+ * Every process this driver has signalled, so a run's end can tell the driver's own kill (the cap,
+ * a stop, a lost lease) from a signal that came from somewhere else.
+ */
+const killedByDriver = new WeakSet<object>();
+
+/**
+ * The signals a person sends to stop a process. A crash's signals (SIGSEGV, SIGABRT, SIGBUS) are not
+ * among them, and neither is SIGKILL: the kernel's out-of-memory killer sends it too, and the two
+ * cannot be told apart from here.
+ */
+const STOP_SIGNALS = ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM'];
+/**
+ * The same signals as exit codes (128 plus the signal's number). An engine that traps the signal
+ * reports it this way rather than dying of it: `claude -p` exits 143 on SIGTERM.
+ */
+const STOP_EXITS: Record<number, string> = { 129: 'SIGHUP', 130: 'SIGINT', 131: 'SIGQUIT', 143: 'SIGTERM' };
+
+/** The stop signal a process ended by, from its signal or its exit code, or null when it ended some other way. */
+export function stopSignalOf(signalCode: string | null, exitCode: number): string | null {
+  if (signalCode) return STOP_SIGNALS.includes(signalCode) ? signalCode : null;
+  return STOP_EXITS[exitCode] ?? null;
+}
+
+/**
+ * Throws an `EnvironmentFault` when the run ended on one: a full disk, exhausted memory, or a stop
+ * signal from outside the driver. Every seat that runs an agent calls this before it reads the run's
+ * exit, so such a run reaches its driver's settlement (`settleEnvironmentFault`) instead of being
+ * read as the seat's failure, a failure that would be counted against the work.
+ */
+export function refuseEnvironmentFault(run: AgentRun, role: string, issue: number): AgentRun {
+  if (run.fault) throw new EnvironmentFault(run.fault, role, `${role} on #${issue} ended on ${describeFault(run.fault)}; see ${run.logPath}`);
+  return run;
+}
+
 /** Agents run under setsid where available, so a kill reaches their whole process group. */
 export const SETSID = Bun.which('setsid');
 
@@ -94,6 +130,7 @@ export const SETSID = Bun.which('setsid');
  * without it the group kill is a no-op ESRCH and the plain kill still lands.
  */
 export function killAgent(proc: { pid: number; kill: () => void }, escalateMs = 10_000): void {
+  killedByDriver.add(proc);
   const signal = (sig: 'SIGTERM' | 'SIGKILL') => {
     try {
       process.kill(-proc.pid, sig);
@@ -239,7 +276,9 @@ export async function runAgent(
   for (let attempt = 0; ; attempt++) {
     const run = await runAgentOnce(ctx, role, issue, cwd, seat, prompt);
     // A run killed at the cap is not asked again: it spent the cap, and the lane has waited that long.
-    if (run.exitCode === 0 || run.timedOut || attempt >= AGENT_RETRIES) return run;
+    // Nor is one that ended on an environment fault: asking again on a full disk fails the same way,
+    // and whoever sent a stop signal wanted the agent to stop.
+    if (run.exitCode === 0 || run.timedOut || run.fault || attempt >= AGENT_RETRIES) return run;
 
     const reason = retryableFailure(run.logPath);
     if (!reason) return run;
@@ -254,9 +293,11 @@ export async function runAgent(
  * What a seat's run came to. `notRun` marks a seat a dry run skipped: exit 0 there means nothing
  * ran, not that an agent succeeded, and no answer file exists to read. `timedOut` marks a run the
  * driver killed at the cap: an engine can exit 0 on its way down with an answer file half meant,
- * so its exit code is never 0 here and no seat reads what it left.
+ * so its exit code is never 0 here and no seat reads what it left. `fault` names an environment
+ * fault the run ended on (a host fault in its log, or a stop signal this driver did not send); its
+ * exit code is never 0 either, and what it left is cleared.
  */
-export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true };
+export type AgentRun = { logPath: string; exitCode: number; notRun?: true; timedOut?: true; fault?: Fault };
 
 /** Runs one headless agent process to completion, capturing its output into a per-issue log. */
 export async function runAgentOnce(ctx: Context, role: string, issue: number, cwd: string, seat: Seat, prompt: string): Promise<AgentRun> {
@@ -346,6 +387,8 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
   // The driver killed it, so whatever code the engine chose on its way down says nothing: every
   // seat distrusts a non-zero exit, and that is the branch a killed run belongs in.
   const exitCode = timedOut && exited === 0 ? TIMED_OUT_EXIT : exited;
+  // A stop signal the driver did not send: the driver's own kills are all recorded by killAgent.
+  const outsideSignal = killedByDriver.has(proc) ? null : stopSignalOf(proc.signalCode ?? null, exited);
 
   // `claude -p` prints its final message to stdout and writes no file, so without this the
   // fallback verdict channel would exist only for engines with an --output-last-message flag.
@@ -368,7 +411,21 @@ export async function runAgentOnce(ctx: Context, role: string, issue: number, cw
     ctx.log(`  #${issue}  ${role} timed out at ${capMs / 60000} minutes and was killed; its answer is not trusted`);
     return { logPath, exitCode, timedOut: true };
   }
-  if (exitCode !== 0) ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
+  if (exitCode !== 0) {
+    // A run that ended on an environment fault (a person's stop, a full disk, no memory) gave no
+    // answer and no wrong one: what it left is cleared like a killed run's, now and for a resume,
+    // and the run says so for the seat to refuse.
+    const host = outsideSignal ? null : hostFaultInLog(logPath);
+    const fault: Fault | null = outsideSignal ? { kind: 'stopped', signal: outsideSignal, role } : host ? { kind: host, role } : null;
+    if (fault) {
+      for (const left of answers) rmSync(join(cwd, left), { force: true });
+      ctx.log(`  #${issue}  ${role} exited ${exitCode} on ${describeFault(fault)}; the work is not judged by it`);
+      return { logPath, exitCode, fault };
+    }
+    ctx.log(`  #${issue}  ${role} exited ${exitCode}; its answer is not trusted`);
+  }
+  // A clean run is past whatever point its seat's free fault interrupted, so that marker comes off.
+  if (exitCode === 0) clearFaultMarkers(ctx, issue, role, (message) => ctx.log(`  #${issue}  ${message}`));
 
   return { logPath, exitCode };
 }
