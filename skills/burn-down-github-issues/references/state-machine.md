@@ -98,7 +98,7 @@ mirrored to Number fields on the card.
 |---|---|---|
 | A1 Inbox | move card | `APPRAISER_DISPATCHED` [lineActive] to A2 |
 | A2 Appraising | run appraiser | `APPRAISED`: close verdict to A3; needs-decision to P1 when a panel can sit, else H1; needs-human to H2; over ceiling to C1 (size label, size callback); within to B1 (size label). `AGENT_FAILED`: under cap back to A1 (count); else Q1 |
-| A3 Confirming close | run confirmer | `CONFIRMED` to T2 (both receipts, close); `DISPUTED` to H2 (both opinions); `AGENT_FAILED` to Q1 |
+| A3 Confirming close | run confirmer | `CONFIRMED` to T2 (both receipts, close); `DISPUTED` (the issue is not provably dead, so it stands): an appraiser's first disputed close to A1 (C7 for a released trunk) with both opinions on the thread, marked so the next is known (`firstDisputedClose`); a second dispute, or a worker's, to H2; `AGENT_FAILED` to Q1 |
 
 ### Ready
 
@@ -112,10 +112,10 @@ mirrored to Number fields on the card.
 |---|---|---|
 | C1 To carve | move card | `KNIFE_DISPATCHED` [lineActive] to C2 (carving claim) |
 | C2 Carving | run carver | `CUT_PROPOSED` to C3; `KNIFE_VERDICT`: too-uncertain to P1 when a panel can sit, else H1, indivisible (small-enough, nothing-left, depth cap) to H2; `AGENT_FAILED`: under cap to C1, else Q2 |
-| C3 Confirming cut | run carve confirmer | `CUT_CONFIRMED` to C4; `OPINION_CONFIRMED` (the carver's opinion confirmed): too-uncertain to P1 when a panel can sit, else H1, anything else to H2; `CUT_DISPUTED`: under the round cap to C2, else Q2; `AGENT_FAILED` to Q2 |
+| C3 Confirming cut | run carve confirmer | `CUT_CONFIRMED` to C4; `OPINION_CONFIRMED` (the carver's opinion confirmed): on a first carving (`firstCarving`: no open child, no live record), small-enough or indivisible to B1 with `loop/work-whole` (worked whole at its own size) and nothing-left to C7 for the release appraisal; too-uncertain to P1 when a panel can sit, else H1; anything else to H2; `CUT_DISPUTED`: under the round cap to C2, else Q2; `AGENT_FAILED` to Q2 |
 | C4 Spawning children | post `applying` record, create children in delivery order, add edges, adopt references, post `live` record, label trunk | `SPAWN_COMPLETE` to C5 (release claim, admit children to the board); `AGENT_FAILED` to Q2 |
 | C5 Epic: children in flight | move card | `FINGERPRINT_CHANGED`, `ALL_CHILDREN_CLOSED` [lineActive] to C6 |
-| C6 Revisiting | run carver, run carve confirmer | `REVISITED`: still-good to C5; amend to C4 (new generation); exhausted to C7; a question to P1 when a panel can sit, else H1 (pause the touched leaves); anything else to Q2. `CAP_REACHED` to Q2; `AGENT_FAILED`: under cap to C5, else Q2 |
+| C6 Revisiting | run carver, run carve confirmer | `REVISITED`: a live record with no child (a first carving's hand-off, its hold lifted) is settled with no agent: a confirmed one-piece verdict on a thread untouched since is worked whole to B1 (`loop/work-whole`, trunk labels off), anything else is released to C7; still-good to C5; amend to C4 (new generation); exhausted to C7; a question to P1 when a panel can sit, else H1 (pause the touched leaves); anything else to Q2. `CAP_REACHED` to Q2; `AGENT_FAILED`: under cap to C5, else Q2 |
 | C7 Rolling up | roll-up comment, `released` record, trunk labels off, `loop/released` on | `ROLLED_UP`: nothing remains to T2; else to A2 (size label off; the release appraisal sizes the remainder) |
 
 A trunk never enters B, D, E, or F. Its children are cards of their own, entering at A1, B1, C1,
