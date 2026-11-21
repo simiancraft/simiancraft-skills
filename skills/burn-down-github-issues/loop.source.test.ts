@@ -37,7 +37,7 @@ describe('resume dispatch owns automatic redrive', () => {
     const end = source.indexOf('\n}', start) + 2;
     expect(source.slice(start, end)).toContain('redriveIssue(');
     expect(source.slice(0, start) + source.slice(end)).not.toContain('redriveIssue(');
-    expect(source).toMatch(/await pool\(\s*resumable,\s*CONFIG.concurrency,\s*resumePull,/);
+    expect(source).toMatch(/await pool\(\s*resumable,\s*CONCURRENCY,\s*resumePull,/);
   });
 });
 
@@ -65,7 +65,7 @@ describe('drivers drain the board before moving on or exiting', () => {
 
 describe('the work phase takes on what the run made eligible', () => {
   it('works through a refilling pool whose refill is the mid-run admission', () => {
-    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONFIG\.concurrency,[\s\S]*?ADMISSION\.admit,/);
+    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONCURRENCY,[\s\S]*?ADMISSION\.admit,/);
     expect(source).not.toMatch(/await pool\(\s*candidates,/);
   });
 
@@ -87,5 +87,45 @@ describe('the work phase takes on what the run made eligible', () => {
 
   it('counts the start-of-run appraisals in the run budget', () => {
     expect(source).toContain('for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);');
+  });
+});
+
+describe('--concurrency overrides the config for one run', () => {
+  /** The loop's `positive` option reader, loaded alone with its argument list and exit stubbed. */
+  function positiveWith(args: string[]) {
+    const match = /^function positive\(/m.exec(source);
+    if (!match) throw new Error('missing positive');
+    const body = source.slice(match.index, source.indexOf('\n}', match.index) + 2);
+    const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(body);
+    const errors: string[] = [];
+    const opt = (name: string) => {
+      const i = args.indexOf(`--${name}`);
+      return i >= 0 ? args[i + 1] : undefined;
+    };
+    const process = { exit: (code: number) => { throw new Error(`exit ${code}`); } };
+    const console = { error: (line: string) => errors.push(line) };
+    const positive = new Function('opt', 'process', 'console', `${js}\nreturn positive;`)(opt, process, console) as (name: string, fallback: number) => number;
+    return { positive, errors };
+  }
+
+  it('takes the flag over the config, and the config without it', () => {
+    expect(positiveWith(['--concurrency', '1']).positive('concurrency', 2)).toBe(1);
+    expect(positiveWith(['--concurrency', '4']).positive('concurrency', 2)).toBe(4);
+    expect(positiveWith([]).positive('concurrency', 2)).toBe(2);
+  });
+
+  it('refuses zero, a negative, a fraction, and a word', () => {
+    for (const raw of ['0', '-1', '1.5', 'two']) {
+      const { positive, errors } = positiveWith(['--concurrency', raw]);
+      expect(() => positive('concurrency', 2)).toThrow('exit 1');
+      expect(errors).toEqual([`--concurrency expects a positive integer, got '${raw}'`]);
+    }
+  });
+
+  it('feeds every pool from the override, never from the config directly', () => {
+    expect(source).toContain("const CONCURRENCY = positive('concurrency', CONFIG.concurrency);");
+    expect(source.match(/CONFIG\.concurrency/g)).toHaveLength(1);
+    expect(source).toMatch(/resumeStranded\(\s*ctx,\s*stranded,\s*CONCURRENCY,/);
+    expect(source).toMatch(/await refillingPool\(\s*first,\s*CONCURRENCY,/);
   });
 });

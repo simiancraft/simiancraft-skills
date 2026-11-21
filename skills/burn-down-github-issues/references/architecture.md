@@ -80,7 +80,7 @@ repository-shaped, can be set in the repository's `burn-down-github-issues.confi
 | `autoMerge` | `code-only` | Merge code; park anything touching data, a migration, a stored string, or CI |
 | `maxReviewRounds` | 3 | Review rounds an issue gets, ever, before the DLQ |
 | `limit` | 5 | Issues per run |
-| `concurrency` | 2 | Issues worked at once, one worktree each |
+| `concurrency` | 2 | Issues worked at once, one worktree each; `--concurrency <n>` overrides it for one run |
 | `appraiserConcurrency` | 3 | Appraisers at once; no worktree, so they are cheap |
 | `appraiseLimit` | 12 | Issues appraised per run |
 

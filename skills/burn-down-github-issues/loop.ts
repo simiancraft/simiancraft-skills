@@ -231,7 +231,7 @@ const CARVE_PROMPTS = join(HERE, '..', 'carve-github-issue', 'prompts');
  * repository, so this answers with the main checkout wherever it is invoked from.
  */
 /** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
-export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat', 'walker', 'floor', 'base-url'] } as const;
+export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'concurrency', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat', 'walker', 'floor', 'base-url'] } as const;
 export const USAGE = `burn-down-github-issues: appraise, carve, work, review, and land a repository's open issues, headless.
 Run it from inside the target repository. With no flags it starts a REAL run on the whole window.
 
@@ -239,6 +239,7 @@ Run it from inside the target repository. With no flags it starts a REAL run on 
 
   --dry-run               rehearse: no agent is run and nothing is written; say what would happen
   --limit <n>             work at most n issues this run
+  --concurrency <n>       work at most n issues at once (default: the config's)
   --only <n,n,...>        restrict the run to these issues, in appraisal, selection, and the sweep
   --max-points <n>        the largest size a worker may take on (default: the config's)
   --no-appraise           skip the sizing pass
@@ -396,18 +397,21 @@ function countOption(name: string, fallback: number): number {
   return parsed;
 }
 const LIMIT = countOption('limit', CONFIG.limit);
-// Per-run ambition knob: a one-off ceiling raise belongs on the command line, not in the durable
-// config, whose value is what unattended runs get.
-const MAX_POINTS = (() => {
-  const raw = opt('max-points');
-  if (raw === undefined) return CONFIG.maxPoints;
+/** A positive option: zero or a mistyped value refuses rather than running with nothing or NaN. */
+function positive(name: string, fallback: number): number {
+  const raw = opt(name);
+  if (raw === undefined) return fallback;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    console.error(`--max-points expects a positive integer, got '${raw}'`);
+    console.error(`--${name} expects a positive integer, got '${raw}'`);
     process.exit(1);
   }
   return parsed;
-})();
+}
+// Per-run knobs: a one-off ceiling raise, or fewer lanes while something else shares the machine,
+// belongs on the command line, not in the durable config, whose value is what unattended runs get.
+const MAX_POINTS = positive('max-points', CONFIG.maxPoints);
+const CONCURRENCY = positive('concurrency', CONFIG.concurrency);
 // One named issue is what the sibling fix skill is; the loop is selection over a backlog.
 if (opt('issue') !== undefined) {
   console.error('--issue moved to the fix-github-issue skill: bun run <skill-dir>/fix.ts --issue <n>');
@@ -1269,7 +1273,7 @@ async function main(): Promise<void> {
     await resumeStranded(
       ctx,
       stranded,
-      CONFIG.concurrency,
+      CONCURRENCY,
       MAX_POINTS,
     );
   }
@@ -1329,7 +1333,7 @@ async function main(): Promise<void> {
     log(resumable.map((r) => `#${r.issue.number} (PR #${r.pull.number})`).join(', '));
     await pool(
       resumable,
-      CONFIG.concurrency,
+      CONCURRENCY,
       resumePull,
       ({ issue }) => `#${issue.number}`,
     );
@@ -1346,11 +1350,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  step(`Working ${first.length} issue(s), ${Math.min(CONFIG.concurrency, first.length)} at a time; more join as lanes settle`);
+  step(`Working ${first.length} issue(s), ${Math.min(CONCURRENCY, first.length)} at a time; more join as lanes settle`);
   log(first.map((i) => `#${i.number}`).join(', '));
   await refillingPool(
     first,
-    CONFIG.concurrency,
+    CONCURRENCY,
     async (issue) => {
       await waitForGo(`#${issue.number}`);
       // The pipeline places the card at every seam from Coding on; the two ways it can decline to
