@@ -96,6 +96,16 @@ repository has (`references/adopting.md`). Every run is teed to `<worktreeRoot>/
   says so; it does not stop for a human.
 - **Closes carry receipts, and receipts get re-checked.** Narrative alone never closes an issue.
 
+- **A size says what it judged.** Every valid appraisal posts a stamp comment on the thread with
+  the base commit it read and the thread as people wrote it, both taken before the appraiser runs
+  (so a fetch or an edit during the turn reads later as a move), the paths it named in `touches`
+  (`[]` when the work changes no repository paths, `null` when it could not tell), and a digest that
+  leaves out comments the loop marked as its own, whichever account the loop runs under
+  (`lib/stamp.ts`). A later reader can tell whether the size still describes the issue. A missing
+  stamp, or one with no base or unknown paths, is unknowable, never fresh. A stamp that cannot be
+  written is logged and costs the appraisal nothing. A re-size takes `loop/work-whole` off the
+  issue, so the knife judges the new size.
+
 ## Hard dependencies
 
 - The sibling `fix-github-issue` skill, imported for the agent runner, config loader, prompt

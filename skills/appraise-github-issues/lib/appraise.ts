@@ -26,11 +26,13 @@ import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-is
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
-import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq } from '../../fix-github-issue/lib/labels.ts';
+import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
 import { isStopping, mutate, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { runSizeCallback, type SizeCallbackResult } from './callbacks.ts';
+import { noteStampedHere, noteStampingSince, renderStamp, threadDigest, threadParts } from './stamp.ts';
+import { loopNote } from '../../fix-github-issue/lib/note.ts';
 
 export const APPRAISAL_VERDICTS = ['valid', 'already-fixed', 'obsolete', 'needs-decision', 'needs-human', 'failed'] as const;
 export type AppraisalVerdict = (typeof APPRAISAL_VERDICTS)[number];
@@ -42,6 +44,11 @@ export type AppraisalResult = {
   points?: number;
   reason: string;
   closeComment?: string;
+  /**
+   * For `valid`: the repository paths the appraiser said the work changes. Empty when it said the
+   * work changes none; null when it could not tell, or gave no usable list.
+   */
+  touches?: string[] | null;
 };
 
 /** What the confirmer writes to `loop-confirmation.json`, after validation. */
@@ -53,7 +60,8 @@ export type AppraisalOutcome = {
   points?: number;
   reason: string;
   /** How the close was settled, when the verdict was a close. */
-  close?: 'confirmed' | 'disputed' | 'unconfirmed' | 'skipped';
+  /** `stood`: the first dispute of this close; the issue stands and is appraised again with the objection on its thread. */
+  close?: 'confirmed' | 'disputed' | 'stood' | 'unconfirmed' | 'skipped';
   /** True when the verdict changed nothing on the issue and the next run should try again. */
   retry?: boolean;
   /** True when the appraisal stopped because the issue changed under it; the tracker, not this outcome, says where the card is. */
@@ -123,6 +131,9 @@ export function assertConfirmCloses(value: unknown, fileName: string): void {
   }
 }
 
+/** Opens the comment that records a disputed close, so a second dispute of the issue is known. */
+export const CLOSE_DISPUTED_MARKER = '<!-- appraise-close-disputed -->';
+
 const SIZE_LABEL = /^size:\s*(\d+)$/;
 
 /** The largest size label the issue carries, or null when unsized. Max, because a relabel is add-then-remove. */
@@ -180,6 +191,39 @@ export function isHeld(labels: Array<{ name: string }>, skipLabels: string[]): b
   return labels.some((l) => skipLabels.includes(l.name) || l.name === 'loop/dlq' || l.name.startsWith('loop/dlq:'));
 }
 
+/**
+ * The base as the appraiser will find it, read once before the agent runs. It is the base the
+ * stamp records, so a fetch made while the appraisal runs cannot put a commit on the stamp that
+ * the appraiser never saw. If the ref moves during the turn, the stamp names an older base than
+ * the one read, and a later freshness check errs toward stale. Null when it cannot be read.
+ */
+function readBase(ctx: Context, say: (message: string) => void): string | null {
+  try {
+    return sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], ctx.repoRoot, 1).trim() || null;
+  } catch (error) {
+    say(`the base could not be read for the appraisal stamp (${(error as Error).message.split('\n')[0]}); it will be stamped without one`);
+    return null;
+  }
+}
+
+/**
+ * Records what this valid appraisal judged (the base it read, the paths it named, the thread as
+ * people wrote it), so the knife's dispatch can tell whether the appraisal still describes the issue.
+ * The thread is the one read before the appraiser ran, so an edit during its turn reads as a move. A base that could not be read is recorded as none, which a reader treats as unknowable.
+ */
+function postStamp(ctx: Context, node: Parameters<typeof threadDigest>[0], issue: number, base: string | null, points: number, touches: string[] | null): void {
+  const at = new Date().toISOString();
+  const stamp = { base, touches, thread: threadDigest(node, ctx.botLogin), parts: threadParts(node, ctx.botLogin), points, at };
+  mutate(ctx, `stamp the appraisal of #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', renderStamp(stamp)]);
+  if (ctx.dryRun) return;
+  noteStampedHere(ctx.project.repo, issue, at);
+  try {
+    noteStampingSince(ctx.runDir, at);
+  } catch {
+    // Only the guard's account of a missing stamp reads this; it says so when it is absent.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Validation: an agent's answer is data, and malformed data is no answer.
 // ---------------------------------------------------------------------------
@@ -201,6 +245,10 @@ export function validateAppraisal(raw: unknown, issue: number): { ok: true; resu
   if (r.closeComment !== undefined && r.closeComment !== null && typeof r.closeComment !== 'string') {
     return { ok: false, why: 'closeComment must be a string' };
   }
+  // `touches` is optional and advisory: a stamp without it is still a stamp, so a malformed list is
+  // dropped rather than costing the appraisal. Dropped reads as not known (null), never as "changes
+  // nothing" ([]): only the appraiser's own empty list says that.
+  const touches = Array.isArray(r.touches) ? r.touches.filter(nonEmptyString).map((t) => t.trim()) : null;
   return {
     ok: true,
     result: {
@@ -209,6 +257,7 @@ export function validateAppraisal(raw: unknown, issue: number): { ok: true; resu
       points: typeof r.points === 'number' ? r.points : undefined,
       reason: r.reason.trim(),
       closeComment: nonEmptyString(r.closeComment) ? r.closeComment.trim() : undefined,
+      touches,
     },
   };
 }
@@ -374,6 +423,7 @@ export async function appraiseIssue(
     say('a trunk is not appraised; it is worked by closing its children');
     return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
   }
+  const base = readBase(ctx, say);
 
   // Every caller gets a freshly fetched base, so the prompt's promise holds however it was reached.
   refreshBase(ctx, say);
@@ -514,6 +564,10 @@ export async function appraiseIssue(
         outcome.close = 'confirmed';
       } else {
         say(`confirmer disagrees: ${confirmation.reason}`);
+        // A disputed close means the issue is not provably dead, so the first dispute leaves it
+        // standing: no hold, and the next appraisal reads the objection on the thread. A second
+        // dispute of a close is a person's. The marker is how the second one is known.
+        const disputedBefore = readTree(ctx, issue.number, io).issue.comments.some((c) => c.author === ctx.botLogin && c.body.startsWith(CLOSE_DISPUTED_MARKER));
         // Comment first, then the label that hides the issue from selection, so a crash between
         // the two leaves an issue that is still selectable rather than one held without a reason.
         mutate(ctx, `comment on #${issue.number}`, [
@@ -523,15 +577,23 @@ export async function appraiseIssue(
           String(issue.number),
           '--body',
           [
-            `Appraisal proposed closing this as \`${result.verdict}\`, and an independent re-check disagreed; a person needs to settle it.`,
+            CLOSE_DISPUTED_MARKER,
+            disputedBefore
+              ? `Appraisal proposed closing this as \`${result.verdict}\`, and an independent re-check disagreed again; a person needs to settle it.`
+              : `Appraisal proposed closing this as \`${result.verdict}\`, and an independent re-check disagreed, so it is not provably done: it stands, and is appraised again with this objection in view.`,
             '',
             `**Proposed close:** ${closeComment}`,
             '',
             `**Re-check:** ${confirmation.reason}`,
           ].join('\n'),
         ]);
-        mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
-        outcome.close = 'disputed';
+        if (disputedBefore) {
+          mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+          outcome.close = 'disputed';
+        } else {
+          outcome.close = 'stood';
+          outcome.retry = true;
+        }
       }
       break;
     }
@@ -579,9 +641,21 @@ export async function appraiseIssue(
             'comment',
             String(issue.number),
             '--body',
-            `Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`,
+            loopNote(`Re-sized at ${result.points} points, previously \`${priorSizes.join('`, `')}\`. ${result.reason}`),
           ]);
         }
+        // Worked whole was the knife's judgment of the issue at its old size; a new size asks again.
+        if (issue.labels.some((l) => l.name === WORK_WHOLE)) {
+          mutate(ctx, `unlabel #${issue.number} ${WORK_WHOLE} (re-sized)`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', WORK_WHOLE]);
+        }
+      }
+      // The stamp is a record for the knife's guard; a stamp that cannot be written costs that
+      // record, never the appraisal the size label already settled.
+      try {
+        postStamp(ctx, before.issue, issue.number, base, result.points, result.touches ?? null);
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        say(`the appraisal stamp could not be written (${(error as Error).message.split('\n')[0]}); the guard will read this issue as stamp-missing`);
       }
       // The size is on the issue; what happens next for an issue of this size is the producer's.
       // A released trunk fires no callback: the burndown that asked for the release appraisal

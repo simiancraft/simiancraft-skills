@@ -7,7 +7,7 @@ import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import { CARVE_DEFAULTS, type CarveKnobs, type Carving, type Confirmation, validateCarving, validateConfirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
 import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/shell.ts';
-import { awaitReleases, type ClaimHandle, claim, keepClaimed, leaseLost } from './claims.ts';
+import { awaitReleases, type ClaimHandle, claim, isTrunk, keepClaimed, leaseLost } from './claims.ts';
 import { loopLabels } from '../../fix-github-issue/lib/labels.ts';
 import { carveIssue, workStarted } from './knife.ts';
 import { type Cut, renderRecord, type Record } from './record.ts';
@@ -16,6 +16,8 @@ import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carv
 import { laneState, successors } from '../../burn-down-github-issues/lib/simulate.ts';
 import { ENGINES } from '../../fix-github-issue/lib/engines.ts';
 import { runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { appraiseIssue } from '../../appraise-github-issues/lib/appraise.ts';
+import { latestStamp, renderStamp, threadDigest, threadParts } from '../../appraise-github-issues/lib/stamp.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -79,6 +81,18 @@ describe('the carving driver makes only moves the chart allows', () => {
       expect(illegal(lanes)).toEqual([]);
     });
   }
+  test('an oversized release remainder the knife works whole leaves the release settled', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }, { name: 'size: 8' }] })]);
+    const ctx = ctxFor(io); const lanes = ['C7'];
+    const k = knobs(fixture('indivisible', carving(10, { verdict: 'indivisible', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true)));
+    await makeDriver(ctx, k, lanes).releaseAppraisal(10);
+    expect(labels(io, 10)).toContain('loop/work-whole');
+    // A released label left on would send every sweep back to the knife, which leaves it alone.
+    expect(labels(io, 10)).not.toContain('loop/released');
+    expect(lanes.at(-1)).toBe('B1');
+    expect(illegal(lanes)).toEqual([]);
+  });
+
   test('a release appraisal that fails after its lease was lost counts nothing', async () => {
     const released = () => new FakeTracker(BOT, [fakeIssue(10, { labels: [{ name: 'loop/released' }] })]);
     const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
@@ -776,6 +790,10 @@ describe('carveIssue', () => {
     expect(r.revisits).toBe(1);
     expect(r.ledger.filter((l) => l.status === 'completed').map((l) => l.id)).toEqual(['A1', 'A2']);
     expect(records(io, 10)).toEqual(['applying', 'live', 'live']);
+    // A revisit rewrites a judgment too, so the shadow guard logs it with its mode.
+    const lines = readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.some((l) => l.issue === 10 && l.mode === 'revisit' && l.point === 'dispatch')).toBe(true);
+    expect(lines.some((l) => l.issue === 10 && l.mode === 'revisit' && l.point === 'carver-answered' && l.carverVerdict === 'still-good')).toBe(true);
   });
 
   test('a question pauses exactly the owner of the affected criterion; removing the hold redrives into a new epoch', async () => {
@@ -828,12 +846,82 @@ describe('carveIssue', () => {
     const k = knobs(fixture('indivisible', carving(10, { verdict: 'indivisible', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true)));
     const d = new CarvingDriver({ ctx, knobs: k, appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (_n, _t, l) => lanes.push(l), log: () => {} });
     await d.revisit(10, 'first carving');
-    expect(lanes.at(-1)).toBe('H2');
+    // A first carving the knife judged one piece is worked whole, not handed to a person.
+    expect(lanes.at(-1)).toBe('B1');
     const illegal = lanes.slice(1).flatMap((to, index) => {
       const from = lanes[index];
       return from === to || successors(laneState(from), { ownEventsOnly: true }).has(laneState(to)) ? [] : [`${from}->${to}`];
     });
     expect(illegal).toEqual([]);
+  });
+
+  for (const verdict of ['small-enough', 'indivisible'] as const) test(`a first carving's confirmed ${verdict} is worked whole, with no hold`, async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture(verdict, carving(10, { verdict, cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);
+    expect(out.outcome).toBe('work-whole');
+    expect(labels(io, 10)).toContain('loop/work-whole');
+    expect(labels(io, 10)).toContain('size: 8');
+    expect(labels(io, 10).some((l) => l === 'needs-human' || l === 'loop/handed-off')).toBe(false);
+    expect(records(io, 10).at(-1)).toBe('released');
+    expect(io.view(10)!.comments.some((c) => c.body.startsWith(`<!-- carve-work-whole verdict=${verdict}`))).toBe(true);
+    // The knife leaves a work-whole issue alone from then on, whatever its size.
+    const again = await carveIssue(ctxFor(io), issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    expect(again.outcome).toBe('left-alone');
+  });
+
+  test('a first carving logs, in shadow, whether the pre-carve guard would fire, and still carves', async () => {
+    const started = new Date().toISOString();
+    const io = trunk(); const ctx = ctxFor(io); const said: string[] = [];
+    ctx.log = (m: string) => said.push(m);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    expect(out.outcome).toBe('carve');
+    // The fixture trunk was never appraised, so nothing recorded what its size judged.
+    expect(said.some((m) => m.includes('pre-carve guard (shadow, first-carving dispatch): unknowable (stamp-unaccounted); would re-appraise first'))).toBe(true);
+    expect(said.some((m) => m.includes('pre-carve guard (shadow, first-carving, carver answered carve): unknowable'))).toBe(true);
+    const lines = readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const mine = lines.filter((l) => l.issue === 10 && l.at >= started);
+    expect(mine.map((l) => l.point)).toEqual(['dispatch', 'carver-answered']);
+    expect(mine[0]).toMatchObject({ mode: 'first-carving', verdict: 'unknowable', cause: 'stamp-unaccounted', fires: true, samePass: false, stampAt: null, ageSeconds: null, stampBase: null });
+    expect(mine[1]).toMatchObject({ carverVerdict: 'carve' });
+    expect('baseNow' in mine[0]).toBe(true);
+  });
+
+  /** Stamps the trunk as an appraisal would, against the thread as it stands now. */
+  function stampTrunk(io: FakeTracker, touches: string[]): void {
+    const view = io.view(10)!;
+    const thread = { title: view.title, body: view.body, comments: view.comments };
+    io.comment(10, BOT, renderStamp({ base: 'b'.repeat(40), touches, thread: threadDigest(thread, BOT), parts: threadParts(thread, BOT), points: 13, at: new Date().toISOString() }));
+  }
+  const guardLines = (ctx: Context, since: string) =>
+    readFileSync(join(ctx.runDir, 'pre-carve-guard.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.issue === 10 && l.at >= since);
+
+  test('a stamp that named no paths is read from its thread alone, not as unknowable', async () => {
+    const started = new Date().toISOString();
+    const io = trunk(); const ctx = ctxFor(io);
+    stampTrunk(io, []);
+    await carveIssue(ctx, issue10, knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true))), io);
+    const [dispatch] = guardLines(ctx, started);
+    expect(dispatch).toMatchObject({ point: 'dispatch', verdict: 'fresh', scope: 'thread-only', fires: false });
+    expect(dispatch.reasons[0]).toMatch(/^paths: none/);
+  });
+
+  test("a carver's still-good that meets a stale verdict is logged as settling it", async () => {
+    const { io, ctx } = await carved();
+    stampTrunk(io, []);
+    io.comment(10, 'person', 'One more detail about the existing flow.');
+    const started = new Date().toISOString();
+    await carveIssue(ctx, issue10, knobs(fixture('sg', revisit(10, 'still-good')), fixture('yes', confirmation(10, 'revisit', 'still-good', true))), io);
+    const answered = guardLines(ctx, started).find((l) => l.point === 'carver-answered');
+    expect(answered).toMatchObject({ verdict: 'stale', carverVerdict: 'still-good', carverSettles: true });
+  });
+
+  test("a first carving's confirmed nothing-left releases the issue to the appraiser, with no hold", async () => {
+    const io = trunk(); const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('nl', carving(10, { verdict: 'nothing-left', cuts: undefined, chosen: undefined, affected: [] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);
+    expect(out.outcome).toBe('exhausted');
+    expect(labels(io, 10)).toContain('loop/released');
+    expect(labels(io, 10).some((l) => l.startsWith('size:') || l === 'needs-human')).toBe(false);
+    expect(records(io, 10).at(-1)).toBe('released');
   });
 
   test('a dry run with fixture seats lands nothing and logs every write', async () => {
@@ -845,6 +933,165 @@ describe('carveIssue', () => {
     expect(io.view(10)!.subIssues).toEqual([]);
     expect(ctx.dryRunLog.some((l) => l.includes('create child'))).toBe(true);
     expect(ctx.dryRunLog.some((l) => l.includes('post the live record'))).toBe(true);
+  });
+});
+
+describe('a childless record', () => {
+  /** A first carving handed off with no child; `verdict` rewrites it as an older build's one-piece hand-off. */
+  async function handedOff(verdict?: 'indivisible' | 'small-enough') {
+    const io = trunk(); const ctx = ctxFor(io);
+    const out = await carveIssue(ctx, issue10, knobs(fixture('tu', carving(10, { verdict: 'too-uncertain', cuts: undefined, chosen: undefined, affected: ['A1'] })), fixture('agree', confirmation(10, 'carve', 'hand-off-agree', true))), io);
+    expect(out.outcome).toBe('too-uncertain');
+    if (verdict) {
+      for (const c of io.issues.get(10)!.comments) c.body = c.body.replaceAll('too-uncertain', verdict);
+      io.addLabel(10, 'loop/carved');
+      io.addLabel(10, 'loop/carve-gen: 1');
+    }
+    io.removeLabel(10, 'needs-decision');
+    return { io, ctx };
+  }
+  const noAgent = () => knobs(fixture('none', {}), fixture('none2', {}));
+
+  test('is no trunk, so the appraiser sizes it rather than refusing it', async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    const tree = readTree(ctx, 10, io);
+    expect(tree.record?.state).toBe('live');
+    expect(isTrunk(tree)).toBe(false);
+  });
+
+  test("an older build's one-piece hand-off on an untouched thread is worked whole", async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    const out = await carveIssue(ctx, issue10, noAgent(), io);
+    expect(out.outcome).toBe('work-whole');
+    expect(labels(io, 10)).toContain('loop/work-whole');
+    expect(labels(io, 10).some((l) => l === 'loop/carved' || l.startsWith('loop/carve-gen') || l === 'loop/handed-off')).toBe(false);
+    expect(records(io, 10).at(-1)).toBe('released');
+  });
+
+  test('a one-piece hand-off whose thread moved since is released to the appraiser', async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    io.comment(10, 'person', 'The scope changed: also cover the email path.');
+    const out = await carveIssue(ctx, issue10, noAgent(), io);
+    expect(out.outcome).toBe('exhausted');
+    expect(labels(io, 10)).toContain('loop/released');
+    expect(labels(io, 10)).not.toContain('loop/work-whole');
+    expect(labels(io, 10).some((l) => l.startsWith('size:') || l === 'loop/carved')).toBe(false);
+  });
+
+  for (const moved of [false, true]) test(`the driver settles it along legal board edges${moved ? ', thread moved' : ''}`, async () => {
+    const { io, ctx } = await handedOff('indivisible');
+    if (moved) io.comment(10, 'person', 'Also the email path.');
+    const lanes: string[] = ['H1'];
+    ctx.onLane = (e) => lanes.push(e.lane);
+    const d = new CarvingDriver({ ctx, knobs: noAgent(), appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (_n, _t, l) => lanes.push(l), log: () => {} });
+    await d.revisit(10, 'a hold was removed');
+    expect(lanes.at(-1)).toBe(moved ? 'C7' : 'B1');
+    const illegal = lanes.slice(1).flatMap((to, index) => {
+      const from = lanes[index];
+      return from === to || successors(laneState(from), { ownEventsOnly: true }).has(laneState(to)) ? [] : [`${from}->${to}`];
+    });
+    expect(illegal).toEqual([]);
+  });
+
+  test('an answered question is released to the appraiser, never worked whole', async () => {
+    const { io, ctx } = await handedOff();
+    const out = await carveIssue(ctx, issue10, noAgent(), io);
+    expect(out.outcome).toBe('exhausted');
+    expect(labels(io, 10)).toContain('loop/released');
+  });
+});
+
+describe('a valid appraisal', () => {
+  test('stamps the thread with the paths it named and a base it could not read as none', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(31, { title: 'add a palette', body: 'Criteria: A1' })]);
+    const issue = { number: 31, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const answer = fixture('valid', { issue: 31, verdict: 'valid', points: 2, reason: 'one new palette', touches: ['src/palettes/', 42, ''] });
+    const options = { ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] };
+    await appraiseIssue(ctxFor(io), issue as never, options as never);
+    const stamp = latestStamp(io.view(31)!.comments, BOT);
+    expect(stamp?.points).toBe(2);
+    expect(stamp?.touches).toEqual(['src/palettes/']);
+    // The scratch repository is not a git checkout, so the base is unknowable, not invented.
+    expect(stamp?.base).toBeNull();
+    expect(stamp?.thread).toBe(threadDigest(io.view(31)!, BOT));
+  });
+
+  test('stamps the base read before the appraiser ran, not one fetched while it ran', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'stamp-base-'));
+    const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]).stdout.toString().trim();
+    git('init', '-q', '-b', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'judged');
+    const judged = git('rev-parse', 'HEAD');
+    git('commit', '-q', '--allow-empty', '-m', 'landed while the appraiser ran');
+    const later = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', judged);
+    const io = new FakeTracker(BOT, [fakeIssue(32, { title: 'add a palette', body: 'Criteria: A1' })]);
+    // The ref moves when the size lands on the issue, after the appraiser answered and before the stamp.
+    const addLabel = io.addLabel.bind(io);
+    io.addLabel = (n: number, name: string) => {
+      addLabel(n, name);
+      if (name.startsWith('size:')) git('update-ref', 'refs/remotes/origin/main', later);
+    };
+    const ctx = ctxFor(io);
+    ctx.repoRoot = repo;
+    const issue = { number: 32, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const answer = fixture('valid', { issue: 32, verdict: 'valid', points: 2, reason: 'one new palette', touches: ['src/palettes/'] });
+    const options = { ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] };
+    await appraiseIssue(ctx, issue as never, options as never);
+    expect(git('rev-parse', 'refs/remotes/origin/main')).toBe(later);
+    expect(latestStamp(io.view(32)!.comments, BOT)?.base).toBe(judged);
+    rmSync(repo, { recursive: true, force: true });
+  });
+});
+
+describe('a valid appraisal, read against the thread it judged', () => {
+  const options = (answer: string) => ({ ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] });
+  const issueOf = (n: number, labels: Array<{ name: string }> = []) => ({ number: n, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels });
+
+  test('stamps the thread as it was before the appraiser ran, so an edit during the turn reads as a move', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(33, { title: 'add a palette', body: 'Criteria: A1' })]);
+    const judged = threadDigest(io.view(33)!, BOT);
+    const addLabel = io.addLabel.bind(io);
+    io.addLabel = (n: number, name: string) => {
+      addLabel(n, name);
+      if (name.startsWith('size:')) io.comment(33, 'person', 'Also cover the dark theme.');
+    };
+    await appraiseIssue(ctxFor(io), issueOf(33) as never, options(fixture('valid', { issue: 33, verdict: 'valid', points: 2, reason: 'one palette', touches: ['src/palettes/'] })) as never);
+    expect(latestStamp(io.view(33)!.comments, BOT)?.thread).toBe(judged);
+  });
+
+  test('stamps paths it was not told as not known, and an empty list as none', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(34, { body: 'Criteria: A1' }), fakeIssue(35, { body: 'Decide: A1' })]);
+    await appraiseIssue(ctxFor(io), issueOf(34) as never, options(fixture('omitted', { issue: 34, verdict: 'valid', points: 2, reason: 'one palette' })) as never);
+    await appraiseIssue(ctxFor(io), issueOf(35) as never, options(fixture('none', { issue: 35, verdict: 'valid', points: 1, reason: 'a decision', touches: [] })) as never);
+    expect(latestStamp(io.view(34)!.comments, BOT)?.touches).toBeNull();
+    expect(latestStamp(io.view(35)!.comments, BOT)?.touches).toEqual([]);
+  });
+
+  test('takes loop/work-whole off an issue it re-sizes, so the knife judges the new size', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(36, { body: 'Criteria: A1', labels: [{ name: 'size: 3' }, { name: 'loop/work-whole' }] })]);
+    await appraiseIssue(ctxFor(io), issueOf(36, [{ name: 'size: 3' }, { name: 'loop/work-whole' }]) as never, options(fixture('bigger', { issue: 36, verdict: 'valid', points: 8, reason: 'larger than it looked', touches: ['src/'] })) as never);
+    expect(labels(io, 36)).not.toContain('loop/work-whole');
+    const same = new FakeTracker(BOT, [fakeIssue(37, { body: 'Criteria: A1', labels: [{ name: 'size: 3' }, { name: 'loop/work-whole' }] })]);
+    await appraiseIssue(ctxFor(same), issueOf(37, [{ name: 'size: 3' }, { name: 'loop/work-whole' }]) as never, options(fixture('same', { issue: 37, verdict: 'valid', points: 3, reason: 'as sized', touches: ['src/'] })) as never);
+    expect(labels(same, 37)).toContain('loop/work-whole');
+  });
+});
+
+describe('a disputed appraiser close', () => {
+  test('stands the first time, with no hold, and is a person\'s the second time', async () => {
+    const io = new FakeTracker(BOT, [fakeIssue(30, { title: 'maybe done', body: 'Criteria: A1' })]);
+    const issue = { number: 30, title: 'maybe done', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const close = fixture('close', { issue: 30, verdict: 'already-fixed', reason: 'looks done', closeComment: 'Fixed in abc123.' });
+    const disagree = fixture('disagree', { issue: 30, agree: false, reason: 'A1 is still missing on main' });
+    const options = { ageDays: null, seats: { appraiser: { engine: 'fixture', model: close }, confirmer: { engine: 'fixture2', model: disagree } }, confirmCloses: true, skipLabels: ['needs-human', 'needs-decision', 'loop/skip', 'loop/parked'] };
+    const first = await appraiseIssue(ctxFor(io), issue as never, options as never);
+    expect(first.close).toBe('stood');
+    expect(io.view(30)!.state).toBe('OPEN');
+    expect(labels(io, 30)).not.toContain('needs-human');
+    const second = await appraiseIssue(ctxFor(io), issue as never, options as never);
+    expect(second.close).toBe('disputed');
+    expect(labels(io, 30)).toContain('needs-human');
   });
 });
 
