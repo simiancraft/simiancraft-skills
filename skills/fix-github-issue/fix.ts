@@ -39,6 +39,7 @@ import { parseSeat, seatLabel } from './lib/engines.ts';
 import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { readLandBlocker } from './lib/land.ts';
+import { noteText } from './lib/note.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
 import { guardCli } from './lib/cli.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
@@ -295,7 +296,7 @@ if (REDRIVE && RESUME_PR && !DRY_RUN) {
 /** The objection that stopped the work last time: the newest dead-letter or park comment on the thread. */
 const OBJECTION = (() => {
   const raw = sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""']);
-  return raw.trim() || 'The pull request was stopped before it could land; finish it and re-prove it.';
+  return noteText(raw) || 'The pull request was stopped before it could land; finish it and re-prove it.';
 })();
 
 // A landing has no objection to answer: the work was approved and only the boundary stopped it,
