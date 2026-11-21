@@ -371,6 +371,11 @@ the label or running `fix.ts --redrive` is the redrive, counted as `loop/redrive
   `alwaysInvalidates` and each discards the approval of every pull request still queued, at the
   cost of a full re-review per discard. Safe, visible in the log, and worth knowing before you
   interpret it as a hang.
+- **Every valid appraisal posts a stamp comment**, a re-appraisal at an unchanged size included.
+  It records what the size judged, so the knife's pre-carve guard can tell whether it still holds;
+  expect one per appraisal in the issue's notifications. When stamping began is recorded in
+  `<worktreeRoot>/runs/stamping-since` on the machine that appraised, so a run on another machine,
+  or after that directory is cleared, reports a missing stamp's cause as `stamp-unaccounted`.
 
 ## Stopping a run
 

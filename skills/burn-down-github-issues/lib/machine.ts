@@ -192,7 +192,14 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runConfirmer'],
               on: {
                 CONFIRMED: { target: 'ticket.terminal.closedWithoutCode', actions: ['commentBothReceipts', 'closeIssue'] },
-                DISPUTED: { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions'] },
+                // A disputed close means the issue is not provably dead, so it stands: the first
+                // dispute of an appraiser's close sends it back to be appraised with the objection on
+                // its thread. A second dispute, or a worker's, is a person's.
+                DISPUTED: [
+                  { target: 'ticket.carving.rollingUp', guard: 'closeByAppraiser and firstDisputedClose and releasedLabel', actions: ['commentBothOpinions'] },
+                  { target: 'ticket.appraisal.inbox', guard: 'closeByAppraiser and firstDisputedClose', actions: ['commentBothOpinions'] },
+                  { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions'] },
+                ],
                 // The close is the appraiser's or a worker's. A confirmer that fails is a failed
                 // turn of whichever asked: a worker's attempt, or one more appraisal.
                 AGENT_FAILED: [
@@ -260,8 +267,13 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runCarveConfirmer'],
               on: {
                 CUT_CONFIRMED: { target: 'ticket.carving.spawningChildren' },
-                // The carver's opinion about the issue is confirmed here too, and then it is a person's.
+                // The carver's opinion about the issue is confirmed here too. On a first carving, one
+                // piece is worked whole and nothing left is released to the appraiser to close; a
+                // question, and any opinion on a carved trunk, is a person's.
                 OPINION_CONFIRMED: [
+                  { target: 'ticket.ready.ready', guard: 'verdictSmallEnough and firstCarving', actions: ['labelWorkWhole', 'commentBothOpinions', 'releasedRecord', 'releaseClaim'] },
+                  { target: 'ticket.ready.ready', guard: 'verdictIndivisible and firstCarving', actions: ['labelWorkWhole', 'commentBothOpinions', 'releasedRecord', 'releaseClaim'] },
+                  { target: 'ticket.carving.rollingUp', guard: 'verdictNothingLeft and firstCarving', actions: ['commentBothOpinions', 'releasedRecord', 'releaseSize', 'labelReleased', 'releaseClaim'] },
                   { target: 'ticket.panel.reviewing', guard: 'verdictTooUncertain and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'liveRecord', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictTooUncertain', actions: ['labelHold', 'commentQuestion', 'liveRecord', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', actions: ['labelHold', 'commentBothOpinions', 'liveRecord', 'releaseClaim'] },
@@ -300,6 +312,9 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runCarver', 'runCarveConfirmer'],
               on: {
                 REVISITED: [
+                  // A live record with no child is a first carving's hand-off; with its hold lifted, a
+                  // one-piece verdict on an untouched thread is worked whole, and anything else rolls up.
+                  { target: 'ticket.ready.ready', guard: 'verdictIndivisible and childlessRecord', actions: ['labelWorkWhole', 'releasedRecord', 'unlabelTrunk', 'releaseClaim'] },
                   { target: 'ticket.carving.childrenInFlight', guard: 'verdictStillGood', actions: ['postLiveRecord', 'countRevisit', 'releaseClaim'] },
                   { target: 'ticket.carving.spawningChildren', guard: 'verdictAmend', actions: ['countGeneration'] },
                   { target: 'ticket.carving.rollingUp', guard: 'verdictExhausted' },
