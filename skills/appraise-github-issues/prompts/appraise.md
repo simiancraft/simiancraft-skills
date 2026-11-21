@@ -100,9 +100,16 @@ driver reads, so write it even when you failed.
   "reason": "one or two sentences; for needs-decision, the exact question a human must answer",
   "closeComment": "only for already-fixed and obsolete: the full comment to post, receipt included",
   "priorSize": "the size label it already carried, or null",
-  "disagrees": false
+  "disagrees": false,
+  "touches": ["src/palettes/", "src/index.ts"]
 }
 ```
+
+For `valid`, list in `touches` the repository paths (files, or directories for broad work) the
+change would most likely modify, as you found them in the code. The loop uses them only to notice
+later that the code under this issue moved; name what you saw. Give `[]` only when the work changes
+no repository paths at all (an investigation, a decision). Give `null` when you could not tell which
+paths it would change; never guess.
 
 Set `disagrees` to true when your points differ from a `size: N` label already on the issue, and say
 why in `reason`. Be accurate rather than generous: a verdict the driver acts on is worth more than

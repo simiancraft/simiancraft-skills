@@ -43,6 +43,11 @@ describe('refusal and isTrunk', () => {
   function gate(io: FakeTracker, n: number, ceiling = 2) {
     return refusal(readTree(ctxFor(io), n, io), ceiling);
   }
+  test('passes an oversized issue the knife judged one piece', () => {
+    const io = new FakeTracker(BOT, [fakeIssue(4, { labels: [{ name: 'size: 8' }, { name: 'loop/work-whole' }] }), fakeIssue(5, { labels: [{ name: 'size: 8' }] })]);
+    expect(gate(io, 4)).toBeNull();
+    expect(gate(io, 5)).toMatch(/over the ceiling/);
+  });
   test('refuses closed, held, paused-by-ancestor, trunk, oversized, blocked; passes a clean leaf', () => {
     const io = new FakeTracker(BOT, [
       fakeIssue(1, { subIssues: [2, 3], labels: [{ name: 'loop/paused' }] }),
