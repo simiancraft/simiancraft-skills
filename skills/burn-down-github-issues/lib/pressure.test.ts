@@ -17,6 +17,7 @@ import { allOpenIssues } from '../../appraise-github-issues/lib/appraise.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { proofHeldComment, standingStop } from '../../fix-github-issue/lib/work-markers.ts';
+import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -935,7 +936,7 @@ describe('a prover that needs a person', () => {
     const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdProof'], {
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
       move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
-      proofHeldComment, liveGate: () => ({ ok: true }),
+      proofHeldComment, loopNote, liveGate: () => ({ ok: true }),
     });
     const ctx = { ...context(new FakeTracker(bot)), dryRun: false, runId: 'run-1' };
     const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat };
@@ -952,7 +953,10 @@ describe('a prover that needs a person', () => {
     expect(standingStop([{ author: bot, body: hold }], bot)).toEqual({ kind: 'proof-held' });
     expect(hold).toContain('pull request #7 stays open');
     expect(hold).toContain('the shared test credentials');
-    expect(writes.some((argv: string[]) => argv[1] === 'pr' && argv[2] === 'comment' && argv[3] === '7')).toBe(true);
+    // The pointer on the pull request is the loop's word, marked as such.
+    const pointer = writes.find((argv: string[]) => argv[1] === 'pr' && argv[2] === 'comment' && argv[3] === '7')?.at(-1) ?? '';
+    expect(pointer.startsWith(LOOP_NOTE)).toBe(true);
+    expect(pointer).toContain('#1');
     expect(lanes).toEqual(['H2']);
     expect(legal('D2', 'H2')).toBe(true);
   });

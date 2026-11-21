@@ -1399,7 +1399,7 @@ function holdProof(ctx: Context, issue: Issue, result: WorkerResult, say: (messa
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
   if (pr) {
     mutate(ctx, `label PR #${pr} needs-human`, ['gh', 'pr', 'edit', String(pr), '--add-label', 'needs-human']);
-    mutate(ctx, `note the hold on PR #${pr}`, ['gh', 'pr', 'comment', String(pr), '--body', `Held for a person while proving; the reason and how to lift the hold are on #${issue.number}. Not to be merged while \`needs-human\` is on this pull request.`]);
+    mutate(ctx, `note the hold on PR #${pr}`, ['gh', 'pr', 'comment', String(pr), '--body', loopNote(`Held for a person while proving; the reason and how to lift the hold are on #${issue.number}. Not to be merged while \`needs-human\` is on this pull request.`)]);
   }
   say(`the prover needs a person; ${pr ? `PR #${pr} stays open, ` : ''}held with needs-human`);
   move(ctx, issue, 'H2', `proof held: ${result.reason}`.slice(0, 120));
