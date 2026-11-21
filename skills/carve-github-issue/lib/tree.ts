@@ -103,6 +103,8 @@ export type TrackerIo = {
   write: (op: TrackerWrite) => void;
   /** `gh issue create ...`, answering the new issue's number (gh prints its URL). */
   create: (op: TrackerWrite) => number;
+  /** When the issue's newest `size:` label was applied, or null when it carries none that was. */
+  sizedAt?: (n: number) => string | null;
 };
 
 export const SIZE_LABEL = /^size:\s*(\d+)$/;
@@ -125,7 +127,7 @@ export function hashText(text: string): string {
 // ---------------------------------------------------------------------------
 
 /** Every marker the collection writes; a comment carrying one, by the bot, is not a person's word. */
-export const MARKER = /<!--\s*(carve-record|carve-rollup|carve-claim|carve-unclaim|carve-handoff|appraise-handoff|carve-answer|carve-pause|carve-unpause|loop-close|loop-step|loop-proof-held|carve)\b([^>]*)-->/;
+export const MARKER = /<!--\s*(carve-record|carve-rollup|carve-claim|carve-unclaim|carve-handoff|appraise-handoff|carve-answer|carve-pause|carve-unpause|loop-close|loop-step|loop-proof-held|loop-note|appraise-stamp|appraise-close-disputed|carve)\b([^>]*)-->/;
 
 export function parseMarker(text: string): { name: string; fields: { [key: string]: string } } | null {
   const match = MARKER.exec(text);
@@ -192,6 +194,11 @@ export function ghIo(ctx: Context): TrackerIo {
         throw new Error(`could not list the comments on #${n} through the REST api, so its claims and records cannot be read: ${(error as Error).message.split('\n')[0]}`);
       }
       return enrichBlockers(ctx, [toNode(raw, rest, ctx.botLogin, ctx.log)])[0];
+    },
+    sizedAt(n) {
+      const pages = JSON.parse(api(ctx, `repos/{repo}/issues/${n}/timeline`, ['--paginate', '--slurp', '-X', 'GET', '-f', 'per_page=100'])) as Array<Array<{ event?: string; created_at?: string; label?: { name?: string } }>>;
+      const sized = pages.flat().filter((e) => e.event === 'labeled' && SIZE_LABEL.test(e.label?.name ?? '') && e.created_at);
+      return sized.at(-1)?.created_at ?? null;
     },
     openPullBranches() {
       return sh(ctx, ['gh', 'pr', 'list', '--state', 'open', '--limit', '5000', '--json', 'headRefName', '--jq', '.[].headRefName']).split('\n').filter(Boolean);

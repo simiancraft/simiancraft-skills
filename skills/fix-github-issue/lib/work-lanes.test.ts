@@ -10,6 +10,7 @@ import { ENGINES } from './engines.ts';
 import { ciCommandFault, type ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { placeWork } from './pipeline.ts';
+import { loopNote } from './note.ts';
 import { codedComment, latestStep, proofHeldComment, standingStop, unprovedComment } from './work-markers.ts';
 
 /** A real remote and real lanes: whether a push happened is only a fact on disk. */
@@ -103,6 +104,12 @@ describe('the Work markers', () => {
     // A person's words, or one pasting the marker, are not the loop's stop.
     expect(standingStop([{ author: BOT, body: park }, { author: 'someone', body: held }], BOT)).toEqual({ kind: 'objection', text: park });
     expect(standingStop([{ author: BOT, body: 'Coded; proving next.' }], BOT)).toBeNull();
+    // A park note carries the loop-note marker: it is still an objection, read without the marker,
+    // and a held proof stays the standing stop until a newer note follows it.
+    const marked = loopNote(park);
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: marked }], BOT)).toEqual({ kind: 'objection', text: park });
+    expect(standingStop([{ author: BOT, body: marked }, { author: BOT, body: held }], BOT)).toEqual({ kind: 'proof-held' });
+    expect(standingStop([{ author: BOT, body: loopNote('Taken off the board by the sweep.') }], BOT)).toBeNull();
     // A held proof is a loop marker, so it is never the work's newest Work step.
     expect(latestStep([{ author: BOT, body: held }], BOT)).toBeNull();
   });

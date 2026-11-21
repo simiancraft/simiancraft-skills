@@ -93,6 +93,13 @@ class World {
   };
 }
 
+describe('placement of a work-whole issue', () => {
+  it('is Ready at any size once the knife judged it one piece', () => {
+    expect(placeByFacts({ state: 'OPEN', labels: ['size: 8', 'loop/work-whole'], pulls: [], points: 8, ceiling: 2 }).lane).toBe('B1');
+    expect(placeByFacts({ state: 'OPEN', labels: ['size: 8'], pulls: [], points: 8, ceiling: 2 }).lane).toBe('C1');
+  });
+});
+
 describe('interpreter combinations', () => {
   for (const initial of ['E1', 'D3']) {
     it(`${initial}: resume conflicts into landing DLQ`, () => {
@@ -211,7 +218,7 @@ describe('tracker and checks pressure', () => {
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping and whether its lease stands; here neither is in doubt.
   // Nor does any pull request carry a person's hold, unless a test says so.
-  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), ...deps };
+  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -332,7 +339,7 @@ describe('runtime moves and settlement', () => {
   for (const initial of ['E1', 'D3']) it(`a resumed ${initial} card with a historical objection has a chart route to its revision`, async () => {
     let lane = initial; const edges: string[] = [];
     const api = loadFunctions(pipeline, ['redriveIssue'], {
-      DEFAULT_MAX_POINTS: 2, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
       runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
@@ -999,7 +1006,7 @@ describe('a prover that needs a person', () => {
     const writes: string[][] = [];
     const reproofs: boolean[] = [];
     const api = loadFunctions(pipeline, ['redriveIssue'], {
-      DEFAULT_MAX_POINTS: 2, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
       trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, pullHolds: () => ['needs-human'],
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,

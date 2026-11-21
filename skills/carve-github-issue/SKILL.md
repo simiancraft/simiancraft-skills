@@ -26,6 +26,22 @@ elsewhere in the backlog.
 
 ## What it does
 
+Whenever the knife is dispatched toward a record (a first carving or a revisit), and again each
+time the carver answers, the **pre-carve guard** asks whether the appraisal the knife trusts still
+describes the issue: `fresh` (nothing it judged moved), `stale` (commits on the paths it named, or
+a person edited or wrote on the thread, said by part), or `unknowable`, with its cause:
+`never-stamped` (sized before stamping began), `stamp-missing` (sized since, yet unstamped),
+`stamp-unaccounted` (no stamp, and which of those is not known), `stamp-incomplete` (no base), or
+`uncheckable` (git could not compare). A stamp whose appraisal named no paths (a spike) is read
+from its thread alone, with `scope: thread-only` and the reason `paths: none`; there is no movement
+under it to ask about. It runs in **shadow** for now: it logs its answer and appends a line to
+`pre-carve-guard.jsonl` in the run directory with the mode, the point (`dispatch` or
+`carver-answered`), the scope, the stamp's time and age, `samePass` when this same run wrote the
+stamp (so a `fresh` there measures nothing), both the stamp's base and the base now, the files the
+commits on its paths changed (`movedFiles`), and, at the carver's answer, `carverSettles` when a
+`still-good` answer met a `stale` verdict (a live guard that took that answer as the re-appraisal
+would not fire). It routes nothing.
+
 1. **Inventory.** Every acceptance criterion in the parent's whole thread, numbered. This is the
    100% rule made checkable: the pieces must cover it exactly.
 2. **Normalize.** Each piece is matched against the trunk's own tree first, then the backlog, open
@@ -41,6 +57,9 @@ elsewhere in the backlog.
    cannot land before an earlier one, references are attached or depended on, and a **carving
    record** lands on the trunk's thread: the cut, the ledger, and what the tracker looked like.
    Grammar in `references/the-record.md`.
+   On a first carving, a confirmed `small-enough` or `indivisible` is an answer, not a question:
+   the issue is worked whole, and `loop/work-whole` makes its own size its ceiling. A confirmed
+   `nothing-left` releases it to the appraiser, whose close goes through the close confirmer.
 6. **Revisit.** Every child close, and every change to the trunk a person makes, brings the knife
    back to ask one question: is this carving still good? `still-good` rolls the ledger forward;
    `amend` is a new generation; `exhausted` releases the trunk to the appraiser; a question pauses

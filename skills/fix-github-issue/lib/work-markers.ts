@@ -10,6 +10,7 @@
  */
 
 import { parseMarker } from '../../carve-github-issue/lib/tree.ts';
+import { noteText } from './note.ts';
 
 export type Touch = 'code' | 'data' | 'migration' | 'stored-string' | 'ci';
 
@@ -103,7 +104,9 @@ export function standingStop(comments: Array<{ author?: string; body: string }>,
     const { author, body } = comments[i];
     if (botLogin !== undefined && author !== botLogin) continue;
     if (parseMarker(body)?.name === PROOF_HELD) return { kind: 'proof-held' };
-    if (/dead-letter queue|parked|Parked/.test(body)) return { kind: 'objection', text: body };
+    // A park or dead-letter note opens with the loop-note marker; its words are what the next coder answers.
+    const text = noteText(body);
+    if (/dead-letter queue|parked|Parked/.test(text)) return { kind: 'objection', text };
   }
   return null;
 }
