@@ -56,13 +56,14 @@ const REDRIVE: Transition[] = [
 
 /**
  * A pull request of the loop's own whose driver is gone, with no hold on it: a run that died on
- * another machine, a lane that was removed. Nobody objected to the work, so it is not a revision.
- * It catches up, then goes to the closest lane that can carry it on: Proving, where its author
- * makes the proof current and hands it to review.
+ * another machine, a lane that was removed, or a held proof a person lifted. Nobody objected to the
+ * work, so it is not a revision. It catches up, then goes to the closest lane that can carry it
+ * on: Proving, where its author makes the proof current and hands it to review. A held proof's
+ * `needs-human` on the pull request is the lifted hold's mirror and comes off with the reclaim.
  */
 const RESUME: Transition[] = [
-  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['reclaim', 'markResuming'] },
-  { target: 'ticket.work.proving', actions: ['reclaim', 'prToDraft', 'runProver'] },
+  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['reclaim', 'liftPrHoldMirror', 'markResuming'] },
+  { target: 'ticket.work.proving', actions: ['reclaim', 'liftPrHoldMirror', 'prToDraft', 'runProver'] },
 ];
 
 /** Transitions every ticket state inherits, tried before its own only for the events named here. */
@@ -412,6 +413,13 @@ export const MACHINE: StateNode = {
               on: {
                 // A ready pull request whose head is the proven commit: the prover's whole contract.
                 PROVED: { target: 'ticket.review.readyForReview', actions: ['prReady'] },
+                // A prover that needs a person answers after the code was pushed and announced, so
+                // the work is held where it stands: the pull request stays open with the hold on it
+                // too, and lifting the issue's label puts the card back by its facts (Drafted or
+                // Ready for review with the pull request, which resumes at Proving; Ready without
+                // one, where the announcement is proved, not coded again). Every other escape is
+                // the Work phase's, below.
+                WORKER_VERDICT: { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'labelPrHold', 'commentProofHeld', 'releaseClaim', 'removeWorktree'] },
                 // Proof that cannot be produced is a fault in the code, not the proof: back a step,
                 // with what could not be shown as the coder's brief. It spends an attempt.
                 PROOF_REFUSED: [
@@ -554,6 +562,8 @@ export const MACHINE: StateNode = {
               on: {
                 MERGED: { target: 'ticket.terminal.merged', actions: ['closeIssueWithPointer', 'putOnFloor', 'followBase', 'leaveQueue', 'releaseClaim', 'removeWorktree'] },
                 ISSUE_CHANGED_UNDER_REVIEW: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+                // A person's hold on the pull request itself (`needs-human` above all) refuses the merge as one on the issue does.
+                PR_HELD: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                 // The line can hold a card here while it is paused; anything that landed meanwhile is caught up first.
                 BASE_MOVED_WHILE_WAITING: [
                   { target: 'ticket.landing.catchingUp', guard: 'refreshesUnderCap', actions: ['countRefresh'] },

@@ -10,7 +10,8 @@ import { ENGINES } from './engines.ts';
 import { ciCommandFault, type ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { placeWork } from './pipeline.ts';
-import { codedComment, latestStep, unprovedComment } from './work-markers.ts';
+import { loopNote } from './note.ts';
+import { codedComment, latestStep, proofHeldComment, standingStop, unprovedComment } from './work-markers.ts';
 
 /** A real remote and real lanes: whether a push happened is only a fact on disk. */
 let scratch: string;
@@ -93,6 +94,24 @@ describe('the Work markers', () => {
   it("trusts only the bot's markers: a person pasting one moves nothing", () => {
     const coded = codedComment('run-1', { branch: 'fix/x-1', sha: 'a'.repeat(40), gated: 'a'.repeat(40), touches: [] }, 'h');
     expect(latestStep([{ author: 'someone', body: coded }], BOT)).toBeNull();
+  });
+
+  it('reads a held proof as no objection, and the newest stop of the bot as the standing one', () => {
+    const held = proofHeldComment('run-1', { branch: 'fix/x-1', pr: 7 }, 'needs the shared test credentials; parked until then');
+    const park = 'Parked: the merge boundary refused it.';
+    expect(standingStop([{ author: BOT, body: park }, { author: BOT, body: held }], BOT)).toEqual({ kind: 'proof-held' });
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: park }], BOT)).toEqual({ kind: 'objection', text: park });
+    // A person's words, or one pasting the marker, are not the loop's stop.
+    expect(standingStop([{ author: BOT, body: park }, { author: 'someone', body: held }], BOT)).toEqual({ kind: 'objection', text: park });
+    expect(standingStop([{ author: BOT, body: 'Coded; proving next.' }], BOT)).toBeNull();
+    // A park note carries the loop-note marker: it is still an objection, read without the marker,
+    // and a held proof stays the standing stop until a newer note follows it.
+    const marked = loopNote(park);
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: marked }], BOT)).toEqual({ kind: 'objection', text: park });
+    expect(standingStop([{ author: BOT, body: marked }, { author: BOT, body: held }], BOT)).toEqual({ kind: 'proof-held' });
+    expect(standingStop([{ author: BOT, body: loopNote('Taken off the board by the sweep.') }], BOT)).toBeNull();
+    // A held proof is a loop marker, so it is never the work's newest Work step.
+    expect(latestStep([{ author: BOT, body: held }], BOT)).toBeNull();
   });
 
   it('refuses a field that would break the marker apart', () => {
