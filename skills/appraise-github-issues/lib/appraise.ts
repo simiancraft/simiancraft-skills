@@ -423,10 +423,10 @@ export async function appraiseIssue(
     say('a trunk is not appraised; it is worked by closing its children');
     return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
   }
-  const base = readBase(ctx, say);
-
   // Every caller gets a freshly fetched base, so the prompt's promise holds however it was reached.
+  // The fetch comes first: the stamp records the base the appraiser will read, not the one before it.
   refreshBase(ctx, say);
+  const base = readBase(ctx, say);
 
   const cwd = join(ctx.runDir, `appraise-${issue.number}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
