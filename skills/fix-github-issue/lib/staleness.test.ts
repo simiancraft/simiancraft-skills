@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { behindBase, behindBeyondNoise, fetchBase, importClosure, resolveSpecifier, staleAgainstBase } from './staleness.ts';
+import { behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, importClosure, isAutomationCommit, resolveSpecifier, staleAgainstBase } from './staleness.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const run = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -160,6 +160,59 @@ describe('behindBeyondNoise: what a landing must catch up on', () => {
     landUpstream(other, 'src/version.ts', "export const version = '1.0.1';\n");
     (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['src/version.ts'];
     expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['src/version.ts']);
+  });
+});
+
+describe('commitsBehind: who moved the base', () => {
+  function landAs(other: string, author: string, file: string, subject: string): void {
+    writeFileSync(join(other, file), `${subject}\n`);
+    git(other, 'add', file);
+    git(other, '-c', `user.name=${author}`, '-c', `user.email=${author}@example.com`, 'commit', '-q', '-m', subject);
+    git(other, 'push', '-q', 'origin', 'development');
+  }
+
+  it('marks configured authors and skip-CI subjects as automation, and nobody else', () => {
+    const { ctx, lane, other } = repository();
+    (ctx.project as { automationAuthors?: string[] }).automationAuthors = ['Deploy-Bot'];
+    landAs(other, 'someone', 'src/unrelated.ts', 'change the unrelated module');
+    landAs(other, 'deploy-bot', 'deploy.json', 'write back the deployed revision');
+    landAs(other, 'release-please', 'CHANGELOG.md', 'chore(release): 1.0.1 [skip ci]');
+    const commits = commitsBehind(ctx, lane, fetchBase(ctx, lane));
+    expect(commits.map((commit) => [commit.subject, commit.automation])).toEqual([
+      ['chore(release): 1.0.1 [skip ci]', true],
+      ['write back the deployed revision', true],
+      ['change the unrelated module', false],
+    ]);
+  });
+
+  it('leaves out commits a base already looked at contained', () => {
+    const { ctx, lane, other } = repository();
+    landAs(other, 'someone', 'src/unrelated.ts', 'first move');
+    const seen = fetchBase(ctx, lane);
+    landAs(other, 'someone', 'deploy.json', 'second move');
+    expect(commitsBehind(ctx, lane, fetchBase(ctx, lane), seen).map((commit) => commit.subject)).toEqual(['second move']);
+  });
+
+  it('is empty when the lane holds the base', () => {
+    const { ctx, lane } = repository();
+    expect(commitsBehind(ctx, lane, fetchBase(ctx, lane))).toEqual([]);
+  });
+
+  it('matches an author by email as well as name, without case, and every GitHub skip marker', () => {
+    const ctx = { project: { automationAuthors: ['ci@example.com'] } } as unknown as Context;
+    expect(isAutomationCommit(ctx, 'CI', 'CI@example.com', 'deploy')).toBe(true);
+    expect(isAutomationCommit(ctx, 'person', 'p@example.com', 'deploy')).toBe(false);
+    for (const marker of ['[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]', '[SKIP CI]']) {
+      expect(isAutomationCommit(ctx, 'person', 'p@example.com', `bump ${marker}`)).toBe(true);
+    }
+    const unconfigured = { project: {} } as unknown as Context;
+    expect(isAutomationCommit(unconfigured, 'deploy-bot', 'bot@example.com', 'write back')).toBe(false);
+  });
+
+  it('names commits by short sha, subject, and author, and counts the rest', () => {
+    const commits = Array.from({ length: 8 }, (_, i) => ({ sha: `${i}`.repeat(40), author: 'bot', subject: `move ${i}`, automation: true }));
+    expect(describeCommits(commits.slice(0, 1))).toBe('0000000000 "move 0" (bot)');
+    expect(describeCommits(commits)).toEndWith('"move 5" (bot), and 2 more');
   });
 });
 

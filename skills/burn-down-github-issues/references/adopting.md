@@ -48,6 +48,7 @@ export default {
     sourceExtensions: ['.ts', '.tsx', '.js', '.jsx'],
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
     releaseArtifacts: [] /* optional string[]; same pattern rules as alwaysInvalidates; see below */,
+    automationAuthors: [] /* optional string[]; commit author names or emails of your release and deploy automation; see below */,
     ciCommand: 'bun run test:ci' /* optional; CI's deciding command when different from checkCommand; the prover always runs it */,
     smokeCommand: 'bun run smoke' /* optional; boots the landing head before the merge; see "The line" below */,
     followBase: false /* optional; true fast-forwards the main checkout after every merge; see "The line" below */,
@@ -187,6 +188,20 @@ its approval and is re-reviewed for noise the machine produced. A landing whose 
 files does not catch up at all, so its checks are not re-run for a changelog commit. It still catches
 up when the work imports one of them, on a version-only `package.json` bump, and whenever the base's
 protection requires an up-to-date branch or cannot be read.
+
+### `automationAuthors`: keep automation commits off the refresh cap
+
+A landing looks upstream after each of its gates, and every move it finds there costs a catch-up
+and a fresh CI run. Only two moves are allowed before the landing is a dead letter, so a base that
+gains a deploy write-back and a release commit after every merge can spend that budget by itself.
+List the git author names or emails your automation commits as (compared without case). A move made
+only of their commits, or of commits whose subject carries `[skip ci]`, `[ci skip]`, `[no ci]`,
+`[skip actions]`, or `[actions skip]`, still catches up but is not counted against the cap; such
+moves have a larger bound of their own, six, so a runaway stream still stops. A move with any other
+commit in it counts as before. This is independent of `releaseArtifacts`: that key decides whether a
+move needs a catch-up at all, by which files changed; this one decides what a catch-up costs, by who
+made it. The landing dead letter names the commits that moved the base, so a missing author shows up
+there.
 
 ## The line: a switch, and the floor that flips it
 
