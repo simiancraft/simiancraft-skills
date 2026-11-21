@@ -169,6 +169,14 @@ describe('fingerprint and needsRevisit', () => {
     expect(base.holds).toEqual([]);
     const withMarker = fingerprint(tree((io) => io.comment(10, BOT, '<!-- carve-claim kind=carving run=x at=t expires=t -->')), BOT);
     expect(withMarker).toEqual(base);
+    const withStamp = fingerprint(tree((io) => io.comment(10, BOT, '<!-- appraise-stamp base=none thread=x points=3 at=t -->\nAppraised.')), BOT);
+    expect(withStamp).toEqual(base);
+    const withDispute = fingerprint(tree((io) => io.comment(10, BOT, '<!-- appraise-close-disputed -->\nThe confirmer disagreed.')), BOT);
+    expect(withDispute).toEqual(base);
+    const withNote = fingerprint(tree((io) => io.comment(10, BOT, '<!-- loop-note -->\nCleared by the sweep.')), BOT);
+    expect(withNote).toEqual(base);
+    const withOperator = fingerprint(tree((io) => io.comment(10, BOT, 'A ruling, written by the person whose account the loop runs under.')), BOT);
+    expect(withOperator.comments.length).toBe(1);
     const withPerson = fingerprint(tree((io) => io.comment(10, 'person', 'thoughts')), BOT);
     expect(withPerson.comments.length).toBe(1);
     const withHold = fingerprint(tree((io) => io.addLabel(10, 'needs-human')), BOT);

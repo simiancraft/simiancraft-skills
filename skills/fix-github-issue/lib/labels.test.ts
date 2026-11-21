@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import type { Context } from './context.ts';
-import { countOf, DLQ_PHASES, dlqLabel, dlqPhase, HOLD_LABELS, isDlqLabel, closeIssue, isHeldBy, loopLabels, recordCount, sendToDlq } from './labels.ts';
+import { ceilingFor, countOf, DLQ_PHASES, dlqLabel, dlqPhase, HOLD_LABELS, isDlqLabel, closeIssue, isHeldBy, loopLabels, recordCount, sendToDlq } from './labels.ts';
 
 const labels = (...names: string[]) => names.map((name) => ({ name }));
 
@@ -39,6 +39,15 @@ describe('the labels the loop creates', () => {
     const labels = loopLabels();
     for (const [name, , description] of labels) expect(description.length, name).toBeLessThanOrEqual(100);
     for (const phase of DLQ_PHASES) expect(labels.map(([name]) => name)).toContain(dlqLabel(phase));
+  });
+});
+
+describe('the ceiling one issue is held to', () => {
+  it('is the run ceiling unless the knife judged the issue one piece', () => {
+    expect(ceilingFor(['size: 8'], 8, 2)).toBe(2);
+    expect(ceilingFor(['size: 8', 'loop/work-whole'], 8, 2)).toBe(8);
+    expect(ceilingFor(['size: 1', 'loop/work-whole'], 1, 2)).toBe(2);
+    expect(ceilingFor(['loop/work-whole'], null, 2)).toBe(2);
   });
 });
 
