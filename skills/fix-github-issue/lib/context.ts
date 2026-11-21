@@ -39,6 +39,9 @@ export type MergePermission = { ok: true } | { ok: false; reason: string };
 /** What a merge gate is told about the issue about to land. */
 export type MergingIssue = { number: number; labels: Array<{ name: string }> };
 
+/** The change at the merge boundary: the lane's worktree, whose HEAD would land, and the base ref it lands on. */
+export type BoundaryChange = { cwd: string; base: string };
+
 /** What `closeIssue` tells a driver after every close it makes, whichever path made it. */
 export type CloseEvent = {
   issue: number;
@@ -97,6 +100,12 @@ export type Context = {
    * other gate still applies; only the autoMerge park is waived, and the waiver is recorded on the PR.
    */
   landPastBoundary?: number;
+  /**
+   * Asked at the merge boundary with the issue about to land and its change: a reason to park the
+   * approved change for a person whatever `autoMerge` says, or null to leave the decision to
+   * `autoMerge`. A person's `--land` still waives the park. Absent means `autoMerge` alone decides.
+   */
+  holdAtBoundary?: (issue: MergingIssue, change: BoundaryChange) => string | null;
   /** Told once, after every confirmed merge. */
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
@@ -136,6 +145,7 @@ export function createContext(options: {
   step?: (message: string) => void;
   mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
   landPastBoundary?: number;
+  holdAtBoundary?: (issue: MergingIssue, change: BoundaryChange) => string | null;
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;
@@ -166,6 +176,7 @@ export function createContext(options: {
     step: options.step ?? defaultStep,
     mayMerge: options.mayMerge,
     landPastBoundary: options.landPastBoundary,
+    holdAtBoundary: options.holdAtBoundary,
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
     onLane: options.onLane,

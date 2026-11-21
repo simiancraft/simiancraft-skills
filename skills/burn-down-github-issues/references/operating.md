@@ -110,7 +110,11 @@ worker failed|reviewer wrote no verdict|exceeded [0-9]+ minutes|refusing to merg
 ## When the line is paused
 
 The line is the file switch `<worktreeRoot>/runs/line-switch`; this is the one list of where the
-running loop reads it, and the other references point here. A paused line holds:
+running loop reads it, and the other references point here. A person's pause, and a floor pause of
+any cause but `outside-repository`, hold every seam below. A floor pause for an outage
+(`floor:outside-repository:`) holds only the merge: appraisal and dispatch go on, and approved pull
+requests wait in the landing line until a walk finds the floor right (`floor.md`, "The line"). A
+paused line holds:
 
 - the appraisal stage, once, before it starts (the knife a size callback starts inside that stage
   runs under the same check, not one of its own);
@@ -118,7 +122,9 @@ running loop reads it, and the other references point here. A paused line holds:
 - every merge, through the fix pipeline's `mayMerge` hook, which the loop answers by waiting for
   `go`; a stranded pull request resumed at the run's start reaches it here too. The one exception
   is a floor incident's fix, which passes a pause the floor wrote (it is the merge that clears it)
-  and still waits on a person's.
+  and still waits on a person's. One that undoes a recently merged pull request never lands
+  unattended: it parks at the merge boundary whatever `autoMerge` says, and a person lands it with
+  `fix.ts --land`. A forward repair lands as `autoMerge` allows.
 
 The start-of-run work before those seams is not held: the repair, the stranded-lane resume up to
 its merge, and the knife's sweep (its revisits and redrives included) run on a paused line. The
@@ -128,7 +134,8 @@ statechart guards the knife's dispatch and revisit with `lineActive` as well
 A paused seam logs one line, `line is paused (<reason>); holding <where> until <path> says go`,
 and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
 see the state and the reason. A reason beginning `floor:` was written by the floor and names what
-it found wrong; the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
+it found wrong, after the cause it knows (`floor:undiagnosed:`, `floor:cause-unknown:`,
+`floor:in-repository:`, or `floor:outside-repository:`; `floor.md`, "The line"); the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
 more, and the floor releases its own pause once nothing on it is wrong. A reason without that
 prefix was written by a person, and only a person clears it:
 `echo go > <worktreeRoot>/runs/line-switch`.

@@ -38,7 +38,7 @@ import { createContext } from './lib/context.ts';
 import { parseSeat, seatLabel } from './lib/engines.ts';
 import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from '../burn-down-github-issues/lib/board-writer.ts';
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
-import { landBlocker } from './lib/land.ts';
+import { readLandBlocker } from './lib/land.ts';
 import { noteText } from './lib/note.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
 import { guardCli } from './lib/cli.ts';
@@ -229,12 +229,7 @@ if (LAND) {
     console.error(`--land needs an open pull request that references #${ISSUE_NUMBER}; there is none`);
     process.exit(1);
   }
-  const comments = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | { body, createdAt }]'])) as Array<{ body: string; createdAt: string }>;
-  const parkedAt = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/issues/${ISSUE_NUMBER}/events`, '--paginate', '--jq', '.[] | select(.event == "labeled" and .label.name == "loop/parked") | .created_at'])
-    .split('\n')
-    .filter(Boolean)
-    .at(-1) ?? null;
-  const blocker = landBlocker(issue.labels.map((l) => l.name), comments, parkedAt);
+  const blocker = readLandBlocker(ctx, ISSUE_NUMBER);
   if (blocker) {
     console.error(`--land refuses #${ISSUE_NUMBER}: ${blocker}`);
     process.exit(1);

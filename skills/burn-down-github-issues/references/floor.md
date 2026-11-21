@@ -163,14 +163,39 @@ itself is not a callback: an interlock never depends on a file an adopter might 
 
 ## The line
 
-A wrong walk writes `pause` and a reason beginning `floor:` to `<worktreeRoot>/runs/line-switch`,
-naming everything on the floor that is wrong. It never overwrites a pause a person set, and it
+A wrong walk writes `pause` and a reason beginning `floor:<cause>:` to
+`<worktreeRoot>/runs/line-switch`, naming everything on the floor that is wrong. The cause says
+what the floor knows about where the remedy lies, so the kind of pause is readable from the switch
+and survives a restart:
+
+| Cause | What the floor knows |
+|---|---|
+| `undiagnosed` | something is wrong and no diagnosis has answered yet; the walk writes this at once |
+| `cause-unknown` | a diagnosis ran and could not say (it failed, or gave no usable answer) |
+| `in-repository` | the diagnosis places the remedy in this repository (`fix-forward` or `revert`) |
+| `outside-repository` | the diagnosis places the remedy outside it: a vendor or host outage, a reindex, a config value |
+
+Each diagnosis restates the pause as soon as it answers. With several items wrong the pause is
+`outside-repository` only when every one is; any item that is the repository's, or not known to be
+anyone's, makes it the stricter cause. A bare `floor:` reason from an earlier version reads as
+`undiagnosed`. It never overwrites a pause a person set, and it
 releases only its own, on the first walk that finds nothing on the floor wrong. After an incident's
 fix merges, that is the next walk, so a cadence like `wrong ? 2 : …` keeps the wait short. An item
 whose incident a person owns holds the pause until it walks clean or someone clears the switch. A
 person who writes `go` while the floor is still wrong is obeyed: the floor pauses again only when
-another item turns wrong. What a paused
-line holds is listed once in `operating.md`, "When the line is paused".
+another item turns wrong.
+
+The cause decides what the pause holds. Every cause but `outside-repository` is a repair: the
+floor's own fault, or one nobody can yet say is not, so merges wait, no new lane starts, and the
+incident's fix runs first. Lanes already under way finish their turn and wait at the merge; nothing
+is stopped. `outside-repository` is an outage: the remedy is not code, so the pause holds only the
+merge (merging is what deploys into the downed environment). Appraisal, carving, coding, proving,
+and review go on, new lanes start, and approved pull requests stack in the landing line. The floor
+keeps walking on its cadence; the first walk that finds the floor right lifts the pause, and the
+stacked pull requests land one at a time through the pull master, each caught up to the one before,
+each walked as it deploys. The readout shows an outage under ⚠️ with the count of pull requests
+waiting at the merge. What a paused line holds, seam by seam, is listed once in `operating.md`,
+"When the line is paused".
 
 ## Incidents
 
@@ -180,8 +205,19 @@ honest confidence. The floor files an issue labelled `floor/incident` with all o
 open one for the item) and hands it to `fix-github-issue` like any other issue. Its fix merges
 through the floor's own pause (it is the merge that makes the next walk come back clean) but still
 waits on a pause a person set; it lands through a pull master of its own, since the lanes' one may
-be held by a lane waiting at that very pause, and its merge goes up onto the floor too. The readout lists an incident the floor is
-repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
+be held by a lane waiting at that very pause, and its merge goes up onto the floor too. A fix that
+repairs forward lands without a person, as any change `autoMerge` allows does. A fix that undoes a
+recently merged pull request (the culprit the incident names, or any merge still on the floor)
+parks at the merge boundary whatever `autoMerge` says, on every path that lands it (the floor's, a
+resumed lane, an ordinary one), because its premise is a walk of a live environment and a walk can
+be wrong (a deploy still running reads as absent). The fix undoes a merge when it is a `git revert`
+of it, deletes a file the merge added, restores one it deleted, puts back a line the merge removed,
+or only removes lines the merge added from a file; a change that rewrites the merge's lines into
+new ones is a forward repair. A person confirms a parked one with `fix.ts --land`. The readout lists an incident the floor is
+repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it. Its ⛔
+line names the way out: an approved fix parked at the merge boundary is landed with `fix.ts --land
+<n>` (lifting its label would only hand it to a run that parks it again); any other park is handed
+back by lifting its label.
 
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)
 parks the incident for a person instead. An incident with a person, parked or dead-lettered or
