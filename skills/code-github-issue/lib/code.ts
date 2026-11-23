@@ -32,6 +32,8 @@ export type CodeResult = {
   /** What the prover reads first: what changed, how to exercise it, what was not checked. */
   handoff?: string;
   touches?: Touch[];
+  /** For needs-human: `base` when the gate fails on the untouched base, before the change. */
+  outside?: 'base';
 };
 
 /**
@@ -108,6 +110,8 @@ export async function runCode(
   if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
     return fail(issue.number, `coder verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}`);
   }
+  // Only a needs-human can name the base as its cause; any other value, or verdict, names nothing.
+  result.outside = result.verdict === 'needs-human' && result.outside === 'base' ? 'base' : undefined;
   // A malformed classification must read as no classification, which fails closed at the merge.
   result.touches = Array.isArray(result.touches) ? result.touches.filter((t) => TOUCHES.includes(t)) : undefined;
   if (result.verdict === 'out-of-band') {

@@ -93,7 +93,8 @@ file and line as it stands today.
    remote.
 
 If the gate fails on the untouched base, before your change, that is not yours to fix: return
-`needs-human` naming the failing check.
+`needs-human` naming the failing check, with `"outside": "base"`. The pull request, if there is one,
+is held open for a person and continued once the base passes.
 
 ## The verdict file
 
@@ -112,7 +113,8 @@ write it even when you failed.
   "sha": "the full SHA of the pushed head",
   "gated": "the full SHA the check command passed on",
   "handoff": "for the prover: what changed and why, how to exercise it, and what you could not check",
-  "touches": ["code"]
+  "touches": ["code"],
+  "outside": "only for needs-human: base, when the gate fails on the untouched base"
 }
 ```
 

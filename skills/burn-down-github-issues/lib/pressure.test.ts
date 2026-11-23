@@ -1174,17 +1174,17 @@ describe("an incident's owner after its fix ran", () => {
 describe('a prover that needs a person', () => {
   const pipeline = '../../fix-github-issue/lib/pipeline.ts';
   const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
-  const settle = (seat: 'coder' | 'prover', pr: number | undefined) => {
+  const settle = (seat: 'coder' | 'prover', pr: number | undefined, extra: Record<string, unknown> = {}) => {
     const writes: string[][] = [];
     const lanes: string[] = [];
-    const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdProof'], {
+    const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdForAPerson'], {
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
       move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
       proofHeldComment, heldComment, loopNote, liveGate: () => ({ ok: true }), settleOutsideStop,
     });
     // The settlement writes through the context's tracker, into the same list.
     const ctx = { ...context(new FakeTracker(bot)), io: { write: (op: { argv: string[] }) => writes.push(op.argv) }, dryRun: false, runId: 'run-1' };
-    const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat };
+    const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat, ...extra };
     return api.settleTerminalVerdict(ctx, { number: 1, title: 't', labels: [] }, result, 2, noop, pr).then((outcome: unknown) => ({ outcome, writes, lanes }));
   };
 
@@ -1214,18 +1214,42 @@ describe('a prover that needs a person', () => {
     expect(lanes).toEqual(['H2']);
   });
 
-  it("leaves a coder's needs-human as it was: nothing is proved, so the pull request is closed", async () => {
-    const { writes, lanes } = await settle('coder', 7);
-    expect(writes).toContainEqual(['gh', 'pr', 'close', '7', '--comment', 'Superseded; see the issue.']);
-    expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'edit')).toEqual([]);
+  it("holds a coder's needs-human on a pull request it was continuing open, as a draft, instead of closing it", async () => {
+    const { outcome, writes, lanes } = await settle('coder', 7);
+    expect(outcome).toEqual({ outcome: 'handed-off', reason: 'the signed-in probe needs the shared test credentials' });
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'close')).toEqual([]);
+    expect(writes).toContainEqual(['gh', 'pr', 'ready', '7', '--undo']);
+    expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--add-label', 'needs-human']);
+    expect(writes).toContainEqual(['gh', 'issue', 'edit', '1', '--add-label', 'needs-human']);
+    const record = writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    const stop = standingStop([{ author: bot, body: record }], bot);
+    expect(stop).toMatchObject({ kind: 'outside', cause: 'needs-person', seat: 'coder' });
+    // Lifting the hold continues the work: the hold is the loop's, and the coder gets its words back.
+    expect(loopHoldStands(stop)).toBe(true);
+    expect(objectionAfter(stop)).toContain('the shared test credentials');
+    expect(lanes).toEqual(['H2']);
+  });
+
+  it('names a gate that fails on the untouched base as the cause', async () => {
+    const { writes } = await settle('coder', 7, { outside: 'base' });
+    const record = writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    expect(stopIn(record)?.fields.cause).toBe('base');
+    expect(record).toContain('untouched base');
+  });
+
+  it("closes nothing and holds the issue alone for a coder's needs-human with no pull request", async () => {
+    const { writes, lanes } = await settle('coder', undefined);
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr')).toEqual([]);
+    expect(standingStop([{ author: bot, body: writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1) ?? '' }], bot)?.kind).toBe('held');
     expect(lanes).toEqual(['H2']);
   });
 
   it("reads a coder's needs-human after a held proof as the standing stop, so a redrive lifts no needs-human", async () => {
     const held = (await settle('prover', 7)).writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1) ?? '';
-    const asked = (await settle('coder', 7)).writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    const asked = (await settle('coder', undefined)).writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
     const stop = standingStop([{ author: bot, body: held }, { author: bot, body: asked }], bot);
     expect(stop?.kind).toBe('held');
+    expect(loopHoldStands(stop)).toBe(false);
     expect(standingStop([{ author: bot, body: asked }, { author: bot, body: held }], bot)?.kind).toBe('proof-held');
   });
 

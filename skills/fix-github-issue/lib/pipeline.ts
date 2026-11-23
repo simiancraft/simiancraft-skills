@@ -96,6 +96,8 @@ export type WorkerResult = {
    * after the code was pushed and announced, so its hold keeps the pull request open.
    */
   seat?: 'coder' | 'prover';
+  /** For needs-human: `base` when the seat reproduced the failure on the untouched base, which is not the change's. */
+  outside?: 'base';
 };
 
 export type ReviewResult = {
@@ -227,7 +229,7 @@ async function runWorker(
       if (c.verdict === 'not-run') return { issue: issue.number, verdict: 'not-run', reason: c.reason };
       if (c.verdict !== 'coded') {
         // The escapes are the same words either seat may say, with the pull request a revision holds.
-        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches, seat: 'coder' };
+        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches, seat: 'coder', outside: c.outside };
       }
       coded = { branch: c.branch ?? '', gated: c.gated ?? '', touches: c.touches ?? [] };
       // The push is the fact; the announcement is what the next run, on any machine, reads.
@@ -1370,7 +1372,10 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 
     case 'needs-decision':
     case 'needs-human': {
-      if (result.verdict === 'needs-human' && result.seat === 'prover') return holdProof(ctx, issue, result, say, pr);
+      // A prover's ask comes after the code was pushed and announced, and a coder's on a pull request
+      // it was continuing comes with that pull request's work already reviewed: either is an outside
+      // stop that waits on a person with the pull request held open, never a reason to close it.
+      if (result.verdict === 'needs-human' && (result.seat === 'prover' || pr)) return holdForAPerson(ctx, issue, result, say, pr);
       // Comment first, then the label that hides the issue from selection. The comment is the stop's
       // record on the thread, so it outranks any held proof an earlier seat left.
       mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', heldComment(result.verdict, result.reason)]);
@@ -1439,28 +1444,36 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 }
 
 /**
- * A prover that needs a person (access, credentials, a shared record it may not touch) answers
- * after the code was pushed and announced, so nothing about the change is in doubt. The work is
- * held where it stands rather than thrown away: the pull request stays open, the issue and the
- * pull request both carry `needs-human`, and the issue says what is missing and how the hold
- * comes off. The lane is retired as on every other exit; the branch is on the remote, and the
- * pickup checks the pull request's branch out afresh. A lane kept for a hold of unknown length
- * would also read, once the hold is lifted, as one a dead run stranded with no usable verdict.
+ * A seat that needs a person, where the work is already on a pull request or pushed: an outside
+ * stop that waits on one. A prover's ask (access, credentials, a shared record it may not touch)
+ * answers after the code was pushed and announced; a coder's, on a pull request it was continuing,
+ * leaves that pull request's approval and receipts standing, and a gate it found failing on the
+ * untouched base (`outside: 'base'`) is not the change's at all. The work is held where it stands
+ * rather than thrown away: the pull request stays open (back in draft when the coder was continuing
+ * it), the issue and the pull request both carry `needs-human`, and the issue says what is missing
+ * and how the hold comes off. The lane is retired as on every other exit (a lane holding a coder's
+ * uncommitted edit is kept); the branch is on the remote, and the pickup checks it out afresh.
  *
  * Lifting the issue's label is the whole pickup. The issue goes back to where its facts put it:
- * Drafted or Ready for review with this pull request, where the burndown resumes it from Proving
- * (the hold comment is not an objection, so no coder is sent), or, with no pull request, Ready,
- * where the coded announcement is proved rather than coded again. `fix.ts --redrive` does the same
- * at once. The pickup takes the pull request's label off with the issue's, and a label still on
- * the pull request at the merge gate refuses the merge.
+ * Drafted or Ready for review with this pull request, where the burndown resumes it (a held proof
+ * from Proving, a coder's hold with its own words as the coder's brief), or, with no pull request,
+ * Ready, where the coded announcement is proved rather than coded again. `fix.ts --redrive` does the
+ * same at once. The pickup takes the pull request's label off with the issue's, and a label still
+ * on the pull request at the merge gate refuses the merge.
  */
-function holdProof(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void, pr?: number): FixOutcome {
-  holdLease(ctx, issue.number, 'hold the proof for a person');
+function holdForAPerson(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void, pr?: number): FixOutcome {
+  holdLease(ctx, issue.number, 'hold the work for a person');
   const branch = result.branch ?? '';
-  // An outside stop that waits on a person, recorded as the held proof it is.
-  settleOutsideStop(ctx, issue, { cause: 'needs-person', seat: 'prover', reason: result.reason }, 'proving', say, { pr, record: proofHeldComment(ctx.runId, { branch, pr }, result.reason) });
-  say(`the prover needs a person; ${pr ? `PR #${pr} stays open, ` : ''}held with needs-human`);
-  move(ctx, issue, 'H2', `proof held: ${result.reason}`.slice(0, 120));
+  const prover = result.seat === 'prover';
+  const cause = !prover && result.outside === 'base' ? 'base' : 'needs-person';
+  settleOutsideStop(ctx, issue, { cause, seat: prover ? 'prover' : 'coder', reason: result.reason }, prover ? 'proving' : 'coding', say, {
+    pr,
+    continuation: !prover,
+    // A held proof keeps the record its pickup reads.
+    record: prover ? proofHeldComment(ctx.runId, { branch, pr }, result.reason) : undefined,
+  });
+  say(`the ${prover ? 'prover' : 'coder'} needs a person; ${pr ? `PR #${pr} stays open, ` : ''}held with needs-human`);
+  move(ctx, issue, 'H2', `${prover ? 'proof held' : cause === 'base' ? 'base fails its gate' : 'held'}: ${result.reason}`.slice(0, 120));
   retireLane(ctx, issue.number, say);
   return { outcome: 'handed-off', reason: result.reason };
 }

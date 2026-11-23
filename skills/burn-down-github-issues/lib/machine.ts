@@ -377,6 +377,9 @@ export const MACHINE: StateNode = {
               { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
               { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
+              // A coder's needs-human on a pull request it was continuing is an outside stop: the pull
+              // request is held open in draft, never closed, and lifting the hold continues the work.
+              { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman and prExists', actions: ['labelHold', 'prToDraft', 'labelPrHold', 'recordOutsideStop', 'releaseClaim'] },
               { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
               // A verdict the driver cannot read is a failed turn, settled like one.
@@ -403,6 +406,9 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
                   { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
+                  // A coder's needs-human on a pull request it was continuing is an outside stop: the pull
+                  // request is held open in draft, never closed, and lifting the hold continues the work.
+                  { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman and prExists', actions: ['labelHold', 'prToDraft', 'labelPrHold', 'recordOutsideStop', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
                 ],

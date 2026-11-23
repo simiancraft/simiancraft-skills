@@ -118,8 +118,13 @@ and carve queues are its own. Each queue is meant to be triaged differently
 for a person, and the pull request carries the same label so the branch says what the issue says.
 
 A hand-off is not a park either, and which seat made it decides what happens to a pull request.
-A coder's `needs-human` or `needs-decision`, and a prover's `needs-decision`, close any pull
-request the work had: nothing behind them is proved. A prover's `needs-human` comes after the code
+A coder's `needs-decision`, a prover's `needs-decision`, and a coder's `needs-human` with no pull
+request close any pull request the work had: nothing behind them is proved. A coder's `needs-human`
+on a pull request it was continuing is an outside stop that waits on a person: the pull request goes
+back to draft and stays open with its approval and receipts, the issue and the pull request carry
+`needs-human`, and the issue gets an `outside` stop record (cause `base` when the coder answered
+`"outside": "base"` because the gate fails on the untouched base, else `needs-person`). Lifting the
+hold continues the work, with the record's words as the coder's brief. A prover's `needs-human` comes after the code
 was pushed and announced, so the work is held where it stands (`WorkerResult.seat` says which seat
 answered): the pull request stays open, the issue and the pull request both carry `needs-human`,
 the issue gets a `proof-held` stop record with the reason and how the hold comes
@@ -435,7 +440,8 @@ An outside stop is a stop the change did not cause, settled in one place, `settl
 |---|---|---|
 | `host` | a run ended on `ENOSPC` or `ENOMEM` | the line pauses; the work reruns (a repeat is charged; see below) |
 | `signal` | a stop signal the driver did not send | the work reruns on a later run |
-| `needs-person` | a prover's `needs-human` | the work waits on a person with its pull request held open |
+| `base` | a coder's `needs-human` with `"outside": "base"` on a pull request | the work waits on a person with its pull request held open in draft |
+| `needs-person` | a prover's `needs-human`, or a coder's on a pull request | the work waits on a person with its pull request held open |
 
 Whatever the cause, nothing is counted, no pull request is closed, and the stop is recorded on the
 issue as a `loop-stop kind=outside` record naming the cause and the seat (a held proof keeps its own
