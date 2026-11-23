@@ -1167,6 +1167,36 @@ describe('release noise at every catch-up', () => {
   });
 });
 
+describe('whether the base requires an up-to-date branch, when its protection cannot be read', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const ask = (pull: { status: string; behindBy: string } | null, pr: number | undefined = 7) => {
+    const reads: string[] = [];
+    const api = loadFunctions(pipeline, ['requiresUpToDate', 'upToDateByPullRequest'], {
+      sh: (_ctx: unknown, argv: string[]) => {
+        reads.push(argv.slice(0, 3).join(' '));
+        if (argv.some((a) => a.includes('/protection/'))) throw new Error('HTTP 403: Resource not accessible by integration');
+        if (argv.some((a) => a.includes('/rules/branches/'))) throw new Error('HTTP 403: Resource not accessible by integration');
+        if (argv[1] === 'pr') return JSON.stringify({ mergeStateStatus: pull?.status, headRefOid: 'h' });
+        if (argv.some((a) => a.includes('/compare/'))) return pull?.behindBy ?? '0';
+        throw new Error(`unexpected ${argv.join(' ')}`);
+      },
+    });
+    return { strict: api.requiresUpToDate(context(new FakeTracker(bot)), pr), reads };
+  };
+  it('reads BEHIND on the pull request as GitHub requiring it', () => {
+    expect(ask({ status: 'BEHIND', behindBy: '2' }).strict).toBe(true);
+  });
+  it('reads a mergeable pull request whose head is behind the base as not requiring it', () => {
+    expect(ask({ status: 'CLEAN', behindBy: '2' }).strict).toBe(false);
+  });
+  it('fails closed when the pull request says nothing: not behind, blocked, or not computed yet', () => {
+    expect(ask({ status: 'CLEAN', behindBy: '0' }).strict).toBe(true);
+    expect(ask({ status: 'BLOCKED', behindBy: '2' }).strict).toBe(true);
+    expect(ask({ status: 'UNKNOWN', behindBy: '2' }).strict).toBe(true);
+    expect(ask(null, undefined).strict).toBe(true);
+  });
+});
+
 describe("an incident's owner after its fix ran", () => {
   const handle = (outcome: string, labels: string[]) => {
     let reads = 0;

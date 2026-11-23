@@ -361,9 +361,9 @@ function remoteBranchHead(ctx: Context, cwd: string, branch: string): string | n
  * commit. `skipNoise` is that answer when the caller already read it; otherwise it is read here,
  * and only once the movement is known to be noise.
  */
-function behindOnlyByNoise(ctx: Context, cwd: string, baseSha: string, skipNoise?: boolean): boolean {
+function behindOnlyByNoise(ctx: Context, cwd: string, baseSha: string, skipNoise?: boolean, pr?: number): boolean {
   if (skipNoise === false || behindBeyondNoise(ctx, cwd, baseSha).length > 0) return false;
-  return skipNoise ?? !requiresUpToDate(ctx);
+  return skipNoise ?? !requiresUpToDate(ctx, pr);
 }
 
 /**
@@ -611,25 +611,45 @@ export function reviewedChecks(all: Array<{ name: string; verdict: string | null
 /**
  * Whether the base requires a branch to be up to date before it merges, by classic protection or by
  * a ruleset. When it does, a landing catches up on every base movement, release noise included, or
- * GitHub refuses it. Only a base known to require neither skips that: a denied or failed read is not
- * knowledge, so it answers true and the landing catches up as before.
+ * GitHub refuses it. Only a base known to require neither skips that. A denied or failed read is not
+ * knowledge: what GitHub says of the pull request `pr` decides then (`upToDateByPullRequest`), and
+ * with no pull request it answers true and the landing catches up as before.
  */
-function requiresUpToDate(ctx: Context): boolean {
-  let classic: boolean;
+function requiresUpToDate(ctx: Context, pr?: number): boolean {
+  let classic: boolean | null;
   try {
     classic = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/branches/${ctx.project.baseBranch}/protection/required_status_checks`, '--jq', '.strict'], ctx.repoRoot, 1) === 'true';
   } catch (error) {
-    // Only GitHub's explicit answer that the branch has no such protection lets the ruleset check decide.
-    if (!/Branch not protected|Required status checks not enabled/i.test((error as Error).message)) return true;
-    classic = false;
+    // Only GitHub's explicit answer that the branch has no such protection is a no; a denied read is unknown.
+    classic = /Branch not protected|Required status checks not enabled/i.test((error as Error).message) ? false : null;
   }
   if (classic) return true;
+  let rules: boolean | null;
   try {
     // The rules in force on the branch, rulesets included; readable with ordinary repository access.
-    return (
-      sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/rules/branches/${ctx.project.baseBranch}`, '--jq', '[.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy] | any'], ctx.repoRoot, 1) ===
-      'true'
-    );
+    rules = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/rules/branches/${ctx.project.baseBranch}`, '--jq', '[.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy] | any'], ctx.repoRoot, 1) === 'true';
+  } catch {
+    rules = null;
+  }
+  if (rules) return true;
+  if (classic === false && rules === false) return false;
+  return pr === undefined ? true : upToDateByPullRequest(ctx, pr);
+}
+
+/**
+ * The pull request's own word on the rule, for a token that cannot read the protection. GitHub
+ * reports `BEHIND` only when the base requires an up-to-date branch and the head lacks base commits,
+ * so `BEHIND` is a yes; a mergeable state (`CLEAN`, `UNSTABLE`, `HAS_HOOKS`) on a head that is behind
+ * the base is a no. Anything else (a head not behind, a state that can mask `BEHIND` such as
+ * `BLOCKED`, one not computed yet, a failed read) says nothing, and answers true.
+ */
+function upToDateByPullRequest(ctx: Context, pr: number): boolean {
+  try {
+    const view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeStateStatus,headRefOid'])) as { mergeStateStatus?: string; headRefOid?: string };
+    if (view.mergeStateStatus === 'BEHIND') return true;
+    if (!['CLEAN', 'UNSTABLE', 'HAS_HOOKS'].includes(view.mergeStateStatus ?? '') || !view.headRefOid) return true;
+    const behindBy = Number(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/compare/${ctx.project.baseBranch}...${view.headRefOid}`, '--jq', '.behind_by']));
+    return !(Number.isFinite(behindBy) && behindBy > 0);
   } catch {
     return true;
   }
@@ -948,7 +968,7 @@ function netChangeId(cwd: string, baseSha: string, head: string): string {
 /** Pull requests whose boundary waiver is already on the thread: a reproof re-enters the landing, and the note says it once. */
 const waiverNoted = new Set<number>();
 
-export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean } = {}): Promise<CaughtUp | 'conflict' | null> {
+export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean; pr?: number } = {}): Promise<CaughtUp | 'conflict' | null> {
   // A catch-up merges the base in and pushes the lane's branch; every wait in a landing can
   // outlast the lease, so every catch-up asks for it first.
   await yieldToStop(`catch up ${why}`);
@@ -959,7 +979,7 @@ export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: st
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return null;
-  if (behindOnlyByNoise(ctx, cwd, baseSha, options.skipNoise)) {
+  if (behindOnlyByNoise(ctx, cwd, baseSha, options.skipNoise, options.pr)) {
     say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up`);
     return null;
   }
@@ -1089,7 +1109,7 @@ async function land(
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
     // A revision never begins on a stale lane: whatever the base changed beyond release noise, the
     // author revises against current code rather than against the base as it stood when this branch started.
-    if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
+    if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision', { pr }) === 'conflict') {
       // A dead letter must not sit in draft: the person reading it would find a branch the CI
       // guard is configured to skip, and nothing else would ever flip it back.
       mutate(ctx, `mark PR #${pr} ready again before the dead letter`, ['gh', 'pr', 'ready', String(pr)]);
@@ -1156,7 +1176,7 @@ async function land(
   const reviewedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? { names: [], passed: [] } : checksOn(ctx, reviewedSha);
   const requiredByBase = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : requiredStatusChecks(ctx);
   // Release noise on the base is merged in by the merge itself, unless protection insists on an up-to-date branch.
-  const skipNoise = !ctx.dryRun && !requiresUpToDate(ctx);
+  const skipNoise = !ctx.dryRun && !requiresUpToDate(ctx, pr);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
   /** The base commit of the last look upstream; its commits were judged then. */
@@ -1722,7 +1742,7 @@ export async function reviewAndLand(
       // that reached the paths the proof covers means the world moved beneath the proof: the work
       // goes back to its author to reacquire it, which is upstream churn and spends no round.
       const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-      const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+      const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review', { pr });
       caughtAtLanding = null;
       if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
       if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
@@ -2182,7 +2202,7 @@ async function approvedAtHead(
   const view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,isDraft'])) as { headRefOid: string; isDraft: boolean };
   if (view.headRefOid !== sha || view.isDraft) return null;
   const base = fetchBase(ctx, cwd);
-  if ((requiresUpToDate(ctx) ? behindBase(ctx, cwd, base) : behindBeyondNoise(ctx, cwd, base)).length > 0) return null;
+  if ((requiresUpToDate(ctx, pr) ? behindBase(ctx, cwd, base) : behindBeyondNoise(ctx, cwd, base)).length > 0) return null;
   if (ctx.knobs.checks !== 'none') {
     // One look, no wait: green now, by the landing's own rules, or the usual path.
     const reviewedChecks = checksOn(ctx, sha);
@@ -2268,7 +2288,7 @@ export async function redriveIssue(
     }
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
     const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
+    if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive', { pr: pull.number }) === 'conflict') {
       return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pull.number);
     }
     const feedback: ReviewResult =
