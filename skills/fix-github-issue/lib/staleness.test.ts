@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, importClosure, isAutomationCommit, isReleaseNoise, resolveSpecifier, staleAgainstBase } from './staleness.ts';
+import { behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, importClosure, isReleaseNoise, resolveSpecifier, staleAgainstBase } from './staleness.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const run = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -237,17 +237,14 @@ describe('commitsBehind: who moved the base', () => {
     git(other, 'push', '-q', 'origin', 'development');
   }
 
-  it('marks configured authors and skip-CI subjects as automation, and nobody else', () => {
+  it('names each commit by author and subject, newest first, whoever made it', () => {
     const { ctx, lane, other } = repository();
-    (ctx.project as { automationAuthors?: string[] }).automationAuthors = ['Deploy-Bot'];
     landAs(other, 'someone', 'src/unrelated.ts', 'change the unrelated module');
-    landAs(other, 'deploy-bot', 'deploy.json', 'write back the deployed revision');
-    landAs(other, 'release-please', 'CHANGELOG.md', 'chore(release): 1.0.1 [skip ci]');
+    landAs(other, 'release-bot', 'CHANGELOG.md', 'chore(release): 1.0.1 [skip ci]');
     const commits = commitsBehind(ctx, lane, fetchBase(ctx, lane));
-    expect(commits.map((commit) => [commit.subject, commit.automation])).toEqual([
-      ['chore(release): 1.0.1 [skip ci]', true],
-      ['write back the deployed revision', true],
-      ['change the unrelated module', false],
+    expect(commits.map((commit) => [commit.subject, commit.author])).toEqual([
+      ['chore(release): 1.0.1 [skip ci]', 'release-bot'],
+      ['change the unrelated module', 'someone'],
     ]);
   });
 
@@ -264,19 +261,8 @@ describe('commitsBehind: who moved the base', () => {
     expect(commitsBehind(ctx, lane, fetchBase(ctx, lane))).toEqual([]);
   });
 
-  it('matches an author by email as well as name, without case, and every GitHub skip marker', () => {
-    const ctx = { project: { automationAuthors: ['ci@example.com'] } } as unknown as Context;
-    expect(isAutomationCommit(ctx, 'CI', 'CI@example.com', 'deploy')).toBe(true);
-    expect(isAutomationCommit(ctx, 'person', 'p@example.com', 'deploy')).toBe(false);
-    for (const marker of ['[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]', '[SKIP CI]']) {
-      expect(isAutomationCommit(ctx, 'person', 'p@example.com', `bump ${marker}`)).toBe(true);
-    }
-    const unconfigured = { project: {} } as unknown as Context;
-    expect(isAutomationCommit(unconfigured, 'deploy-bot', 'bot@example.com', 'write back')).toBe(false);
-  });
-
   it('names commits by short sha, subject, and author, and counts the rest', () => {
-    const commits = Array.from({ length: 8 }, (_, i) => ({ sha: `${i}`.repeat(40), author: 'bot', subject: `move ${i}`, automation: true }));
+    const commits = Array.from({ length: 8 }, (_, i) => ({ sha: `${i}`.repeat(40), author: 'bot', subject: `move ${i}` }));
     expect(describeCommits(commits.slice(0, 1))).toBe('0000000000 "move 0" (bot)');
     expect(describeCommits(commits)).toEndWith('"move 5" (bot), and 2 more');
   });

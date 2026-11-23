@@ -28,7 +28,7 @@ import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
-import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_AUTOMATION_REFRESHES, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, heldComment, latestStep, proofHeldComment, standingStop, type Touch, unprovedComment } from './work-markers.ts';
 import { loopNote } from './note.ts';
 
@@ -1064,9 +1064,9 @@ async function land(
   let baseSeen = '';
   /** The base commit of the last look upstream; its commits were judged then. */
   let lastLook: string | undefined;
-  /** Moves counted against the refresh cap, moves made only by known automation, and every commit that moved the base. */
+  /** Moves counted against the refresh cap, moves made only of release noise, and every commit that moved the base. */
   let refreshes = 0;
-  let automationMoves = 0;
+  let noiseMoves = 0;
   const movers: BaseCommit[] = [];
   for (;;) {
     const caught = await catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
@@ -1107,29 +1107,31 @@ async function land(
       // The commit fetched is the commit compared and the commit remembered. The remote-tracking
       // ref is shared with every other lane, so reading it again could name a commit never checked.
       const checked = fetchBase(ctx, cwd);
-      if ((skipNoise ? behindBeyondNoise(ctx, cwd, checked) : behindBase(ctx, cwd, checked)).length === 0) {
+      const beyondNoise = behindBeyondNoise(ctx, cwd, checked);
+      if ((skipNoise ? beyondNoise : behindBase(ctx, cwd, checked)).length === 0) {
         baseSeen = checked;
         lastLook = checked;
         return 'fresh';
       }
-      // Who moved the base decides what the move costs. Release and deploy machinery follows every
-      // merge, so a move made only of its commits still catches up but is not counted against the
-      // refresh cap; it has a larger bound of its own, so a stream of them cannot loop forever.
+      // What the move changed decides what it costs, never who made it. Release machinery follows
+      // every merge, so a move made only of release noise (reached here only when protection wants an
+      // up-to-date branch) still catches up but is not counted against the refresh cap; it has a
+      // larger bound of its own, so a stream of them cannot loop forever.
       const moved = commitsBehind(ctx, cwd, checked, lastLook);
       lastLook = checked;
       movers.unshift(...moved);
-      const byAutomation = moved.length > 0 && moved.every((commit) => commit.automation);
-      if (byAutomation) automationMoves += 1;
+      const byNoise = beyondNoise.length === 0;
+      if (byNoise) noiseMoves += 1;
       else refreshes += 1;
-      const total = refreshes + automationMoves;
+      const total = refreshes + noiseMoves;
       const named = movers.length > 0 ? `; the commits that moved it: ${describeCommits(movers)}` : '';
       if (refreshes > MAX_BASE_REFRESHES) {
-        return { dlq: `the base moved ${total} times while this landing waited on its gates (${refreshes} past known automation)${named}; it needs a quiet base or a person` };
+        return { dlq: `the base moved ${total} times while this landing waited on its gates (${refreshes} beyond release noise)${named}; it needs a quiet base or a person` };
       }
-      if (automationMoves > MAX_AUTOMATION_REFRESHES) {
-        return { dlq: `the base moved ${total} times while this landing waited on its gates (${automationMoves} only by known automation, past that bound of ${MAX_AUTOMATION_REFRESHES})${named}; it needs a quiet base or a person` };
+      if (noiseMoves > MAX_NOISE_REFRESHES) {
+        return { dlq: `the base moved ${total} times while this landing waited on its gates (${noiseMoves} only by release noise, past that bound of ${MAX_NOISE_REFRESHES})${named}; it needs a quiet base or a person` };
       }
-      say(`the base moved ${after}${byAutomation ? ' by known automation only, not counted against the refresh cap' : ''}; catching up again before anything else`);
+      say(`the base moved ${after}${byNoise ? ' only by release noise, not counted against the refresh cap' : ''}; catching up again before anything else`);
       return 'again';
     };
 

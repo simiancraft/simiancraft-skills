@@ -25,33 +25,18 @@ export function matchesPath(file: string, pattern: string): boolean {
 export const MAX_BASE_REFRESHES = 2;
 
 /**
- * How many times a landing catches up on a base moved only by known automation before it gives
- * up. These moves are not counted against `MAX_BASE_REFRESHES`, since release and deploy machinery
- * follows every merge; this separate bound keeps a stream of them from looping a landing forever.
+ * How many times a landing catches up on a base moved only by release noise (`isReleaseNoise`)
+ * before it gives up. These moves are not counted against `MAX_BASE_REFRESHES`, since release
+ * machinery follows every merge; this separate bound keeps a stream of them from looping a landing
+ * forever. A landing meets them only when the base requires an up-to-date branch.
  */
-export const MAX_AUTOMATION_REFRESHES = 6;
+export const MAX_NOISE_REFRESHES = 6;
 
-/** Subject markers that say a commit is not meant to start CI; GitHub honors each of these. */
-const SKIP_CI_MARKERS = ['[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]'];
-
-/** One commit the base gained that the lane did not have. */
+/** One commit the base gained that the lane did not have, named in a dead letter. */
 export interface BaseCommit {
   sha: string;
   author: string;
   subject: string;
-  /** Made by configured automation, or marked to skip CI. */
-  automation: boolean;
-}
-
-/**
- * Whether a commit is known automation: its author's name or email is in the configured
- * `automationAuthors` (compared without case), or its subject carries a skip-CI marker.
- */
-export function isAutomationCommit(ctx: Context, name: string, email: string, subject: string): boolean {
-  const authors = (ctx.project.automationAuthors ?? []).map((author) => author.toLowerCase());
-  if (authors.includes(name.toLowerCase()) || authors.includes(email.toLowerCase())) return true;
-  const lowered = subject.toLowerCase();
-  return SKIP_CI_MARKERS.some((marker) => lowered.includes(marker));
 }
 
 /**
@@ -60,13 +45,13 @@ export function isAutomationCommit(ctx: Context, name: string, email: string, su
  */
 export function commitsBehind(ctx: Context, cwd: string, baseSha: string, seenSha?: string): BaseCommit[] {
   const range = [`HEAD..${baseSha}`, ...(seenSha ? [`^${seenSha}`] : [])];
-  const out = sh(ctx, ['git', 'log', '--format=%H%x1f%an%x1f%ae%x1f%s', ...range, '--'], cwd);
+  const out = sh(ctx, ['git', 'log', '--format=%H%x1f%an%x1f%s', ...range, '--'], cwd);
   return out
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const [sha = '', name = '', email = '', subject = ''] = line.split('\x1f');
-      return { sha, author: name, subject, automation: isAutomationCommit(ctx, name, email, subject) };
+      const [sha = '', author = '', subject = ''] = line.split('\x1f');
+      return { sha, author, subject };
     });
 }
 

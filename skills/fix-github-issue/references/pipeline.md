@@ -301,13 +301,12 @@ landing is a dead letter, because a base that keeps landing into these files nee
 or a person.
 
 A landing also looks upstream after each gate (checks, smoke, the line), and a base that moved
-while a gate ran sends it back to catch up. Those moves are counted by who made them. A move made
-only of known automation's commits (an author `automationAuthors` names, or a subject carrying
-`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, or `[actions skip]`) still catches up, but is
-not counted against the refresh cap (`MAX_BASE_REFRESHES`, 2); any other move is. Automation moves
-have a bound of their own (`MAX_AUTOMATION_REFRESHES`, 6), so a stream of them still ends in a
-dead letter rather than a loop. The dead letter names the commits that moved the base: short sha,
-subject, and author.
+while a gate ran sends it back to catch up. A move made only of release noise needs no catch-up
+unless protection requires an up-to-date branch; then it catches up but is not counted against the
+refresh cap (`MAX_BASE_REFRESHES`, 2), and has a bound of its own (`MAX_NOISE_REFRESHES`, 6), so a
+stream of release commits still ends in a dead letter rather than a loop. Any other move counts,
+whoever authored it. The dead letter names the commits that moved the base: short sha, subject,
+and author.
 
 Only the merge is serialized. A catch-up and its re-review run outside the lock, because holding it
 across a review would stall every other lane behind one stale branch; the lock is then re-entered

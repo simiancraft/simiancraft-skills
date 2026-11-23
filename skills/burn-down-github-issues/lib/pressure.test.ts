@@ -603,8 +603,8 @@ describe('runtime moves and settlement', () => {
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         // The lane is behind by a changelog alone, on every look.
         behindBase: () => ['changelog/1.0.1.md'], behindBeyondNoise: () => [], requiresUpToDate: () => strict,
-        commitsBehind: () => [{ sha: 'c'.repeat(40), author: 'someone', subject: 'land the changelog', automation: false }], describeCommits: (c: { subject: string }[]) => c.map(x => x.subject).join(', '),
-        MAX_AUTOMATION_REFRESHES: 6,
+        commitsBehind: () => [{ sha: 'c'.repeat(40), author: 'someone', subject: 'land the changelog' }], describeCommits: (c: { subject: string }[]) => c.map(x => x.subject).join(', '),
+        MAX_NOISE_REFRESHES: 6,
         fetchBase: () => base, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
         awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
         mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
@@ -615,14 +615,16 @@ describe('runtime moves and settlement', () => {
     // Strict protection keeps the old rule: never fresh while behind, so the refresh cap is reached.
     expect(await landWith(true)).toEqual({ dlq: expect.stringMatching(/the base moved \d+ times/) });
   });
-  describe('base moves made only by known automation', () => {
-    type Mover = { sha: string; author: string; subject: string; automation: boolean };
-    const human = (n: number): Mover => ({ sha: `h${n}`.padEnd(40, '0'), author: 'someone', subject: `merge feature ${n}`, automation: false });
-    const automaton = (n: number): Mover => ({ sha: `b${n}`.padEnd(40, '0'), author: 'deploy-bot', subject: `write back ${n} [skip ci]`, automation: true });
-    /** Lands with the base moving by `moves` in turn, one per look upstream, then holding still. */
-    const landThrough = (moves: Mover[][] | (() => Mover[] | undefined)) => {
+  describe('base moves made only of release noise', () => {
+    type Mover = { sha: string; author: string; subject: string };
+    /** One look upstream: the commits that moved the base, and whether every file they changed is release noise. */
+    type Move = { commits: Mover[]; noise: boolean };
+    const feature = (n: number): Move => ({ commits: [{ sha: `h${n}`.padEnd(40, '0'), author: 'someone', subject: `merge feature ${n}` }], noise: false });
+    const release = (n: number): Move => ({ commits: [{ sha: `r${n}`.padEnd(40, '0'), author: 'release-bot', subject: `chore(release): 1.0.${n} [skip ci]` }], noise: true });
+    /** Lands with the base moving by `moves` in turn, one per look upstream, then holding still; protection wants an up-to-date branch. */
+    const landThrough = (moves: Move[] | (() => Move | undefined)) => {
       const next = typeof moves === 'function' ? moves : () => moves.shift();
-      let current: Mover[] | undefined;
+      let current: Move | undefined;
       const sh = (_ctx: unknown, argv: string[]) => {
         if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
         if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
@@ -632,12 +634,13 @@ describe('runtime moves and settlement', () => {
       };
       const ctx = context(new FakeTracker(bot));
       const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
-        DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_AUTOMATION_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+        DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_NOISE_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
-        behindBase: () => { current = next(); return current ? ['some/file.ts'] : []; }, behindBeyondNoise: () => [], requiresUpToDate: () => true,
-        commitsBehind: () => current ?? [],
+        fetchBase: () => { current = next(); return 'A'; },
+        behindBase: () => (current ? ['some/file'] : []), behindBeyondNoise: () => (current && !current.noise ? ['some/file'] : []), requiresUpToDate: () => true,
+        commitsBehind: () => current?.commits ?? [],
         describeCommits: (commits: Mover[]) => commits.map(commit => `${commit.sha.slice(0, 10)} "${commit.subject}" (${commit.author})`).join(', '),
-        fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+        checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
         awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
         mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
       });
@@ -645,25 +648,27 @@ describe('runtime moves and settlement', () => {
     };
 
     it('are caught up on without spending the refresh cap', async () => {
-      // Two merges, each followed by a deploy write-back and a release commit: six moves, two counted.
-      expect(await landThrough([[human(1)], [automaton(1)], [automaton(2)], [human(2)], [automaton(3)], [automaton(4)]])).toBe('merged');
+      // Two merges, each followed by two release commits: six moves, two counted.
+      expect(await landThrough([feature(1), release(1), release(2), feature(2), release(3), release(4)])).toBe('merged');
     });
 
-    it('still count when a person\'s commit rides along', async () => {
-      const result = await landThrough([[automaton(1), human(1)], [automaton(2), human(2)], [automaton(3)], [automaton(4), human(3)]]);
-      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 4 times while this landing waited on its gates (3 past known automation)') });
+    it('count by what changed, never by who made the commit', async () => {
+      // A release bot's commit that changed code, and a skip-CI subject on it, are movement like any other.
+      const botCode = (n: number): Move => ({ commits: [{ sha: `b${n}`.padEnd(40, '0'), author: 'release-bot', subject: `write back ${n} [skip ci]` }], noise: false });
+      const result = await landThrough([botCode(1), release(1), botCode(2), botCode(3)]);
+      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 4 times while this landing waited on its gates (3 beyond release noise)') });
     });
 
     it('name every commit that moved the base in the dead letter', async () => {
-      const result = (await landThrough([[human(1)], [automaton(1)], [human(2)], [human(3)]])) as { dlq: string };
-      for (const commit of [human(1), automaton(1), human(2), human(3)]) expect(result.dlq).toContain(commit.subject);
+      const result = (await landThrough([feature(1), release(1), feature(2), feature(3)])) as { dlq: string };
+      for (const move of [feature(1), release(1), feature(2), feature(3)]) expect(result.dlq).toContain(move.commits[0].subject);
       expect(result.dlq).toContain('(someone)');
     });
 
     it('cannot loop forever: an endless stream of them reaches a bound of its own', async () => {
       let n = 0;
-      const result = await landThrough(() => [automaton(++n)]);
-      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 7 times while this landing waited on its gates (7 only by known automation, past that bound of 6)') });
+      const result = await landThrough(() => release(++n));
+      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 7 times while this landing waited on its gates (7 only by release noise, past that bound of 6)') });
       expect(n).toBe(7);
     });
   });
