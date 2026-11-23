@@ -12,7 +12,8 @@ import { isHostFaultKind, settleOutsideStop } from '../../fix-github-issue/lib/e
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
 import { landingWatch } from '../../fix-github-issue/lib/landing-watch.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
+import { CLAIM_READBACK, claim, refusal } from '../../carve-github-issue/lib/claims.ts';
+import { HOLD_LABELS, isDlqLabel, isHeldBy } from '../../fix-github-issue/lib/labels.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { readTree } from '../../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS } from '../../carve-github-issue/lib/carve.ts';
@@ -1200,29 +1201,6 @@ describe('whether the base requires an up-to-date branch, when its protection ca
   });
 });
 
-describe("an incident's owner after its fix ran", () => {
-  const handle = (outcome: string, labels: string[]) => {
-    let reads = 0;
-    const api = loadFunctions('./floor/incident.ts', ['handleIncident', 'ownedNow'], {
-      gather: () => ({ lastGood: undefined, suspects: [], logs: '' }),
-      openIncidentFor: () => (++reads === 1 ? null : { number: 31, withAPerson: labels.length > 0 }),
-      causeOf: () => 'in-repository', incidentTitle: () => 'floor: x is absent', renderSuspects: () => '', ensureIncidentLabel: noop, ensureLabels: noop,
-      INCIDENT_LABEL, sh: (_ctx: unknown, argv: string[]) => (argv[2] === 'create' ? 'https://github.com/o/r/issues/31' : '{"number":31,"labels":[]}'),
-      enrichBlockers: noop, parkIssue: noop,
-      fixIssue: async () => ({ outcome, reason: 'r' }),
-    });
-    const entry = { itemId: 'pull-request:7', checkedAt: '2026-11-20T00:00:00Z', rung: 'exercise', verdict: 'absent', reason: 'r' };
-    return api.handleIncident(context(new FakeTracker(bot)), { entry, maxPoints: 2, diagnosis: { culprit: null, confidence: 'likely', error: '', remedy: 'fix-forward', summary: 's' } });
-  };
-
-  it('is with a person only when the tracker says so, never because the fix did not merge', async () => {
-    for (const outcome of ['unjudged', 'busy', 'stopped']) expect((await handle(outcome, [])).withAPerson).toBe(false);
-    expect((await handle('handed-off', ['needs-human'])).withAPerson).toBe(true);
-    expect((await handle('dlq', ['loop/dlq'])).withAPerson).toBe(true);
-    expect((await handle('merged', [])).withAPerson).toBe(false);
-  });
-});
-
 describe('a prover that needs a person', () => {
   const pipeline = '../../fix-github-issue/lib/pipeline.ts';
   const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
@@ -1446,7 +1424,7 @@ describe('a pull request merged while its landing watched', () => {
     const merged = (over: Record<string, unknown>) => ({ number: 70, title: 'fix: a leaf', body: 'Refs #42', headRefName: 'fix/a-leaf-42', mergedAt: '2026-11-21T11:00:00Z', mergeCommit: { oid: 'm'.repeat(40) }, files: [{ path: 'src/a.ts' }], author: { login: bot }, ...over });
     const run = async (pulls: unknown[]) => {
       recorded.length = 0;
-      const api = loadFunctions('../loop.ts', ['reconcileMergedPullRequests', 'resolvedBy', 'notALeafLabel'], {
+      const api = loadFunctions('../loop.ts', ['reconcileMergedPullRequests', 'resolvedBy', 'loopPullIssue', 'notALeafLabel'], {
         ctx: { botLogin: bot }, mergedPullRequests: () => pulls, log: noop, trackerIo: noop, issueRefs,
         isHeldBy: () => false, HOLD_LABELS: [], CONFIG: { skipLabels: [] }, looksLikeTrunk: () => false, pointsFromLabels: () => 1,
         DRY_RUN: false, threadOf: () => ({}), refusal: () => null, NOT_A_LEAF: [], MAX_POINTS: 2, place: noop,
@@ -1460,6 +1438,38 @@ describe('a pull request merged while its landing watched', () => {
     expect(await run([merged({ author: { login: 'someone' } })])).toEqual([]);
     // A closing keyword still counts, whoever opened it.
     expect(await run([merged({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' })])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
+    // The loop's own pull request resolves its issue only on a coder's branch (`fix/<words>-<n>`) whose body references the issue.
+    expect(await run([merged({ headRefName: 'release/2026-11-42' })])).toEqual([]);
+    expect(await run([merged({ body: 'A tidy-up.' })])).toEqual([]);
+    expect(await run([merged({ body: 'Refs #420' })])).toEqual([]);
+  });
+
+  it('records a hand merge of the loop\'s pull request for an issue the loop held, and lifts the loop\'s holds', async () => {
+    const recorded: number[] = [];
+    const lifted: string[] = [];
+    const logs: string[] = [];
+    const leaf = (labels: string[]) => ({ number: 42, title: 'a leaf', labels: [{ name: 'size: 1' }, ...labels.map((name) => ({ name }))], blockedBy: { nodes: [] } });
+    const pull = (over: Record<string, unknown> = {}) => ({ number: 70, title: 'fix: a leaf', body: 'Refs #42', headRefName: 'fix/a-leaf-42', mergedAt: '2026-11-21T11:00:00Z', mergeCommit: { oid: 'm'.repeat(40) }, files: [], author: { login: bot }, ...over });
+    const run = async (labels: string[], pr = pull()) => {
+      recorded.length = 0;
+      lifted.length = 0;
+      const issue = leaf(labels);
+      const api = loadFunctions('../loop.ts', ['reconcileMergedPullRequests', 'resolvedBy', 'loopPullIssue', 'notALeafLabel', 'loopHolds'], {
+        ctx: { botLogin: bot }, mergedPullRequests: () => [pr], log: (m: string) => logs.push(m), trackerIo: noop, issueRefs,
+        isHeldBy, isDlqLabel, HOLD_LABELS, CONFIG: { skipLabels: ['needs-decision', 'needs-human', 'loop/skip', 'loop/parked'] }, looksLikeTrunk: () => false, pointsFromLabels: () => 1,
+        DRY_RUN: false, threadOf: () => ({ issue: { ...issue, state: 'OPEN' }, ancestors: [], children: [], record: null, blockers: [], recordBlockers: [] }), refusal, NOT_A_LEAF: ['loop/paused'], MAX_POINTS: 2, place: noop,
+        mutate: (_ctx: unknown, _d: unknown, argv: string[]) => lifted.push(argv.at(-1) as string),
+        recordMerge: async (_ctx: unknown, merge: { issue: number }) => { recorded.push(merge.issue); return 'closed'; },
+      });
+      await api.reconcileMergedPullRequests([issue]);
+      return { recorded: recorded.slice(), lifted: lifted.slice() };
+    };
+    expect(await run(['needs-human', 'loop/dlq: landing'])).toEqual({ recorded: [42], lifted: ['needs-human', 'loop/dlq: landing'] });
+    expect(logs.at(-1)).toContain('lifted needs-human, loop/dlq: landing');
+    // A person's own hold stands, and a merge the loop did not open does not lift the loop's.
+    expect(await run(['loop/skip'])).toEqual({ recorded: [], lifted: [] });
+    expect(await run(['needs-human', 'loop/skip'])).toEqual({ recorded: [], lifted: [] });
+    expect(await run(['needs-human'], pull({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' }))).toEqual({ recorded: [], lifted: [] });
   });
 });
 

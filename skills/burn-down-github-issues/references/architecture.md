@@ -257,12 +257,17 @@ position the trunk's newest leaf would have had; the rest of the backlog stays n
 
 Reconciliation records the merge of an open, sized leaf a merged pull request resolves: one that
 names it with a closing keyword (`fixes #12` at the start of a line or a sentence; a sentence
-starting with "not" does not count), or one the loop opened whose branch names it (`fix/...-12`),
-since the loop's own pull requests reference their issue with `Refs` and never a closing keyword.
+starting with "not" does not count), or one the loop opened on a coder's branch that names it
+(`fix/...-12`) whose body references it (`Refs #12`), since the loop's own pull requests reference
+their issue with `Refs` and never a closing keyword. A branch name alone resolves nothing.
 The merge is recorded as the landing records its own (`recordMerge` in the fix skill's
 `lib/record-merge.ts`): the card to Merged, the merge onto the floor, and the issue closed with a
-pointer. It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it
-re-reads the issue immediately before closing.
+pointer. It never closes a trunk, a paused issue, a claimed issue, or a blocked one, and it
+re-reads the issue immediately before closing. A held issue is closed only by the loop's own pull
+request, merged by hand while the loop held it, and only when every hold it carries is the loop's
+(`needs-human`, `needs-decision`, `loop/parked`, or a dead letter): those come off once the merge
+is recorded, and the log says so. A person's own hold (`loop/skip`, a configured skip label) keeps
+the issue as it is.
 
 ## Carving and revisits
 

@@ -33,13 +33,13 @@ import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../f
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { reportPreflight } from './lib/preflight.ts';
 import { parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { ensureLabels, HOLD_LABELS, isDlqLabel, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
 import { type FixOutcome, fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
 import { findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
-import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
+import { isStopping, log, mutate, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { objectionAfter, standingStop } from '../fix-github-issue/lib/stop-record.ts';
 import { isHostFaultKind } from '../fix-github-issue/lib/environment-fault.ts';
@@ -692,14 +692,35 @@ type Merged = {
 
 /**
  * The issues a merged pull request resolves: those a closing keyword names, and, for a pull request
- * the loop opened, the issue its branch names (`<prefix>-<issue>`). The loop's own pull requests
- * reference their issue with `Refs`, never a closing keyword, so the keyword alone misses them.
+ * the loop opened, the issue its branch names the way a coder is told to (`fix/<words>-<issue>`)
+ * when its body also references that issue (`Refs #<issue>`). The loop's own pull requests
+ * reference their issue with `Refs`, never a closing keyword, so the keyword alone misses them; a
+ * branch name alone is not a resolution.
  */
 function resolvedBy(pr: Merged, botLogin: string): number[] {
   const refs = issueRefs([pr], 'closing');
-  const branch = /-(\d{1,6})$/.exec(pr.headRefName);
-  if (pr.author?.login === botLogin && branch) refs.push(Number(branch[1]));
+  const own = loopPullIssue(pr, botLogin);
+  if (own !== null) refs.push(own);
   return [...new Set(refs)];
+}
+
+/** The issue a merged pull request the loop opened was for, or null when the loop did not open it. */
+function loopPullIssue(pr: Merged, botLogin: string): number | null {
+  const branch = /^fix\/.+-(\d{1,6})$/.exec(pr.headRefName);
+  if (pr.author?.login !== botLogin || !branch) return null;
+  const issue = Number(branch[1]);
+  return issueRefs([{ title: '', body: pr.body, headRefName: '' }], 'owning').includes(issue) ? issue : null;
+}
+
+/**
+ * The holds the loop itself puts on an issue (a person's hand-off, a decision, a park, a dead
+ * letter), or null when the issue also carries a hold of a person's own (`loop/skip`, a configured
+ * skip label, a pause), which no merge lifts.
+ */
+function loopHolds(labels: Array<{ name: string }>, skipLabels: string[]): string[] | null {
+  const LOOP_HOLDS = ['needs-human', 'needs-decision', 'loop/parked'];
+  const holds = labels.map((l) => l.name).filter((name) => HOLD_LABELS.includes(name) || skipLabels.includes(name) || isDlqLabel(name));
+  return holds.every((name) => LOOP_HOLDS.includes(name) || isDlqLabel(name)) ? holds : null;
 }
 
 /** Pull requests merged into the base within the reconciliation window, read once per run. */
@@ -745,7 +766,11 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
     for (const ref of resolvedBy(pr, ctx.botLogin)) {
       const issue = open.get(ref);
       if (!issue) continue;
-      if (isHeldBy(issue.labels, CONFIG.skipLabels) || issue.labels.some((l) => HOLD_LABELS.includes(l.name))) continue;
+      // A held issue is recorded only for the loop's own pull request, which a person merged by
+      // hand while the loop held it; the loop's holds then come off, and a person's own stand.
+      const held = isHeldBy(issue.labels, CONFIG.skipLabels) || issue.labels.some((l) => HOLD_LABELS.includes(l.name));
+      const lift = held ? (loopPullIssue(pr, ctx.botLogin) === ref ? loopHolds(issue.labels, CONFIG.skipLabels) : null) : [];
+      if (lift === null) continue;
       if (notALeafLabel(issue) || looksLikeTrunk(issue)) continue;
       if ((issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED'))) continue;
       if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
@@ -753,7 +778,7 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
       if (!DRY_RUN) {
         const tree = threadOf(issue.number);
         if (!tree) continue;
-        const why = refusal(tree, MAX_POINTS);
+        const why = refusal(lift.length > 0 ? { ...tree, issue: { ...tree.issue, labels: tree.issue.labels.filter((l) => !lift.includes(l.name)) } } : tree, MAX_POINTS);
         if (why) {
           log(`repair: #${issue.number} is referenced by merged PR #${pr.number} but is not closed, because ${why}`);
           continue;
@@ -768,6 +793,8 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
         comment: `Resolved by #${pr.number}, merged at ${pr.mergedAt}. No run recorded the merge when it landed.`,
         reason: `merged #${pr.number} by reconciliation`,
       });
+      for (const label of lift) mutate(ctx, `lift ${label} on #${issue.number}`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', label]);
+      if (lift.length > 0) log(`repair: #${issue.number} was held when PR #${pr.number} merged by hand; recorded the merge and lifted ${lift.join(', ')}`);
       open.delete(ref);
     }
   }

@@ -44,7 +44,7 @@ import {
   TERMINAL,
 } from './ledger.ts';
 import { ghLineage, type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
-import { classify, type DeployRun, deployedRevision, deployRunsFor, describe, probe } from './probe.ts';
+import { classify, type DeployRun, deployedRevision, deployRunsFor, describe, laterDeployRuns, probe } from './probe.ts';
 
 const VERDICT_FILE = 'walk-verdict.json';
 /** Pending verdicts a drain does not wait on: another issue, or deploy evidence, settles them. */
@@ -94,6 +94,8 @@ export type FloorOptions = {
   readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null;
   /** The deploy workflow's runs for a merge commit; `deployRunsFor` on the forge, unless a test supplies its own. */
   deployRuns?: (sha: string) => DeployRun[];
+  /** The deploy workflow's runs on the base branch after a cancelled one; `laterDeployRuns` on the forge, unless a test supplies its own. */
+  laterDeployRuns?: (cancelled: DeployRun) => DeployRun[];
   /** Why a person cannot land an incident's parked fix, or null when they can; `readLandBlocker`, unless a test supplies its own. */
   landBlocker?: (issue: number) => string | null;
 };
@@ -485,11 +487,12 @@ export class Floor {
       const landing = new Set(unsettled.map((item) => item.ref?.issue).filter((n): n is number => n !== undefined));
       const workflow = this.env.deployWorkflow;
       const runsFor = workflow ? (this.o.deployRuns ?? ((sha: string) => deployRunsFor(ctx, workflow, sha))) : undefined;
+      const laterRuns = workflow ? (this.o.laterDeployRuns ?? ((run: DeployRun) => laterDeployRuns(ctx, workflow, ctx.project.baseBranch, run))) : undefined;
       for (const item of unsettled) {
         // Owed to a sibling still open, or merged and not yet verified: nothing to look at until it lands.
         const prior = before.get(item.id);
         if (prior?.verdict === 'owed-by-sibling' && prior.sibling !== undefined && (landing.has(prior.sibling) || owedTo(this.lineage(item), prior.sibling))) continue;
-        const undeployed = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, workflow, runsFor, capMinutes: this.env.deployCapMinutes, repoRoot: ctx.repoRoot });
+        const undeployed = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, workflow, runsFor, laterRuns, capMinutes: this.env.deployCapMinutes, repoRoot: ctx.repoRoot });
         if (!undeployed) {
           walkable.push(item);
           continue;
@@ -720,6 +723,11 @@ export class Floor {
 
   /** The snapshot for this walk: `readOwnership` over the ledger now, with a tracker read that fails read as unknown. */
   private readOwners(): Ownership {
+    return this.ownersOf(latestByItem(readLedger(this.o.dir)));
+  }
+
+  /** `readOwnership` over these ledger entries, with a tracker read that fails read as unknown. */
+  private ownersOf(latest: Map<string, LedgerEntry>): Ownership {
     const read = (itemId: string): IncidentState => {
       try {
         return this.readIncident(itemId);
@@ -728,7 +736,7 @@ export class Floor {
         return undefined;
       }
     };
-    return readOwnership(latestByItem(readLedger(this.o.dir)), read, this.owners, (issue) => this.landable(issue));
+    return readOwnership(latest, read, this.owners, (issue) => this.landable(issue));
   }
 
   /** Where an item's issue sits in a carved trunk, read once per walk; null without an issue or a readable one. */
@@ -783,14 +791,10 @@ export class Floor {
         diagnosis,
         onDiagnosed: (cause) => this.diagnosed(entry.itemId, cause),
       });
-      // The incident's owner as handleIncident just read it from the tracker.
-      const owned = this.owners.get(entry.itemId);
-      if (owned) {
-        owned.incident = result.issue || null;
-        owned.owner = result.withAPerson ? 'person' : result.issue ? 'floor' : 'nobody';
-        owned.landable = result.withAPerson && this.landable(result.issue);
-      }
-      return { issue: result.issue, outcome: result.fix?.outcome ?? (result.withAPerson ? 'with a person' : 'filed'), cause: result.cause };
+      // The item's owner as the tracker reads after the repair, through the snapshot's one reader.
+      const owned = this.ownersOf(new Map([[entry.itemId, entry]])).get(entry.itemId);
+      if (owned) this.owners.set(entry.itemId, owned);
+      return { issue: result.issue, outcome: result.fix?.outcome ?? (owned?.owner === 'person' ? 'with a person' : 'filed'), cause: result.cause };
     } catch (error) {
       if (error instanceof RunStopping) throw error;
       this.o.log(`floor: incident for ${entry.itemId} failed: ${(error as Error).message}`);

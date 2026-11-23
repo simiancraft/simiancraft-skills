@@ -144,7 +144,7 @@ logo"). The ledger entry carries `itemId`, `checkedAt`, `deployedRevision`, `run
 | `not-checkable` | terminal | looking would need a side effect or credentials the config does not give; the reason says which |
 | `absent` | wrong | the deployed revision includes the merge and the change is not there |
 | `down` | wrong | liveness failed |
-| `deploy-failed` | wrong | the deploy run for the merge failed, was cancelled, timed out, or never started; the reason carries the run's URL |
+| `deploy-failed` | wrong | the deploy run for the merge failed, timed out, or never started, or was cancelled with no later run containing the merge; the reason carries the run's URL |
 | `not-yet-deployed` | pending | walked again next time |
 | `deploy-unconfirmed` | pending | still no deploy evidence `deployCapMinutes` after the merge; named under ⚠️ on every readout, never an incident, and the drain does not wait on it; walked once evidence arrives |
 | `unverified` | pending | no longer assigned; read in older ledgers only |
@@ -165,7 +165,11 @@ A merge is deployed when there is evidence of it, never because time has passed:
   progress has not deployed it yet. When none is, and the newest run failed, was cancelled, timed
   out, or never started, the merge is `deploy-failed`: a wrong verdict, with the run's URL in its
   reason, that pauses the line and files an incident diagnosed like any other (a broken build or
-  bundle is a fault in the repository). A later successful run clears it.
+  bundle is a fault in the repository). A later successful run clears it. A cancelled run is
+  judged against the workflow's later runs on the base branch first: a workflow that cancels in
+  progress cancels each back-to-back merge's run for the next, so a later run for a commit that
+  contains the merge carries it (deployed once that run succeeds, `not-yet-deployed` while it has
+  not), and the merge is `deploy-failed` only when nothing later contains it.
 
 A merge without evidence is `not-yet-deployed` and is not walked, so a backend change whose deploy
 is still running is never judged `absent` or `intact` against the build before it. After
