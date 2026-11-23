@@ -166,8 +166,12 @@ The floor runs inside the loop's process, so the switch is its whole interlock w
 queue and nothing has to parse a ledger to flip it. Every merge goes up onto the floor through the
 pipeline's `afterMerge` hook; a walk of the deployed base that finds something wrong pauses the line
 before it files an incident, and releases its own pause once nothing on the floor is wrong. The
+pause names the cause the diagnosis found: a repair holds every seam, and an outage whose remedy is
+outside the repository holds only the merge, so the lanes keep working and their merges stack. The
 incident's fix is the one merge a paused line must not hold, so the floor fixes it under the
-loop's context without the `mayMerge` gate. A passing walk is the statechart's `WALKED` event: the
+loop's context without the `mayMerge` gate. A fix that undoes a recently merged pull request still
+parks at the merge boundary, whatever `autoMerge` says, through the pipeline's `holdAtBoundary`
+hook, and a person lands it; a forward repair lands. A passing walk is the statechart's `WALKED` event: the
 card moves from Merged to Verified on the floor.
 
 A run is done when its merges are verified, not when they land. They reach the floor seconds

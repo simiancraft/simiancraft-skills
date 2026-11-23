@@ -39,7 +39,8 @@ burndown (parallel)
 a state of the ticket so that a pause moves no card: in the machine, appraiser dispatch, worker
 dispatch, and the knife's dispatch and revisit are guarded by `lineActive`, and a card waiting on a
 paused line stays in its lane while the board's banner says why. `lib/machine.test.ts` asserts that
-`lineActive` guards exactly those events and no others. Where the running loop actually holds,
+`lineActive` guards exactly those events and no others. A floor pause for an outage outside the
+repository holds only the merge, so for these events the line reads as active. Where the running loop actually holds,
 which includes the merge and does not yet include the knife's sweep, is listed once in
 `operating.md`, "When the line is paused".
 

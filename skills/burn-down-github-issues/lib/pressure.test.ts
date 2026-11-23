@@ -16,6 +16,8 @@ import { CARVE_DEFAULTS } from '../../carve-github-issue/lib/carve.ts';
 import { allOpenIssues } from '../../appraise-github-issues/lib/appraise.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
+import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
+import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -661,6 +663,66 @@ describe('runtime moves and settlement', () => {
       expect(result).toEqual({ dlq: expect.stringContaining('the base moved 7 times while this landing waited on its gates (7 only by known automation, past that bound of 6)') });
       expect(n).toBe(7);
     });
+  });
+});
+
+describe('a floor incident at the merge boundary', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const incident = { number: 9, title: 'floor: item absent', labels: [{ name: INCIDENT_LABEL }] };
+  const landWith = (holdAtBoundary: Context['holdAtBoundary'], landPastBoundary?: number) => {
+    const parks: string[][] = [];
+    const ctx = context(new FakeTracker(bot));
+    ctx.knobs.autoMerge = 'code-only';
+    ctx.holdAtBoundary = holdAtBoundary;
+    ctx.landPastBoundary = landPastBoundary;
+    const sh = (_ctx: unknown, argv: string[]) => {
+      if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
+      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
+      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv.at(-1) === '.parents[0].sha') return 'A';
+      return '';
+    };
+    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase', 'mergeAllowed'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], boundaryWaived, waiverNoted: new Set(),
+      sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+      mutate: (_ctx: unknown, _what: string, argv: string[]) => { if (argv.includes('loop/parked')) parks.push(argv); },
+      followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+    });
+    return api.land(ctx, incident, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop).then((outcome: unknown) => ({ outcome, parks }));
+  };
+  it('without a hold, autoMerge alone decides', async () => {
+    expect((await landWith(undefined)).outcome).toBe('merged');
+  });
+  const reverting: Context['holdAtBoundary'] = (issue) => incidentHold(issue, () => 'undoes #12 (abc1234567): puts back lines it removed from src/a.ts');
+  const forward: Context['holdAtBoundary'] = (issue) => incidentHold(issue, () => null);
+  it('lands an incident fix that repairs forward without a person', async () => {
+    const { outcome, parks } = await landWith(forward);
+    expect(outcome).toBe('merged');
+    expect(parks).toHaveLength(0);
+  });
+  it('parks an incident fix that undoes a recent merge, with a reason --land accepts', async () => {
+    const { outcome, parks } = await landWith(reverting);
+    expect(outcome).toEqual({ park: expect.stringMatching(/^autoMerge is code-only and the change touches code; a floor\/incident fix that undoes #12/) });
+    expect(parks).toHaveLength(1);
+    const body = (outcome as { park: string }).park;
+    expect(landBlocker(['loop/parked'], [{ body, createdAt: '2026-09-20T00:00:00Z' }], '2026-09-20T00:00:01Z')).toBeNull();
+  });
+  it('a person who clears it with --land lands it', async () => {
+    expect((await landWith(reverting, incident.number)).outcome).toBe('merged');
+  });
+  it('holds only incidents, asks about a revert only for one, and the loop asks it at every merge', () => {
+    let asked = 0;
+    const ask = () => {
+      asked += 1;
+      return 'reverts #12 (abc1234567)';
+    };
+    expect(incidentHold({ number: 1, labels: [{ name: 'bug' }] }, ask)).toBeNull();
+    expect(asked).toBe(0);
+    expect(incidentHold(incident, ask)).toContain('live environment');
+    expect(readFileSync(new URL('../loop.ts', import.meta.url), 'utf8')).toContain('holdAtBoundary: (issue, change) => incidentHold(issue, () => revertOf(change.cwd, change.base, recentMerges(ctx, issue.number, FLOOR_DIR))),');
   });
 });
 

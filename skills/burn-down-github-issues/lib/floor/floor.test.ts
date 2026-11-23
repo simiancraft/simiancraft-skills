@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
-import { Floor, FLOOR_PAUSE, stillWithAPerson } from './floor.ts';
+import { Floor, FLOOR_PAUSE, incidentWaiting, stillWithAPerson } from './floor.ts';
+import type { handleIncident } from './incident.ts';
 import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
+import { type FloorCause, floorReason, lineHolds, readSwitch } from './line.ts';
 import { type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
 
 let scratch: string;
@@ -28,7 +30,7 @@ afterAll(() => {
 const PROJECT = { name: 'Test', repo: 'o/floor', remote: 'origin', baseBranch: 'main', evidenceBranch: 'evidence', checkCommand: 'true', installCommand: 'true', conventionDocs: [], sizingScale: 'fib', sharedServices: [], portBase: 9000, portSpan: 10, pathAliases: [], sourceExtensions: ['.ts'], alwaysInvalidates: [], touchPaths: { migration: [], ci: [] }, worktreeRoot: 'wt' } as ProjectConfig;
 
 /** A floor of its own per case, with recording callbacks in its callbacks directory. */
-function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf } = {}) {
+function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident } = {}) {
   const root = join(scratch, name);
   const callbacksDir = join(root, 'callbacks');
   mkdirSync(callbacksDir, { recursive: true });
@@ -64,6 +66,8 @@ function floorFor(name: string, environment: Record<string, unknown> = {}, extra
     log: () => {},
     print: (text) => readouts.push(text),
     ...(extra.lineageOf ? { lineageOf: extra.lineageOf } : {}),
+    handleIncident: extra.repair,
+    waitingAtMerge: () => 2,
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
   const line = () => (existsSync(switchFile) ? readFileSync(switchFile, 'utf8') : 'go\n');
@@ -76,7 +80,7 @@ describe('a walk that finds the environment down', () => {
     status = 503;
     const first = await f.floor.walkOnce({ livenessOnly: true });
     expect(first?.wrong).toBe(true);
-    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE} liveness is down`);
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
     expect(f.calls('on-walk-fail')).toBe(1);
     // Nothing here needs a person yet: the outage is a heads-up, not a question.
     expect(f.readouts[0]).toContain('liveness is down');
@@ -136,7 +140,7 @@ describe('an outage that began inside a quiet window', () => {
     // The quiet walk, as the ledger records one, then a walk outside any window.
     appendEntry(f.dir, { itemId: 'liveness', checkedAt: new Date().toISOString(), rung: 'liveness', verdict: 'down', reason: '/ 503', quiet: true });
     await f.floor.walkOnce({ livenessOnly: true });
-    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE} liveness is down`);
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
     expect(f.calls('on-walk-fail')).toBe(1);
     status = 200;
     await f.floor.walkOnce({ livenessOnly: true });
@@ -359,5 +363,99 @@ describe('"Needs you" is read fresh at render time', () => {
     expect(kept.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
     // An item the ledger already shows right costs no tracker read.
     expect(reads).not.toContain('e');
+  });
+});
+
+describe('the readout line for an incident a person owns', () => {
+  it('names the landing when the merge boundary parked an approved fix', () => {
+    const line = incidentWaiting('home', 42, true);
+    expect(line).toContain('fix.ts --land 42');
+    expect(line).not.toContain('lift its label');
+  });
+  it('hands any other park back by its label', () => {
+    expect(incidentWaiting('home', 42, false)).toContain('lift its label to hand it back');
+    expect(incidentWaiting('home', undefined, true)).toContain('(see floor/incident)');
+  });
+});
+
+describe('the cause on the floor\'s pause', () => {
+  const deployed = () => git(scratch, 'rev-parse', 'HEAD');
+  /** An incident handler that answers with this cause, recording the line as the diagnosis found it and as it left it. */
+  const answering = (cause: FloorCause | 'throws', seen: string[], during?: (switchFile: string) => void): typeof handleIncident =>
+    async (_ctx, options) => {
+      seen.push(readFileSync(switchFileOf.current, 'utf8'));
+      if (cause === 'throws') throw new Error('the diagnosis seat is gone');
+      during?.(switchFileOf.current);
+      options.onDiagnosed?.(cause);
+      seen.push(readFileSync(switchFileOf.current, 'utf8'));
+      return { issue: 31, created: true, fix: null, diagnosis: null, withAPerson: cause === 'outside-repository', cause };
+    };
+  const switchFileOf = { current: '' };
+  const wrongWalk = async (name: string, cause: FloorCause | 'throws', during?: (switchFile: string) => void) => {
+    const seen: string[] = [];
+    const f = floorFor(name, { revisionCommand: `echo ${deployed()}` }, { repair: answering(cause, seen, during) });
+    switchFileOf.current = f.switchFile;
+    status = 503;
+    await f.floor.walkOnce();
+    return { f, seen };
+  };
+
+  it('is undiagnosed the moment the walk finds something wrong, and the diagnosis converts it', async () => {
+    const { f, seen } = await wrongWalk('cause-outage', 'outside-repository');
+    expect(seen[0]).toStartWith(`pause\n${floorReason('undiagnosed', 'liveness is down')}`);
+    expect(seen[1]).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    expect(f.line()).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    status = 200;
+  });
+
+  it('lets lanes start during an outage, stacks merges, and releases them on the first walk that finds it up', async () => {
+    const { f } = await wrongWalk('cause-outage-release', 'outside-repository');
+    expect(lineHolds(readSwitch(f.switchFile), 'dispatch')).toBe(false);
+    expect(lineHolds(readSwitch(f.switchFile), 'merge')).toBe(true);
+    expect(f.readouts.at(-1)).toContain('only merges are held, other work goes on');
+    expect(f.readouts.at(-1)).toContain('2 pull request(s) waiting at the merge');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(lineHolds(readSwitch(f.switchFile), 'merge')).toBe(false);
+  });
+
+  it('starts no new lane while the floor repairs its own fault', async () => {
+    const { f } = await wrongWalk('cause-repair', 'in-repository');
+    expect(lineHolds(readSwitch(f.switchFile), 'dispatch')).toBe(true);
+    expect(f.readouts.at(-1)).toContain('merges wait and no new lane starts');
+    status = 200;
+  });
+
+  it('records a remedy in the repository as the repository\'s', async () => {
+    const { f } = await wrongWalk('cause-ours', 'in-repository');
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}in-repository: `);
+    status = 200;
+  });
+
+  it('records a diagnosis that could not answer as a cause nobody knows, never as an outage', async () => {
+    const { f } = await wrongWalk('cause-thrown', 'throws');
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}cause-unknown: `);
+    status = 200;
+  });
+
+  it('never overwrites a pause a person set while the diagnosis ran', async () => {
+    const { f } = await wrongWalk('cause-person', 'outside-repository', (file) => writeFileSync(file, 'pause\nholding for the release\n'));
+    expect(f.line()).toBe('pause\nholding for the release\n');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('pause\nholding for the release\n');
+  });
+
+  it('keeps the cause an earlier run recorded for an outage still under way', async () => {
+    const f = floorFor('cause-restart');
+    status = 503;
+    appendEntry(f.dir, { itemId: 'liveness', checkedAt: new Date().toISOString(), rung: 'liveness', verdict: 'down', reason: '/ 503' });
+    writeFileSync(f.switchFile, `pause\n${floorReason('outside-repository', 'liveness is down')}; see the ledger on the floor\n`);
+    const restarted = new Floor({ ...(f.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o });
+    await restarted.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    status = 200;
+    await restarted.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('go\n');
   });
 });
