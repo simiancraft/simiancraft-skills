@@ -18,7 +18,7 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
 import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
-import { heldComment, proofHeldComment, standingStop } from '../../fix-github-issue/lib/stop-record.ts';
+import { heldComment, proofHeldComment, standingStop, stopComment, stopIn } from '../../fix-github-issue/lib/stop-record.ts';
 import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
@@ -285,6 +285,31 @@ describe('private failure routing, loaded in memory', () => {
     const api = loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['review'], { isDraft: () => false, dirtyPaths: () => ['uncommitted.ts'] });
     const result = await api.review({}, { number: 1 }, 7, '/fake', noop, 1); expect(result.dlq).toBe('work');
     expect(successors(laneState('E1'), { ownEventsOnly: true }).has(laneState('Q3'))).toBe(true);
+  });
+});
+
+describe('an approval is recorded on the thread', () => {
+  const approve = async (decision: string) => {
+    const writes: string[][] = [];
+    const lanes: string[] = [];
+    const api = loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['review'], {
+      isDraft: () => false, dirtyPaths: () => [], sh: () => 'a'.repeat(40), stopComment,
+      move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
+      runReviewer: async () => ({ decision, blocking: [], adequacy: 'the receipts show it' }),
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+    });
+    const result = await api.review(context(new FakeTracker(bot)), { number: 1 }, 7, '/fake', noop, 1);
+    return { result, writes, lanes };
+  };
+  it('a merge verdict writes an approved stop naming the reviewed head and the pull request', async () => {
+    const { result, writes } = await approve('merge');
+    expect(result.reviewedSha).toBe('a'.repeat(40));
+    const body = writes.find((argv) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    expect(standingStop([{ author: bot, body }], bot)).toEqual({ kind: 'approved', sha: 'a'.repeat(40) });
+    expect(stopIn(body)?.fields.pr).toBe('7');
+  });
+  it('a rejection writes none', async () => {
+    expect((await approve('block')).writes).toEqual([]);
   });
 });
 

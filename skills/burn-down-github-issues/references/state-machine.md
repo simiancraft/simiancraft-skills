@@ -140,7 +140,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 | Lane | Entry | Leaves on |
 |---|---|---|
 | E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
-| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card on), else gather-more to D2 (spend a round; the prover reacquires proof with the reviewer's words as the brief) and block to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
+| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head, and record an `approved` stop naming it on the issue); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card on), else gather-more to D2 (spend a round; the prover reacquires proof with the reviewer's words as the brief) and block to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
 
 ### Landing (the pull master; serial)
 

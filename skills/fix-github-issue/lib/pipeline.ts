@@ -30,7 +30,7 @@ import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, st
 import { boundaryWaived } from './land.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
-import { heldComment, proofHeldComment, standingStop } from './stop-record.ts';
+import { heldComment, proofHeldComment, standingStop, stopComment } from './stop-record.ts';
 import { loopNote } from './note.ts';
 
 /**
@@ -947,7 +947,12 @@ async function review(
   // A verdict that is not merge is explained by what blocks it, not by how good the evidence was.
   const why = verdict.decision !== 'merge' && verdict.blocking.length > 0 ? verdict.blocking.join(' | ') : verdict.adequacy;
   say(`review: ${verdict.decision}; ${why}`);
-  if (verdict.decision === 'merge') move(ctx, issue, 'F1', `approved at ${reviewedSha.slice(0, 10)}`);
+  if (verdict.decision === 'merge') {
+    // The approval is a fact a later run reads from the thread (what stopped the work since is
+    // newer than it), so it is recorded there, pinned to the head the reviewer read.
+    mutate(ctx, `record the approval of PR #${pr} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('approved', { sha: reviewedSha, pr }, `**Approved** at \`${reviewedSha.slice(0, 12)}\` on pull request #${pr}; landing next.`)]);
+    move(ctx, issue, 'F1', `approved at ${reviewedSha.slice(0, 10)}`);
+  }
   return { review: verdict, reviewedSha };
 }
 

@@ -489,7 +489,7 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runReviewer'],
               on: {
                 REVIEWED: [
-                  { target: 'ticket.landing.approved', guard: 'decisionMerge', actions: ['pinReviewedHead'] },
+                  { target: 'ticket.landing.approved', guard: 'decisionMerge', actions: ['pinReviewedHead', 'recordApproval'] },
                   // A rejection goes to the lane it is about: asking for more evidence is the
                   // prover's, objecting to the code is the coder's. Neither begins on a stale lane:
                   // the rejection stands through the catch-up, which hands the card on afterwards.
