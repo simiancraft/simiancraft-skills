@@ -25,7 +25,7 @@ import { RunScope } from './lib/run-scope.ts';
  * references/freshness-and-reproof.md.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentCapMs, children, killAgent } from '../fix-github-issue/lib/agent.ts';
@@ -882,6 +882,9 @@ async function resumePull({ issue, pull }: { issue: Issue; pull: { number: numbe
   }
   const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
   if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+  // A host fault judged nothing: the resume runs again in this run, once the line says go, as a
+  // Ready card a host fault ended is readmitted. A person's stop is not handed back.
+  if (result.outcome === 'unjudged' && result.fault && result.fault !== 'stopped') RERUNS.push({ kind: 'driverless', issue, pull });
 }
 
 /**
@@ -1377,7 +1380,7 @@ async function main(): Promise<void> {
       worked++;
       await workOn(item);
     },
-    async () => (await ADMISSION.admit()).map((issue): WorkItem => ({ kind: 'ready', issue })),
+    async () => [...RERUNS.splice(0), ...(await ADMISSION.admit()).map((issue): WorkItem => ({ kind: 'ready', issue }))],
     (item) => `#${item.issue.number}`,
     { until: startup },
   );
@@ -1392,9 +1395,15 @@ async function main(): Promise<void> {
  * request with no driver, or a Ready card. Each holds one of `concurrency`'s slots while it runs.
  */
 type WorkItem =
-  | { kind: 'stranded'; issue: Issue; entry: Stranded }
+  | { kind: 'stranded'; issue: Issue; entry: Stranded; rerun?: true }
   | { kind: 'driverless'; issue: Issue; pull: { number: number; branch: string } }
   | { kind: 'ready'; issue: Issue };
+
+/**
+ * Resumes a host fault ended unjudged, handed to the refill to run again. Each keeps the slot it
+ * already took under `--limit`; a second fault on the same work is charged, not rerun.
+ */
+const RERUNS: WorkItem[] = [];
 
 function describeWorkItem(item: WorkItem): string {
   if (item.kind === 'stranded') return `#${item.issue.number} (resume PR #${item.entry.result.pr})`;
@@ -1403,7 +1412,7 @@ function describeWorkItem(item: WorkItem): string {
 }
 
 async function workOn(item: WorkItem): Promise<void> {
-  if (item.kind === 'stranded') return resumeOneStranded(ctx, item.entry, MAX_POINTS);
+  if (item.kind === 'stranded') return resumeStranded(item);
   if (item.kind === 'driverless') return resumePull(item);
   const { issue } = item;
   await waitForGo(`#${issue.number}`, 'dispatch');
@@ -1416,6 +1425,21 @@ async function workOn(item: WorkItem): Promise<void> {
   // it waits for go like any lane, and so reruns once the host is fixed. A person's stop is
   // not handed back in this run, or the work they stopped would start again at once.
   if (result.outcome === 'unjudged' && result.fault && result.fault !== 'stopped') ADMISSION.readmit(issue.number);
+}
+
+/**
+ * A pull request a dead run stranded in a lane here. Run again after a host fault, it waits for go
+ * first; its lane, kept when it holds the proof, resumes as it is, and one that was cleared resumes
+ * as a pull request with no driver.
+ */
+async function resumeStranded(item: Extract<WorkItem, { kind: 'stranded' }>): Promise<void> {
+  if (item.rerun) await waitForGo(`#${item.issue.number}`, 'dispatch');
+  const result = await resumeOneStranded(ctx, item.entry, MAX_POINTS);
+  if (result?.outcome !== 'unjudged' || !result.fault || result.fault === 'stopped') return;
+  const { pr, branch } = item.entry.result;
+  if (existsSync(item.entry.cwd)) RERUNS.push({ ...item, rerun: true });
+  else if (pr && branch) RERUNS.push({ kind: 'driverless', issue: item.issue, pull: { number: pr, branch } });
+  else log(`#${item.issue.number}  not run again this run: its lane is gone and its pull request names no branch`);
 }
 
 /** `--floor <mode>`: the floor alone, under the instance lock, so it never races a running loop. */

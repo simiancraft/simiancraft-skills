@@ -16,10 +16,10 @@ import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
 import { claim, type ClaimHandle, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import type { TrackerIo } from '../../carve-github-issue/lib/tree.ts';
-import { children, killAgent, killAgentsOn, readResult, refuseEnvironmentFault, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { children, killAgent, killAgentsOn, parseJsonFile, readResult, refuseEnvironmentFault, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
-import { CONFIRMATION_FILE } from './control-files.ts';
+import { CONFIRMATION_FILE, PROOF_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
 import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from './environment-fault.ts';
@@ -1889,12 +1889,20 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
  * with no pull request to the work dead letter. Commits no remote has get a ref of their own first,
  * so nothing committed is lost; what is uncommitted was the interrupted run's, whose answer is not
  * trusted. A lane that cannot be cleared is left where it is, and said so.
+ *
+ * A lane that holds a prover's proof of its head, clean and on a remote, is kept: the proof is the
+ * finished work a resume picks up from (`findStranded`), and clearing it would prove the same
+ * commit again.
  */
 export function clearLaneForRerun(ctx: Context, issue: number, say: (message: string) => void): void {
   if (ctx.dryRun) return;
   const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (!existsSync(cwd)) return;
   try {
+    if (holdsProof(ctx, cwd)) {
+      say('kept the lane: it holds the proof of its pushed head, which the rerun resumes from');
+      return;
+    }
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
       const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
       const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
@@ -1906,6 +1914,13 @@ export function clearLaneForRerun(ctx: Context, issue: number, say: (message: st
   } catch (error) {
     say(`could not clear the lane for the rerun (${(error as Error).message.split('\n')[0]}); it is kept`);
   }
+}
+
+/** A proved answer in the lane, nothing uncommitted beside it, and a head some remote has. */
+function holdsProof(ctx: Context, cwd: string): boolean {
+  if (parseJsonFile<{ verdict?: string }>(join(cwd, PROOF_FILE))?.verdict !== 'proved') return false;
+  if (dirtyPaths(ctx, cwd).length > 0) return false;
+  return Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0;
 }
 
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {

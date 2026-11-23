@@ -9,7 +9,7 @@ import { agentCapMs, renderTemplate } from './agent.ts';
 import { ENGINES } from './engines.ts';
 import { ciCommandFault, ciEnvironmentFault, gateCommand, gateEnvironment, type ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
-import { placeWork } from './pipeline.ts';
+import { clearLaneForRerun, placeWork } from './pipeline.ts';
 import { loopNote } from './note.ts';
 import { codedComment, heldComment, latestStep, proofHeldComment, standingStop, unprovedComment } from './work-markers.ts';
 
@@ -600,4 +600,32 @@ describe("the gate runs in the CI job's environment shape when one is configured
       expect(result.gateRun).toEqual({ command, sha, exitCode: 0, environment: expected });
     });
   }
+});
+
+describe('a lane an environment fault interrupted', () => {
+  it('keeps the lane when it holds the proof of its pushed head, so the next resume needs no new proof', () => {
+    const dir = lane(161);
+    code(dir, 'fix/proved-161');
+    writeFileSync(join(dir, 'loop-proof.json'), JSON.stringify({ issue: 161, verdict: 'proved', reason: 'shown', pr: 9, branch: 'fix/proved-161' }));
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 161, () => {});
+    expect(existsSync(join(dir, 'loop-proof.json'))).toBe(true);
+  });
+
+  it('clears a lane with no proof, one with uncommitted edits, and one whose head no remote has', () => {
+    const bare = lane(162);
+    code(bare, 'fix/unproved-162');
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 162, () => {});
+    expect(existsSync(bare)).toBe(false);
+    const dirty = lane(163);
+    code(dirty, 'fix/dirty-163');
+    writeFileSync(join(dirty, 'loop-proof.json'), JSON.stringify({ issue: 163, verdict: 'proved', reason: 'shown', pr: 9 }));
+    writeFileSync(join(dirty, 'a.txt'), 'edited\n');
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 163, () => {});
+    expect(existsSync(dirty)).toBe(false);
+    const local = lane(164);
+    code(local, 'fix/local-164', false);
+    writeFileSync(join(local, 'loop-proof.json'), JSON.stringify({ issue: 164, verdict: 'proved', reason: 'shown', pr: 9 }));
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 164, () => {});
+    expect(existsSync(local)).toBe(false);
+  });
 });

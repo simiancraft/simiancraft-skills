@@ -46,7 +46,8 @@ describe('resumes run beside new work, not ahead of it', () => {
   it('waits on no resume before the work pool starts', () => {
     expect(source).not.toContain('await resumeStranded(');
     expect(source).not.toMatch(/await pool\(\s*resumable,/);
-    expect(source).toContain("if (item.kind === 'stranded') return resumeOneStranded(ctx, item.entry, MAX_POINTS);");
+    expect(source).toContain("if (item.kind === 'stranded') return resumeStranded(item);");
+    expect(source).toContain('const result = await resumeOneStranded(ctx, item.entry, MAX_POINTS);');
   });
 
   it('queues stranded and driverless resumes first, then Ready, in one pool sized by concurrency', () => {
@@ -182,7 +183,8 @@ describe('every seam reads the line for what it holds', () => {
     expect(source.match(/await waitForGo\('appraisal', 'appraisal'\);/g)).toHaveLength(2);
     expect(source).toContain("await waitForGo('the merge queue', 'merge', issue.labels.some((label) => label.name === INCIDENT_LABEL));");
     expect(source).toContain('if (!lineHolds(sw, seam, incidentFix)) {');
-    expect(source.match(/await waitForGo\(/g)).toHaveLength(5);
+    expect(source).toContain("if (item.rerun) await waitForGo(`#${item.issue.number}`, 'dispatch');");
+    expect(source.match(/await waitForGo\(/g)).toHaveLength(6);
   });
 
   it('tells the floor how many pull requests wait at the merge', () => {

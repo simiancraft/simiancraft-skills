@@ -942,6 +942,34 @@ describe('resume dispatch judges the lane before continuing', () => {
     await d.run();
     expect(d.calls).toEqual(['wait', 'claim', 'judge', 'objection', 'redrive']);
   });
+  it('queues a resume a host fault left unjudged to run again, as a host fault readmits Ready work', async () => {
+    const reruns: unknown[] = [];
+    const d = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'ENOSPC', fault: 'host' }) });
+    await d.run();
+    expect(reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
+    const stopped = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'stop', fault: 'stopped' }) });
+    await stopped.run();
+    expect(reruns).toHaveLength(1);
+  });
+  it('runs a stranded resume again after a host fault: from its kept lane after go, or as a driverless resume once the lane is gone', async () => {
+    const stranded = { kind: 'stranded', issue: entry.issue, entry: { issue: entry.issue, cwd: '/kept', result: { issue: 92, verdict: 'fixed', reason: 'r', pr: 100, branch: 'fix/resume-92' } } };
+    const run = async (lane: boolean, fault: string, item: Record<string, unknown> = stranded) => {
+      const reruns: unknown[] = [];
+      const calls: string[] = [];
+      const api = loadFunctions('../loop.ts', ['resumeStranded'], {
+        ctx: {}, MAX_POINTS: 2, RERUNS: reruns, log: noop, existsSync: () => lane,
+        waitForGo: async () => { calls.push('wait'); },
+        resumeOneStranded: async () => { calls.push('resume'); return { outcome: 'unjudged', reason: 'r', fault }; },
+      });
+      await api.resumeStranded(item);
+      return { reruns, calls };
+    };
+    expect((await run(true, 'host')).reruns).toEqual([{ ...stranded, rerun: true }]);
+    expect((await run(false, 'host')).reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
+    expect((await run(true, 'stopped')).reruns).toEqual([]);
+    expect((await run(true, 'host')).calls).toEqual(['resume']);
+    expect((await run(true, 'host', { ...stranded, rerun: true })).calls).toEqual(['wait', 'resume']);
+  });
   it('does not judge or park a held lane', async () => {
     const d = dispatch('dirty', { claimHolder: () => 'held' });
     await d.run();

@@ -16,7 +16,7 @@ import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight } from './lane.ts';
-import { type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
+import { type FixOutcome, type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
@@ -328,14 +328,14 @@ export function parkForInspection(ctx: Context, issue: number, reason: string): 
  * Lands one pull request a dead run left finished: the live gate, a fresh claim, then review and
  * landing from the lane's verdict. The caller runs these in its work pool beside new lanes, so a
  * resume waiting on checks holds one slot, not the run; a lane cut while it waits catches up with
- * the base it moves at its own seams.
+ * the base it moves at its own seams. Returns how the resume settled, or null when it did not start.
  */
 export async function resumeOneStranded(
   ctx: Context,
   entry: Stranded,
   maxPoints: number,
   ceiling: number = maxPoints,
-): Promise<void> {
+): Promise<FixOutcome | null> {
   const { issue } = entry;
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   // A fresh claim, never the dead run's, and the live gate first: the issue may have been
@@ -345,12 +345,12 @@ export async function resumeOneStranded(
   if (!gate.ok) {
     say(`not resuming: ${gate.why}`);
     if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
-    return;
+    return null;
   }
   const handle = await claim(ctx, io, issue.number, 'working');
   if (handle === 'busy') {
     say('not resuming: another run holds it');
-    return;
+    return null;
   }
   const stopRenewing = keepClaimed(handle, () => {
     // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
@@ -361,10 +361,13 @@ export async function resumeOneStranded(
   // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
   // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.
   let keepLane = false;
+  let outcome: FixOutcome;
   try {
-    await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
+    outcome = await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
   } catch (error) {
-    keepLane = recordThrow(ctx, issue, error as Error, say, entry.result.pr).keepLane;
+    const thrown = recordThrow(ctx, issue, error as Error, say, entry.result.pr);
+    keepLane = thrown.keepLane;
+    outcome = thrown.outcome;
   } finally {
     stopRenewing();
     try {
@@ -377,4 +380,5 @@ export async function resumeOneStranded(
     // its only copy in this lane, and a resume must not be where that goes.
     if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
   }
+  return outcome;
 }
