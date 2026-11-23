@@ -10,6 +10,7 @@ import { beginStop, resetStop, RunStopping } from '../../fix-github-issue/lib/sh
 import { awaitReleases, type ClaimHandle, claim, isTrunk, keepClaimed, leaseLost } from './claims.ts';
 import { loopLabels } from '../../fix-github-issue/lib/labels.ts';
 import { carveIssue, workStarted } from './knife.ts';
+import { stopComment } from '../../fix-github-issue/lib/stop-record.ts';
 import { type Cut, renderRecord, type Record } from './record.ts';
 import { readTree } from './tree.ts';
 import { Carving as CarvingDriver } from '../../burn-down-github-issues/lib/carving.ts';
@@ -59,6 +60,19 @@ describe('the carving driver makes only moves the chart allows', () => {
     const d = new CarvingDriver({ ctx, knobs: knobs(fixture('carver', carving(10)), fixture('confirmer', confirmation(10, 'carve', 'cover', true))), appraisal: { seats: { appraiser: { engine: 'fixture' }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [], maxAppraiseAttempts: 3, sizeCallbackTimeoutMinutes: 1 }, only: null, ageDays: 100, mark: (n) => visited.push(n), log: () => {} });
     await d.sweep([10, 20].map((n) => io.view(n)!));
     expect([...new Set(visited)].sort()).toEqual([10, 20]);
+  });
+
+  test('a third rerunning outside stop during carving reads as held and goes to H2', async () => {
+    const io = trunk(); const ctx = ctxFor(io); const lanes = ['C1'];
+    const earlier = stopComment('outside', { cause: 'transport', seat: 'carver' }, 'earlier');
+    io.comment(10, BOT, earlier);
+    io.comment(10, BOT, earlier);
+    io.beforeWrite = op => { if (op.argv[1] === 'issue' && op.argv[2] === 'create') throw new Error('error connecting to api.github.com'); };
+    const k = knobs(fixture('carve', carving(10)), fixture('cover', confirmation(10, 'carve', 'cover', true)));
+    await makeDriver(ctx, k, lanes).revisit(10, 'first carve');
+    expect(lanes.at(-1)).toBe('H2');
+    expect(labels(io, 10)).toContain('needs-human');
+    expect(illegal(lanes)).toEqual([]);
   });
 
   test('a stop during the sweep still ends it', async () => {
