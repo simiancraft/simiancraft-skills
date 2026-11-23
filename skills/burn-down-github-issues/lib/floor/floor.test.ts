@@ -7,6 +7,7 @@ import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
 import { Floor, FLOOR_PAUSE } from './floor.ts';
 import { appendEntry, appendItem, readLedger, readList } from './ledger.ts';
+import { type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
 
 let scratch: string;
 let status = 200;
@@ -27,7 +28,7 @@ afterAll(() => {
 const PROJECT = { name: 'Test', repo: 'o/floor', remote: 'origin', baseBranch: 'main', evidenceBranch: 'evidence', checkCommand: 'true', installCommand: 'true', conventionDocs: [], sizingScale: 'fib', sharedServices: [], portBase: 9000, portSpan: 10, pathAliases: [], sourceExtensions: ['.ts'], alwaysInvalidates: [], touchPaths: { migration: [], ci: [] }, worktreeRoot: 'wt' } as ProjectConfig;
 
 /** A floor of its own per case, with recording callbacks in its callbacks directory. */
-function floorFor(name: string, environment: Record<string, unknown> = {}) {
+function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf } = {}) {
   const root = join(scratch, name);
   const callbacksDir = join(root, 'callbacks');
   mkdirSync(callbacksDir, { recursive: true });
@@ -48,7 +49,7 @@ function floorFor(name: string, environment: Record<string, unknown> = {}) {
     log: () => {},
     step: () => {},
   });
-  const { floor: config, faults } = resolveFloor({ environment: { kind: 'web', baseUrl: `http://localhost:${server.port}`, ...environment } });
+  const { floor: config, faults } = resolveFloor({ ...(extra.forge === undefined ? {} : { forge: extra.forge }), environment: { kind: 'web', baseUrl: `http://localhost:${server.port}`, ...environment } });
   expect(faults).toEqual([]);
   const readouts: string[] = [];
   const switchFile = join(root, 'line-switch');
@@ -58,10 +59,11 @@ function floorFor(name: string, environment: Record<string, unknown> = {}) {
     dir: join(root, 'floor'),
     switchFile,
     callbacksDir,
-    seats: { walker: { engine: 'fixture' }, callback: { engine: 'fixture' } },
+    seats: { walker: { engine: 'fixture', ...(extra.walkerAnswer ? { model: extra.walkerAnswer } : {}) }, callback: { engine: 'fixture' } },
     maxPoints: 2,
     log: () => {},
     print: (text) => readouts.push(text),
+    ...(extra.lineageOf ? { lineageOf: extra.lineageOf } : {}),
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
   const line = () => (existsSync(switchFile) ? readFileSync(switchFile, 'utf8') : 'go\n');
@@ -203,5 +205,110 @@ describe('a merge the forge listed before the loop recorded it', () => {
     expect(item.ref?.issue).toBe(50);
     expect(item.source).toBe('burndown');
     expect(readList(dir)).toHaveLength(1);
+  });
+});
+
+describe('a carved child whose missing effect an open sibling owns', () => {
+  // Issue 10 changed what new installs create; its open sibling 11 migrates the rows that exist.
+  const lineage = (siblingOpen: boolean): Lineage => ({
+    issue: { number: 10, title: 'feat: new installs get the new channel', body: 'Acceptance: a fresh install gives every article the new channel.' },
+    trunk: { number: 9, title: 'Move articles to the new channel' },
+    openSiblings: siblingOpen ? [{ number: 11, title: 'feat: migrate existing articles', body: 'Acceptance: every existing article is on the new channel.' }] : [],
+  });
+
+  function carvedFloor(name: string, answers: Record<string, unknown>) {
+    const deployed = git(scratch, 'rev-parse', 'HEAD');
+    const answerDir = join(scratch, `${name}-answers`);
+    mkdirSync(answerDir, { recursive: true });
+    for (const [file, body] of Object.entries(answers)) writeFileSync(join(answerDir, file), JSON.stringify(body));
+    const tracker = { siblingOpen: true, reads: 0 };
+    const f = floorFor(name, { revisionCommand: `echo ${deployed}` }, {
+      forge: false,
+      walkerAnswer: join(answerDir, 'walk.json'),
+      lineageOf: (issue) => {
+        tracker.reads++;
+        return issue === 10 ? lineage(tracker.siblingOpen) : null;
+      },
+    });
+    f.floor.put({ issue: 10, title: 'feat: new installs get the new channel', pr: 100, sha: deployed, mergedAt: new Date().toISOString(), paths: ['src/fixtures.ts'] });
+    return { ...f, answerDir, tracker };
+  }
+  const itemVerdicts = (dir: string) => readLedger(dir).filter((e) => e.itemId === 'pull-request:100').map((e) => e.verdict);
+
+  it('records owed-by-sibling from the walker, pauses nothing, and walks again once the sibling closes', async () => {
+    status = 200;
+    const f = carvedFloor('owed-walker', {
+      'walk.json': { entries: [{ itemId: 'pull-request:100', rung: 'look', verdict: 'owed-by-sibling', sibling: 11, reason: 'Existing articles are on the old channel; #11 migrates them.' }] },
+    });
+    const first = await f.floor.walkOnce();
+    expect(first?.wrong).toBe(false);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ verdict: 'owed-by-sibling', sibling: 11 });
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+    expect(f.readouts[0]).toContain('owed by sibling #11');
+    // The drain does not wait on the sibling's work.
+    expect(f.floor.owed('run')).toHaveLength(0);
+
+    // While the sibling is open the item is not walked again.
+    await f.floor.walkOnce();
+    expect(itemVerdicts(f.dir)).toEqual(['owed-by-sibling']);
+
+    // Once it closes, the item is walked again and judged.
+    f.tracker.siblingOpen = false;
+    writeFileSync(join(f.answerDir, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:100', rung: 'look', verdict: 'present', reason: 'Every article is on the new channel.' }] }));
+    await f.floor.walkOnce();
+    expect(itemVerdicts(f.dir)).toEqual(['owed-by-sibling', 'present']);
+  });
+
+  it('waits on a sibling that merged until its own floor item is verified', async () => {
+    status = 200;
+    const f = carvedFloor('owed-landing', {
+      'walk.json': { entries: [{ itemId: 'pull-request:100', rung: 'look', verdict: 'owed-by-sibling', sibling: 11, reason: 'Owed to #11.' }] },
+    });
+    await f.floor.walkOnce();
+    f.tracker.siblingOpen = false;
+    appendItem(f.dir, { id: 'pull-request:110', addedAt: new Date().toISOString(), source: 'burndown', text: 'feat: migrate existing articles', ref: { issue: 11, pullRequest: 110, sha: '0123456789abcdef0123456789abcdef01234567' } });
+    await f.floor.walkOnce();
+    expect(itemVerdicts(f.dir)).toEqual(['owed-by-sibling']);
+  });
+
+  it('settles an absent through the diagnosis before anything pauses, files nothing, and fixes nothing', async () => {
+    status = 200;
+    const f = carvedFloor('owed-diagnosis', {
+      'walk.json': { entries: [{ itemId: 'pull-request:100', rung: 'exercise', verdict: 'absent', reason: 'Existing articles are on the old channel.' }] },
+      'walk.diagnose.json': { culprit: null, confidence: 'likely', error: '', remedy: 'owed-by-sibling', sibling: 11, summary: '#11 migrates the existing rows.' },
+    });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(false);
+    expect(walk?.incidents).toEqual([]);
+    expect(itemVerdicts(f.dir)).toEqual(['absent', 'owed-by-sibling']);
+    expect(readLedger(f.dir).at(-1)?.sibling).toBe(11);
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+  });
+});
+
+describe('owedTo and the lineage text', () => {
+  const lineage: Lineage = {
+    issue: { number: 10, title: 'child', body: 'Acceptance: the child holds.' },
+    trunk: { number: 9, title: 'trunk' },
+    openSiblings: [{ number: 11, title: 'sibling', body: 'Acceptance: the sibling holds.' }],
+  };
+
+  it('names only a sibling open under the trunk', () => {
+    expect(owedTo(lineage, 11)?.number).toBe(11);
+    expect(owedTo(lineage, 12)).toBeNull();
+    expect(owedTo(lineage, '11')).toBeNull();
+    expect(owedTo(lineage, undefined)).toBeNull();
+    expect(owedTo(null, 11)).toBeNull();
+  });
+
+  it("puts the child's own acceptance and each open sibling's in front of the walker", () => {
+    const text = renderLineage(lineage, '  ');
+    expect(text).toContain('closes issue #10 (child)');
+    expect(text).toContain('  > Acceptance: the child holds.');
+    expect(text).toContain('carved from trunk #9 (trunk)');
+    expect(text).toContain('- #11 sibling');
+    expect(text).toContain('Acceptance: the sibling holds.');
   });
 });

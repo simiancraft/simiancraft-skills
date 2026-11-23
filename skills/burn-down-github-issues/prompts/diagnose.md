@@ -26,6 +26,13 @@ first, from the forge rather than from anyone's memory:
 A read-only checkout at the failing revision is at `{{CHECKOUT}}`; use `git show <sha>` there to
 read any suspect's diff.
 
+## Where the failed item sits
+
+The issue the failed item closed, with its acceptance, and the trunk it was carved from with that
+trunk's children still open:
+
+{{LINEAGE}}
+
 ## What the environment says
 
 Output of the configured logs command, most recent last:
@@ -35,6 +42,11 @@ Output of the configured logs command, most recent last:
 ```
 
 ## How to reason
+
+First, when the failed item was carved from a trunk, read its own acceptance and the open siblings
+above. If what is missing is an effect an open sibling owns (its title and acceptance say it will
+deliver exactly that), the remedy is `owed-by-sibling` and `sibling` names it. Nothing is fixed or
+filed then: the sibling's own merge is the fix, and a fix here would duplicate it. Otherwise:
 
 1. If the log names a symbol, a route, a file, or an error class, search the suspects' diffs for
    it. A suspect whose diff introduces the named thing is the culprit; say so and quote both.
@@ -55,7 +67,8 @@ Write `{{DIAGNOSIS_FILE}}` as JSON:
 { "culprit": { "pullRequest": 1234, "sha": "<sha>" } | null,
   "confidence": "certain|likely|guess|none",
   "error": "<the exact line or symbol from the log, or empty>",
-  "remedy": "fix-forward|revert|outside-repository",
+  "remedy": "fix-forward|revert|outside-repository|owed-by-sibling",
+  "sibling": <the open sibling's issue number, for owed-by-sibling only>,
   "summary": "<two to five sentences a person can act on; name what to look at first>" }
 ```
 

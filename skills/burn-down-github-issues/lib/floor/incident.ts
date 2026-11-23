@@ -13,6 +13,7 @@ import { enrichBlockers } from '../../../fix-github-issue/lib/blockers.ts';
 import { fixIssue, type FixOutcome, type Issue } from '../../../fix-github-issue/lib/pipeline.ts';
 import { sh } from '../../../fix-github-issue/lib/shell.ts';
 import { type LedgerEntry, lastClean, readLedger } from './ledger.ts';
+import { type Lineage, renderLineage } from './lineage.ts';
 
 type MergedPullRequest = { number: number; title: string; mergedAt: string; mergeCommit: string; paths: string[] };
 
@@ -36,7 +37,10 @@ export type Diagnosis = {
   culprit: { pullRequest: number; sha: string } | null;
   confidence: 'certain' | 'likely' | 'guess' | 'none';
   error: string;
-  remedy: 'fix-forward' | 'revert' | 'outside-repository';
+  /** `owed-by-sibling`: an open sibling under the failed item's trunk owns the missing effect. */
+  remedy: 'fix-forward' | 'revert' | 'outside-repository' | 'owed-by-sibling';
+  /** For `owed-by-sibling`: that sibling's issue number. */
+  sibling?: number;
   summary: string;
 };
 
@@ -107,24 +111,57 @@ export function ensureIncidentLabel(ctx: Context): void {
   sh(ctx, ['gh', 'label', 'create', INCIDENT_LABEL, '--color', 'b60205', '--description', 'A walk of the running environment found it wrong', '--force']);
 }
 
+type DiagnoseOptions = {
+  dir: string;
+  entry: LedgerEntry;
+  checkout: string;
+  walker: Seat;
+  logsCommand?: string;
+  /** When the failed item merged, for an `absent` item. */
+  mergedAt?: string;
+  /** Where the failed item's issue sits in a carved trunk, when it has one. */
+  lineage?: Lineage | null;
+};
+
+type Evidence = { lastGood: LedgerEntry | undefined; suspects: MergedPullRequest[]; logs: string };
+
+function gather(ctx: Context, options: DiagnoseOptions): Evidence {
+  const lastGood = lastClean(readLedger(options.dir));
+  return { lastGood, suspects: suspectsBetween(ctx, lastGood, options.entry, options.mergedAt), logs: readLogs(options.logsCommand, ctx.invokeRoot) };
+}
+
+/**
+ * One agent turn, read-only, in the checkout at the failing revision. Null in a dry run, or when the
+ * turn produced no usable answer.
+ */
+export async function diagnose(ctx: Context, options: DiagnoseOptions, evidence: Evidence = gather(ctx, options)): Promise<Diagnosis | null> {
+  if (ctx.dryRun) return null;
+  const { entry, checkout } = options;
+  const { lastGood, suspects, logs } = evidence;
+  const prompt = renderPrompt(ctx, 'diagnose.md', {
+    ENTRY: JSON.stringify(entry, null, 2),
+    LAST_GOOD: lastGood ? JSON.stringify(lastGood, null, 2) : '(no clean walk on record)',
+    SUSPECTS: renderSuspects(suspects),
+    LOGS: logs || '(no logs command configured, or it printed nothing)',
+    LINEAGE: options.lineage ? renderLineage(options.lineage) : '(the failed item names no issue, or its issue could not be read)',
+    CHECKOUT: checkout,
+    DIAGNOSIS_FILE: join(checkout, DIAGNOSIS_FILE),
+  });
+  const run = await runAgent(ctx, 'diagnose', 0, checkout, options.walker, prompt);
+  return run.exitCode === 0 ? readResult<Diagnosis>(checkout, DIAGNOSIS_FILE) : null;
+}
+
 export async function handleIncident(
   ctx: Context,
-  options: {
-    dir: string;
-    entry: LedgerEntry;
-    checkout: string;
-    walker: Seat;
-    logsCommand?: string;
+  options: DiagnoseOptions & {
     maxPoints: number;
-    /** When the failed item merged, for an `absent` item. */
-    mergedAt?: string;
+    /** A diagnosis this walk already made for the entry; undefined to make one here. */
+    diagnosis?: Diagnosis | null;
   },
 ): Promise<IncidentResult> {
-  const { dir, entry, checkout, walker } = options;
-  const ledger = readLedger(dir);
-  const lastGood = lastClean(ledger);
-  const suspects = suspectsBetween(ctx, lastGood, entry, options.mergedAt);
-  const logs = readLogs(options.logsCommand, ctx.invokeRoot);
+  const { entry } = options;
+  const evidence = gather(ctx, options);
+  const { lastGood, suspects, logs } = evidence;
 
   // An incident already open for this item, checked first: one a person owns needs no diagnosis
   // turn and no fix, only the fresh ledger entry the walk just wrote.
@@ -134,21 +171,8 @@ export async function handleIncident(
     return { issue: existing.number, created: false, fix: null, diagnosis: null, withAPerson: true };
   }
 
-  // Diagnosis is one agent turn, read-only, in the checkout at the failing revision.
-  let diagnosis: Diagnosis | null = null;
-  if (!ctx.dryRun) {
-    const prompt = renderPrompt(ctx, 'diagnose.md', {
-      ENTRY: JSON.stringify(entry, null, 2),
-      LAST_GOOD: lastGood ? JSON.stringify(lastGood, null, 2) : '(no clean walk on record)',
-      SUSPECTS: renderSuspects(suspects),
-      LOGS: logs || '(no logs command configured, or it printed nothing)',
-      CHECKOUT: checkout,
-      DIAGNOSIS_FILE: join(checkout, DIAGNOSIS_FILE),
-    });
-    const run = await runAgent(ctx, 'diagnose', 0, checkout, walker, prompt);
-    if (run.exitCode === 0) diagnosis = readResult<Diagnosis>(checkout, DIAGNOSIS_FILE);
-    if (!diagnosis) ctx.log('the diagnosis turn produced no usable answer; filing the incident without one');
-  }
+  const diagnosis = options.diagnosis !== undefined ? options.diagnosis : await diagnose(ctx, options, evidence);
+  if (!diagnosis && !ctx.dryRun) ctx.log('the diagnosis turn produced no usable answer; filing the incident without one');
 
   const title = incidentTitle(entry.itemId, entry.verdict);
   let issue = existing?.number ?? null;
