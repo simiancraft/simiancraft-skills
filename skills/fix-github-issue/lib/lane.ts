@@ -82,13 +82,20 @@ export function seatScratch(ctx: Context, issue: number, role: string): string {
   return dir;
 }
 
-export function worktreeFor(ctx: Context, issue: number): string {
+/**
+ * `heldLane` answers whether a dirty lane is one the loop's own hold for a person kept: its
+ * uncommitted work is this issue's own, left by the seat that asked for the person, and the pickup
+ * after the hold is lifted continues on it. Asked only of a dirty lane.
+ */
+export function worktreeFor(ctx: Context, issue: number, heldLane?: () => boolean): string {
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (existsSync(dir)) {
     // Reconcile leaves a dirty no-PR worktree in place for inspection; handing it to a fresh
-    // worker would make the new fix inherit another run's uncommitted state.
+    // worker would make the new fix inherit another run's uncommitted state. A hold's lane is the
+    // exception: that state is this issue's own, kept for the pickup.
     if (dirtyPaths(ctx, dir).length > 0) {
-      throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
+      if (!heldLane?.()) throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
+      ctx.log(`#${issue}  continuing on the lane the loop's hold kept, with its uncommitted work`);
     }
     copyLaneFiles(ctx, issue, dir);
     return dir;
@@ -148,10 +155,14 @@ export function copyLaneFiles(ctx: Context, issue: number, dir: string): void {
  * the pushes that follow reach the same remote branch, and it is reset to the remote head so the
  * lane holds exactly what the pull request holds.
  */
-export function worktreeAtPullRequest(ctx: Context, issue: number, branch: string): string {
+export function worktreeAtPullRequest(ctx: Context, issue: number, branch: string, heldLane?: () => boolean): string {
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (existsSync(dir)) {
-    if (dirtyPaths(ctx, dir).length > 0) {
+    // A dirty lane is refused, unless the loop's hold kept it on this pull request's branch: then
+    // it is this issue's own work, and the pickup continues on it as it stands (`worktreeFor`).
+    const dirty = dirtyPaths(ctx, dir).length > 0;
+    const kept = dirty && heldLane?.() === true && sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir) === branch;
+    if (dirty && !kept) {
       throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
     }
     // A run stopped mid-revision can leave commits here that never reached the remote; the reset
@@ -169,6 +180,11 @@ export function worktreeAtPullRequest(ctx: Context, issue: number, branch: strin
       } catch (error) {
         throw new Error(`worktree for #${issue} holds commits no remote has and ${branch} would not take them (${(error as Error).message.split('\n')[0]}); inspect or remove ${dir}`);
       }
+    }
+    if (kept) {
+      ctx.log(`#${issue}  continuing on the lane the loop's hold kept, with its uncommitted work`);
+      copyLaneFiles(ctx, issue, dir);
+      return dir;
     }
     removeWorktree(ctx, issue);
   }

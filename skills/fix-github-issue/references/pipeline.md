@@ -124,7 +124,9 @@ on a pull request it was continuing is an outside stop that waits on a person: t
 back to draft and stays open with its approval and receipts, the issue and the pull request carry
 `needs-human`, and the issue gets an `outside` stop record (cause `base` when the coder answered
 `"outside": "base"` because the gate fails on the untouched base, else `needs-person`). Lifting the
-hold continues the work, with the record's words as the coder's brief. A prover's `needs-human` comes after the code
+hold continues the work, with the record's words as the coder's brief. A lane the hold kept because
+it held the seat's uncommitted work is that work's place: the run start's reconcile and the stranded
+lane sweep leave it alone, and the pickup continues on it (`heldLane`) instead of refusing it as dirty. A prover's `needs-human` comes after the code
 was pushed and announced, so the work is held where it stands (`WorkerResult.seat` says which seat
 answered): the pull request stays open, the issue and the pull request both carry `needs-human`,
 the issue gets a `proof-held` stop record with the reason and how the hold comes

@@ -1578,8 +1578,9 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
  * untouched base (`outside: 'base'`) is not the change's at all. The work is held where it stands
  * rather than thrown away: the pull request stays open (back in draft when the coder was continuing
  * it), the issue and the pull request both carry `needs-human`, and the issue says what is missing
- * and how the hold comes off. The lane is retired as on every other exit (a lane holding a coder's
- * uncommitted edit is kept); the branch is on the remote, and the pickup checks it out afresh.
+ * and how the hold comes off. The lane is retired as on every other exit; a lane holding a seat's
+ * uncommitted edit is kept, and the pickup continues on it (`heldLane`). Otherwise the branch is on
+ * the remote, and the pickup checks it out afresh.
  *
  * Lifting the issue's label is the whole pickup. The issue goes back to where its facts put it:
  * Drafted or Ready for review with this pull request, where the burndown resumes it (a held proof
@@ -2003,8 +2004,24 @@ export async function fixIssue(
     lift: options.lift,
     // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
     // learns to treat the main checkout as a valid agent working directory.
-    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number)),
+    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number, () => heldLane(ctx, issue.number))),
   }, async (cwd) => await workIssue(ctx, issue, cwd, maxPoints, ceiling, say));
+}
+
+/**
+ * Whether the issue's lane is one the loop's own hold for a person kept: the newest stop on its
+ * thread is that hold (a held proof, or an outside stop that waits on a person), and a hold retires
+ * its lane like any exit, which keeps a lane holding the seat's uncommitted work. That work is the
+ * issue's own, and the pickup after the hold continues on it rather than dead-lettering it. A thread
+ * that cannot be read is not that knowledge.
+ */
+export function heldLane(ctx: Context, issue: number): boolean {
+  try {
+    return loopHoldStands(standingStop(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin));
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return false;
+  }
 }
 
 /** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */
@@ -2260,7 +2277,7 @@ export async function redriveIssue(
     lift: options.lift,
     pr: pull.number,
     admit: options.admit,
-    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeAtPullRequest(ctx, issue.number, pull.branch)),
+    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeAtPullRequest(ctx, issue.number, pull.branch, () => heldLane(ctx, issue.number))),
   }, async (cwd) => {
     if (ctx.dryRun) {
       say(`DRY RUN  would ${objection === null ? 'reacquire the proof of' : 'revise'} PR #${pull.number} on ${pull.branch}, then review and land`);

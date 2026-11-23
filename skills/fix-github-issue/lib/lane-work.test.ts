@@ -7,7 +7,8 @@ import type { Context } from './context.ts';
 import { claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
-import { reconcile } from './resume.ts';
+import { judgeLane, reconcile } from './resume.ts';
+import { stopComment } from './stop-record.ts';
 import { dirtyPaths, resetLane, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
@@ -284,6 +285,57 @@ describe('resuming a pull request in its lane', () => {
     expect(() => worktreeAtPullRequest(ctxFor(lines), 84, 'fix/resume-84')).toThrow(/holds commits no remote has/);
     expect(existsSync(dir)).toBe(true);
     expect(git(repo, 'rev-parse', `refs/loop/rescued/issue-84/${sha.slice(0, 12)}`)).toBe(sha);
+  });
+});
+
+describe('a lane a hold kept with its uncommitted work', () => {
+  const ctxWith = (io: FakeTracker, lines: string[] = []) =>
+    ({ project: { ...PROJECT, repo: 'o/r' }, repoRoot: repo, dryRun: false, dryRunLog: [], botLogin: 'loop-bot', runId: `${hostname()}-${process.pid}-9`, io, log: (m: string) => lines.push(m) }) as unknown as Context;
+  /** An issue whose newest stop is the loop's hold for a person, as a coder's needs-human writes it. */
+  const heldIssue = (n: number) => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(n, { labels: [{ name: 'needs-human' }] })]);
+    io.comment(n, 'loop-bot', stopComment('outside', { cause: 'needs-person', seat: 'coder' }, 'needs a credential'));
+    return io;
+  };
+  const dirtyLane = (n: number, branch?: string) => {
+    const dir = lane(n, Boolean(branch), branch);
+    if (branch) {
+      git(dir, 'push', '-q', 'origin', `HEAD:refs/heads/${branch}`);
+      git(dir, 'branch', '-q', `--set-upstream-to=origin/${branch}`);
+    }
+    writeFileSync(join(dir, 'half-done.txt'), 'the coder\'s own edits\n');
+    return dir;
+  };
+
+  it('is kept at a loop start, not sent to a dead letter', () => {
+    const lines: string[] = [];
+    const dir = dirtyLane(190);
+    reconcile({ ...ctxWith(heldIssue(190), lines), dryRun: true } as Context, new Set());
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(lines.some((l) => /#190 .*leaving it for inspection/.test(l))).toBe(false);
+    expect(lines.some((l) => /#190 .*kept by the loop's hold/.test(l))).toBe(true);
+  });
+
+  it('is the lane a fresh pickup continues on; any other dirty lane is still refused', () => {
+    const dir = dirtyLane(191);
+    expect(worktreeFor(ctxWith(heldIssue(191)), 191, () => true)).toBe(dir);
+    expect(readFileSync(join(dir, 'half-done.txt'), 'utf8')).toContain('own edits');
+    expect(() => worktreeFor(ctxWith(heldIssue(191)), 191, () => false)).toThrow(/dirty/);
+  });
+
+  it("is the lane a pull request's pickup continues on, on that pull request's branch", () => {
+    const dir = dirtyLane(192, 'fix/held-192');
+    const head = git(dir, 'rev-parse', 'HEAD');
+    expect(worktreeAtPullRequest(ctxWith(heldIssue(192)), 192, 'fix/held-192', () => true)).toBe(dir);
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(head);
+    expect(readFileSync(join(dir, 'half-done.txt'), 'utf8')).toContain('own edits');
+  });
+
+  it('is judged held, not dirty, when it sits at the pull request head', () => {
+    const dir = dirtyLane(193, 'fix/held-193');
+    const head = git(dir, 'rev-parse', 'HEAD');
+    expect(judgeLane(ctxWith(heldIssue(193)), 193, () => head).kind).toBe('held-at-head');
+    expect(judgeLane(ctxWith(new FakeTracker('loop-bot', [fakeIssue(193)])), 193, () => head).kind).toBe('dirty');
   });
 });
 

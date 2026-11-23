@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Context } from './context.ts';
 import { claimHolder, findStranded, judgeLane, managedLanes, parkForInspection, resumeOneStranded } from './resume.ts';
 import { RunStopping } from './shell.ts';
+import { stopComment } from './stop-record.ts';
 import { claimMarker } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 
@@ -206,8 +207,9 @@ describe('findStranded judges a lane before resuming it', () => {
     writeFileSync(join(dir, 'loop-proof.json'), JSON.stringify({ issue: n, verdict: 'proved', reason: 'shown', pr: 9, branch: `fix/resume-${n}` }));
     return dir;
   };
-  const find = (n: number) => {
+  const find = (n: number, thread: string[] = []) => {
     const io = new FakeTracker('bot', [fakeIssue(n)]);
+    for (const body of thread) io.comment(n, 'bot', body);
     trackers.set(n, io);
     const lines: string[] = [];
     const context = { ...ctx(), io, runId: 'starting-run', botLogin: 'bot', dryRun: false, knobs: { maxReviewRounds: 3 }, log: (m: string) => lines.push(m) } as unknown as Context;
@@ -233,5 +235,13 @@ describe('findStranded judges a lane before resuming it', () => {
     expect(lines.some((l) => l.startsWith('#82  stranded worktree holds uncommitted work'))).toBe(true);
     expect(trackers.get(82)?.view(82)?.labels.map((l) => l.name)).toContain('loop/dlq: work');
     expect(trackers.get(82)?.view(82)?.comments.at(-1)?.body).toContain('unfinished.txt');
+  });
+  it("leaves a lane the loop's hold kept to the pickup, with no dead letter", () => {
+    const dir = lane(83);
+    writeFileSync(join(dir, 'unfinished.txt'), 'the coder\'s own work');
+    const { found, lines } = find(83, [stopComment('outside', { cause: 'needs-person', seat: 'coder' }, 'needs a credential')]);
+    expect(found).toEqual([]);
+    expect(lines.some((l) => l.includes("#83  stranded worktree is kept by the loop's hold"))).toBe(true);
+    expect(trackers.get(83)?.view(83)?.labels.map((l) => l.name)).not.toContain('loop/dlq: work');
   });
 });

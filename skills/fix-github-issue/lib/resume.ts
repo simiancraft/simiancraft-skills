@@ -16,7 +16,7 @@ import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, rescueRef } from './lane.ts';
-import { type FixOutcome, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
+import { type FixOutcome, heldLane, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
@@ -67,6 +67,11 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     if (dirty) {
       if (rescueClosedLane(ctx, issue, dir)) {
         repaired++;
+        continue;
+      }
+      // The loop's own hold kept this lane with the seat's work in it; the pickup continues on it.
+      if (heldLane(ctx, issue)) {
+        ctx.log(`reconcile: #${issue} has uncommitted work kept by the loop's hold for a person; leaving it for the pickup`);
         continue;
       }
       ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
@@ -206,8 +211,12 @@ export function claimHolder(ctx: Context, issue: number, cache: Map<number, stri
   return cache.get(issue) ?? null;
 }
 
+/**
+ * `held-at-head`: a lane at the pull request's head whose uncommitted work the loop's own hold for a
+ * person kept (`heldLane`); it is the issue's own, and the pickup continues on it.
+ */
 export type LaneJudgement =
-  | { kind: 'no-lane' | 'clean-at-head' }
+  | { kind: 'no-lane' | 'clean-at-head' | 'held-at-head' }
   | { kind: 'dirty' | 'off-head'; reason: string }
   | { kind: 'unreadable'; reason: string };
 
@@ -216,10 +225,12 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (!existsSync(dir)) return { kind: 'no-lane' };
   let head: string;
+  let held = false;
   let reading = 'git status --porcelain';
   try {
     const dirty = dirtyPaths(ctx, dir);
-    if (dirty.length > 0) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
+    held = dirty.length > 0 && heldLane(ctx, issue);
+    if (dirty.length > 0 && !held) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
     reading = 'git rev-parse HEAD';
     head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
   } catch (error) {
@@ -234,7 +245,7 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
     return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
   }
   if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
-  return { kind: 'clean-at-head' };
+  return { kind: held ? 'held-at-head' : 'clean-at-head' };
 }
 
 /**
@@ -270,6 +281,12 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       continue;
     }
 
+    // A lane the loop's own hold kept is not stranded: its pickup (a redrive, or the burndown once
+    // the hold is lifted) continues on it. Asked only of a dirty lane, the one a hold keeps.
+    if (dirtyLane(ctx, dir) && heldLane(ctx, num)) {
+      ctx.log(`#${num}  stranded worktree is kept by the loop's hold for a person; leaving it for the pickup`);
+      continue;
+    }
     const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
       ctx.log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
@@ -305,6 +322,15 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
   }
   return found;
 }
+/** Whether a lane holds uncommitted work; a status that cannot be read is not knowledge of it, and answers false. */
+function dirtyLane(ctx: Context, dir: string): boolean {
+  try {
+    return dirtyPaths(ctx, dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The finished work a dead lane holds, as the pipeline reads it: the prover's ready pull request, or,
  * in a lane an older run left, the single worker's verdict. A coder's answer alone is not finished
