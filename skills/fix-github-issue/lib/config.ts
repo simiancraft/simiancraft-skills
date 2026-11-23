@@ -53,11 +53,11 @@ export type ProjectConfig = {
   alwaysInvalidates: string[];
   /**
    * Files the repository's own release machinery rewrites on every merge to the base (deploy
-   * constants, generated changelogs). Their movement alone never invalidates an approval: the
-   * queued branch still catches up, but does not pay a re-review for noise every landing produces.
+   * constants, generated changelogs). Their movement alone never invalidates an approval and never
+   * forces a catch-up, unless the work imports one or the base requires an up-to-date branch.
    * Optional; same pattern rules as alwaysInvalidates. package.json needs no entry here: a base
    * change that only bumps its "version" field is recognized as release noise automatically,
-   * while any other package.json change still invalidates.
+   * while any other package.json change still counts as movement.
    */
   releaseArtifacts?: string[];
   /**

@@ -1005,7 +1005,7 @@ describe('catch-up stop boundaries', () => {
       const acts: string[] = [];
       const api = loadFunctions(pipeline, [name], {
         yieldToStop: async () => { if (++gates === stopAt) throw new RunStopping('stop'); },
-        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'],
+        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'], behindOnlyByNoise: () => false,
         staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch',
         move: () => acts.push('F2'), updateFromBase: () => { acts.push('merge'); return false; },
       });
@@ -1021,7 +1021,7 @@ describe('catch-up stop boundaries', () => {
       let gates = 0;
       const api = loadFunctions(pipeline, [name], {
         yieldToStop: async () => { if (++gates > 2) throw new RunStopping('after push'); },
-        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [],
+        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [], behindOnlyByNoise: () => false,
         staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop, updateFromBase: () => true,
       });
       const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
@@ -1034,7 +1034,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     let gates = 0;
     const api = loadFunctions(pipeline, ['reviewAndLand', 'catchUp'], {
-      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'],
+      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], behindOnlyByNoise: () => false,
       staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
       yieldToStop: async () => { if (++gates === 3 && stopped) throw new RunStopping('stop'); },
       deadLetter: () => acts.push('deadLetter'), mutate: () => acts.push('ready'),
@@ -1049,7 +1049,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     let gates = 0;
     const api = loadFunctions(pipeline, ['land', 'catchUp'], {
-      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'],
+      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], behindOnlyByNoise: () => false,
       staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
       yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
       mutate: (_ctx: unknown, _why: string, argv: string[]) => acts.push(argv.includes('--undo') ? 'draft' : 'ready'),
@@ -1062,12 +1062,58 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     const api = loadFunctions(pipeline, ['runWorker', 'seamCatchUp'], {
       placeWork: () => ({ kind: 'prove', coded: { branch: 'fix/x', sha: 'head', gated: 'head' }, sha: 'head', handoff: 'h' }),
-      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false,
+      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false, behindOnlyByNoise: () => false,
       yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
       recordAttempt: () => acts.push('attempt'), runProve: () => acts.push('prove'), move: noop,
     });
     await expect(api.runWorker(context(new FakeTracker(bot)), { number: 1, title: 't', labels: [] }, '/fake', 2)).rejects.toBeInstanceOf(RunStopping);
     expect(acts).toEqual([]);
+  });
+});
+
+describe('release noise at every catch-up', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  // A release commit: a configured changelog and a version-only package.json bump. `beyond` is what `behindBeyondNoise` leaves.
+  const load = (name: string, beyond: string[], upToDateRequired: boolean, merges: string[]) =>
+    loadFunctions(pipeline, [name, 'behindOnlyByNoise'], {
+      fetchBase: () => 'base', behindBase: () => ['CHANGELOG.md', 'package.json'], behindBeyondNoise: () => beyond,
+      requiresUpToDate: () => upToDateRequired, staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop,
+      updateFromBase: () => { merges.push('merge'); return true; },
+    });
+  const run = (api: any, name: string, options?: { skipNoise?: boolean }) => {
+    const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
+    return name === 'catchUp' ? api.catchUp(...args, 'head', noop, 'before the redrive', options) : api.seamCatchUp(...args, noop, 'before proving');
+  };
+
+  for (const name of ['catchUp', 'seamCatchUp']) {
+    it(`${name} pushes no head for a base moved only by release noise`, async () => {
+      const merges: string[] = [];
+      expect(await run(load(name, [], false, merges), name)).toEqual(name === 'catchUp' ? null : 'current');
+      expect(merges).toEqual([]);
+    });
+    it(`${name} catches up on release noise when the base requires an up-to-date branch`, async () => {
+      const merges: string[] = [];
+      await run(load(name, [], true, merges), name);
+      expect(merges).toEqual(['merge']);
+    });
+    it(`${name} catches up when the release commit also changed a dependency`, async () => {
+      const merges: string[] = [];
+      await run(load(name, ['package.json'], false, merges), name);
+      expect(merges).toEqual(['merge']);
+    });
+  }
+  it('a landing that already read the protection does not read it again', async () => {
+    const merges: string[] = [];
+    let reads = 0;
+    const api = loadFunctions(pipeline, ['catchUp', 'behindOnlyByNoise'], {
+      fetchBase: () => 'base', behindBase: () => ['CHANGELOG.md'], behindBeyondNoise: () => [],
+      requiresUpToDate: () => { reads += 1; return true; }, staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop,
+      updateFromBase: () => { merges.push('merge'); return true; },
+    });
+    expect(await run(api, 'catchUp', { skipNoise: true })).toBeNull();
+    await run(api, 'catchUp', { skipNoise: false });
+    expect(merges).toEqual(['merge']);
+    expect(reads).toBe(0);
   });
 });
 

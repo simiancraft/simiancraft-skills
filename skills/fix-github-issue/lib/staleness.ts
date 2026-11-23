@@ -206,22 +206,21 @@ export function behindBase(ctx: Context, cwd: string, baseSha?: string): string[
 }
 
 /**
- * What a landing has to catch up on: `behindBase` less the files `releaseArtifacts` names, which the
- * adopter declares the release machinery alone writes. A base that moved only there needs no
- * catch-up before the merge: the merge brings them in, and catching up would only push a head whose
- * CI starts over. Two cases keep the catch-up: a release file this work's import closure reaches
- * (the change reads it, so it must be checked with the new contents), and a version-only
- * package.json bump, which code can read and which no adopter declared as noise.
+ * What a landing has to catch up on: `behindBase` less the files `isReleaseNoise` calls noise (the
+ * configured release artifacts, and a version-only package.json bump). A base that moved only there
+ * needs no catch-up before the merge: the merge brings them in, and catching up would only push a
+ * head whose CI starts over. One case keeps the catch-up: a noise file this work's import closure
+ * reaches (the change reads it, so it must be checked with the new contents).
  */
 export function behindBeyondNoise(ctx: Context, cwd: string, baseSha: string): string[] {
   const behind = behindBase(ctx, cwd, baseSha);
-  if (behind.length === 0 || (ctx.project.releaseArtifacts ?? []).length === 0) return behind;
-  const artifact = (file: string) => isReleaseArtifact(ctx, file);
-  if (!behind.some(artifact)) return behind;
+  if (behind.length === 0) return behind;
+  const noise = (file: string) => isReleaseNoise(ctx, cwd, file, 'HEAD', baseSha);
+  if (!behind.some(noise)) return behind;
   const mine = sh(ctx, ['git', 'diff', '--name-only', `${baseSha}...HEAD`], cwd).split('\n').filter(Boolean);
   const closure = importClosure(ctx, cwd, mine);
   if (closure.size > CLOSURE_CAP) return behind;
-  return behind.filter((file) => !artifact(file) || closure.has(file));
+  return behind.filter((file) => !noise(file) || closure.has(file));
 }
 
 /**

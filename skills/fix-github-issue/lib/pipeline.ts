@@ -350,6 +350,18 @@ function remoteBranchHead(ctx: Context, cwd: string, branch: string): string | n
 }
 
 /**
+ * Whether a lane behind `baseSha` lacks only release noise (`behindBeyondNoise` is empty), which
+ * the merge brings in, so no catch-up is owed and no new head restarts CI. Never when the base
+ * requires an up-to-date branch: GitHub then refuses the merge until the lane holds every base
+ * commit. `skipNoise` is that answer when the caller already read it; otherwise it is read here,
+ * and only once the movement is known to be noise.
+ */
+function behindOnlyByNoise(ctx: Context, cwd: string, baseSha: string, skipNoise?: boolean): boolean {
+  if (skipNoise === false || behindBeyondNoise(ctx, cwd, baseSha).length > 0) return false;
+  return skipNoise ?? !requiresUpToDate(ctx);
+}
+
+/**
  * The catch-up at the seam between two Work seats: the base merged in and pushed when the lane is
  * behind, with no card move, since the card is between lanes the driver already owns. A conflict is
  * never resolved here.
@@ -360,6 +372,10 @@ async function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (messag
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return 'current';
+  if (behindOnlyByNoise(ctx, cwd, baseSha)) {
+    say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up ${why}`);
+    return 'current';
+  }
   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
   await yieldToStop(`catch up ${why}`);
   if (updateFromBase(ctx, cwd, baseSha)) return 'caught-up';
@@ -818,12 +834,13 @@ export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message
 
 /**
  * Upstream is more correct until this work is merged. No seat begins on a lane that lacks the
- * current base: not a revision, not a review, not a merge. A lane that is behind at all merges the
- * base in (never a rebase) and pushes; what that costs is decided separately, by whether the
- * movement reached the paths the proof or the approval covers.
+ * current base: not a revision, not a review, not a merge. A lane that is behind merges the base in
+ * (never a rebase) and pushes; what that costs is decided separately, by whether the movement
+ * reached the paths the proof or the approval covers. The one exception is a base that moved only
+ * by release noise (`behindOnlyByNoise`), which the merge brings in without a catch-up.
  *
  * `since` is the commit the standing proof or verdict was pinned to. Returns null when the lane
- * already holds the base; `conflict` when the merge could not apply, which the pipeline never
+ * already holds the base, or lacks only release noise; `conflict` when the merge could not apply, which the pipeline never
  * resolves itself; otherwise the head before and after, and the overlap: the incoming files
  * inside the import closure of this work, or a global invalidator. An empty overlap means the
  * world did not move beneath the proof; a non-empty one means it did.
@@ -854,7 +871,7 @@ export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: st
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return null;
-  if (options.skipNoise && behindBeyondNoise(ctx, cwd, baseSha).length === 0) {
+  if (behindOnlyByNoise(ctx, cwd, baseSha, options.skipNoise)) {
     say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up`);
     return null;
   }
@@ -973,8 +990,8 @@ async function land(
     // Back to draft before anything is pushed: the catch-up below and the revision pushes that
     // follow must not each spend a CI run on a pull request still marked ready.
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-    // A revision never begins on a stale lane: whatever the base changed, the author revises
-    // against current code rather than against the base as it stood when this branch started.
+    // A revision never begins on a stale lane: whatever the base changed beyond release noise, the
+    // author revises against current code rather than against the base as it stood when this branch started.
     if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
       // A dead letter must not sit in draft: the person reading it would find a branch the CI
       // guard is configured to skip, and nothing else would ever flip it back.

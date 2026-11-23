@@ -185,16 +185,32 @@ describe('behindBeyondNoise: what a landing must catch up on', () => {
     expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['changelog/1.0.1.md']);
   });
 
-  it('keeps a version-only package.json bump, which code can read and no adopter declared', () => {
+  it('is empty when the base moved only by a release commit: a configured changelog and a version-only package.json bump', () => {
     const { ctx, lane, other } = repository();
-    writeFileSync(join(other, 'package.json'), '{ "name": "x", "version": "1.0.0" }\n');
-    git(other, 'add', 'package.json');
-    git(other, 'commit', '-q', '-m', 'manifest');
+    (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['CHANGELOG.md'];
+    sharedManifest(lane, other);
+    writeFileSync(join(other, 'CHANGELOG.md'), '# 1.0.1\n');
+    writeFileSync(join(other, 'package.json'), '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    git(other, 'add', 'CHANGELOG.md', 'package.json');
+    git(other, 'commit', '-q', '-m', 'chore(release): 1.0.1 [skip ci]');
     git(other, 'push', '-q', 'origin', 'development');
-    git(lane, 'fetch', '-q', 'origin');
-    git(lane, 'merge', '-q', '--no-edit', 'origin/development');
-    landUpstream(other, 'package.json', '{ "name": "x", "version": "1.0.1" }\n');
-    expect(behindBeyondNoise(withArtifacts(ctx), lane, fetchBase(ctx, lane))).toEqual(['package.json']);
+    const base = fetchBase(ctx, lane);
+    expect(behindBase(ctx, lane, base)).toEqual(['CHANGELOG.md', 'package.json']);
+    expect(behindBeyondNoise(ctx, lane, base)).toEqual([]);
+  });
+
+  it('treats a version-only package.json bump as noise with no release artifacts configured', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual([]);
+  });
+
+  it('keeps a version bump that also changes a dependency', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "2.0.0" }\n}\n');
+    expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['package.json']);
   });
 
   it('keeps a release artifact the work imports: the change has to be checked with its new contents', () => {

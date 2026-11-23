@@ -275,7 +275,11 @@ Some paths are outside any import graph and invalidate everything in flight: wha
 generated output, build configs, and the workflows. Those short-circuit to stale. The mirror of
 that list is `releaseArtifacts`: files the repository's own release machinery rewrites on every
 landing, whose movement alone never invalidates an approval, plus a version-only manifest bump,
-which is recognized as release noise without an entry.
+which is recognized as release noise without an entry. A version bump that also changes anything
+else in the manifest (a dependency, a script) is movement. Which commit made the change, and who
+authored it, does not enter into it: the files decide. Every catch-up applies the same rule: at
+the seam before proving, before a review, before a revision, before a redrive or `--land`, and
+before the merge.
 
 Freshness gates an **approval**, not a rejection. A rejection names a gap in the work, and the base
 moving does not fill it, so a rejected change catches up and goes straight to its revision rather
@@ -285,7 +289,7 @@ reaching the same verdict twice.
 | Incoming change | Before a review | Before the merge |
 |---|---|---|
 | none | the review starts | the merge proceeds |
-| only files `releaseArtifacts` names, none of them in the work's import closure, and protection is known not to require an up-to-date branch | the base is merged in; the proof stands | no catch-up and no new CI run: the merge itself brings them in, on the head that was checked. A version-only manifest bump, or protection that cannot be read, catches up as usual |
+| only release noise (files `releaseArtifacts` names, or a version-only manifest bump), none of it in the work's import closure, and protection is known not to require an up-to-date branch | no catch-up; the proof stands and the review starts on the head as it is | no catch-up and no new CI run: the merge itself brings them in, on the head that was checked. Protection that requires an up-to-date branch, or cannot be read, catches up as usual |
 | nothing the closure reaches, and the branch's own change is byte-identical across the merge (compared by patch id) | the base is merged in; the proof stands; the review starts on the caught-up head | the base is merged in; the approval stands; the pull master waits on the caught-up head's checks and lands that head |
 | inside the closure, or a global invalidator, or the merge altered the branch's own change | the base is merged in; the proof is stale; the card goes back to Proving, not to a revision: the author reruns the checks and reacquires what the movement reached on the same pull request, spending no review round | the base is merged in; the approval no longer describes what would land; the head is **re-reviewed**, spending no round |
 | any, on a **rejection** | | the base is merged in and the author revises; the verdict still stands |
