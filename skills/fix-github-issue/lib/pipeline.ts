@@ -25,7 +25,7 @@ import { followBase } from './follow-base.ts';
 import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
-import { dirtyPaths, heldLane, inFlight, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
+import { dirtyPaths, heldLane, inFlight, judgeLane, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, rateLimitedIn, rateLimitResetAt, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { recordMerge } from './record-merge.ts';
@@ -546,9 +546,13 @@ async function pullRequestMatchesReview(
     return `branch ${view.headRefName} does not name issue ${issue}`;
   }
   if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
-  if (view.headRefOid !== localHead) return 'remote head and worktree head disagree';
-  if (dirtyPaths(ctx, cwd).length > 0) return 'worktree has uncommitted changes';
-  return null;
+  // The lane itself, judged as every pickup judges it: clean, and at the head that would land. A
+  // hold's kept work is uncommitted work here too; nothing lands that is not in the pull request.
+  const lane = judgeLane(ctx, issue, () => view.headRefOid);
+  if (lane.kind === 'clean-at-head') return null;
+  if (lane.kind === 'off-head') return 'remote head and worktree head disagree';
+  if (lane.kind === 'no-lane') return 'the lane is gone';
+  return 'worktree has uncommitted changes';
 }
 
 /** Whether a pull request is still a draft, which is the worker saying the work is unfinished. */
