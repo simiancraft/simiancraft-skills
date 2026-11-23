@@ -338,7 +338,7 @@ describe('runtime moves and settlement', () => {
   const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
   for (const initial of ['E1', 'D3']) it(`a resumed ${initial} card with a historical objection has a chart route to its revision`, async () => {
     let lane = initial; const edges: string[] = [];
-    const api = loadFunctions(pipeline, ['redriveIssue'], {
+    const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,

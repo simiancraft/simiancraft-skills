@@ -39,7 +39,7 @@ commands rather than trusting a claim of green, and returns a verdict.
 | `parked` | a pull request exists and a person owns the next call: the merge boundary refused it, or the issue changed under the review; the issue carries the reason |
 | `dlq` | a machine gave up: the issue carries `loop/dlq: <phase>` (work, review, or landing from this pipeline) and the reason that put it there |
 | `failed` | the worker or its confirmer failed with attempts remaining: the attempt is counted on the issue (`loop/attempts: N`) and the card goes back to Ready |
-| `left-alone` | the live gate refused the issue before a claim (a hold, a closed issue, a size over the ceiling); nothing was written |
+| `left-alone` | the live gate refused the issue (a hold, a closed issue, a size over the ceiling); nothing was written, except under `--redrive` or `--land`, whose lift and released claim stand |
 | `busy` | another run's claim on the issue stands; nothing was written, and the driver places the card for it |
 | `not-run` | a dry run reached a seat it does not run; nothing was tried, so nothing failed |
 | `stopped` | the operator's stop unwound the lane; nothing was settled, and the lane is kept for the next run |
@@ -91,6 +91,11 @@ phase's dead letter clears its own counter), so removing the label, or `fix.ts -
 redrive with a fresh budget, and each redrive is counted on the issue as `loop/redrives: N`. This is what stops an
 issue nobody can get right from cycling between worker and reviewer forever, one restart at a
 time.
+
+`fix.ts --redrive` and `--land` take the issue's claim before they lift its hold, then run the live
+gate. A run that starts between those writes finds the hold or the claim, never neither, so its
+startup walk leaves the lane alone instead of judging it stranded. A gate that still refuses the
+issue, or a lift that fails, releases the claim.
 
 A round is spent whenever a rejection sends the work back or parks it, and recorded before the
 revision starts, so a run killed mid-revision refunds nothing. Four things deliberately cost no
@@ -316,7 +321,8 @@ reviewer does not destroy the verdict this resume depends on.
 The verdict is trusted only as far as it can be corroborated: it must name the issue whose lane it
 sits in, the pull request must still be open, and the lane must sit at that pull request's remote
 head, or the resume would review a tree that is not what would merge. The safety labels that gate
-selection gate resumption too.
+selection gate resumption too. So does another run's live claim: a lane whose issue another run holds,
+or whose claim cannot be read, is neither judged nor resumed.
 
 Two windows remain unrecoverable, because no trusted verdict exists on disk during them: after the
 pull request opens and before the verdict file is written, and during a revision between clearing

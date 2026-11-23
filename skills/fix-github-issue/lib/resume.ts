@@ -32,31 +32,18 @@ export type Stranded = { issue: Issue; cwd: string; result: WorkerResult };
  * starts, under the instance lock.
  */
 export function reconcile(ctx: Context, claimed: Set<number>): void {
-  const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
-  const holders = new Map<number, string | null>();
   let repaired = 0;
 
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (!dir.startsWith(`${managed}/`)) continue;
-
-    // Agents make scratch siblings next to their own worktree (`issue-1234-evidence`) to capture a
-    // before state or write to the evidence branch. A pattern anchored on the number alone could
-    // not see them, so a crashed lane left them behind permanently: nothing else walks this root.
-    // They belong to the parent issue, so the claimed and dirty rules below judge them by the
-    // parent where it still exists, and a sibling's removal takes only the sibling: removing by
-    // issue number would also take the parent worktree this same pass may have chosen to keep.
-    const parts = /issue-(\d+)(-[^/]+)?$/.exec(dir);
-    const issue = parts?.[1];
-    if (!issue) continue;
-    const parent = resolve(managed, `issue-${issue}`);
-    const isSibling = Boolean(parts?.[2]);
-    const judged = isSibling && existsSync(parent) ? parent : dir;
+  for (const lane of managedLanes(ctx)) {
+    const { issue, dir } = lane;
+    // A scratch sibling belongs to its parent issue, so the claimed and dirty rules below judge it
+    // by the parent where that still exists, and a sibling's removal takes only the sibling: removing
+    // by issue number would also take the parent worktree this same pass may have chosen to keep.
+    const judged = lane.sibling && existsSync(lane.parent) ? lane.parent : dir;
 
     // A pull request means the work reached GitHub and is not ours to throw away; selection already
     // treats the issue as claimed, so leave both alone and let a human or a later round finish it.
-    if (claimed.has(Number(issue))) {
+    if (claimed.has(issue)) {
       ctx.log(`reconcile: #${issue} has an open pull request; leaving its worktree in place`);
       continue;
     }
@@ -64,7 +51,7 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     // `fix.ts` holds no instance lock, so a loop can start while a hand-run fix's worker is still in
     // this lane, before its pull request exists. A live claim by another run means the lane is not
     // abandoned; a claim that cannot be read is treated the same, since removing is the irreversible act.
-    const holder = claimHolder(ctx, Number(issue), holders);
+    const holder = lane.holder();
     if (holder) {
       ctx.log(`reconcile: #${issue} is claimed by ${holder}; leaving its worktree in place`);
       continue;
@@ -78,16 +65,16 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
       }
     })();
     if (dirty) {
-      if (rescueClosedLane(ctx, Number(issue), dir)) {
+      if (rescueClosedLane(ctx, issue, dir)) {
         repaired++;
         continue;
       }
       ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
-      parkForInspection(ctx, Number(issue), `An earlier run left uncommitted work in its lane (${judged}) and no pull request. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
+      parkForInspection(ctx, issue, `An earlier run left uncommitted work in its lane (${judged}) and no pull request. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
       continue;
     }
 
-    if (isSibling) {
+    if (lane.sibling) {
       ctx.log(`reconcile: removing abandoned scratch worktree ${dir}`);
       try {
         sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
@@ -97,7 +84,7 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     } else {
       // Committed work is kept or pushed first; reconcile is a clean-up, not a place work is lost.
       ctx.log(`reconcile: retiring the abandoned worktree for #${issue}`);
-      retireLane(ctx, Number(issue), (m) => ctx.log(`reconcile: ${m}`));
+      retireLane(ctx, issue, (m) => ctx.log(`reconcile: ${m}`));
     }
     repaired++;
   }
@@ -161,6 +148,50 @@ export function rescueClosedLane(ctx: Context, issue: number, dir: string): bool
   return true;
 }
 
+/** One worktree under the managed root that belongs to an issue: its own lane, or a scratch sibling beside it. */
+export type ManagedLane = {
+  issue: number;
+  dir: string;
+  /** The issue's own lane directory, `issue-<n>`; a sibling's parent, and the lane itself otherwise. */
+  parent: string;
+  /** A scratch worktree an agent made beside its lane (`issue-1234-evidence`), not the lane itself. */
+  sibling: boolean;
+  /** Who else holds a live claim on the issue, read once per walk and failing closed (see claimHolder). */
+  holder: () => string | null;
+};
+
+/**
+ * The managed lanes git knows about: every registered worktree under the managed root named for an
+ * issue, with the claim rule that decides whether another run holds it.
+ *
+ * Agents make scratch siblings next to their own worktree (`issue-1234-evidence`) to capture a
+ * before state or write to the evidence branch. A pattern anchored on the number alone could not
+ * see them, so a crashed lane left them behind permanently; they are listed here with their parent.
+ * The claim is read lazily, so a walk that rules a lane out first never asks the tracker about it,
+ * and once per issue, so a lane and its siblings share one read.
+ */
+export function managedLanes(ctx: Context): ManagedLane[] {
+  const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
+  const holders = new Map<number, string | null>();
+  const lanes: ManagedLane[] = [];
+  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const dir = resolve(line.slice('worktree '.length).trim());
+    if (!dir.startsWith(`${managed}/`)) continue;
+    const parts = /issue-(\d+)(-[^/]+)?$/.exec(dir);
+    if (!parts?.[1]) continue;
+    const issue = Number(parts[1]);
+    lanes.push({
+      issue,
+      dir,
+      parent: resolve(managed, `issue-${issue}`),
+      sibling: Boolean(parts[2]),
+      holder: () => claimHolder(ctx, issue, holders),
+    });
+  }
+  return lanes;
+}
+
 /** Who else holds a live claim on an issue, if anyone; read once per issue, and fail closed. */
 export function claimHolder(ctx: Context, issue: number, cache: Map<number, string | null>): string | null {
   if (!cache.has(issue)) {
@@ -217,24 +248,28 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
  * window (after the PR, before the verdict) leaves nothing safe to resume from.
  */
 export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): Stranded[] {
-  const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
   const found: Stranded[] = [];
 
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (!dir.startsWith(`${managed}/`)) continue;
-    const num = /issue-(\d+)$/.exec(dir)?.[1];
-    if (!num) continue;
-    if (inFlight.has(Number(num))) continue;
+  for (const lane of managedLanes(ctx)) {
+    const { issue: num, dir } = lane;
+    if (lane.sibling) continue; // reconcile owns scratch siblings
+    if (inFlight.has(num)) continue;
 
-    const issue = all.find((candidate) => candidate.number === Number(num));
+    const issue = all.find((candidate) => candidate.number === num);
     if (!issue) continue; // closed or outside the window; reconcile owns the cleanup question
 
     // The safety labels that gate selection gate resumption too: a parked, skipped, DLQed, or
     // budget-exhausted issue belongs to a human even when a worktree still remembers it.
     if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
+
+    // Another run's live claim means its lane is in use: a redrive claims before it lifts its hold,
+    // so an issue read without a hold may still be one a person's redrive is about to work.
+    const holder = lane.holder();
+    if (holder) {
+      ctx.log(`#${num}  stranded lane is claimed by ${holder}; leaving it in place`);
+      continue;
+    }
 
     const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
