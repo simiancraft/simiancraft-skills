@@ -17,7 +17,7 @@ import type { Context } from './context.ts';
 import { ensureLabel } from './labels.ts';
 import { loopNote } from './note.ts';
 import { mutate, sh, transportFailureIn } from './shell.ts';
-import { stopComment, stopIn } from './stop-record.ts';
+import { stopComment, stopsInScope } from './stop-record.ts';
 
 /** The host conditions, by errno code: the machine's, never the work's, the first time. */
 export const HOST_FAULT_KINDS = ['ENOSPC', 'ENOMEM'] as const;
@@ -237,10 +237,8 @@ function repeatsOf(ctx: Context, issue: number, cause: OutsideCause): number {
     return 0;
   }
   let repeats = 0;
-  for (let i = comments.length - 1; i >= 0; i--) {
-    if (comments[i].author !== ctx.botLogin) continue;
-    const stop = stopIn(comments[i].body);
-    if (!stop) continue;
+  // Scoped as every reader of the stop scopes it: the loop's own records.
+  for (const { stop } of stopsInScope(comments, { botLogin: ctx.botLogin })) {
     if (stop.kind !== 'outside' || stop.fields.cause !== cause) break;
     repeats += 1;
   }

@@ -98,15 +98,20 @@ export type StopScope = { botLogin?: string; since?: string };
 
 type Thread = Array<{ author?: string; body: string; createdAt?: string }>;
 
-/** The newest stop record in scope and where it sits on the thread. */
-function newestStop(comments: Thread, scope: StopScope): { stop: StopRecord; at: number } | null {
+/** The stop records in scope, newest first, each with where it sits on the thread. */
+export function* stopsInScope(comments: Thread, scope: StopScope = {}): Generator<{ stop: StopRecord; at: number }> {
   for (let i = comments.length - 1; i >= 0; i--) {
     const { author, body, createdAt } = comments[i];
     if (scope.botLogin !== undefined && author !== scope.botLogin) continue;
     if (scope.since !== undefined && createdAt !== undefined && createdAt <= scope.since) continue;
     const stop = stopIn(body);
-    if (stop) return { stop, at: i };
+    if (stop) yield { stop, at: i };
   }
+}
+
+/** The newest stop record in scope and where it sits on the thread. */
+function newestStop(comments: Thread, scope: StopScope): { stop: StopRecord; at: number } | null {
+  for (const found of stopsInScope(comments, scope)) return found;
   return null;
 }
 
