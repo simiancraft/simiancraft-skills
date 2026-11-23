@@ -528,28 +528,27 @@ async function pullRequestMatchesReview(
   cwd: string,
   reviewedSha: string,
 ): Promise<string | null> {
-  type View = { headRefOid: string; baseRefName: string; headRefName: string; state: string };
-  const read = (): View => JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']));
+  const watch = landingWatch(pr, { read: (argv) => sh(ctx, argv), now: () => Date.now() });
   const localHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-  let view = read();
+  let view = watch.observe();
   // A catch-up has just pushed this head, and the pull request's head can trail the push by a few
   // seconds. When the worktree already holds the expected commit, wait for GitHub to agree before
   // calling it a mismatch; a wrong head stays wrong after the wait.
   // Awaited, not slept through: other lanes' output, timeouts, and lease renewals run meanwhile.
-  for (let tries = 0; view.headRefOid !== reviewedSha && localHead === reviewedSha && tries < 6; tries++) {
+  for (let tries = 0; view.head !== reviewedSha && localHead === reviewedSha && tries < 6; tries++) {
     await Bun.sleep(5_000);
-    view = read();
+    view = watch.observe();
   }
 
   if (view.state !== 'OPEN') return `pull request is ${view.state}`;
-  if (view.baseRefName !== ctx.project.baseBranch) return `targets ${view.baseRefName}, not ${ctx.project.baseBranch}`;
-  if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(view.headRefName)) {
-    return `branch ${view.headRefName} does not name issue ${issue}`;
+  if (view.base !== ctx.project.baseBranch) return `targets ${view.base}, not ${ctx.project.baseBranch}`;
+  if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(view.branch)) {
+    return `branch ${view.branch} does not name issue ${issue}`;
   }
-  if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
+  if (view.head !== reviewedSha) return `head ${view.head.slice(0, 9)} is not the reviewed commit`;
   // The lane itself, judged as every pickup judges it: clean, and at the head that would land. A
   // hold's kept work is uncommitted work here too; nothing lands that is not in the pull request.
-  const lane = judgeLane(ctx, issue, () => view.headRefOid);
+  const lane = judgeLane(ctx, issue, () => view.head);
   if (lane.kind === 'clean-at-head') return null;
   if (lane.kind === 'off-head') return 'remote head and worktree head disagree';
   if (lane.kind === 'no-lane') return 'the lane is gone';
@@ -871,21 +870,6 @@ export async function awaitGreenChecks(
     if (open !== null && holding.length === 0) return null;
     const gaveUp = await wait(open === null ? 'the check suites of the landing head cannot be read' : `check suite(s) on the landing head have not finished: ${holding.map((suite) => (suite.runs > 0 ? suite.app : `${suite.app} (no run in it; an app that runs nothing here belongs in idleCheckSuiteApps)`)).join(', ')}`, 15_000);
     if (gaveUp) return gaveUp;
-  }
-}
-
-/**
- * The commit a merged pull request's merge made on the base, as GitHub reports it: what a deploy run
- * on push builds and what the floor watches, never the pull request's head. Empty, and said, when it
- * cannot be read.
- */
-function mergeCommitOf(ctx: Context, pr: number, say: (message: string) => void): string {
-  try {
-    const oid = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
-    return oid === 'null' ? '' : oid;
-  } catch (error) {
-    say(`could not read the merge commit of PR #${pr}: ${(error as Error).message.split('\n')[0]}`);
-    return '';
   }
 }
 
@@ -1362,13 +1346,16 @@ async function land(
   // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
   // later while this driver has already parked it, so cancel whatever was scheduled first.
   // The merge report can trail the merge by a few seconds; wait for it before calling it missing.
-  const readMerged = () => sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
-  let merged = readMerged();
-  for (let tries = 0; (!merged || merged === 'null') && tries < 6; tries++) {
+  // Read through the landing watch, as every read of the pull request here is: the merge's time
+  // and the commit it made come from one observation.
+  const watch = landingWatch(pr, { read: (argv) => sh(ctx, argv), now: () => Date.now() });
+  let seen = watch.observe();
+  for (let tries = 0; !seen.mergedAt && tries < 6; tries++) {
     await Bun.sleep(5_000);
-    merged = readMerged();
+    seen = watch.observe();
   }
-  if (!merged || merged === 'null') {
+  const merged = seen.mergedAt;
+  if (!merged) {
     try {
       sh(ctx, ['gh', 'pr', 'merge', String(pr), '--disable-auto']);
     } catch {
@@ -1396,7 +1383,8 @@ async function land(
     // That cannot be prevented from here, so it is detected and said plainly.
     // The merge goes up as the commit the merge made, which is what a deploy on push builds, as the
     // run start's reconcile records the merges it finds.
-    const mergeCommit = ctx.dryRun ? '' : mergeCommitOf(ctx, pr, say);
+    const mergeCommit = seen.mergeCommit;
+    if (!mergeCommit) say(`PR #${pr} reported its merge but no merge commit; the floor is not told of it`);
     const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, mergeCommit, baseSeen, say);
     if (unseenBase) {
       mutate(ctx, `note on PR #${pr} that it landed across an unseen commit`, [
@@ -2206,8 +2194,8 @@ async function approvedAtHead(
   if (!touches) return null;
   const sha = approval.sha;
   if (sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd) !== sha) return null;
-  const view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,isDraft'])) as { headRefOid: string; isDraft: boolean };
-  if (view.headRefOid !== sha || view.isDraft) return null;
+  const view = landingWatch(pr, { read: (argv) => sh(ctx, argv), now: () => Date.now() }).observe();
+  if (view.head !== sha || view.draft) return null;
   const base = fetchBase(ctx, cwd);
   if (catchUpOwed(ctx, cwd, base, undefined, pr)) return null;
   if (ctx.knobs.checks !== 'none') {

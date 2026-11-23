@@ -250,8 +250,10 @@ landing is a dead letter that says so. Only `checks: 'none'` says the repository
 a pull request, and every wait ends at `checksTimeoutMinutes`.
 
 The wait is a landing watch (`lib/landing-watch.ts`): each poll is one observation of the pull
-request, its state, its head, and each check on that head with its status and the moment the watch
-first saw it, kept across polls. A pull request observed merged ends the wait, whoever merged it, and
+request, its state, its head, its branches, whether it is a draft, its merge time and merge commit,
+and each check on that head with its status and the moment the watch first saw it, kept across polls.
+Every read of the pull request a landing makes goes through it: the merge gate's match against the
+review, a standing approval's head, and the confirmation of the merge. A pull request observed merged ends the wait, whoever merged it, and
 the merge is recorded exactly as the loop's own is (`recordMerge` in `lib/record-merge.ts`: the card
 to Merged, the merge onto the floor, the base followed, the lane removed, and the issue closed with a
 pointer); the loop merges nothing itself. One observed closed ends the wait as a park: a person

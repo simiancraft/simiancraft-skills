@@ -1,7 +1,8 @@
 /**
  * The landing watch: a pull request under watch while it lands. Each poll is one observation of
- * it: the pull request's state, its head, and each check on that head with its status and the
- * moment this watch first saw it. A check's first sighting is kept across polls, so how long a
+ * it: the pull request's state, its head, its branches, whether it is a draft, its merge when it has
+ * one, and each check on that head with its status and the moment this watch first saw it. Every
+ * read of the pull request a landing makes goes through it. A check's first sighting is kept across polls, so how long a
  * check has sat in one place is a fact the watch knows rather than one each poll guesses at.
  *
  * The reader only observes. What an observation means for the landing (wait, refuse, end) is the
@@ -31,6 +32,13 @@ export type CheckObservation = {
 export type LandingObservation = {
   state: 'OPEN' | 'MERGED' | 'CLOSED';
   head: string;
+  /** The branch it targets, and its own branch. */
+  base: string;
+  branch: string;
+  draft: boolean;
+  /** When it merged, and the commit the merge made on the base; null and empty until it has. */
+  mergedAt: string | null;
+  mergeCommit: string;
   checks: CheckObservation[];
 };
 
@@ -88,7 +96,7 @@ function providerOf(node: CheckNode): string {
 }
 
 /** The argv of one observation's read. */
-export const watchArgv = (pr: number): string[] => ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid,state'];
+export const watchArgv = (pr: number): string[] => ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid,state,baseRefName,headRefName,isDraft,mergedAt,mergeCommit'];
 
 /**
  * A watch on one pull request. `observe` reads it once (a read that throws is the caller's to
@@ -100,7 +108,16 @@ export function landingWatch(pr: number, io: { read: (argv: string[]) => string;
   const firstSeen = new Map<string, number>();
   return {
     observe: () => {
-      const view = JSON.parse(io.read(watchArgv(pr))) as { statusCheckRollup: CheckNode[] | null; headRefOid: string; state?: string };
+      const view = JSON.parse(io.read(watchArgv(pr))) as {
+        statusCheckRollup: CheckNode[] | null;
+        headRefOid: string;
+        state?: string;
+        baseRefName?: string;
+        headRefName?: string;
+        isDraft?: boolean;
+        mergedAt?: string | null;
+        mergeCommit?: { oid?: string } | null;
+      };
       const at = io.now();
       const occurrences = new Map<string, number>();
       const checks = (view.statusCheckRollup ?? []).map((node): CheckObservation => {
@@ -123,7 +140,16 @@ export function landingWatch(pr: number, io: { read: (argv: string[]) => string;
         };
       });
       const state = view.state === 'MERGED' || view.state === 'CLOSED' ? view.state : 'OPEN';
-      return { state, head: view.headRefOid, checks };
+      return {
+        state,
+        head: view.headRefOid,
+        base: view.baseRefName ?? '',
+        branch: view.headRefName ?? '',
+        draft: view.isDraft === true,
+        mergedAt: view.mergedAt || null,
+        mergeCommit: view.mergeCommit?.oid ?? '',
+        checks,
+      };
     },
   };
 }

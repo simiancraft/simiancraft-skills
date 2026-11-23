@@ -10,6 +10,7 @@ import { issueRefs } from './refs.ts';
 import { RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { isHostFaultKind, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
+import { landingWatch } from '../../fix-github-issue/lib/landing-watch.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
@@ -227,10 +228,12 @@ async function fakeRecordMerge(ctx: Context, merge: { sha: string }, record: { p
   record.beforeClose?.();
   return 'closed';
 }
+/** The landing watch's read of a pull request that has merged, at `mergedAt`, making `oid`. */
+const mergedView = (mergedAt: string, oid: string) => JSON.stringify({ state: 'MERGED', headRefOid: 'h', mergedAt, mergeCommit: { oid }, statusCheckRollup: [] });
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping, whether an environment fault ended it, and whether its lease stands; here none is in doubt.
   // Nor does any pull request carry a person's hold, unless a test says so.
-  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, recordMerge: fakeRecordMerge, approvedAtHead: async () => null, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  deps = { landingWatch, pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, recordMerge: fakeRecordMerge, approvedAtHead: async () => null, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -612,13 +615,12 @@ describe('runtime moves and settlement', () => {
     const sh = (_ctx: unknown, argv: string[]) => {
       if (argv[1] === 'rev-list') { expect(argv.at(-1)).toBe(`HEAD..${checkedBase}`); return '0'; }
       if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? landedOn : 'h';
-      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
-      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
       if (argv.at(-1) === '.parents[0].sha') return landedOn;
       return '';
     };
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
-    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, behindBeyondNoise: behindBase, requiresUpToDate: () => true, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
@@ -631,14 +633,13 @@ describe('runtime moves and settlement', () => {
     const base = 'A';
     const sh = (_ctx: unknown, argv: string[]) => {
       if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? base : 'h';
-      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
-      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
       if (argv.at(-1) === '.parents[0].sha') return base;
       return '';
     };
     const landWith = (strict: boolean) => {
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         // The lane is behind by a changelog alone, on every look.
@@ -667,13 +668,12 @@ describe('runtime moves and settlement', () => {
       let current: Move | undefined;
       const sh = (_ctx: unknown, argv: string[]) => {
         if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
-        if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
-        if (argv.includes('mergeCommit')) return 'merge-sha';
+        if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
         if (argv.at(-1) === '.parents[0].sha') return 'A';
         return '';
       };
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_NOISE_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         fetchBase: () => { current = next(); return 'A'; },
@@ -725,12 +725,11 @@ describe('a floor incident at the merge boundary', () => {
     ctx.landPastBoundary = landPastBoundary;
     const sh = (_ctx: unknown, argv: string[]) => {
       if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
-      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
-      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
       if (argv.at(-1) === '.parents[0].sha') return 'A';
       return '';
     };
-    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase', 'mergeAllowed'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase', 'mergeAllowed'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], boundaryWaived, waiverNoted: new Set(),
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
       behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
@@ -1375,7 +1374,7 @@ describe('a prover that needs a person', () => {
   it('refuses the merge while needs-human is on the pull request, whatever the issue carries', async () => {
     const writes: string[][] = [];
     const ctx = context(new FakeTracker(bot));
-    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
@@ -1404,9 +1403,9 @@ describe('a pull request merged while its landing watched', () => {
     const { recordMerge } = loadFunctions('../../fix-github-issue/lib/record-merge.ts', ['recordMerge'], {
       closeIssue: async (_ctx: unknown, issue: number) => { closes.push(issue); }, parkIssue: noop,
     });
-    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
-      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv.includes('mergedAt') ? '2026-11-21T11:11:04Z' : argv.includes('mergeCommit') ? 'm'.repeat(40) : ''),
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv[5]?.includes('mergedAt') ? mergedView('2026-11-21T11:11:04Z', 'm'.repeat(40)) : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
       behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
       fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
@@ -1430,7 +1429,7 @@ describe('a pull request merged while its landing watched', () => {
 
   it('parks a pull request closed while its checks were waited on', async () => {
     const ctx = context(new FakeTracker(bot));
-    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
@@ -1476,7 +1475,7 @@ describe('a landing on an approval that still stands at the head', () => {
     const head = over.head ?? 'H';
     const sh = (_ctx: unknown, argv: string[]) => {
       if (argv.includes('createdAt')) return '2026-11-21T00:23:00Z';
-      if (argv.includes('headRefOid,isDraft')) return JSON.stringify({ headRefOid: head, isDraft: over.draft ?? false });
+      if (argv[5]?.includes('isDraft')) return JSON.stringify({ state: 'OPEN', headRefOid: head, isDraft: over.draft ?? false, statusCheckRollup: [] });
       return head;
     };
     const { validTouches } = loadFunctions(pipeline, ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] });
