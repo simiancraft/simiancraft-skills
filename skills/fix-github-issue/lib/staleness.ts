@@ -24,6 +24,59 @@ export function matchesPath(file: string, pattern: string): boolean {
 /** Beyond this the closure is not worth computing; treat the proof as stale and re-review. */
 export const MAX_BASE_REFRESHES = 2;
 
+/**
+ * How many times a landing catches up on a base moved only by known automation before it gives
+ * up. These moves are not counted against `MAX_BASE_REFRESHES`, since release and deploy machinery
+ * follows every merge; this separate bound keeps a stream of them from looping a landing forever.
+ */
+export const MAX_AUTOMATION_REFRESHES = 6;
+
+/** Subject markers that say a commit is not meant to start CI; GitHub honors each of these. */
+const SKIP_CI_MARKERS = ['[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]'];
+
+/** One commit the base gained that the lane did not have. */
+export interface BaseCommit {
+  sha: string;
+  author: string;
+  subject: string;
+  /** Made by configured automation, or marked to skip CI. */
+  automation: boolean;
+}
+
+/**
+ * Whether a commit is known automation: its author's name or email is in the configured
+ * `automationAuthors` (compared without case), or its subject carries a skip-CI marker.
+ */
+export function isAutomationCommit(ctx: Context, name: string, email: string, subject: string): boolean {
+  const authors = (ctx.project.automationAuthors ?? []).map((author) => author.toLowerCase());
+  if (authors.includes(name.toLowerCase()) || authors.includes(email.toLowerCase())) return true;
+  const lowered = subject.toLowerCase();
+  return SKIP_CI_MARKERS.some((marker) => lowered.includes(marker));
+}
+
+/**
+ * The commits on `baseSha` the lane's HEAD lacks, less any reachable from `seenSha` (a base this
+ * landing already looked at, whose commits were judged then). Newest first.
+ */
+export function commitsBehind(ctx: Context, cwd: string, baseSha: string, seenSha?: string): BaseCommit[] {
+  const range = [`HEAD..${baseSha}`, ...(seenSha ? [`^${seenSha}`] : [])];
+  const out = sh(ctx, ['git', 'log', '--format=%H%x1f%an%x1f%ae%x1f%s', ...range, '--'], cwd);
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [sha = '', name = '', email = '', subject = ''] = line.split('\x1f');
+      return { sha, author: name, subject, automation: isAutomationCommit(ctx, name, email, subject) };
+    });
+}
+
+/** Names commits for a message: short sha, subject, and author, at most `limit` of them. */
+export function describeCommits(commits: readonly BaseCommit[], limit = 6): string {
+  const named = commits.slice(0, limit).map((commit) => `${commit.sha.slice(0, 10)} "${commit.subject}" (${commit.author})`);
+  const more = commits.length - named.length;
+  return more > 0 ? `${named.join(', ')}, and ${more} more` : named.join(', ');
+}
+
 export const CLOSURE_CAP = 3000;
 
 /**

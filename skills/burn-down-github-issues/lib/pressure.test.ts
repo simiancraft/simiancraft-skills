@@ -598,6 +598,8 @@ describe('runtime moves and settlement', () => {
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         // The lane is behind by a changelog alone, on every look.
         behindBase: () => ['changelog/1.0.1.md'], behindBeyondNoise: () => [], requiresUpToDate: () => strict,
+        commitsBehind: () => [{ sha: 'c'.repeat(40), author: 'someone', subject: 'land the changelog', automation: false }], describeCommits: (c: { subject: string }[]) => c.map(x => x.subject).join(', '),
+        MAX_AUTOMATION_REFRESHES: 6,
         fetchBase: () => base, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
         awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
         mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
@@ -607,6 +609,58 @@ describe('runtime moves and settlement', () => {
     expect(await landWith(false)).toBe('merged');
     // Strict protection keeps the old rule: never fresh while behind, so the refresh cap is reached.
     expect(await landWith(true)).toEqual({ dlq: expect.stringMatching(/the base moved \d+ times/) });
+  });
+  describe('base moves made only by known automation', () => {
+    type Mover = { sha: string; author: string; subject: string; automation: boolean };
+    const human = (n: number): Mover => ({ sha: `h${n}`.padEnd(40, '0'), author: 'someone', subject: `merge feature ${n}`, automation: false });
+    const automaton = (n: number): Mover => ({ sha: `b${n}`.padEnd(40, '0'), author: 'deploy-bot', subject: `write back ${n} [skip ci]`, automation: true });
+    /** Lands with the base moving by `moves` in turn, one per look upstream, then holding still. */
+    const landThrough = (moves: Mover[][] | (() => Mover[] | undefined)) => {
+      const next = typeof moves === 'function' ? moves : () => moves.shift();
+      let current: Mover[] | undefined;
+      const sh = (_ctx: unknown, argv: string[]) => {
+        if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
+        if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
+        if (argv.includes('mergeCommit')) return 'merge-sha';
+        if (argv.at(-1) === '.parents[0].sha') return 'A';
+        return '';
+      };
+      const ctx = context(new FakeTracker(bot));
+      const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+        DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_AUTOMATION_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+        sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
+        behindBase: () => { current = next(); return current ? ['some/file.ts'] : []; }, behindBeyondNoise: () => [], requiresUpToDate: () => true,
+        commitsBehind: () => current ?? [],
+        describeCommits: (commits: Mover[]) => commits.map(commit => `${commit.sha.slice(0, 10)} "${commit.subject}" (${commit.author})`).join(', '),
+        fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+        awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+        mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+      });
+      return api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    };
+
+    it('are caught up on without spending the refresh cap', async () => {
+      // Two merges, each followed by a deploy write-back and a release commit: six moves, two counted.
+      expect(await landThrough([[human(1)], [automaton(1)], [automaton(2)], [human(2)], [automaton(3)], [automaton(4)]])).toBe('merged');
+    });
+
+    it('still count when a person\'s commit rides along', async () => {
+      const result = await landThrough([[automaton(1), human(1)], [automaton(2), human(2)], [automaton(3)], [automaton(4), human(3)]]);
+      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 4 times while this landing waited on its gates (3 past known automation)') });
+    });
+
+    it('name every commit that moved the base in the dead letter', async () => {
+      const result = (await landThrough([[human(1)], [automaton(1)], [human(2)], [human(3)]])) as { dlq: string };
+      for (const commit of [human(1), automaton(1), human(2), human(3)]) expect(result.dlq).toContain(commit.subject);
+      expect(result.dlq).toContain('(someone)');
+    });
+
+    it('cannot loop forever: an endless stream of them reaches a bound of its own', async () => {
+      let n = 0;
+      const result = await landThrough(() => [automaton(++n)]);
+      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 7 times while this landing waited on its gates (7 only by known automation, past that bound of 6)') });
+      expect(n).toBe(7);
+    });
   });
 });
 
