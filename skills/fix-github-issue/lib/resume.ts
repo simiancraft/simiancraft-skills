@@ -15,7 +15,7 @@ import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
 import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
-import { dirtyPaths, inFlight } from './lane.ts';
+import { dirtyPaths, inFlight, rescueRef } from './lane.ts';
 import { type FixOutcome, type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
@@ -127,8 +127,7 @@ export function rescueClosedLane(ctx: Context, issue: number, dir: string): bool
       git('add', '-A');
       const tree = git('write-tree');
       const commit = git('commit-tree', tree, '-p', 'HEAD', '-m', `rescued: uncommitted work in the lane for closed issue #${issue}`);
-      saved = `refs/loop/rescued/issue-${issue}/${commit.slice(0, 12)}`;
-      git('update-ref', saved, commit);
+      saved = rescueRef(ctx, issue, commit, dir);
     }
   } catch (error) {
     ctx.log(`reconcile: #${issue} is closed, but the uncommitted work in its lane could not be saved (${(error as Error).message.split('\n')[0]})`);

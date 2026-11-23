@@ -626,7 +626,13 @@ describe('a lane an environment fault interrupted', () => {
     const local = lane(164);
     code(local, 'fix/local-164', false);
     writeFileSync(join(local, 'loop-proof.json'), JSON.stringify({ issue: 164, verdict: 'proved', reason: 'shown', pr: 9 }));
-    clearLaneForRerun(context(new FakeTracker(BOT), ''), 164, () => {});
+    const unpushed = git(local, 'rev-parse', 'HEAD');
+    const said: string[] = [];
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 164, (m) => said.push(m));
     expect(existsSync(local)).toBe(false);
+    // The head no remote has is kept under a ref named for it.
+    const ref = `refs/loop/rescued/issue-164/${unpushed.slice(0, 12)}`;
+    expect(git(repo, 'rev-parse', ref)).toBe(unpushed);
+    expect(said).toContain(`saved the lane's unpushed commits as ${ref}`);
   });
 });

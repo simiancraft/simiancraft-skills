@@ -22,6 +22,17 @@ export function dirtyPaths(ctx: Context, cwd: string): string[] {
 }
 
 /**
+ * Keeps a commit under a ref of its own, `refs/loop/rescued/issue-<n>/<sha12>`, in the repository
+ * every worktree shares, and returns the ref. One ref per rescue, named for the commit it saves, so a
+ * later rescue on the same issue never takes an earlier one's name and leaves its history unreachable.
+ */
+export function rescueRef(ctx: Context, issue: number, sha: string, cwd: string): string {
+  const ref = `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`;
+  sh(ctx, ['git', 'update-ref', ref, sha], cwd);
+  return ref;
+}
+
+/**
  * Returns a lane to what a fresh worker expects: detached at the base, no branch, no scratch.
  *
  * A worker that dies partway has usually already cut its branch and may have committed to it, so
@@ -36,8 +47,7 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
     // A lane kept from an earlier, stopped run can hold commits that run never pushed; the reset
     // below discards this attempt's work, never theirs, so they keep a ref of their own.
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
-      const sha = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-      sh(ctx, ['git', 'update-ref', `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`, sha], cwd);
+      rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), cwd);
     }
     sh(ctx, ['git', 'fetch', remote, base]);
     sh(ctx, ['git', 'checkout', '--detach', `${remote}/${base}`], cwd);
@@ -149,9 +159,7 @@ export function worktreeAtPullRequest(ctx: Context, issue: number, branch: strin
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], dir)) > 0) {
       const head = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir);
       if (head !== branch) {
-        const sha = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
-        const rescued = `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`;
-        sh(ctx, ['git', 'update-ref', rescued, sha], dir);
+        const rescued = rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], dir), dir);
         throw new Error(`worktree for #${issue} holds commits no remote has, on ${head} rather than ${branch}; saved as ${rescued}, inspect or remove ${dir}`);
       }
       try {

@@ -25,7 +25,7 @@ import { followBase } from './follow-base.ts';
 import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
-import { dirtyPaths, inFlight, removeWorktree, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
+import { dirtyPaths, inFlight, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { recordMerge } from './record-merge.ts';
@@ -1984,11 +1984,7 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
       // A branch ref would survive the worktree; a detached head does not, and the next run's
       // reconcile removes a clean lane. The commits are given a ref of their own first, in the
       // repository all worktrees share, so removing this directory can never make them unreachable.
-      // One ref per rescue, named for the commit it saves: a later attempt on the same issue must
-      // not take the name of an earlier one and leave its history unreachable.
-      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-      const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
-      sh(ctx, ['git', 'update-ref', rescued, head], cwd);
+      const rescued = rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), cwd);
       say(`keeping the lane, and saved its detached commits as ${rescued}: no branch and no remote has them`);
       return false;
     }
@@ -2029,9 +2025,7 @@ export function clearLaneForRerun(ctx: Context, issue: number, say: (message: st
       return;
     }
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
-      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-      const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
-      sh(ctx, ['git', 'update-ref', rescued, head], cwd);
+      const rescued = rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), cwd);
       say(`saved the lane's unpushed commits as ${rescued}`);
     }
     removeWorktree(ctx, issue);
