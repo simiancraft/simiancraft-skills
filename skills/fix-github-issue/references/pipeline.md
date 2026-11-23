@@ -187,9 +187,9 @@ stop, which judges nothing about the change whether it reruns the work or waits 
 (`standingApproval` in `lib/stop-record.ts`); it names both seats'
 classification (`touches`, recorded with the approval) and this pull request; the lane and the pull
 request both hold the head it names; the pull request is ready; the base needs no catch-up, by the
-landing's rule for release noise; and the checks on that head are green now, by the newest run under
-each name. A head that moved, an approval for another commit, or checks that are not green keep the
-path above. The pull master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
+landing's rule for release noise; and no check on that head has failed, by the newest run under
+each name. A head that moved, an approval for another commit, or a failed check keep the path above;
+checks still running or yet to register are the landing's to wait on, with its stuck-check rule. The pull master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
 and the pinned merge. Only the boundary is waived, only for that issue, and only when both agents
 classified the change: a missing classification still fails closed. The pull request carries a
 comment that a person cleared it, posted before the remaining gates run.

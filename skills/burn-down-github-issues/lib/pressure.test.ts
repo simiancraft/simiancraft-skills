@@ -1513,11 +1513,18 @@ describe('a landing on an approval that still stands at the head', () => {
     expect(seats).toEqual([]);
   });
 
+  it('lands on it while the checks are still running: the landing waits on them, nothing is proved again', async () => {
+    const { standing, seats, undrafted } = await land([approved('H'), boundary], { checks: 'checks still unfinished: ci, after 0 minutes' });
+    expect(standing?.reviewedSha).toBe('H');
+    expect(seats).toEqual([]);
+    expect(undrafted).toBe(false);
+  });
+
   for (const [what, thread, over] of [
     ['the head moved since the approval', [approved('H')], { head: 'H2' }],
     ['the approval is for another commit', [approved('G')], {}],
     ['the base moved beyond release noise', [approved('H')], { behind: ['src/a.ts'] }],
-    ['the checks are not green by any run', [approved('H')], { checks: 'checks failed: ci (FAILURE)' }],
+    ['a check on the head has failed', [approved('H')], { checks: 'checks failed: ci (FAILURE)' }],
     ['the pull request is a draft', [approved('H')], { draft: true }],
     ['the approval named no classification', [approved('H', '')], {}],
     ['a dead letter came after the approval', [approved('H'), { author: bot, body: stopComment('dead-letter', { phase: 'landing' }, 'checks failed'), createdAt: '2026-11-21T03:00:00Z' }], {}],

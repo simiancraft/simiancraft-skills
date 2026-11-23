@@ -2178,12 +2178,12 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
 /**
  * The approval a continuation lands on without proving or reviewing again, or null when the work
  * owes either. All of these must hold: the newest approval on the thread since the pull request
- * opened still stands (`standingApproval`: nothing but a boundary park or an outside stop that
- * reruns the work is newer), it names both seats' classification, it was given to this pull request
- * at the head the lane and the pull request both hold, the pull request is ready, the base needs no
- * catch-up (by the landing's own rule for release noise), and the checks on that head are green now,
- * judged by the newest run under each name. A head that moved, an approval for another commit, or
- * checks that are not green keep the usual path.
+ * opened still stands (`standingApproval`: nothing but a boundary park or an outside stop is
+ * newer), it names both seats' classification, it was given to this pull request at the head the
+ * lane and the pull request both hold, the pull request is ready, the base needs no catch-up (by the
+ * landing's own rule for release noise), and no check on that head has failed, judged by the newest
+ * run under each name. A head that moved, an approval for another commit, or a failed check keep the
+ * usual path; checks still running are waited on by the landing.
  */
 async function approvedAtHead(
   ctx: Context,
@@ -2204,13 +2204,16 @@ async function approvedAtHead(
   const base = fetchBase(ctx, cwd);
   if ((requiresUpToDate(ctx, pr) ? behindBase(ctx, cwd, base) : behindBeyondNoise(ctx, cwd, base)).length > 0) return null;
   if (ctx.knobs.checks !== 'none') {
-    // One look, no wait: green now, by the landing's own rules, or the usual path.
+    // One look, no wait: a check that has failed on this head keeps the usual path. Checks still
+    // running, or yet to register, are the landing's to wait on: its watch waits for them, and
+    // calls one its provider never started stuck, so the approval is not proved and reviewed again
+    // only because a check was slow. The prefix is the one `awaitGreenChecks` refuses red checks with.
     const reviewedChecks = checksOn(ctx, sha);
     const now = { ...ctx, knobs: { ...ctx.knobs, checksTimeoutMinutes: 0 } };
     const green = await awaitGreenChecks(now, pr, () => {}, { sha, names: reviewedChecks.names, passedAtReview: reviewedChecks.passed, required: requiredStatusChecks(ctx) });
-    if (green !== null) return null;
+    if (green !== null && (typeof green === 'object' || green.startsWith('checks failed:'))) return null;
   }
-  say(`PR #${pr} was approved at ${sha.slice(0, 10)}, which it still holds, the base needs no catch-up, and its checks are green; landing on that approval`);
+  say(`PR #${pr} was approved at ${sha.slice(0, 10)}, which it still holds, the base needs no catch-up, and no check on it has failed; landing on that approval`);
   return {
     review: { pr, decision: 'merge', adequacy: `Approved at ${sha.slice(0, 12)}; the approval stands on the thread.`, confidence: 'standing approval', blocking: [], touches },
     reviewedSha: sha,
