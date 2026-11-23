@@ -654,6 +654,23 @@ describe('deploy evidence', () => {
     expect(byRuns([run('in_progress'), run('completed', 'failure')])?.state).toBe('not-yet-deployed');
   });
 
+  it('judges a cancelled run superseded by a later run that contains the merge a wait, not a failed deploy', () => {
+    const merge = head();
+    git(scratch, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'a later merge');
+    const later = head();
+    const cancelled: DeployRun = { status: 'completed', conclusion: 'cancelled', url: 'https://ci.test/runs/3', createdAt: minutesAgo(4) };
+    const judge = (laterRuns: DeployRun[]) =>
+      classify({ deployed: null, sha: merge, mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor: () => [cancelled], laterRuns: () => laterRuns, capMinutes: 180, repoRoot: scratch });
+    expect(judge([{ status: 'in_progress', conclusion: null, headSha: later, url: 'https://ci.test/runs/4', createdAt: minutesAgo(3) }])).toEqual({
+      state: 'not-yet-deployed',
+      reason: 'the Deploy run for the merge was cancelled and a later run that contains it is in_progress: https://ci.test/runs/4',
+    });
+    expect(judge([{ status: 'completed', conclusion: 'success', headSha: later, createdAt: minutesAgo(3) }])).toBeNull();
+    // A later run for a commit that does not contain the merge covers nothing: the cancelled run was the last word.
+    expect(judge([{ status: 'in_progress', conclusion: null, headSha: OTHER, createdAt: minutesAgo(3) }])?.state).toBe('deploy-failed');
+    expect(judge([])?.state).toBe('deploy-failed');
+  });
+
   it('treats a failed deploy as wrong: pauses the line and files an incident, and a later green run walks it', async () => {
     status = 200;
     git(scratch, 'update-ref', 'refs/remotes/origin/main', head());

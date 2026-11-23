@@ -44,7 +44,7 @@ import {
   TERMINAL,
 } from './ledger.ts';
 import { ghLineage, type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
-import { classify, type DeployRun, deployedRevision, deployRunsFor, describe, probe } from './probe.ts';
+import { classify, type DeployRun, deployedRevision, deployRunsFor, describe, laterDeployRuns, probe } from './probe.ts';
 
 const VERDICT_FILE = 'walk-verdict.json';
 /** Pending verdicts a drain does not wait on: another issue, or deploy evidence, settles them. */
@@ -94,6 +94,8 @@ export type FloorOptions = {
   readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null;
   /** The deploy workflow's runs for a merge commit; `deployRunsFor` on the forge, unless a test supplies its own. */
   deployRuns?: (sha: string) => DeployRun[];
+  /** The deploy workflow's runs on the base branch after a cancelled one; `laterDeployRuns` on the forge, unless a test supplies its own. */
+  laterDeployRuns?: (cancelled: DeployRun) => DeployRun[];
   /** Why a person cannot land an incident's parked fix, or null when they can; `readLandBlocker`, unless a test supplies its own. */
   landBlocker?: (issue: number) => string | null;
 };
@@ -485,11 +487,12 @@ export class Floor {
       const landing = new Set(unsettled.map((item) => item.ref?.issue).filter((n): n is number => n !== undefined));
       const workflow = this.env.deployWorkflow;
       const runsFor = workflow ? (this.o.deployRuns ?? ((sha: string) => deployRunsFor(ctx, workflow, sha))) : undefined;
+      const laterRuns = workflow ? (this.o.laterDeployRuns ?? ((run: DeployRun) => laterDeployRuns(ctx, workflow, ctx.project.baseBranch, run))) : undefined;
       for (const item of unsettled) {
         // Owed to a sibling still open, or merged and not yet verified: nothing to look at until it lands.
         const prior = before.get(item.id);
         if (prior?.verdict === 'owed-by-sibling' && prior.sibling !== undefined && (landing.has(prior.sibling) || owedTo(this.lineage(item), prior.sibling))) continue;
-        const undeployed = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, workflow, runsFor, capMinutes: this.env.deployCapMinutes, repoRoot: ctx.repoRoot });
+        const undeployed = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, workflow, runsFor, laterRuns, capMinutes: this.env.deployCapMinutes, repoRoot: ctx.repoRoot });
         if (!undeployed) {
           walkable.push(item);
           continue;

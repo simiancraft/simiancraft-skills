@@ -6,7 +6,8 @@
  * merge whether there is evidence it is deployed: the deployed revision contains it, or, with no
  * revision to read, the deploy workflow's run for the merge commit completed successfully. Time
  * alone is never evidence: a merge without any is `not-yet-deployed`, and past the cap
- * `deploy-unconfirmed`. A deploy run that failed is `deploy-failed`, a wrong verdict. None is walked.
+ * `deploy-unconfirmed`. A deploy run that failed is `deploy-failed`, a wrong verdict; a cancelled run
+ * that a later run containing the merge supersedes is a wait. None is walked.
  */
 
 import type { Context } from '../../../fix-github-issue/lib/context.ts';
@@ -67,13 +68,22 @@ export function includesCommit(repoRoot: string, deployed: string, sha: string):
   return proc.exitCode === 0;
 }
 
-/** One run of the deploy workflow for a commit, as the forge lists it. */
-export type DeployRun = { status: string; conclusion: string | null; url?: string };
+/** One run of the deploy workflow, as the forge lists it, newest first. */
+export type DeployRun = { status: string; conclusion: string | null; url?: string; headSha?: string; createdAt?: string };
 
 /** The deploy workflow's runs for a commit; throws when the forge cannot be read. */
 export function deployRunsFor(ctx: Context, workflow: string, sha: string): DeployRun[] {
-  const raw = sh(ctx, ['gh', 'run', 'list', '--workflow', workflow, '--commit', sha, '--limit', '20', '--json', 'status,conclusion,url']);
+  const raw = sh(ctx, ['gh', 'run', 'list', '--workflow', workflow, '--commit', sha, '--limit', '20', '--json', 'status,conclusion,url,headSha,createdAt']);
   return JSON.parse(raw) as DeployRun[];
+}
+
+/** The deploy workflow's runs on `branch` created after `run`; throws when the forge cannot be read. */
+export function laterDeployRuns(ctx: Context, workflow: string, branch: string, run: DeployRun): DeployRun[] {
+  const raw = sh(ctx, ['gh', 'run', 'list', '--workflow', workflow, '--branch', branch, '--limit', '50', '--json', 'status,conclusion,url,headSha,createdAt']);
+  const runs = JSON.parse(raw) as DeployRun[];
+  if (!run.createdAt) return runs;
+  const after = Date.parse(run.createdAt);
+  return runs.filter((later) => later.createdAt !== undefined && Date.parse(later.createdAt) > after);
 }
 
 /** Conclusions that mean the deploy ran and broke, or was stopped: a fact about the merge, not a wait. */
@@ -85,16 +95,37 @@ const FAILED: ReadonlySet<string> = new Set(['failure', 'cancelled', 'timed_out'
  * a newest run that failed, was cancelled, timed out, or never started is a failed deploy; one that
  * completed any other way (skipped, neutral) did not deploy it.
  */
-export function judgeDeployRuns(workflow: string, runs: DeployRun[]): { deployed: boolean; failed?: true; reason: string } {
+export function judgeDeployRuns(workflow: string, runs: DeployRun[]): { deployed: boolean; failed?: DeployRun; reason: string } {
   if (runs.some((run) => run.status === 'completed' && run.conclusion === 'success')) return { deployed: true, reason: `${workflow} completed successfully` };
   const unfinished = runs.find((run) => run.status !== 'completed');
   if (unfinished) return { deployed: false, reason: `the ${workflow} run is ${unfinished.status}` };
   const finished = runs[0];
   if (finished && FAILED.has(finished.conclusion ?? '')) {
-    return { deployed: false, failed: true, reason: `the ${workflow} run for the merge concluded ${finished.conclusion}${finished.url ? `: ${finished.url}` : ''}` };
+    return { deployed: false, failed: finished, reason: `the ${workflow} run for the merge concluded ${finished.conclusion}${finished.url ? `: ${finished.url}` : ''}` };
   }
   if (finished) return { deployed: false, reason: `the ${workflow} run concluded ${finished.conclusion ?? 'without a conclusion'}` };
   return { deployed: false, reason: `no ${workflow} run for the merge` };
+}
+
+/**
+ * Whether a later run of the workflow covers a merge whose own run was cancelled: a deploy workflow
+ * that cancels in progress cancels each back-to-back merge's run for the next. A later run for a
+ * commit that contains the merge carries it: 'deployed' when that run succeeded, otherwise the wait
+ * as a reason. Null when nothing later contains the merge, or the later runs cannot be read.
+ */
+function supersede(workflow: string, cancelled: DeployRun, sha: string, laterRuns: (cancelled: DeployRun) => DeployRun[], repoRoot: string): 'deployed' | string | null {
+  let runs: DeployRun[];
+  try {
+    runs = laterRuns(cancelled);
+  } catch {
+    return null;
+  }
+  const covering = runs.filter((run) => run.headSha !== undefined && includesCommit(repoRoot, run.headSha, sha));
+  if (covering.some((run) => run.status === 'completed' && run.conclusion === 'success')) return 'deployed';
+  const next = covering.find((run) => run.status !== 'completed') ?? covering[0];
+  if (!next) return null;
+  const state = next.status === 'completed' ? `concluded ${next.conclusion ?? 'without a conclusion'}` : `is ${next.status}`;
+  return `the ${workflow} run for the merge was cancelled and a later run that contains it ${state}${next.url ? `: ${next.url}` : ''}`;
 }
 
 /** A merge with no evidence it is deployed: not walked, and why. */
@@ -105,7 +136,8 @@ export type Undeployed = { state: 'not-yet-deployed' | 'deploy-unconfirmed' | 'd
  * always walked. A deployed revision, when one was read, decides alone; without one, the deploy
  * workflow's runs for the merge do. A merge with no evidence stays `not-yet-deployed` until
  * `capMinutes` after it merged, then is `deploy-unconfirmed`: the floor looked and cannot tell.
- * A failed deploy run is `deploy-failed` at once, whatever the time.
+ * A failed deploy run is `deploy-failed` at once, whatever the time; a cancelled one is, only when
+ * no later run of the workflow contains the merge.
  */
 export function classify(options: {
   /** The revision `revisionCommand` printed; null when unset or unreadable. */
@@ -117,11 +149,13 @@ export function classify(options: {
   workflow?: string;
   /** Reads that workflow's runs for the merge commit. */
   runsFor?: (sha: string) => DeployRun[];
+  /** Reads that workflow's runs started after a cancelled one; without it a cancelled run is the last word. */
+  laterRuns?: (cancelled: DeployRun) => DeployRun[];
   capMinutes: number;
   repoRoot: string;
   now?: number;
 }): Undeployed | null {
-  const { deployed, sha, mergedAt, workflow, runsFor, capMinutes, repoRoot } = options;
+  const { deployed, sha, mergedAt, workflow, runsFor, laterRuns, capMinutes, repoRoot } = options;
   if (!sha) return null;
   let reason: string;
   if (deployed) {
@@ -135,6 +169,11 @@ export function classify(options: {
       judged = { deployed: false, reason: `the ${workflow} runs could not be read (${(error as Error).message})` };
     }
     if (judged.deployed) return null;
+    if (judged.failed?.conclusion === 'cancelled' && laterRuns) {
+      const superseded = supersede(workflow, judged.failed, sha, laterRuns, repoRoot);
+      if (superseded === 'deployed') return null;
+      if (superseded) judged = { deployed: false, reason: superseded };
+    }
     if (judged.failed) return { state: 'deploy-failed', reason: judged.reason };
     reason = judged.reason;
   } else {
