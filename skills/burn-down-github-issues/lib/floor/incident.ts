@@ -155,8 +155,6 @@ export type IncidentResult = {
   created: boolean;
   fix: FixOutcome | null;
   diagnosis: Diagnosis | null;
-  /** True when a person now owns the incident, so walking it again should not start another fix. */
-  withAPerson: boolean;
   /** Where the diagnosis places the remedy; null when no diagnosis was asked (a person already owns the incident). */
   cause: FloorCause | null;
 };
@@ -288,7 +286,7 @@ export async function handleIncident(
   const existing = ctx.dryRun ? null : openIncidentFor(ctx, entry.itemId);
   if (existing?.withAPerson) {
     ctx.log(`incident #${existing.number} is already open for ${entry.itemId} and with a person; not working it again`);
-    return { issue: existing.number, created: false, fix: null, diagnosis: null, withAPerson: true, cause: null };
+    return { issue: existing.number, created: false, fix: null, diagnosis: null, cause: null };
   }
 
   const diagnosis = options.diagnosis !== undefined ? options.diagnosis : await diagnose(ctx, options, evidence);
@@ -334,7 +332,7 @@ export async function handleIncident(
     ].join('\n');
     if (ctx.dryRun) {
       ctx.log(`  DRY RUN  would file incident "${title}"`);
-      return { issue: 0, created: false, fix: null, diagnosis, withAPerson: false, cause: null };
+      return { issue: 0, created: false, fix: null, diagnosis, cause: null };
     }
     ensureIncidentLabel(ctx);
     const url = sh(ctx, ['gh', 'issue', 'create', '--title', title, '--body', body, '--label', INCIDENT_LABEL]);
@@ -357,7 +355,7 @@ export async function handleIncident(
     const where = existing === null ? 'See the diagnosis above.' : `Diagnosis (${diagnosis.confidence}): ${diagnosis.summary}`;
     parkIssue(ctx, issue, `The diagnosis places the remedy outside this repository, so no fix was attempted; a person has to act on the environment. ${where}`);
     ctx.log(`incident #${issue}: parked; the remedy is outside the repository`);
-    return { issue, created: existing === null, fix: null, diagnosis, withAPerson: true, cause: 'outside-repository' };
+    return { issue, created: existing === null, fix: null, diagnosis, cause: 'outside-repository' };
   }
 
   // The fix is the pipeline's job, exactly as for any other issue. The issue is read live, labels and
@@ -367,18 +365,5 @@ export async function handleIncident(
   enrichBlockers(ctx, [live]);
   const fix = await fixIssue(ctx, live, { maxPoints: options.maxPoints });
   ctx.log(`incident #${issue}: ${fix.outcome}; ${fix.reason}`);
-  return { issue, created: existing === null, fix, diagnosis, withAPerson: ownedNow(ctx, entry.itemId), cause: causeOf(diagnosis) };
-}
-
-/**
- * Whether a person owns the incident after its fix ran, read from the tracker as it stands now: a
- * fix that did not merge (unjudged, busy, stopped) is the pipeline's to retry, not a person's. A
- * tracker that cannot be read keeps the incident with a person, as the floor's readout does.
- */
-function ownedNow(ctx: Context, itemId: string): boolean {
-  try {
-    return openIncidentFor(ctx, itemId)?.withAPerson ?? false;
-  } catch {
-    return true;
-  }
+  return { issue, created: existing === null, fix, diagnosis, cause: causeOf(diagnosis) };
 }

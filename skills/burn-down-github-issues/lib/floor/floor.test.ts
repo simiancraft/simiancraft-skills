@@ -498,7 +498,7 @@ describe('the cause on the floor\'s pause', () => {
       during?.(switchFileOf.current);
       options.onDiagnosed?.(cause);
       seen.push(readFileSync(switchFileOf.current, 'utf8'));
-      return { issue: 31, created: true, fix: null, diagnosis: null, withAPerson: cause === 'outside-repository', cause };
+      return { issue: 31, created: true, fix: null, diagnosis: null, cause };
     };
   const switchFileOf = { current: '' };
   const wrongWalk = async (name: string, cause: FloorCause | 'throws', during?: (switchFile: string) => void) => {
@@ -681,7 +681,7 @@ describe('deploy evidence', () => {
     const repair: typeof handleIncident = async (_ctx, options) => {
       filed.push(`${options.entry.verdict}: ${options.entry.reason}`);
       options.onDiagnosed?.('in-repository');
-      return { issue: 41, created: true, fix: null, diagnosis: null, withAPerson: false, cause: 'in-repository' };
+      return { issue: 41, created: true, fix: null, diagnosis: null, cause: 'in-repository' };
     };
     let runs: DeployRun[] = [{ status: 'completed', conclusion: 'failure', url: 'https://ci.test/runs/7' }];
     const f = floorFor('deploy-failed', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs, repair });
@@ -696,6 +696,25 @@ describe('deploy evidence', () => {
     await f.floor.walkOnce();
     expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'present' });
     expect(f.line()).toBe('go\n');
+  });
+
+  it('takes the owner of a repaired item from the tracker as it reads after the repair', async () => {
+    status = 200;
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    let incident: IncidentState = null;
+    const repair: typeof handleIncident = async (_ctx, options) => {
+      options.onDiagnosed?.('in-repository');
+      // The tracker after the repair: the incident is open and back with the pipeline.
+      incident = { number: 51, withAPerson: false };
+      return { issue: 51, created: true, fix: null, diagnosis: null, cause: 'in-repository' };
+    };
+    const runs: DeployRun[] = [{ status: 'completed', conclusion: 'failure', url: 'https://ci.test/runs/8' }];
+    const f = floorFor('repair-owner', { deployWorkflow: 'Deploy' }, { forge: false, deployRuns: () => runs, repair, readIncident: () => incident ?? null });
+    f.floor.put({ issue: 15, title: 'fix: another bundle', pr: 150, sha: OTHER, mergedAt: minutesAgo(10), paths: ['src/d.ts'] });
+    await f.floor.walkOnce();
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:150', verdict: 'deploy-failed' });
+    expect(f.floor.owed('all').map((item) => item.id)).toEqual(['pull-request:150']);
+    expect(f.readouts.at(-1)).not.toContain('incident #51 is parked for you');
   });
 
   it('refuses an empty workflow name, and accepts graceMinutes', () => {

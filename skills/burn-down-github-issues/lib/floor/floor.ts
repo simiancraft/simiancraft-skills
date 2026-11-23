@@ -723,6 +723,11 @@ export class Floor {
 
   /** The snapshot for this walk: `readOwnership` over the ledger now, with a tracker read that fails read as unknown. */
   private readOwners(): Ownership {
+    return this.ownersOf(latestByItem(readLedger(this.o.dir)));
+  }
+
+  /** `readOwnership` over these ledger entries, with a tracker read that fails read as unknown. */
+  private ownersOf(latest: Map<string, LedgerEntry>): Ownership {
     const read = (itemId: string): IncidentState => {
       try {
         return this.readIncident(itemId);
@@ -731,7 +736,7 @@ export class Floor {
         return undefined;
       }
     };
-    return readOwnership(latestByItem(readLedger(this.o.dir)), read, this.owners, (issue) => this.landable(issue));
+    return readOwnership(latest, read, this.owners, (issue) => this.landable(issue));
   }
 
   /** Where an item's issue sits in a carved trunk, read once per walk; null without an issue or a readable one. */
@@ -786,14 +791,10 @@ export class Floor {
         diagnosis,
         onDiagnosed: (cause) => this.diagnosed(entry.itemId, cause),
       });
-      // The incident's owner as handleIncident just read it from the tracker.
-      const owned = this.owners.get(entry.itemId);
-      if (owned) {
-        owned.incident = result.issue || null;
-        owned.owner = result.withAPerson ? 'person' : result.issue ? 'floor' : 'nobody';
-        owned.landable = result.withAPerson && this.landable(result.issue);
-      }
-      return { issue: result.issue, outcome: result.fix?.outcome ?? (result.withAPerson ? 'with a person' : 'filed'), cause: result.cause };
+      // The item's owner as the tracker reads after the repair, through the snapshot's one reader.
+      const owned = this.ownersOf(new Map([[entry.itemId, entry]])).get(entry.itemId);
+      if (owned) this.owners.set(entry.itemId, owned);
+      return { issue: result.issue, outcome: result.fix?.outcome ?? (owned?.owner === 'person' ? 'with a person' : 'filed'), cause: result.cause };
     } catch (error) {
       if (error instanceof RunStopping) throw error;
       this.o.log(`floor: incident for ${entry.itemId} failed: ${(error as Error).message}`);

@@ -1168,29 +1168,6 @@ describe('release noise at every catch-up', () => {
   });
 });
 
-describe("an incident's owner after its fix ran", () => {
-  const handle = (outcome: string, labels: string[]) => {
-    let reads = 0;
-    const api = loadFunctions('./floor/incident.ts', ['handleIncident', 'ownedNow'], {
-      gather: () => ({ lastGood: undefined, suspects: [], logs: '' }),
-      openIncidentFor: () => (++reads === 1 ? null : { number: 31, withAPerson: labels.length > 0 }),
-      causeOf: () => 'in-repository', incidentTitle: () => 'floor: x is absent', renderSuspects: () => '', ensureIncidentLabel: noop, ensureLabels: noop,
-      INCIDENT_LABEL, sh: (_ctx: unknown, argv: string[]) => (argv[2] === 'create' ? 'https://github.com/o/r/issues/31' : '{"number":31,"labels":[]}'),
-      enrichBlockers: noop, parkIssue: noop,
-      fixIssue: async () => ({ outcome, reason: 'r' }),
-    });
-    const entry = { itemId: 'pull-request:7', checkedAt: '2026-11-20T00:00:00Z', rung: 'exercise', verdict: 'absent', reason: 'r' };
-    return api.handleIncident(context(new FakeTracker(bot)), { entry, maxPoints: 2, diagnosis: { culprit: null, confidence: 'likely', error: '', remedy: 'fix-forward', summary: 's' } });
-  };
-
-  it('is with a person only when the tracker says so, never because the fix did not merge', async () => {
-    for (const outcome of ['unjudged', 'busy', 'stopped']) expect((await handle(outcome, [])).withAPerson).toBe(false);
-    expect((await handle('handed-off', ['needs-human'])).withAPerson).toBe(true);
-    expect((await handle('dlq', ['loop/dlq'])).withAPerson).toBe(true);
-    expect((await handle('merged', [])).withAPerson).toBe(false);
-  });
-});
-
 describe('a prover that needs a person', () => {
   const pipeline = '../../fix-github-issue/lib/pipeline.ts';
   const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
