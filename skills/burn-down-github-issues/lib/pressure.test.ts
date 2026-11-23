@@ -18,6 +18,8 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
 import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
+import { proofHeldComment, standingStop } from '../../fix-github-issue/lib/work-markers.ts';
+import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -218,7 +220,8 @@ describe('tracker and checks pressure', () => {
 // of loop.ts, subprocess, source edit, or live tracker is involved.
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping and whether its lease stands; here neither is in doubt.
-  deps = { preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  // Nor does any pull request carry a person's hold, unless a test says so.
+  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -1037,5 +1040,135 @@ describe('catch-up stop boundaries', () => {
     });
     await expect(api.runWorker(context(new FakeTracker(bot)), { number: 1, title: 't', labels: [] }, '/fake', 2)).rejects.toBeInstanceOf(RunStopping);
     expect(acts).toEqual([]);
+  });
+});
+
+describe('a prover that needs a person', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
+  const settle = (seat: 'coder' | 'prover', pr: number | undefined) => {
+    const writes: string[][] = [];
+    const lanes: string[] = [];
+    const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdProof'], {
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+      move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
+      proofHeldComment, loopNote, liveGate: () => ({ ok: true }),
+    });
+    const ctx = { ...context(new FakeTracker(bot)), dryRun: false, runId: 'run-1' };
+    const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat };
+    return api.settleTerminalVerdict(ctx, { number: 1, title: 't', labels: [] }, result, 2, noop, pr).then((outcome: unknown) => ({ outcome, writes, lanes }));
+  };
+
+  it('leaves the pull request open, labels it and the issue needs-human, and says on the issue how the hold comes off', async () => {
+    const { outcome, writes, lanes } = await settle('prover', 7);
+    expect(outcome).toEqual({ outcome: 'handed-off', reason: 'the signed-in probe needs the shared test credentials' });
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'close')).toEqual([]);
+    expect(writes).toContainEqual(['gh', 'issue', 'edit', '1', '--add-label', 'needs-human']);
+    expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--add-label', 'needs-human']);
+    const hold = writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    expect(standingStop([{ author: bot, body: hold }], bot)).toEqual({ kind: 'proof-held' });
+    expect(hold).toContain('pull request #7 stays open');
+    expect(hold).toContain('the shared test credentials');
+    // The pointer on the pull request is the loop's word, marked as such.
+    const pointer = writes.find((argv: string[]) => argv[1] === 'pr' && argv[2] === 'comment' && argv[3] === '7')?.at(-1) ?? '';
+    expect(pointer.startsWith(LOOP_NOTE)).toBe(true);
+    expect(pointer).toContain('#1');
+    expect(lanes).toEqual(['H2']);
+    expect(legal('D2', 'H2')).toBe(true);
+  });
+
+  it('with no pull request opened, holds the issue alone and names the coded branch', async () => {
+    const { writes, lanes } = await settle('prover', undefined);
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr')).toEqual([]);
+    expect(writes).toContainEqual(['gh', 'issue', 'edit', '1', '--add-label', 'needs-human']);
+    expect(writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1)).toContain('the coded commit stays on `fix/probe-1`');
+    expect(lanes).toEqual(['H2']);
+  });
+
+  it("leaves a coder's needs-human as it was: nothing is proved, so the pull request is closed", async () => {
+    const { writes, lanes } = await settle('coder', 7);
+    expect(writes).toContainEqual(['gh', 'pr', 'close', '7', '--comment', 'Superseded; see the issue.']);
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'edit')).toEqual([]);
+    expect(lanes).toEqual(['H2']);
+  });
+
+  it('is proved again on the same pull request once a person lifts the hold: the burndown reads no objection', () => {
+    const thread = [
+      { author: bot, body: 'Moved to the work dead-letter queue.\n\nan older stop' },
+      { author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs the shared test credentials; parked until then') },
+    ];
+    let reads = 0;
+    const api = loadFunctions('../loop.ts', ['lastObjection'], {
+      ctx: { botLogin: bot }, standingStop,
+      sh: () => (++reads === 1 ? '2026-09-20T00:00:00Z' : JSON.stringify(thread)),
+    });
+    expect(api.lastObjection(1, 7)).toBeNull();
+    reads = 0;
+    thread.push({ author: bot, body: 'Parked: the merge boundary refused it.' });
+    expect(api.lastObjection(1, 7)).toBe('Parked: the merge boundary refused it.');
+  });
+
+  it('a lifted hold puts the card back with its pull request, and the resume reaches Proving', () => {
+    const lane = placeByFacts({ state: 'OPEN', labels: ['size: 1'], pulls: [{ number: 7, isDraft: true, merged: false }], ceiling: 2 });
+    expect(lane.lane).toBe('D3');
+    const card = new Card('held', laneState('D2'));
+    card.send('WORKER_VERDICT', (g: string) => g === 'verdictNeedsHuman');
+    expect(card.lane).toBe('H2');
+    expect(card.actions).toContain('labelPrHold');
+    card.send('HOLD_REMOVED', (g: string) => g === 'draftPr');
+    expect(card.lane).toBe('D3');
+    card.send('RESUMED', () => false);
+    expect(card.lane).toBe('D2');
+    expect(card.actions.slice(-4)).toEqual(['liftPrHoldMirror', 'prToDraft', 'runProver', 'moveCard']);
+  });
+
+  const redrive = (thread: Array<{ author: string; body: string }>) => {
+    const writes: string[][] = [];
+    const reproofs: boolean[] = [];
+    const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue'], {
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
+      trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, pullHolds: () => ['needs-human'],
+      claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
+      inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+      runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
+        reproofs.push(reproof);
+        return { verdict: 'failed', reason: 'stop after recording the seat' };
+      }, countFailure: () => ({ outcome: 'dlq' }), removeWorktree: noop,
+    });
+    return api.redriveIssue(context(new FakeTracker(bot)), { number: 1, title: 'issue' }, { number: 7, branch: 'fix/probe-1' }, null).then(() => ({ writes, reproofs }));
+  };
+
+  it("takes the pull request's needs-human off with the issue's when the held proof is the standing stop, and proves", async () => {
+    const { writes, reproofs } = await redrive([{ author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs credentials') }]);
+    expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--remove-label', 'needs-human']);
+    expect(reproofs).toEqual([true]);
+  });
+
+  it("leaves a person's needs-human on the pull request when something else stopped the work last", async () => {
+    const { writes } = await redrive([
+      { author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs credentials') },
+      { author: bot, body: 'Parked: pull request #7 carries `needs-human`.' },
+    ]);
+    expect(writes.filter((argv: string[]) => argv.includes('--remove-label'))).toEqual([]);
+  });
+
+  it('refuses the merge while needs-human is on the pull request, whatever the issue carries', async () => {
+    const writes: string[][] = [];
+    const ctx = context(new FakeTracker(bot));
+    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
+      catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+      pullHolds: () => ['needs-human'],
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv), followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+    });
+    const outcome = await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    expect(outcome).toEqual({ park: expect.stringContaining('pull request #7 carries `needs-human`') });
+    expect(writes.filter((argv: string[]) => argv[2] === 'merge')).toEqual([]);
+    expect(successors(laneState('F5'), { ownEventsOnly: true }).has(laneState('H3'))).toBe(true);
   });
 });

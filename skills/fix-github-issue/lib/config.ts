@@ -7,7 +7,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 
 /** Everything true of a repository rather than of the pipeline. Lives in the repository, never here. */
 export type ProjectConfig = {
@@ -25,6 +25,13 @@ export type ProjectConfig = {
   checkCommand: string;
   /** Frozen-lockfile install. A fresh worktree has no `node_modules`. */
   installCommand: string;
+  /**
+   * Untracked files the driver copies from the main checkout into each lane whenever it makes or
+   * resets one (shared test credentials, say), so every seat has them without running a command.
+   * Paths relative to the repository root; each must be one git ignores. A missing source is
+   * logged and skipped. Optional.
+   */
+  laneFiles?: string[];
   /** Files that state the conventions a prescribed remedy has to be read against. */
   conventionDocs: string[];
   /** Where the point scale is written down, quoted to the appraiser. */
@@ -140,6 +147,18 @@ export function gateCommand(project: ProjectConfig, command: string): string {
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const exports = Object.entries(project.ciEnvironment ?? {}).map(([name, value]) => `${name}=${quote(value)}`);
   return `(export ${exports.join(' ')}; ${command})`;
+}
+
+/** What is wrong with `laneFiles`, or null: absent, or relative paths that stay inside the repository. */
+export function laneFilesFault(files: unknown): string | null {
+  if (files === undefined) return null;
+  const inside = (path: unknown) => {
+    if (typeof path !== 'string' || path.trim() === '' || isAbsolute(path)) return false;
+    const normal = normalize(path);
+    return normal !== '.' && normal !== '..' && !normal.startsWith('../');
+  };
+  if (Array.isArray(files) && files.every(inside)) return null;
+  return 'project.laneFiles must be an array of paths relative to the repository root, none leaving it';
 }
 
 /** The knobs the fix pipeline itself enforces. A driver may carry more; the pipeline reads these. */
@@ -416,6 +435,8 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   if (ciFault) faults.push(ciFault);
   const environmentFault = ciEnvironmentFault(project.ciEnvironment);
   if (environmentFault) faults.push(environmentFault);
+  const laneFault = laneFilesFault(project.laneFiles);
+  if (laneFault) faults.push(laneFault);
   if (project.followBase !== undefined && typeof project.followBase !== 'boolean') {
     faults.push('project.followBase must be a boolean when present');
   }

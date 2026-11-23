@@ -92,7 +92,8 @@ The counters worth watching, and what a stall in each means:
 | `weighing the question on a panel of A, B, C` | a seat raised `needs-decision` and three frontier models are each answering it; their reviews land on the issue one by one |
 | `panel: N of M decided; proceed` or `; hold` | the panel's receipt is on the issue: `proceed` sends the card back to be appraised with the decisions as its ruling, `hold` parks it with what is still open |
 | `no decision panel (<why>); held for a person` | fewer than three distinct models are reachable, or the issue spent its panels; the hold is applied as before |
-| `label #N needs-decision` or `needs-human` | handed off before any pull request; the reason is a comment on the issue, and the label keeps it out of selection until removed |
+| `label #N needs-decision` or `needs-human` | handed off; the reason is a comment on the issue, and the label keeps it out of selection until removed. A coder's hand-off closes any pull request it had |
+| `the prover needs a person; PR #N stays open` | the code is pushed but its proof needs access an agent lacks (shared test credentials, for one): the issue and the pull request both carry `needs-human`, and the pull request stays open. Removing the issue's label is the whole pickup: the next run proves the same pull request again (or `fix.ts --issue N --redrive` does it at once), and the pull request's label comes off with it. While `needs-human` is on the pull request it never merges |
 | `to the <phase> DLQ` | a machine gave up: the worker past its attempts, the review budget spent, or a landing that could not complete; the issue carries `loop/dlq: <phase>` |
 
 **Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** A

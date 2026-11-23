@@ -41,6 +41,7 @@ import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
 import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
+import { standingStop } from '../fix-github-issue/lib/work-markers.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
@@ -908,7 +909,8 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
 
 /**
  * The newest reason the loop itself left on the thread for stopping this pull request, which is
- * the brief a redriven worker gets. Bound to the work in hand: only the loop's own comments, and
+ * the brief a redriven worker gets. A held proof, newest, is no objection: the prover asked for
+ * a person, a person lifted the hold, and the pull request is proved again. Bound to the work in hand: only the loop's own comments, and
  * only those written after this pull request was opened, since an issue's thread also holds the
  * stops of earlier attempts that this pull request never met. Null when the loop never stopped
  * this work: it only lost its driver, and it is resumed from Proving with no objection to answer.
@@ -919,9 +921,11 @@ function lastObjection(issue: number, pull: number): string | null {
   if (!opened) throw new Error(`pull request #${pull} has no creation time`);
   const raw = sh(ctx, [
     'gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq',
-    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.createdAt > "${opened}") | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""`,
+    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.createdAt > "${opened}") | { author: .author.login, body }]`,
   ]);
-  return raw.trim() || null;
+  // A held proof that a person has since lifted is not an objection: the work is proved again.
+  const stop = standingStop(JSON.parse(raw || '[]') as Array<{ author: string; body: string }>, ctx.botLogin);
+  return stop?.kind === 'objection' ? stop.text.trim() || null : null;
 }
 
 /**

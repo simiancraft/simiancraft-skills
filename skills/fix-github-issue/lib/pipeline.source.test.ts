@@ -48,4 +48,8 @@ describe('a person landing past the merge boundary', () => {
     expect(fix).toContain("landPastBoundary: LAND ? ISSUE_NUMBER : undefined");
     expect(fix).toContain('LAND ? null : OBJECTION');
   });
+  it('continues a held proof on its open pull request at Proving, with or without --redrive', () => {
+    expect(fix).toContain('REDRIVE || LAND || PROOF_HELD ? PULLS.find');
+    expect(fix).toContain('const OBJECTION: string | null = PROOF_HELD ? null :');
+  });
 });

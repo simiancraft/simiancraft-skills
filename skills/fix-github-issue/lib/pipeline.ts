@@ -28,7 +28,7 @@ import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktr
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_AUTOMATION_REFRESHES, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
-import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
+import { codedComment, latestStep, proofHeldComment, standingStop, type Touch, unprovedComment } from './work-markers.ts';
 import { loopNote } from './note.ts';
 
 /**
@@ -83,6 +83,11 @@ export type WorkerResult = {
   branch?: string;
   /** What the change touches, which decides whether autoMerge: 'code-only' will merge it. */
   touches?: Array<'code' | 'data' | 'migration' | 'stored-string' | 'ci'>;
+  /**
+   * The seat whose escape this is. A coder's escape has nothing proved behind it; a prover's comes
+   * after the code was pushed and announced, so its hold keeps the pull request open.
+   */
+  seat?: 'coder' | 'prover';
 };
 
 export type ReviewResult = {
@@ -214,7 +219,7 @@ async function runWorker(
       if (c.verdict === 'not-run') return { issue: issue.number, verdict: 'not-run', reason: c.reason };
       if (c.verdict !== 'coded') {
         // The escapes are the same words either seat may say, with the pull request a revision holds.
-        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches };
+        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches, seat: 'coder' };
       }
       coded = { branch: c.branch ?? '', gated: c.gated ?? '', touches: c.touches ?? [] };
       // The push is the fact; the announcement is what the next run, on any machine, reads.
@@ -246,7 +251,7 @@ async function runWorker(
       const touches = [...new Set([...coded.touches, ...(p.touches ?? [])])];
       return { issue: issue.number, verdict: 'fixed', reason: p.reason, pr: p.pr, branch: coded.branch, touches: touches.length > 0 ? touches : undefined };
     }
-    if (p.verdict !== 'unprovable') return { issue: issue.number, verdict: p.verdict, reason: p.reason, pr: p.pr ?? feedback?.pr, branch: coded.branch };
+    if (p.verdict !== 'unprovable') return { issue: issue.number, verdict: p.verdict, reason: p.reason, pr: p.pr ?? feedback?.pr, branch: coded.branch, seat: 'prover' };
 
     // Proof that cannot be produced is a fault in the code: back a step, spending an attempt. The
     // last attempt is the caller's to count, so a refusal at the cap is never counted twice.
@@ -1167,6 +1172,12 @@ async function land(
         say(`refusing to merge PR #${pr}: ${gate.why}`);
         return { park: `the issue changed under the review: ${gate.why}` };
       }
+      // A hold on the pull request is a person's word too, whatever the issue carries.
+      const held = pullHolds(ctx, pr)[0];
+      if (held) {
+        say(`refusing to merge PR #${pr}: it carries ${held}`);
+        return { park: `pull request #${pr} carries \`${held}\`; it merges once that label is off the pull request` };
+      }
     }
 
     // The last look upstream. Pinning the head does not pin the base: if anything landed while
@@ -1325,6 +1336,7 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 
     case 'needs-decision':
     case 'needs-human': {
+      if (result.verdict === 'needs-human' && result.seat === 'prover') return holdProof(ctx, issue, result, say, pr);
       // Comment first, then the label that hides the issue from selection.
       mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(result.reason)]);
       // A question the worker raised is weighed by a decision panel first, when one can sit; one it
@@ -1389,6 +1401,46 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     default:
       return null;
   }
+}
+
+/**
+ * A prover that needs a person (access, credentials, a shared record it may not touch) answers
+ * after the code was pushed and announced, so nothing about the change is in doubt. The work is
+ * held where it stands rather than thrown away: the pull request stays open, the issue and the
+ * pull request both carry `needs-human`, and the issue says what is missing and how the hold
+ * comes off. The lane is retired as on every other exit; the branch is on the remote, and the
+ * pickup checks the pull request's branch out afresh. A lane kept for a hold of unknown length
+ * would also read, once the hold is lifted, as one a dead run stranded with no usable verdict.
+ *
+ * Lifting the issue's label is the whole pickup. The issue goes back to where its facts put it:
+ * Drafted or Ready for review with this pull request, where the burndown resumes it from Proving
+ * (the hold comment is not an objection, so no coder is sent), or, with no pull request, Ready,
+ * where the coded announcement is proved rather than coded again. `fix.ts --redrive` does the same
+ * at once. The pickup takes the pull request's label off with the issue's, and a label still on
+ * the pull request at the merge gate refuses the merge.
+ */
+function holdProof(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void, pr?: number): FixOutcome {
+  holdLease(ctx, issue.number, 'hold the proof for a person');
+  const branch = result.branch ?? '';
+  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', proofHeldComment(ctx.runId, { branch, pr }, result.reason)]);
+  mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+  if (pr) {
+    mutate(ctx, `label PR #${pr} needs-human`, ['gh', 'pr', 'edit', String(pr), '--add-label', 'needs-human']);
+    mutate(ctx, `note the hold on PR #${pr}`, ['gh', 'pr', 'comment', String(pr), '--body', loopNote(`Held for a person while proving; the reason and how to lift the hold are on #${issue.number}. Not to be merged while \`needs-human\` is on this pull request.`)]);
+  }
+  say(`the prover needs a person; ${pr ? `PR #${pr} stays open, ` : ''}held with needs-human`);
+  move(ctx, issue, 'H2', `proof held: ${result.reason}`.slice(0, 120));
+  retireLane(ctx, issue.number, say);
+  return { outcome: 'handed-off', reason: result.reason };
+}
+
+/** The hold labels a person may put on a pull request itself; one standing at the merge gate refuses the merge. */
+export const PULL_HOLD_LABELS = ['needs-human', 'needs-decision', 'loop/skip'];
+
+/** The holds a person's labels put on a pull request; throws when the labels cannot be read, since unknown is not "none". */
+function pullHolds(ctx: Context, pr: number): string[] {
+  const labels = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'labels', '--jq', '.labels[].name']).split('\n').map((l) => l.trim());
+  return labels.filter((label) => PULL_HOLD_LABELS.includes(label));
 }
 
 /**
@@ -1911,6 +1963,14 @@ export async function redriveIssue(
     // The pull request goes back to draft first, so the catch-up and the revision's pushes spend
     // no CI run. Then the base: a redriven pull request has usually sat, and no revision begins on
     // a stale lane.
+    // The issue's hold is the one selection and the live gate read, and it is lifted, or this
+    // redrive would not have passed the gate. When the newest stop on the thread is a held proof,
+    // the pull request's `needs-human` is that hold's mirror; it comes off with it, or the merge
+    // gate would refuse the very work the person released. A label a person put on the pull
+    // request after anything else stopped the work stays, and the merge gate honours it.
+    if (pullHolds(ctx, pull.number).includes('needs-human') && standingStop(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin)?.kind === 'proof-held') {
+      mutate(ctx, `lift needs-human on PR #${pull.number}: the issue's hold was lifted`, ['gh', 'pr', 'edit', String(pull.number), '--remove-label', 'needs-human']);
+    }
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
     const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
     if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {

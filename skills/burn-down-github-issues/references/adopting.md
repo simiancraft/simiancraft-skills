@@ -39,6 +39,7 @@ export default {
     evidenceBranch: '__evidence_locker__',
     checkCommand: 'bun run verify',
     installCommand: 'bun install --frozen-lockfile',
+    laneFiles: ['.env.test.local'] /* optional; ignored files copied from the main checkout into every lane */,
     conventionDocs: ['AGENTS.md', 'CLAUDE.md'],
     sizingScale: 'where your point scale is documented',
     sharedServices: ['the local database', 'the shared staging environment'],
@@ -122,6 +123,7 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `ciCommand` | optional non-empty string; the prover always runs it and records command, full SHA, and exit code in `gateRun`. If unset, it records `checkCommand` only when the head moved or the gated commit is unknown; otherwise no rerun. A moved or unknown head still owes `checkCommand` first. | `bun run test:ci` | omit when `checkCommand` is also CI's deciding command |
 | `ciEnvironment` | optional map of environment variable names to string values: what the CI job's environment has that a lane may not (a linked resource, a stage name). When set, the coder's and reviewer's `checkCommand` and the prover's gate commands run as `(export NAME='value' ...; command)`, and the gate is named `ci-shaped` instead of `lane` in the prover's `gateRun.environment`, its receipt, and the reviewer's citation. Values are written into prompts and logs, so give a secret as a stub of the same shape, never its real value. | `{ SST_RESOURCE_App: '{"name":"app","stage":"test"}' }` | omit when the lane and the CI job see the same environment |
 | `installCommand` | frozen-lockfile install | `bun install --frozen-lockfile` | the same |
+| `laneFiles` | optional; files the main checkout holds and git ignores (shared test credentials, a local env file) that the driver copies into each lane when it makes or resets one, so every seat has them without running a command. Relative to the repository root. A missing source is logged and skipped; a path git does not ignore is logged and not copied, since a seat could commit it. | `['.env.test.local']` | omit |
 | `conventionDocs` | what a prescribed remedy is read against | `CONTRIBUTING.md` | `AGENTS.md` |
 | `sizingScale` | where the point scale is written | a docs page | an issue template |
 | `pathAliases` | **check this**, alias to directory | `@/` to `src` | `~/` to `.` |
