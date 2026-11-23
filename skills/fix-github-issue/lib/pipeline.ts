@@ -2033,7 +2033,10 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * would be the only irreversible act here.
  */
 export function retireLane(ctx: Context, issue: number, say: (message: string) => void): void {
-  if (preserveLaneWork(ctx, issue, say)) removeWorktree(ctx, issue);
+  if (!preserveLaneWork(ctx, issue, say)) return;
+  removeWorktree(ctx, issue);
+  // The seats' scratch (`seatScratch`) goes with the lane; a kept lane keeps it beside it for its reader.
+  if (ctx.runDir) rmSync(join(ctx.runDir, 'scratch', `issue-${issue}`), { recursive: true, force: true });
 }
 
 export function preserveLaneWork(ctx: Context, issue: number, say: (message: string) => void): boolean {

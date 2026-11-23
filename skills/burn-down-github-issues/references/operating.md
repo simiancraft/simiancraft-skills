@@ -232,7 +232,7 @@ A stranded lane that holds a proof beside uncommitted work, or one a driverless 
 or off its pull request's head, gets the same work dead letter instead of a resume; the resume
 judges the lane only once it holds the issue's claim. An untracked `.proof/` or `.proof-<name>/`
 in a lane is a seat's scratch, never uncommitted work; seats are given a scratch directory under
-the run directory (`scratch/issue-<n>/<seat>`) for it.
+the run directory (`scratch/issue-<n>/<seat>`) for it, removed when the lane retires and kept with a lane kept for a person.
 
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.

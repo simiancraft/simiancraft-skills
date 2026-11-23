@@ -73,7 +73,8 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
  * A seat's scratch directory, outside its lane: `<runDir>/scratch/issue-<n>/<role>`. Its prompt names
  * it as `SCRATCH_DIR`, and receipts, logs, and drafts go there, never into the worktree, where an
  * untracked file reads as uncommitted work and the review gate refuses the lane. One directory per
- * issue and seat, kept across attempts beside the run's logs.
+ * issue and seat, kept across the lane's attempts and removed when the lane retires (`retireLane`);
+ * a lane kept for a person keeps its scratch.
  */
 export function seatScratch(ctx: Context, issue: number, role: string): string {
   const dir = join(ctx.runDir, 'scratch', `issue-${issue}`, role);

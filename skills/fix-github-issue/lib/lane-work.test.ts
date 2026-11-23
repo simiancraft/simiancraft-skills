@@ -170,6 +170,22 @@ describe('what a finished lane leaves behind', () => {
     retireLane(ctxFor(lines), 80, say(lines));
     expect(existsSync(dir)).toBe(false);
   });
+
+  it('removes the seats\' scratch with the lane, and keeps it with a kept lane', () => {
+    const runDir = join(scratch, 'run');
+    const ctx = { ...ctxFor([]), runDir } as Context;
+    const seats = (issue: number) => join(runDir, 'scratch', `issue-${issue}`);
+    for (const issue of [182, 183]) {
+      mkdirSync(join(seats(issue), 'prover'), { recursive: true });
+      writeFileSync(join(seats(issue), 'prover', 'gate.log'), 'receipts\n');
+    }
+    lane(182, false);
+    retireLane(ctx, 182, () => {});
+    expect(existsSync(seats(182))).toBe(false);
+    writeFileSync(join(lane(183, false), 'half-done.txt'), 'edits nobody committed\n');
+    retireLane(ctx, 183, () => {});
+    expect(existsSync(join(seats(183), 'prover', 'gate.log'))).toBe(true);
+  });
 });
 
 describe('reconcile at a loop start', () => {
