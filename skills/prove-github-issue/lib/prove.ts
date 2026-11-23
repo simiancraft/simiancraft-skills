@@ -6,11 +6,12 @@
  * its answer is believable.
  */
 
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { agentCapMs, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
+import { CODE_FILE, PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import type { Touch } from '../../fix-github-issue/lib/work-markers.ts';
 
@@ -118,7 +119,9 @@ export async function runProve(
 
   const result = readResult<ProveResult>(cwd, PROOF_FILE);
   if (!result || !KNOWN.includes(result.verdict as ProveVerdict)) {
-    return fail(issue.number, result ? `prover verdict '${result.verdict}' is not one the driver knows; log ends: ${logTail(logPath)}` : `no verdict from the prover; log ends: ${logTail(logPath)}`);
+    // The driver clears the coder's file before the prover starts, so one there now is the prover's.
+    const misplaced = !existsSync(join(cwd, PROOF_FILE)) && existsSync(join(cwd, CODE_FILE)) ? `; ${PROOF_FILE} is missing, but ${CODE_FILE} was written during the prover's turn, so the prover likely answered in the coder's file` : '';
+    return fail(issue.number, `${result ? `prover verdict '${result.verdict}' is not one the driver knows` : 'no verdict from the prover'}${misplaced}; log ends: ${logTail(logPath)}`);
   }
   if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
     return fail(issue.number, `prover verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}`);
