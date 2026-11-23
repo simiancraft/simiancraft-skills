@@ -122,7 +122,7 @@ A coder's `needs-human` or `needs-decision`, and a prover's `needs-decision`, cl
 request the work had: nothing behind them is proved. A prover's `needs-human` comes after the code
 was pushed and announced, so the work is held where it stands (`WorkerResult.seat` says which seat
 answered): the pull request stays open, the issue and the pull request both carry `needs-human`,
-the issue gets a `<!-- loop-proof-held ... -->` comment with the reason and how the hold comes
+the issue gets a `proof-held` stop record with the reason and how the hold comes
 off, and the lane is retired (the branch is on the remote). Removing the issue's label is the whole
 pickup. With a pull request, the facts put the card in Drafted or Ready for review, the burndown
 resumes it with no objection (the held proof is none), and the prover makes the proof current on
@@ -378,6 +378,20 @@ let a driver shape the merge without the pipeline learning why:
 
 Every park carries its reason to the issue as a comment and to the pull request as `loop/parked`,
 whichever gate produced it.
+
+### The stop record
+
+Every stop the loop makes is recorded on the issue in one format (`lib/stop-record.ts`): a
+`<!-- loop-stop kind=<kind> ... -->` marker line, then the words a person and the next seat read.
+The kinds are `park`, `boundary` (the merge boundary's park, which `--land` may waive),
+`dead-letter` (with its `phase`), `proof-held` (with the run, branch, and pull request), `held` (a
+seat's `needs-human` or `needs-decision`, with its `verdict`), and `approved`. One reader,
+`readStop`, answers what stopped the work last: the newest record the loop's login wrote, since the
+open pull request was opened. A park or a dead letter is the objection a redrive hands the coder;
+a held proof is proved again; a boundary park or an approval is neither. Threads written before the
+record are read by their older markers (`loop-proof-held`, `loop-held`) and by a loop note's words:
+a dead-letter queue, a park, and the boundary's `autoMerge is ... and the change touches` reason.
+`--land` classifies the comment that was in force when the park label went on the same way.
 
 ## Known gaps
 

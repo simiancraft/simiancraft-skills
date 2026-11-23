@@ -11,7 +11,8 @@ import { ciCommandFault, ciEnvironmentFault, gateCommand, gateEnvironment, type 
 import { type Context, createContext } from './context.ts';
 import { clearLaneForRerun, placeWork } from './pipeline.ts';
 import { loopNote } from './note.ts';
-import { codedComment, heldComment, latestStep, proofHeldComment, standingStop, unprovedComment } from './work-markers.ts';
+import { codedComment, latestStep, unprovedComment } from './work-markers.ts';
+import { heldComment, proofHeldComment, standingStop } from './stop-record.ts';
 
 /** A real remote and real lanes: whether a push happened is only a fact on disk. */
 let scratch: string;

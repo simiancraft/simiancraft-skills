@@ -29,7 +29,8 @@ import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktr
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
-import { codedComment, heldComment, latestStep, proofHeldComment, standingStop, type Touch, unprovedComment } from './work-markers.ts';
+import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
+import { heldComment, proofHeldComment, standingStop } from './stop-record.ts';
 import { loopNote } from './note.ts';
 
 /**
@@ -896,11 +897,11 @@ export type Reviewed = { review: ReviewResult; reviewedSha: string };
 /** A review that produced no trusted verdict says which dead-letter queue owns the reason. */
 export type DeadLetter = { dlq: DlqPhase; reason: string };
 /**
- * `park` hands the landing to a person (the merge boundary, or the issue changed under the review);
+ * `park` hands the landing to a person (the merge boundary, marked `boundary`, or the issue changed under the review);
  * `dlq` is a landing the machine could not complete (a conflict, red checks, a failed smoke, a
  * refused line, an unreported merge), which the landing queue's triage may retry.
  */
-export type Landing = 'merged' | 'revise' | 'stale' | { reproof: CaughtUp } | { park: string } | { dlq: string };
+export type Landing = 'merged' | 'revise' | 'stale' | { reproof: CaughtUp } | { park: string; boundary?: true } | { dlq: string };
 
 /** How long the smoke command may run before the landing is a dead letter as unbootable. */
 
@@ -1041,7 +1042,7 @@ async function land(
       '--add-label',
       'loop/parked',
     ]);
-    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}${heldNote}` };
+    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}${heldNote}`, boundary: true };
   }
 
   // The approval is pinned to the commit the reviewer read. Anything pushed to the lane since then
@@ -1568,6 +1569,8 @@ export async function reviewAndLand(
   // Why the work stopped, carried to the park comment so the reason lives on the issue rather
   // than only in this run's log. Only a person's call parks; a machine's failure is a dead letter.
   let parkReason = 'the loop worked this issue and could not finish the call';
+  /** A boundary park is recorded as one, so `--land` can tell it from every other. */
+  let parkKind: 'park' | 'boundary' = 'park';
   // A budget already spent when the work arrives here (a resume, a redrive nobody reset) is the
   // review queue's, as it is when the last round is spent below: a machine's limit, not a person's call.
   if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun) {
@@ -1652,6 +1655,7 @@ export async function reviewAndLand(
     // round for the same reason.
     if (typeof outcome === 'object' && verdict.decision === 'merge') {
       parkReason = outcome.park;
+      if (outcome.boundary) parkKind = 'boundary';
       break;
     }
 
@@ -1686,7 +1690,7 @@ export async function reviewAndLand(
   }
 
   holdLease(ctx, issue.number, 'park the issue');
-  parkIssue(ctx, issue.number, parkReason);
+  parkIssue(ctx, issue.number, parkReason, parkKind);
   // The pull request is parked too, so a human reading the branch sees the same state the issue
   // carries rather than an unlabelled draft nobody claimed.
   if (result.pr) {

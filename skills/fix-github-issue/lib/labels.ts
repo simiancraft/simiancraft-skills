@@ -9,7 +9,7 @@
 
 import type { CloseEvent, Context } from './context.ts';
 import { mutate, sh } from './shell.ts';
-import { loopNote } from './note.ts';
+import { type StopKind, stopComment } from './stop-record.ts';
 
 /** The shape every function here reads. Callers carry richer issues; these only need the labels. */
 export type LabelledIssue = { number: number; labels: Array<{ name: string }> };
@@ -256,7 +256,7 @@ export function sendToDlq(ctx: Context, issue: number, phase: DlqPhase, reason: 
     'comment',
     String(issue),
     '--body',
-    loopNote(`Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`),
+    stopComment('dead-letter', { phase }, `Moved to the ${phase} dead-letter queue.\n\n${reason}\n\nRemove the \`${label}\` label, or run the fix command with \`--redrive\`, to put it back with a fresh budget.`),
   ]);
   mutate(ctx, `send #${issue} to the ${phase} DLQ`, ['gh', 'issue', 'edit', String(issue), '--add-label', label]);
   const counter = DLQ_COUNTER[phase];
@@ -388,11 +388,12 @@ function pendingClose(ctx: Context, issue: number, marker: string): boolean {
 
 /**
  * Hands an issue to a human, with the reason on the issue rather than only in a local log. A parked
- * issue is one a person now owns, so it has to say what stopped it.
+ * issue is one a person now owns, so it has to say what stopped it. `kind` is `boundary` when the
+ * merge boundary kept an approved change, which `--land` may waive; any other park is `park`.
  */
-export function parkIssue(ctx: Context, issue: number, reason: string): void {
+export function parkIssue(ctx: Context, issue: number, reason: string, kind: Extract<StopKind, 'park' | 'boundary'> = 'park'): void {
   // Comment first, then the label that hides the issue from selection: a crash between the two
   // leaves an issue that is still selectable, never one held without a reason on its thread.
-  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', loopNote(reason)]);
+  mutate(ctx, `comment on #${issue}`, ['gh', 'issue', 'comment', String(issue), '--body', stopComment(kind, {}, reason)]);
   mutate(ctx, `park #${issue}`, ['gh', 'issue', 'edit', String(issue), '--add-label', 'loop/parked']);
 }

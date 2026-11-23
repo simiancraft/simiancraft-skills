@@ -18,7 +18,7 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
 import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
-import { heldComment, proofHeldComment, standingStop } from '../../fix-github-issue/lib/work-markers.ts';
+import { heldComment, proofHeldComment, standingStop } from '../../fix-github-issue/lib/stop-record.ts';
 import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
@@ -713,7 +713,7 @@ describe('a floor incident at the merge boundary', () => {
   });
   it('parks an incident fix that undoes a recent merge, with a reason --land accepts', async () => {
     const { outcome, parks } = await landWith(reverting);
-    expect(outcome).toEqual({ park: expect.stringMatching(/^autoMerge is code-only and the change touches code; a floor\/incident fix that undoes #12/) });
+    expect(outcome).toEqual({ park: expect.stringMatching(/^autoMerge is code-only and the change touches code; a floor\/incident fix that undoes #12/), boundary: true });
     expect(parks).toHaveLength(1);
     const body = (outcome as { park: string }).park;
     expect(landBlocker(['loop/parked'], [{ body, createdAt: '2026-09-20T00:00:00Z' }], '2026-09-20T00:00:01Z')).toBeNull();

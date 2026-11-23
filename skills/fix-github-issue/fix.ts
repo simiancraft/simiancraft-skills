@@ -40,7 +40,7 @@ import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from 
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { readLandBlocker } from './lib/land.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
-import { standingStop } from './lib/work-markers.ts';
+import { standingStop } from './lib/stop-record.ts';
 import { guardCli } from './lib/cli.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
 import { installStopHandler } from './lib/stop.ts';
