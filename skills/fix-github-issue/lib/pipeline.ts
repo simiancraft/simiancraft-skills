@@ -22,11 +22,11 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE, PROOF_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
+import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
+import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
@@ -641,6 +641,9 @@ export function requiredStatusChecks(ctx: Context, read: (argv: string[]) => str
   }
 }
 
+/** How long the checks wait keeps retrying a tracker it cannot reach before it settles as an outside stop. */
+export const TRANSPORT_WINDOW_MS = 5 * 60_000;
+
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
@@ -712,8 +715,36 @@ export async function awaitGreenChecks(
     return `nothing names the checks this landing must pass: the config lists no requiredChecks and ${ctx.project.baseBranch} requires no status checks (a repository that runs no checks says so with checks: 'none')`;
   }
   const expected = [...new Set([...authoritative, ...(expect?.names ?? [])])];
+  // A read the tracker could not answer says nothing about the checks: it is retried with backoff,
+  // inside the checks deadline and a window of its own. One that outlasts both is an outside stop
+  // (`transport`), settled with nothing counted, never a landing dead letter.
+  let offlineSince: number | null = null;
+  let retries = 0;
+  const readRollup = async (): Promise<string | null> => {
+    try {
+      const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
+      offlineSince = null;
+      retries = 0;
+      return raw;
+    } catch (error) {
+      const text = (error as Error).message ?? '';
+      if (!transportFailureIn(text)) throw error;
+      const now = io.now();
+      offlineSince ??= now;
+      const why = text.trim().split('\n').at(-1) ?? text;
+      if (now - offlineSince >= TRANSPORT_WINDOW_MS || deadline - now <= 0) {
+        throw new EnvironmentFault({ kind: 'transport' }, 'landing', `the checks of PR #${pr} could not be read for ${Math.round((now - offlineSince) / 1000)}s: ${why}`);
+      }
+      const backoff = Math.min(5_000 * 2 ** retries, 60_000);
+      retries += 1;
+      say(`the tracker could not be reached (${why}); reading the checks again in ${backoff / 1000}s`);
+      await stoppableSleep(Math.min(backoff, deadline - now), io.sleep);
+      return null;
+    }
+  };
   for (;;) {
-    const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
+    const raw = await readRollup();
+    if (raw === null) continue;
     const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
     const rollup: CheckNode[] = view.statusCheckRollup ?? [];
     if (expect && view.headRefOid !== expect.sha) {

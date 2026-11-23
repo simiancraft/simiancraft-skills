@@ -235,6 +235,23 @@ describe('a fix lane that ends on an environment fault', () => {
   });
 });
 
+describe('a landing whose tracker read fails in transport', () => {
+  it('judges nothing, dead-letters nothing, records the outside stop, and does not pause the line', () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(31, { labels: [{ name: 'size: 1' }] })]);
+    const paused: string[] = [];
+    const ctx = context([], io, (reason) => paused.push(reason));
+    const issue = { number: 31, title: 'an approved change', labels: [{ name: 'size: 1' }], createdAt: '2026-01-01T00:00:00Z' };
+    move(ctx, issue, 'F3', 'checks pending');
+    const recorded = recordThrow(ctx, issue, new Error('gh pr view 4 --json statusCheckRollup,headRefOid\nerror connecting to api.github.com'), () => {}, 4);
+    expect(recorded.outcome.outcome).toBe('unjudged');
+    expect(recorded.outcome.fault).toBe('transport');
+    expect(labelsOf(io, 31)).toEqual(['size: 1']);
+    expect(io.writes).toHaveLength(1);
+    expect(stopIn(io.writes[0].argv.at(-1) ?? '')?.fields).toMatchObject({ cause: 'transport' });
+    expect(paused).toHaveLength(0);
+  });
+});
+
 describe('an appraiser that fails on the host', () => {
   const options = (appraiser: { engine: 'fixture'; model: string }) => ({ ageDays: null, seats: { appraiser, confirmer: { engine: 'fixture2' as const } }, confirmCloses: false, skipLabels: [], maxAppraiseAttempts: 3 });
   const valid = { issue: 30, verdict: 'valid', points: 1, reason: 'small' };

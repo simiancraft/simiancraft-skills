@@ -42,6 +42,7 @@ import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, res
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { objectionAfter, standingStop } from '../fix-github-issue/lib/stop-record.ts';
+import { isHostFaultKind } from '../fix-github-issue/lib/environment-fault.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
@@ -883,8 +884,9 @@ async function resumePull({ issue, pull }: { issue: Issue; pull: { number: numbe
   const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
   if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
   // A host fault judged nothing: the resume runs again in this run, once the line says go, as a
-  // Ready card a host fault ended is readmitted. A person's stop is not handed back.
-  if (result.outcome === 'unjudged' && result.fault && result.fault !== 'stopped') RERUNS.push({ kind: 'driverless', issue, pull });
+  // Ready card a host fault ended is readmitted. A person's stop is not handed back, nor a transport
+  // failure, which the next run retries rather than this one in a loop while the tracker is down.
+  if (result.outcome === 'unjudged' && isHostFaultKind(result.fault)) RERUNS.push({ kind: 'driverless', issue, pull });
 }
 
 /**
@@ -1423,8 +1425,9 @@ async function workOn(item: WorkItem): Promise<void> {
   if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
   // A host fault paused the line and judged nothing, so the refill may take the issue up again:
   // it waits for go like any lane, and so reruns once the host is fixed. A person's stop is
-  // not handed back in this run, or the work they stopped would start again at once.
-  if (result.outcome === 'unjudged' && result.fault && result.fault !== 'stopped') ADMISSION.readmit(issue.number);
+  // not handed back in this run, or the work they stopped would start again at once; nor is a
+  // transport failure, which the next run retries.
+  if (result.outcome === 'unjudged' && isHostFaultKind(result.fault)) ADMISSION.readmit(issue.number);
 }
 
 /**
@@ -1435,7 +1438,7 @@ async function workOn(item: WorkItem): Promise<void> {
 async function resumeStranded(item: Extract<WorkItem, { kind: 'stranded' }>): Promise<void> {
   if (item.rerun) await waitForGo(`#${item.issue.number}`, 'dispatch');
   const result = await resumeOneStranded(ctx, item.entry, MAX_POINTS);
-  if (result?.outcome !== 'unjudged' || !result.fault || result.fault === 'stopped') return;
+  if (result?.outcome !== 'unjudged' || !isHostFaultKind(result.fault)) return;
   const { pr, branch } = item.entry.result;
   if (existsSync(item.entry.cwd)) RERUNS.push({ ...item, rerun: true });
   else if (pr && branch) RERUNS.push({ kind: 'driverless', issue: item.issue, pull: { number: pr, branch } });

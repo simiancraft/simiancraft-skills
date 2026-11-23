@@ -65,6 +65,28 @@ export const CONTENTION = [
   'API rate limit',
 ];
 
+/**
+ * Failures that mean the tracker could not be reached, not that the command is wrong: a connection
+ * that failed or timed out, or a gateway that answered for a server that did not. A read that meets
+ * one is retried with backoff by the caller that can wait (the checks wait); one that outlasts the
+ * retries is an outside stop (`environment-fault.ts`), never a dead letter.
+ */
+export const TRANSPORT: RegExp[] = [
+  /error connecting to/i,
+  /\bconnection (reset|refused)\b/i,
+  /\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)\b/,
+  /\bi\/o timeout\b/i,
+  /TLS handshake timeout/i,
+  /could not resolve host/i,
+  /\bunexpected EOF\b/i,
+  /\bHTTP 50[234]\b/,
+];
+
+/** Whether a command's error text is a transport failure. */
+export function transportFailureIn(text: string): boolean {
+  return TRANSPORT.some((pattern) => pattern.test(text));
+}
+
 export function sh(ctx: Context, cmd: string[], cwd = ctx.repoRoot, attempts = 4): string {
   // Every gh call is pinned to the configured repository. gh otherwise acts on whatever repo it
   // resolves from the cwd's remotes or its own default, and an unattended mutator that guesses is

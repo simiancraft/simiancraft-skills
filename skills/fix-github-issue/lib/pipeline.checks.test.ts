@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { Context } from './context.ts';
 import { awaitGreenChecks, reviewedChecks } from './pipeline.ts';
-import { beginStop, resetStop, RunStopping } from './shell.ts';
+import { environmentFaultOf } from './environment-fault.ts';
+import { beginStop, resetStop, RunStopping, transportFailureIn } from './shell.ts';
 
 type Check = { name: string; conclusion: string };
 
@@ -258,5 +259,42 @@ describe('the checks a landing expects from the reviewed head', () => {
 
   it('still expects a check that ran and failed at review', () => {
     expect(reviewedChecks([{ name: 'Lint', verdict: 'failure' }]).names).toEqual(['Lint']);
+  });
+});
+
+describe('a transport failure while the checks are waited on', () => {
+  const OFFLINE = 'gh pr view 1 --json statusCheckRollup,headRefOid\nerror connecting to api.github.com';
+  it('retries the read with backoff and carries on once the tracker answers', async () => {
+    const w = world('required', () => [GREEN]);
+    const read = w.io.read;
+    let failures = 0;
+    w.io.read = (argv: string[]) => {
+      if (argv[1] === 'pr' && w.waited() < 45_000) {
+        failures += 1;
+        throw new Error(OFFLINE);
+      }
+      return read(argv);
+    };
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(failures).toBeGreaterThan(1);
+  });
+
+  it('settles a failure that outlasts the retries as an outside stop, not a dead letter', async () => {
+    const w = world('required', () => [GREEN]);
+    w.io.read = () => {
+      throw new Error(OFFLINE);
+    };
+    const thrown = await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io).then(() => null, (error: unknown) => error);
+    expect(environmentFaultOf(thrown)).toMatchObject({ kind: 'transport' });
+    // Bounded: the retries give up well inside the checks timeout.
+    expect(w.waited()).toBeLessThan(10 * 60_000);
+  });
+
+  it('is told from a check that failed: a red check is still the landing queue\'s', async () => {
+    expect(transportFailureIn('error connecting to api.github.com')).toBe(true);
+    expect(transportFailureIn('HTTP 502: Bad Gateway (https://api.github.com/graphql)')).toBe(true);
+    expect(transportFailureIn('dial tcp: lookup api.github.com: i/o timeout')).toBe(true);
+    expect(transportFailureIn('checks failed: build (FAILURE)')).toBe(false);
+    expect(transportFailureIn('HTTP 404: Not Found')).toBe(false);
   });
 });

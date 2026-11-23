@@ -7,7 +7,7 @@ import { Card, fire, laneKey, laneState, successors } from './simulate.ts';
 import { Carving, type CarvingDeps } from './carving.ts';
 import { LANES } from './lanes.ts';
 import { RunStopping } from '../../fix-github-issue/lib/shell.ts';
-import { settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
+import { isHostFaultKind, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
@@ -934,7 +934,7 @@ describe('resume dispatch judges the lane before continuing', () => {
   function dispatch(kind: string, overrides: Record<string, unknown> = {}) {
     const calls: string[] = [];
     const api = loadFunctions('../loop.ts', ['resumePull'], {
-      ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' },
+      ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' }, isHostFaultKind,
       waitForGo: async () => { calls.push('wait'); },
       claimHolder: () => { calls.push('claim'); return null; },
       judgeLane: (_ctx: unknown, issue: number, readHead: () => string) => {
@@ -975,7 +975,7 @@ describe('resume dispatch judges the lane before continuing', () => {
   });
   it('queues a resume a host fault left unjudged to run again, as a host fault readmits Ready work', async () => {
     const reruns: unknown[] = [];
-    const d = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'ENOSPC', fault: 'host' }) });
+    const d = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'ENOSPC', fault: 'ENOSPC' }) });
     await d.run();
     expect(reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
     const stopped = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'stop', fault: 'stopped' }) });
@@ -988,18 +988,20 @@ describe('resume dispatch judges the lane before continuing', () => {
       const reruns: unknown[] = [];
       const calls: string[] = [];
       const api = loadFunctions('../loop.ts', ['resumeStranded'], {
-        ctx: {}, MAX_POINTS: 2, RERUNS: reruns, log: noop, existsSync: () => lane,
+        ctx: {}, MAX_POINTS: 2, RERUNS: reruns, log: noop, existsSync: () => lane, isHostFaultKind,
         waitForGo: async () => { calls.push('wait'); },
         resumeOneStranded: async () => { calls.push('resume'); return { outcome: 'unjudged', reason: 'r', fault }; },
       });
       await api.resumeStranded(item);
       return { reruns, calls };
     };
-    expect((await run(true, 'host')).reruns).toEqual([{ ...stranded, rerun: true }]);
-    expect((await run(false, 'host')).reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
+    expect((await run(true, 'ENOSPC')).reruns).toEqual([{ ...stranded, rerun: true }]);
+    expect((await run(false, 'ENOMEM')).reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
     expect((await run(true, 'stopped')).reruns).toEqual([]);
-    expect((await run(true, 'host')).calls).toEqual(['resume']);
-    expect((await run(true, 'host', { ...stranded, rerun: true })).calls).toEqual(['wait', 'resume']);
+    // A transport failure is the next run's, not a loop in this one while the tracker is down.
+    expect((await run(true, 'transport')).reruns).toEqual([]);
+    expect((await run(true, 'ENOSPC')).calls).toEqual(['resume']);
+    expect((await run(true, 'ENOSPC', { ...stranded, rerun: true })).calls).toEqual(['wait', 'resume']);
   });
   it('does not judge or park a held lane', async () => {
     const d = dispatch('dirty', { claimHolder: () => 'held' });

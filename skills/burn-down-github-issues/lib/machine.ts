@@ -513,7 +513,13 @@ export const MACHINE: StateNode = {
 
         landing: {
           initial: 'approved',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] } },
+          on: {
+            AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+            // A tracker it could not reach, past the checks wait's retries, or a host fault: the
+            // landing judged nothing, so nothing is dead-lettered; the ready pull request with its
+            // approval is resumed from Ready for review.
+            ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'recordOutsideStop', 'leaveQueue', 'releaseClaim', 'clearLaneForRerun'] },
+          },
           states: {
             approved: {
               lane: { key: 'F1', name: 'Approved', description: 'Merge verdict pinned to a head; waiting for the front of the queue' },

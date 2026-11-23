@@ -1,7 +1,7 @@
 /**
  * Environment faults: a seat's run ended for a reason that lies outside the work. The machine ran
- * out of disk (`ENOSPC`) or memory (`ENOMEM`), or a person stopped the agent with a signal this
- * driver did not send. Such a run says nothing about the work's concept, code, or proof: the work
+ * out of disk (`ENOSPC`) or memory (`ENOMEM`), a person stopped the agent with a signal this
+ * driver did not send, or the tracker could not be reached. Such a run says nothing about the work's concept, code, or proof: the work
  * was not judged, which is a different fact from judged and failed. Every seat that runs an agent
  * refuses such a run by throwing an `EnvironmentFault`, and every driver settles it here, the same
  * way: nothing is counted, nothing is dead-lettered or held, and the work is rerun later.
@@ -16,14 +16,14 @@ import { readFileSync } from 'node:fs';
 import type { Context } from './context.ts';
 import { ensureLabel } from './labels.ts';
 import { loopNote } from './note.ts';
-import { mutate } from './shell.ts';
+import { mutate, transportFailureIn } from './shell.ts';
 import { stopComment } from './stop-record.ts';
 
 /** The host conditions, by errno code: the machine's, never the work's, the first time. */
 export const HOST_FAULT_KINDS = ['ENOSPC', 'ENOMEM'] as const;
 export type HostFaultKind = (typeof HOST_FAULT_KINDS)[number];
-/** `stopped`: a stop signal this driver did not send, a person's most likely. */
-export type EnvironmentFaultKind = HostFaultKind | 'stopped';
+/** `stopped`: a stop signal this driver did not send, a person's most likely. `transport`: the tracker could not be reached. */
+export type EnvironmentFaultKind = HostFaultKind | 'stopped' | 'transport';
 
 /**
  * What a run that ended on an environment fault carries: the kind, the signal for a stop, and the
@@ -51,9 +51,14 @@ export class EnvironmentFault extends Error {
   }
 }
 
-/** True for a fault of the host (disk, memory), which pauses the line; false for a person's stop. */
+/** True for a fault of the host (disk, memory), which pauses the line; false for a person's stop or a transport failure. */
 export function isHostFault(fault: Fault): fault is Fault & { kind: HostFaultKind } {
-  return fault.kind !== 'stopped';
+  return isHostFaultKind(fault.kind);
+}
+
+/** True for a host fault's kind: the one kind of fault the burndown reruns in the same run, once the line is resumed. */
+export function isHostFaultKind(kind: string | undefined): kind is HostFaultKind {
+  return (HOST_FAULT_KINDS as readonly string[]).includes(kind ?? '');
 }
 
 /** The host fault a piece of text reports, or null. */
@@ -83,12 +88,15 @@ export function environmentFaultOf(error: unknown): Fault | null {
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && (HOST_FAULT_KINDS as readonly string[]).includes(code)) return { kind: code as HostFaultKind };
   const kind = error instanceof Error ? hostFaultIn(error.message) : null;
-  return kind ? { kind } : null;
+  if (kind) return { kind };
+  return error instanceof Error && transportFailureIn(error.message) ? { kind: 'transport' } : null;
 }
 
 /** How a fault reads in a log line or a reason. */
 export function describeFault(fault: Fault): string {
-  return fault.kind === 'stopped' ? `a stop signal (${fault.signal ?? 'unknown'}) this driver did not send` : `a host fault (${fault.kind})`;
+  if (fault.kind === 'stopped') return `a stop signal (${fault.signal ?? 'unknown'}) this driver did not send`;
+  if (fault.kind === 'transport') return 'a transport failure reaching the tracker';
+  return `a host fault (${fault.kind})`;
 }
 
 /**
@@ -178,7 +186,7 @@ export const WAITS_ON_A_PERSON: readonly OutsideCause[] = ['base', 'needs-person
 
 /** The cause behind a fault a run ended on. */
 export function causeOf(fault: Fault): OutsideCause {
-  return isHostFault(fault) ? 'host' : 'signal';
+  return isHostFault(fault) ? 'host' : fault.kind === 'transport' ? 'transport' : 'signal';
 }
 
 /**

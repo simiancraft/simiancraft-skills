@@ -440,6 +440,7 @@ An outside stop is a stop the change did not cause, settled in one place, `settl
 |---|---|---|
 | `host` | a run ended on `ENOSPC` or `ENOMEM` | the line pauses; the work reruns (a repeat is charged; see below) |
 | `signal` | a stop signal the driver did not send | the work reruns on a later run |
+| `transport` | the tracker could not be reached (`TRANSPORT` in `lib/shell.ts`: a failed or timed-out connection, a 502, 503, or 504) | the work reruns on a later run; the checks wait first retries its read with backoff for up to five minutes |
 | `base` | a coder's `needs-human` with `"outside": "base"` on a pull request | the work waits on a person with its pull request held open in draft |
 | `needs-person` | a prover's `needs-human`, or a coder's on a pull request | the work waits on a person with its pull request held open |
 

@@ -162,18 +162,20 @@ agent that fails leaves the card resting in its queue with the failure recorded;
 failure anywhere becomes a person's hold.
 
 A seat whose run ends on an environment fault raises `ENVIRONMENT_FAULT` instead, from any lane
-of appraisal, carving, work, review, or the panel. An environment fault is a failure of the place
-the work ran, not of the work: the host ran out of disk (`ENOSPC`) or memory (`ENOMEM`), or a stop
-signal the driver did not send, a person's most likely, ended the agent. The work was not judged,
+of appraisal, carving, work, review, landing, or the panel. An environment fault is a failure of the
+place the work ran, not of the work: the host ran out of disk (`ENOSPC`) or memory (`ENOMEM`), a stop
+signal the driver did not send, a person's most likely, ended the agent, or the tracker could not be
+reached (a transport failure the checks wait's retries outlasted, or any step's command failing in
+transport). The work was not judged,
 which is a different fact from judged and failed, so nothing is counted, dead-lettered, or held,
 and the stop is recorded on the issue (`loop-stop kind=outside`, with its cause and seat):
 appraisal returns to A1, carving to C1, work to B1 with no pull request open and to D3 with one (the
-next run resumes a driverless pull request through Proving), review to E1, and the panel gives its
+next run resumes a driverless pull request through Proving), review and landing to E1, and the panel gives its
 round back and re-derives the card from its facts. The claim is released and the lane cleared for
 the rerun (commits no remote has are kept under `refs/loop/rescued/`). A host fault also sends the
 line `PAUSE`, and the burndown takes the issue up again in the same run once the line is resumed; a
-person's stop is rerun by the next run, not this one, so the work they stopped does not start again
-at once.
+person's stop and a transport failure are rerun by the next run, not this one, so the work a person
+stopped does not start again at once and a tracker that is down is not retried in a loop.
 
 The one exception is a host fault the work itself causes, such as tests that fill the disk. The
 first host fault on an issue leaves the marker `loop/environment-fault: <code>@<seat>`; the same code again
