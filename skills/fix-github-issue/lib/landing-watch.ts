@@ -23,6 +23,8 @@ export type CheckObservation = {
   provider: string;
   /** When this watch first saw this check, on the watch's clock. */
   firstSeen: number;
+  /** When the run last changed: its completion, else its start, else its first sighting. Orders the runs of one name. */
+  at: number;
 };
 
 /** The pull request as one poll saw it. */
@@ -40,6 +42,8 @@ export type CheckNode = {
   conclusion?: string;
   state?: string;
   workflowName?: string;
+  startedAt?: string;
+  completedAt?: string;
   detailsUrl?: string;
   targetUrl?: string;
 };
@@ -102,6 +106,7 @@ export function landingWatch(pr: number, io: { read: (argv: string[]) => string;
         occurrences.set(name, nth + 1);
         const key = `${name}\u0000${node.detailsUrl || node.targetUrl || `#${nth}`}`;
         if (!firstSeen.has(key)) firstSeen.set(key, at);
+        const stamp = (value: string | undefined) => (value && Number.isFinite(Date.parse(value)) && !value.startsWith('0001') ? Date.parse(value) : null);
         return {
           name,
           status: classify(node),
@@ -111,6 +116,7 @@ export function landingWatch(pr: number, io: { read: (argv: string[]) => string;
           queued: node.status !== undefined && !node.conclusion && NOT_STARTED.has(node.status),
           provider: providerOf(node),
           firstSeen: firstSeen.get(key) as number,
+          at: stamp(node.completedAt) ?? stamp(node.startedAt) ?? (firstSeen.get(key) as number),
         };
       });
       const state = view.state === 'MERGED' || view.state === 'CLOSED' ? view.state : 'OPEN';

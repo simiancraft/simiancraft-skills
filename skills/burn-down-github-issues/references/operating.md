@@ -269,7 +269,7 @@ For a pull request the merge boundary parked (`autoMerge` declined an approved c
 `bun run <fix-skill-dir>/fix.ts --issue <n> --land`: it lifts only that park, re-proves and
 re-reviews the pull request, and lands it through the pull master with every other gate in force,
 recording the waiver on the pull request. When the approval still stands on the pull request's head
-(nothing pushed since, the base needs no catch-up, and the checks are green by their best run), it
+(nothing pushed since, the base needs no catch-up, and the checks are green by their newest run), it
 skips the draft, the proof, and the review, and lands at once; no new CI run starts. It refuses a dead letter and every other kind of park;
 for those, consider `--redrive`, which puts the issue back through the coder, the prover, the
 reviewer, and the pull master. Do it by hand only when the

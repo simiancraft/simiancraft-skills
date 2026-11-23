@@ -186,7 +186,7 @@ record since the pull request opened has nothing newer than it but a boundary pa
 stop that reruns the work (`standingApproval` in `lib/stop-record.ts`); it names both seats'
 classification (`touches`, recorded with the approval) and this pull request; the lane and the pull
 request both hold the head it names; the pull request is ready; the base needs no catch-up, by the
-landing's rule for release noise; and the checks on that head are green now, by the best run under
+landing's rule for release noise; and the checks on that head are green now, by the newest run under
 each name. A head that moved, an approval for another commit, or checks that are not green keep the
 path above. The pull master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
 and the pinned merge. Only the boundary is waived, only for that issue, and only when both agents
@@ -221,10 +221,11 @@ head, every other check shown is green, and no check suite GitHub has opened on 
 incomplete; suite data that cannot be read is waited on, never assumed. Checks are judged by name, since
 a head can carry several nodes under one name (a run the repository's concurrency rule cancelled, the
 skipped jobs of a run made while the pull request was a draft, a rerun, and the run that counts), and
-by the best run under each: a name passes on a node that succeeded, whatever its siblings say (a later
-run on the same head that lost its runner does not undo a pass already there); with no pass it is
-still running while any node under it runs, fails when a node failed and nothing under it runs, and
-has no verdict yet when all it carries is skipped or cancelled. A check that need not have run may rest on skipped; one that must may not, or a landing
+by the newest run under each, as GitHub's required checks are: ordered by completion, else start,
+else when the watch first saw it, a newer failure overrides an older pass, a newer pass an older
+failure, and a newer run still going keeps the name pending. Runs that cannot be ordered are read
+fail-closed (a failure before a running run, a running run before a pass). Skipped and cancelled nodes
+reach no verdict and are passed over, and a name that carries only those has no verdict yet. A check that need not have run may rest on skipped; one that must may not, or a landing
 could merge with no check having run, which branch protection alone does not prevent. Which checks
 must have run is the written list (`requiredChecks` and the base branch's required status checks) and
 every check that had passed on the head the reviewer read, since the approval counted on those. It is

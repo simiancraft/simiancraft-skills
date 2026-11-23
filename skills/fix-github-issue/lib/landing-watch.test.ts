@@ -58,6 +58,18 @@ describe('the landing watch', () => {
     ]);
   });
 
+  it('orders runs by completion, else start, else first sighting', () => {
+    const watch = landingWatch(1, pullRequest({
+      headRefOid: 'a',
+      statusCheckRollup: [
+        { name: 'a', conclusion: 'SUCCESS', startedAt: '2026-11-21T10:00:00Z', completedAt: '2026-11-21T10:05:00Z' },
+        { name: 'b', status: 'IN_PROGRESS', conclusion: '', startedAt: '2026-11-21T10:01:00Z', completedAt: '0001-01-01T00:00:00Z' },
+        { name: 'c', status: 'QUEUED', conclusion: '' },
+      ],
+    }).io);
+    expect(watch.observe().checks.map((c) => c.at)).toEqual([Date.parse('2026-11-21T10:05:00Z'), Date.parse('2026-11-21T10:01:00Z'), 0]);
+  });
+
   it('classifies a node as the checks wait always has', () => {
     expect(classify({ conclusion: '', status: 'IN_PROGRESS' })).toBe('pending');
     expect(classify({})).toBe('pending');

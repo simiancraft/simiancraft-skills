@@ -752,26 +752,35 @@ export async function awaitGreenChecks(
 
     // A head can carry several nodes under one name: a run the repository cancelled, the skipped
     // jobs of a run made while the pull request was a draft, a rerun, and the run that counts. Judged
-    // by name, then, and by the best run under it: a name passes on a node that passed, whatever its
-    // siblings say, since a later run that lost its runner says nothing a passing run on the same
-    // head did not already settle. A name with no pass is still running while any node under it
-    // runs, and failed when one failed and nothing under it runs.
+    // by name, then, and by the newest run under it, as required checks are: ordered by completion,
+    // else start, else first sighting, a newer failure overrides an older pass, a newer pass an older
+    // failure, and a newer run still going keeps the name pending. Skipped and cancelled nodes reach
+    // no verdict and are passed over here. Runs that cannot be ordered are read fail-closed: a
+    // failure before a running one, a running one before a pass.
     const byName = new Map<string, CheckObservation[]>();
     for (const c of rollup) byName.set(c.name, [...(byName.get(c.name) ?? []), c]);
-    const has = (nodes: CheckObservation[], status: CheckStatus) => nodes.some((c) => c.status === status);
-    const failed = [...byName.values()].filter((nodes) => !has(nodes, 'passed') && !has(nodes, 'pending') && has(nodes, 'failed'));
+    const RANK: Partial<Record<CheckStatus, number>> = { failed: 3, pending: 2, passed: 1 };
+    const newest = (nodes: CheckObservation[]): CheckObservation | null =>
+      nodes.filter((c) => RANK[c.status]).reduce<CheckObservation | null>((best, c) => (!best || c.at > best.at || (c.at === best.at && (RANK[c.status] ?? 0) > (RANK[best.status] ?? 0)) ? c : best), null);
+    const standing = new Map([...byName].map(([name, nodes]) => [name, newest(nodes)?.status ?? null] as const));
+    const failed = [...byName.values()].filter((nodes) => standing.get(nodes[0].name) === 'failed');
     if (failed.length > 0) {
-      return `checks failed: ${failed.map((nodes) => `${nodes[0].name} (${[...new Set(nodes.filter((c) => c.status === 'failed').map((c) => c.verdict))].join(', ')})`).join(', ')}`;
+      return `checks failed: ${failed.map((nodes) => `${nodes[0].name} (${newest(nodes)?.verdict})`).join(', ')}`;
     }
 
-    const pending = [...byName.values()].filter((nodes) => !has(nodes, 'passed') && has(nodes, 'pending'));
+    const pending = [...byName.values()].filter((nodes) => standing.get(nodes[0].name) === 'pending');
     if (pending.length > 0) {
       // A check its provider never started, queued past the threshold, is stuck, not slow: waiting
       // out the checks timeout on it ends in a dead letter for a change nobody faulted. It ends the
       // wait as an outside stop that names the check and its provider.
       const now = io.now();
       const stuck = pending
-        .map((nodes) => nodes.filter((c) => c.status === 'pending'))
+        // The runs newer than the name's newest verdict: an older queued run a newer one superseded holds nothing.
+        .map((nodes) => {
+          const verdicts = nodes.filter((c) => c.status === 'passed' || c.status === 'failed').map((c) => c.at);
+          const since = verdicts.length > 0 ? Math.max(...verdicts) : -Infinity;
+          return nodes.filter((c) => c.status === 'pending' && c.at >= since);
+        })
         .filter((running) => running.every((c) => c.queued) && now - Math.min(...running.map((c) => c.firstSeen)) >= stuckAfterMs)
         .map((running) => ({ check: running[0].name, provider: running[0].provider, minutes: Math.round((now - Math.min(...running.map((c) => c.firstSeen))) / 60_000) }));
       if (stuck.length > 0) {
@@ -795,7 +804,7 @@ export async function awaitGreenChecks(
     const mustRun = new Set([...authoritative, ...(expect?.passedAtReview ?? [])]);
     const unjudged = [...byName.entries()]
       .map(([name, nodes]) => [name, nodes.map((c) => c.status)] as const)
-      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || mustRun.has(name)))
+      .filter(([name, kinds]) => standing.get(name) === null && (kinds.includes('cancelled') || mustRun.has(name)))
       .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
     if (unjudged.length > 0) {
       const gaveUp = await wait(`no check has reached a verdict under: ${unjudged.join(', ')}`, 30_000);
@@ -2103,7 +2112,7 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
  * reruns the work is newer), it names both seats' classification, it was given to this pull request
  * at the head the lane and the pull request both hold, the pull request is ready, the base needs no
  * catch-up (by the landing's own rule for release noise), and the checks on that head are green now,
- * judged by the best run under each name. A head that moved, an approval for another commit, or
+ * judged by the newest run under each name. A head that moved, an approval for another commit, or
  * checks that are not green keep the usual path.
  */
 async function approvedAtHead(

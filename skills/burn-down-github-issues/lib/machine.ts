@@ -90,7 +90,7 @@ const RESUME: Transition[] = [
 /**
  * An approval that still stands on the head in hand: the newest approval names this head, nothing
  * but a boundary park or an outside stop that reruns the work came after it, the base needs no
- * catch-up, and the checks are green by the best run under each name. Nothing is left to
+ * catch-up, and the checks are green by the newest run under each name. Nothing is left to
  * establish, so the card goes straight to Approved: no draft, no proof, no review again.
  */
 const LAND_ON_STANDING_APPROVAL: Transition = { target: 'ticket.landing.approved', guard: 'approvedAtHead and checksGreen and upToDateWithBase', actions: ['reclaim', 'liftPrHoldMirror'] };

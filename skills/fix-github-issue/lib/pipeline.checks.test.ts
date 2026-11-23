@@ -200,11 +200,30 @@ describe('the build gate', () => {
     expect(await awaitGreenChecks(cancelled.ctx, 1, () => {}, EXPECT, cancelled.io)).toContain('optional-lint (cancelled)');
   });
 
-  it('judges a name by its best run: a pass on the head stands beside a later run that failed', async () => {
-    // A second run on an unchanged head lost its runner; the first had passed.
+  const run = (conclusion: string, completedAt: string) => ({ name: 'build', conclusion, completedAt });
+  const going = (startedAt: string) => ({ name: 'build', status: 'IN_PROGRESS', conclusion: '', startedAt });
+
+  it('still refuses at once on a check that failed when its runs cannot be ordered', async () => {
     const w = world('required', () => [node('build', 'SUCCESS'), node('build', 'FAILURE')]);
-    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
     expect(w.waited()).toBe(0);
+  });
+
+  it('judges a name by its newest run: an older failure and a newer pass is a pass', async () => {
+    const w = world('required', () => [run('FAILURE', '2026-11-21T10:00:00Z'), run('SUCCESS', '2026-11-21T10:30:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+  });
+
+  it('judges a name by its newest run: an older pass and a newer failure is a failure', async () => {
+    const w = world('required', () => [run('SUCCESS', '2026-11-21T10:00:00Z'), run('FAILURE', '2026-11-21T10:30:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
+  });
+
+  it('judges a name by its newest run: an older pass and a newer run still going is pending', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [run('SUCCESS', '2026-11-21T10:00:00Z'), going('2026-11-21T10:30:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toContain('checks still unfinished: build');
+    expect(said[0]).toContain('checks still unfinished: build');
   });
 
   it('refuses at once on a name whose only finished run failed and nothing under it runs', async () => {
@@ -214,7 +233,7 @@ describe('the build gate', () => {
   });
 
   it('waits on a rerun of a failed name, and lands when it passes', async () => {
-    const w = world('required', (clock) => [node('build', 'FAILURE'), clock < 90_000 ? node('build', '') : node('build', 'SUCCESS')]);
+    const w = world('required', (clock) => [run('FAILURE', '2026-11-21T10:00:00Z'), clock < 90_000 ? going('2026-11-21T10:05:00Z') : run('SUCCESS', '2026-11-21T10:20:00Z')] as never);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
     expect(w.waited()).toBeGreaterThanOrEqual(90_000);
   });
@@ -358,8 +377,8 @@ describe('a check its provider queued and never started', () => {
     expect(w.waited()).toBeGreaterThanOrEqual(50 * 60_000);
   });
 
-  it('holds nothing under a name that already passed', async () => {
-    const w = world('required', () => [GREEN, queued('build')] as never);
+  it('holds nothing under a name whose newer run passed', async () => {
+    const w = world('required', () => [{ ...GREEN, completedAt: '2026-11-21T10:00:00Z' }, queued('build')] as never);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
     expect(w.waited()).toBe(0);
   });
