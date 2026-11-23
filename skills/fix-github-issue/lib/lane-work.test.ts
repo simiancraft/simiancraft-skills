@@ -261,6 +261,19 @@ describe('reconcile at a loop start', () => {
   });
 });
 
+describe('reconcile and a lane whose status cannot be read', () => {
+  it('keeps it for inspection: a failed read is not a clean lane', () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(194)]);
+    const dir = lane(194, false);
+    writeFileSync(join(dir, '.git'), 'gitdir: /nonexistent/worktree\n');
+    const lines: string[] = [];
+    reconcile({ project: { ...PROJECT, repo: 'o/r' }, repoRoot: repo, dryRun: true, dryRunLog: [], botLogin: 'loop-bot', runId: `${hostname()}-${process.pid}-7`, io, log: (m: string) => lines.push(m) } as unknown as Context, new Set());
+    expect(existsSync(dir)).toBe(true);
+    expect(lines.some((l) => /#194 .*leaving it for inspection.*could not be shown clean/.test(l))).toBe(true);
+    expect(lines.some((l) => /retiring the abandoned worktree for #194/.test(l))).toBe(false);
+  });
+});
+
 describe('resuming a pull request in its lane', () => {
   it('pushes commits an earlier run left unpushed on the branch, rather than resetting them away', () => {
     const lines: string[] = [];

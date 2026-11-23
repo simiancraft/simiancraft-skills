@@ -15,7 +15,7 @@ import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
-import { dirtyPaths, heldLane, inFlight, judgeLane, rescueRef } from './lane.ts';
+import { dirtyPaths, inFlight, judgeLane, judgeLocal, rescueRef } from './lane.ts';
 import { type FixOutcome, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
@@ -57,25 +57,20 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
       continue;
     }
 
-    const dirty = (() => {
-      try {
-        return dirtyPaths(ctx, judged).length > 0;
-      } catch {
-        return false;
-      }
-    })();
-    if (dirty) {
+    // A status that cannot be read is not a clean lane: removing is the irreversible act.
+    const local = judgeLocal(ctx, issue, judged);
+    if (local.kind !== 'clean') {
       if (rescueClosedLane(ctx, issue, dir)) {
         repaired++;
         continue;
       }
       // The loop's own hold kept this lane with the seat's work in it; the pickup continues on it.
-      if (heldLane(ctx, issue)) {
+      if (local.kind === 'held') {
         ctx.log(`reconcile: #${issue} has uncommitted work kept by the loop's hold for a person; leaving it for the pickup`);
         continue;
       }
-      ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
-      parkForInspection(ctx, issue, `An earlier run left uncommitted work in its lane (${judged}) and no pull request. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
+      ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection (${local.reason})`);
+      parkForInspection(ctx, issue, `An earlier run left uncommitted work in its lane (${judged}) and no pull request: ${local.reason}. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
       continue;
     }
 
@@ -248,7 +243,7 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
 
     // A lane the loop's own hold kept is not stranded: its pickup (a redrive, or the burndown once
     // the hold is lifted) continues on it. Asked only of a dirty lane, the one a hold keeps.
-    if (dirtyLane(ctx, dir) && heldLane(ctx, num)) {
+    if (judgeLocal(ctx, num, dir).kind === 'held') {
       ctx.log(`#${num}  stranded worktree is kept by the loop's hold for a person; leaving it for the pickup`);
       continue;
     }
@@ -287,15 +282,6 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
   }
   return found;
 }
-/** Whether a lane holds uncommitted work; a status that cannot be read is not knowledge of it, and answers false. */
-function dirtyLane(ctx: Context, dir: string): boolean {
-  try {
-    return dirtyPaths(ctx, dir).length > 0;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The finished work a dead lane holds, as the pipeline reads it: the prover's ready pull request, or,
  * in a lane an older run left, the single worker's verdict. A coder's answer alone is not finished

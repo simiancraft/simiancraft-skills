@@ -328,22 +328,38 @@ export type LaneJudgement =
   | { kind: 'dirty' | 'off-head'; reason: string }
   | { kind: 'unreadable'; reason: string };
 
+/**
+ * What a lane directory holds of its own, before anything is asked of the tracker's pull request:
+ * nothing uncommitted, uncommitted work the loop's hold kept (`heldLane`), or uncommitted work. A
+ * status that cannot be read is the last: the lane could not be shown clean.
+ */
+export type LocalJudgement = { kind: 'clean' } | { kind: 'held' } | { kind: 'dirty'; reason: string };
+
+export function judgeLocal(ctx: Context, issue: number, dir: string): LocalJudgement {
+  let dirty: string[];
+  try {
+    dirty = dirtyPaths(ctx, dir);
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: git status --porcelain failed (${(error as Error).message})` };
+  }
+  if (dirty.length === 0) return { kind: 'clean' };
+  if (heldLane(ctx, issue)) return { kind: 'held' };
+  return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
+}
+
 /** Judge local work before asking the tracker, without publishing or changing the lane. */
 export function judgeLane(ctx: Context, issue: number, readHead: () => string): LaneJudgement {
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (!existsSync(dir)) return { kind: 'no-lane' };
+  const local = judgeLocal(ctx, issue, dir);
+  if (local.kind === 'dirty') return local;
   let head: string;
-  let held = false;
-  let reading = 'git status --porcelain';
   try {
-    const dirty = dirtyPaths(ctx, dir);
-    held = dirty.length > 0 && heldLane(ctx, issue);
-    if (dirty.length > 0 && !held) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
-    reading = 'git rev-parse HEAD';
     head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
   } catch (error) {
     if (error instanceof RunStopping || isStopping()) throw error;
-    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: ${reading} failed (${(error as Error).message})` };
+    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: git rev-parse HEAD failed (${(error as Error).message})` };
   }
   let remoteHead: string;
   try {
@@ -353,5 +369,5 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
     return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
   }
   if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
-  return { kind: held ? 'held-at-head' : 'clean-at-head' };
+  return { kind: local.kind === 'held' ? 'held-at-head' : 'clean-at-head' };
 }
