@@ -28,6 +28,7 @@ import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
+import { recordMerge } from './record-merge.ts';
 import { type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
@@ -642,6 +643,13 @@ export function requiredStatusChecks(ctx: Context, read: (argv: string[]) => str
   }
 }
 
+/**
+ * What the checks wait came to: null when the landing head is green, a refusal's reason, or the
+ * pull request's end when someone merged or closed it while the wait watched (`head` is the head it
+ * was merged or closed at).
+ */
+export type ChecksWait = string | null | { ended: 'MERGED' | 'CLOSED'; head: string };
+
 /** How long the checks wait keeps retrying a tracker it cannot reach before it settles as an outside stop. */
 export const TRANSPORT_WINDOW_MS = 5 * 60_000;
 
@@ -652,7 +660,7 @@ export async function awaitGreenChecks(
   expect?: { sha: string; names?: string[]; passedAtReview?: string[]; required?: string[] },
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
-): Promise<string | null> {
+): Promise<ChecksWait> {
   const deadline = io.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
   const wait = async (why: string, ms: number): Promise<string | null> => {
     const left = deadline - io.now();
@@ -728,6 +736,8 @@ export async function awaitGreenChecks(
   for (;;) {
     const seen = await observe();
     if (seen === null) continue;
+    // A pull request merged or closed by anyone has nothing left to wait for: the wait ends with what happened.
+    if (seen.state !== 'OPEN') return { ended: seen.state, head: seen.head };
     const rollup = seen.checks;
     if (expect && seen.head !== expect.sha) {
       const gaveUp = await wait('the pull request does not show the landing head yet', 15_000);
@@ -1089,6 +1099,8 @@ async function land(
   let refreshes = 0;
   let noiseMoves = 0;
   const movers: BaseCommit[] = [];
+  /** Set when someone else merged the pull request while this landing watched its checks. */
+  let mergedElsewhere = false;
   for (;;) {
     const caught = await catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
     if (caught === 'conflict') {
@@ -1159,6 +1171,17 @@ async function land(
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
     const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: reviewedChecks.names, passedAtReview: reviewedChecks.passed, required: requiredByBase });
     holdLease(ctx, issue.number, 'act on the checks of the landing head');
+    if (notGreen !== null && typeof notGreen === 'object') {
+      if (notGreen.ended === 'CLOSED') {
+        say(`PR #${pr} was closed while its checks were waited on; a person decides what follows`);
+        return { park: `pull request #${pr} was closed while its checks were waited on` };
+      }
+      // Merged by a person or another writer: the merge stands, and its bookkeeping is still owed.
+      say(`PR #${pr} was merged at ${notGreen.head.slice(0, 10)} while its checks were waited on; recording the merge`);
+      landingSha = notGreen.head;
+      mergedElsewhere = true;
+      break;
+    }
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };
@@ -1239,10 +1262,12 @@ async function land(
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
   // The reads above are synchronous, so a signal that arrived during them has not been heard yet.
-  await yieldToStop(`merge PR #${pr}`);
-  // The yield lets a failed renewal be heard too: the lease is asked for once more, last of all.
-  holdLease(ctx, issue.number, `merge PR #${pr}`);
-  mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
+  if (!mergedElsewhere) {
+    await yieldToStop(`merge PR #${pr}`);
+    // The yield lets a failed renewal be heard too: the lease is asked for once more, last of all.
+    holdLease(ctx, issue.number, `merge PR #${pr}`);
+    mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
+  }
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
   // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
@@ -1287,36 +1312,37 @@ async function land(
         `This merged onto ${unseenBase.slice(0, 10)}, which landed on \`${ctx.project.baseBranch}\` between the last look upstream and the merge. The checks and the review covered the branch without that commit; the combination is unverified until the base's own checks pass.`,
       ]);
     }
-    move(ctx, issue, 'T1', `PR #${pr} merged ${merged}`);
-    // Tell the driver while the worktree still exists, so the event carries the paths that landed.
-    if (ctx.afterMerge) {
-      ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined });
-    }
-    // The person watching the main checkout sees the fix land, when the config asks for that.
-    followBase(ctx, paths);
-
-    // Read the branch name while the worktree still exists, then drop it. This is the one removal
-    // that keeps nothing back: the change is merged, so the base holds every commit the lane had.
-    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-    removeWorktree(ctx, issue.number);
-    try {
-      sh(ctx, ['git', 'push', ctx.project.remote, '--delete', branch]);
-    } catch {
-      say(`merged branch ${branch} was already deleted`);
-    }
-    // Read once more before the close. The merge has landed either way; a refusal here parks the
-    // issue with the merge named, so a person sees a closed pull request against an open issue.
-    if (!ctx.dryRun) {
-      // A lost lease is not a changed issue, and it is not this run's to park.
-      holdLease(ctx, issue.number, 'read the gate before an act on the issue');
-      const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
-      if (!gate.ok) {
+    await recordMerge(ctx, { issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined }, {
+      place: (note) => move(ctx, issue, 'T1', note),
+      note: `PR #${pr} merged ${merged}`,
+      by: 'worker',
+      comment: `Closed by #${pr}.`,
+      reason: `merged #${pr}`,
+      mergeSha: reviewedSha,
+      beforeClose: () => {
+        // The person watching the main checkout sees the fix land, when the config asks for that.
+        followBase(ctx, paths);
+        // Read the branch name while the worktree still exists, then drop it. This is the one removal
+        // that keeps nothing back: the change is merged, so the base holds every commit the lane had.
+        const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+        removeWorktree(ctx, issue.number);
+        try {
+          sh(ctx, ['git', 'push', ctx.project.remote, '--delete', branch]);
+        } catch {
+          say(`merged branch ${branch} was already deleted`);
+        }
+      },
+      // Read once more before the close. The merge has landed either way; a refusal here parks the
+      // issue with the merge named, so a person sees a closed pull request against an open issue.
+      gate: () => {
+        // A lost lease is not a changed issue, and it is not this run's to park.
+        holdLease(ctx, issue.number, 'read the gate before an act on the issue');
+        const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+        if (gate.ok) return null;
         say(`merged PR #${pr} but not closing the issue: ${gate.why}`);
-        parkIssue(ctx, issue.number, `Pull request #${pr} merged at ${merged}, but the issue was not closed because ${gate.why}. A person closes it or carries on.`);
-        return 'merged';
-      }
-    }
-    await closeIssue(ctx, issue.number, `Closed by #${pr}.`, { kind: 'merged', pr, mergeSha: reviewedSha, reason: `merged #${pr}`, by: 'worker' });
+        return gate.why;
+      },
+    });
     return 'merged';
   });
 }

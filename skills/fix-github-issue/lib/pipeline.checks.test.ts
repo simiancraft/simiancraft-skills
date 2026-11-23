@@ -224,6 +224,20 @@ describe('the build gate', () => {
     expect(w.waited()).toBe(30_060);
   });
 
+  it('ends the wait on a pull request merged while it waited, and says at which head', async () => {
+    const w = world('required', () => [{ name: 'preview', conclusion: '' }]);
+    const read = w.io.read;
+    w.io.read = (argv: string[]) => (argv[1] === 'pr' && w.waited() >= 120_000 ? JSON.stringify({ state: 'MERGED', headRefOid: 'landing', statusCheckRollup: [] }) : read(argv));
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toEqual({ ended: 'MERGED', head: 'landing' });
+    expect(w.waited()).toBe(120_000);
+  });
+
+  it('ends the wait on a closed pull request', async () => {
+    const w = world('required', () => [GREEN]);
+    w.io.read = () => JSON.stringify({ state: 'CLOSED', headRefOid: 'other', statusCheckRollup: [] });
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toEqual({ ended: 'CLOSED', head: 'other' });
+  });
+
   it('waits for the pull request to show the landing head', async () => {
     const w = world('required', () => [GREEN]);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, { sha: 'another', required: ['build'] }, w.io)).toContain('does not show the landing head');

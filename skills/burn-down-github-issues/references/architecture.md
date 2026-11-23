@@ -255,10 +255,14 @@ another run's claim released) are seen by the next refill only if this run is st
 A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
 position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
 
-Reconciliation closes an open, sized leaf a merged pull request names with a closing keyword
-(`fixes #12` at the start of a line or a sentence; a sentence starting with "not" does not count).
-It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it re-reads
-the issue immediately before closing.
+Reconciliation records the merge of an open, sized leaf a merged pull request resolves: one that
+names it with a closing keyword (`fixes #12` at the start of a line or a sentence; a sentence
+starting with "not" does not count), or one the loop opened whose branch names it (`fix/...-12`),
+since the loop's own pull requests reference their issue with `Refs` and never a closing keyword.
+The merge is recorded as the landing records its own (`recordMerge` in the fix skill's
+`lib/record-merge.ts`): the card to Merged, the merge onto the floor, and the issue closed with a
+pointer. It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it
+re-reads the issue immediately before closing.
 
 ## Carving and revisits
 

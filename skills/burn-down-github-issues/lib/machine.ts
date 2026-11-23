@@ -86,7 +86,8 @@ const TICKET_WIDE: Record<string, Transition | Transition[]> = {
     { target: 'ticket.terminal.merged', guard: 'aMergedPrReferencesIt' },
     { target: 'ticket.terminal.closedWithoutCode' },
   ],
-  PR_MERGED: { target: 'ticket.terminal.merged', actions: ['closeIssueWithPointer'] },
+  // Recorded as every merge is (`recordMerge`): the card to Merged, the merge onto the floor, the issue closed.
+  PR_MERGED: { target: 'ticket.terminal.merged', actions: ['putOnFloor', 'closeIssueWithPointer'] },
   HOLD_ADDED_BY_PERSON: [
     { target: 'ticket.human.needsDecision', guard: 'holdIsNeedsDecision' },
     { target: 'ticket.human.needsHuman', guard: 'holdIsNeedsHuman' },
@@ -565,6 +566,10 @@ export const MACHINE: StateNode = {
               lane: { key: 'F3', name: 'Checks pending', description: 'Fresh at the front; waiting on the PR checks' },
               entry: ['moveCard', 'waitOnChecks'],
               on: {
+                // The wait reads the pull request's state on every poll. Merged by anyone, the wait
+                // ends and the merge is recorded as the loop's own would be; closed, a person decides.
+                PR_MERGED: { target: 'ticket.terminal.merged', actions: ['putOnFloor', 'followBase', 'removeWorktree', 'closeIssueWithPointer', 'leaveQueue', 'releaseClaim'] },
+                PR_CLOSED: { target: 'ticket.human.parked', actions: ['labelParked', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                 CHECKS: [
                   // Checks take time. A card that fell behind while they ran goes back to catch up
                   // from here; it never enters a later lane lacking the base.

@@ -234,6 +234,15 @@ landing has passed is not seen, exactly as no observation could have seen it. Wi
 landing is a dead letter that says so. Only `checks: 'none'` says the repository runs no checks on
 a pull request, and every wait ends at `checksTimeoutMinutes`.
 
+The wait is a landing watch (`lib/landing-watch.ts`): each poll is one observation of the pull
+request, its state, its head, and each check on that head with its status and the moment the watch
+first saw it, kept across polls. A pull request observed merged ends the wait, whoever merged it, and
+the merge is recorded exactly as the loop's own is (`recordMerge` in `lib/record-merge.ts`: the card
+to Merged, the merge onto the floor, the base followed, the lane removed, and the issue closed with a
+pointer); the loop merges nothing itself. One observed closed ends the wait as a park: a person
+closed it, and a person decides what follows. The run start's reconcile records a merge no landing
+watched the same way.
+
 ## Staying current, and when proof goes stale
 
 **Upstream is more correct until the work is merged.** Every merge moves the base under everything

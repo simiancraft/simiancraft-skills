@@ -51,7 +51,7 @@ Every ticket state inherits these; a leaf does not repeat them.
 | Event | Target | Meaning |
 |---|---|---|
 | `ISSUE_CLOSED` | `terminal.merged` when a merged PR references it, else `terminal.closedWithoutCode` | GitHub is the fact; a closed issue is done whatever the lane said |
-| `PR_MERGED` | `terminal.merged`, closing the issue with a pointer | the pull master died between the merge and the close |
+| `PR_MERGED` | `terminal.merged`, recorded as every merge is (`recordMerge`: the merge onto the floor, the issue closed with a pointer) | the pull master died between the merge and the close, or a person merged it while no landing watched |
 | `HOLD_ADDED_BY_PERSON` | the human lane the label names | a person owns it now |
 | `SKIPPED` | `offBoard` (final) | `loop/skip`; a person's never |
 | `FOREIGN_CLAIM` | `waits.claimedElsewhere` | another run holds a live lease |
@@ -148,7 +148,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 |---|---|---|
 | F1 Approved | enqueue, ask the merge boundary | `BOUNDARY_REFUSED` to H3 (the boundary is a fact about the change, asked once, before anything waits); `HEAD_MOVED` to E1 (the lane moved past the reviewed commit); `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
 | F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing request for more evidence to D2 (run the prover); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the prover reacquires the proof on the existing pull request and `PROVED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
-| F3 Checks pending | wait on checks | `CHECKS`: green but behind the base to F2 under the refresh cap (a move made only of release noise is not counted against it, and has a larger bound of its own), to Q5 past it, naming the commits that moved the base; green and smoke configured to F4; green to F5; else Q5 |
+| F3 Checks pending | wait on checks, reading the pull request's state on every poll | `PR_MERGED` to T1 (someone merged it while the wait watched: put on the floor, follow base, remove the worktree, close with pointer; the loop merges nothing itself); `PR_CLOSED` to H3 (a person decides); `CHECKS`: green but behind the base to F2 under the refresh cap (a move made only of release noise is not counted against it, and has a larger bound of its own), to Q5 past it, naming the commits that moved the base; green and smoke configured to F4; green to F5; else Q5 |
 | F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap (counted as in F3), to Q5 past it; passed to F5; else Q5 (tail as the reason) |
 | F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `PR_HELD` to H3 (the pull request carries `needs-human`, `needs-decision`, or `loop/skip`); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
 

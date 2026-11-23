@@ -33,7 +33,7 @@ import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../f
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { reportPreflight } from './lib/preflight.ts';
 import { parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
@@ -51,6 +51,7 @@ import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from 
 import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { issueRefs } from './lib/refs.ts';
+import { recordMerge } from '../fix-github-issue/lib/record-merge.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
 import { Floor } from './lib/floor/floor.ts';
 import { lineHolds, readSwitch as readLineSwitch, type Seam } from './lib/floor/line.ts';
@@ -670,10 +671,11 @@ function notALeafLabel(issue: Issue): string | null {
 }
 
 /**
- * A merge the pull master landed but never recorded: the process died between `gh pr merge` and
- * the issue close, so the issue is still open and sized and would be fixed a second time. Merged
- * pull requests that reference an open, unheld, sized issue close it with a pointer, and the merge
- * goes on the floor as it would have. Runs under the lock before anything is selected.
+ * A merge nobody recorded: the process died between `gh pr merge` and the issue close, or a person
+ * merged the pull request while no landing watched it, so the issue is still open and sized and
+ * would be fixed a second time. Merged pull requests that resolve an open, unheld, sized issue are
+ * recorded as the landing records its own (`recordMerge`): the card to Merged, the merge onto the
+ * floor, and the issue closed with a pointer. Runs under the lock before anything is selected.
  */
 type Merged = {
   number: number;
@@ -683,7 +685,20 @@ type Merged = {
   mergedAt: string;
   mergeCommit: { oid: string } | null;
   files: Array<{ path: string }>;
+  author?: { login?: string };
 };
+
+/**
+ * The issues a merged pull request resolves: those a closing keyword names, and, for a pull request
+ * the loop opened, the issue its branch names (`<prefix>-<issue>`). The loop's own pull requests
+ * reference their issue with `Refs`, never a closing keyword, so the keyword alone misses them.
+ */
+function resolvedBy(pr: Merged, botLogin: string): number[] {
+  const refs = issueRefs([pr], 'closing');
+  const branch = /-(\d{1,6})$/.exec(pr.headRefName);
+  if (pr.author?.login === botLogin && branch) refs.push(Number(branch[1]));
+  return [...new Set(refs)];
+}
 
 /** Pull requests merged into the base within the reconciliation window, read once per run. */
 const mergedPullRequests = (() => {
@@ -705,7 +720,7 @@ const mergedPullRequests = (() => {
         '--search',
         `merged:>=${since}`,
         '--json',
-        'number,title,body,headRefName,mergedAt,mergeCommit,files',
+        'number,title,body,headRefName,mergedAt,mergeCommit,files,author',
       ]),
     ) as Merged[];
     return cached;
@@ -723,9 +738,9 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
   const open = new Map(all.map((issue) => [issue.number, issue]));
   const io = trackerIo(ctx);
   for (const pr of merged) {
-    // Only a closing keyword counts: a merged pull request that mentions an issue did not
-    // necessarily resolve it, and closing a trunk or a held leaf by reconciliation is a wrong close.
-    for (const ref of new Set(issueRefs([pr], 'closing'))) {
+    // Only a resolution counts: a merged pull request that mentions an issue did not necessarily
+    // resolve it, and closing a trunk or a held leaf by reconciliation is a wrong close.
+    for (const ref of resolvedBy(pr, ctx.botLogin)) {
       const issue = open.get(ref);
       if (!issue) continue;
       if (isHeldBy(issue.labels, CONFIG.skipLabels) || issue.labels.some((l) => HOLD_LABELS.includes(l.name))) continue;
@@ -742,18 +757,15 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
           continue;
         }
       }
-      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} closes it; closing with a pointer`);
-      await closeIssue(ctx, issue.number, `Resolved by #${pr.number}, merged at ${pr.mergedAt}. The run that merged it did not finish recording the close.`, {
-        kind: 'merged',
-        pr: pr.number,
-        mergeSha: pr.mergeCommit?.oid,
-        reason: `merged #${pr.number} by reconciliation`,
+      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} resolves it; recording the merge`);
+      const sha = pr.mergeCommit?.oid ?? '';
+      await recordMerge(ctx, { issue: issue.number, title: pr.title, pr: pr.number, sha, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) }, {
+        place: (note) => place(issue.number, issue.title, 'T1', note),
+        note: `PR #${pr.number} ${sha.slice(0, 10)} (recovered)`,
         by: 'reconcile',
+        comment: `Resolved by #${pr.number}, merged at ${pr.mergedAt}. No run recorded the merge when it landed.`,
+        reason: `merged #${pr.number} by reconciliation`,
       });
-      place(issue.number, issue.title, 'T1', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
-      if (!DRY_RUN && pr.mergeCommit) {
-        FLOOR?.put({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
-      }
       open.delete(ref);
     }
   }

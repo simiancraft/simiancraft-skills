@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Card, fire, laneKey, laneState, successors } from './simulate.ts';
 import { Carving, type CarvingDeps } from './carving.ts';
 import { LANES } from './lanes.ts';
+import { issueRefs } from './refs.ts';
 import { RunStopping } from '../../fix-github-issue/lib/shell.ts';
 import { isHostFaultKind, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
@@ -219,10 +220,17 @@ describe('tracker and checks pressure', () => {
 
 // Actual private functions are evaluated in memory with explicit fake dependencies. No import
 // of loop.ts, subprocess, source edit, or live tracker is involved.
+/** `recordMerge` with every tracker write left out: the card move, the floor hand-off, and the lane's removal run. */
+async function fakeRecordMerge(ctx: Context, merge: { sha: string }, record: { place: (note: string) => void; note: string; beforeClose?: () => void }) {
+  record.place(record.note);
+  if (merge.sha) ctx.afterMerge?.(merge as never);
+  record.beforeClose?.();
+  return 'closed';
+}
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping, whether an environment fault ended it, and whether its lease stands; here none is in doubt.
   // Nor does any pull request carry a person's hold, unless a test says so.
-  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, recordMerge: fakeRecordMerge, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -1338,5 +1346,76 @@ describe('a prover that needs a person', () => {
     expect(outcome).toEqual({ park: expect.stringContaining('pull request #7 carries `needs-human`') });
     expect(writes.filter((argv: string[]) => argv[2] === 'merge')).toEqual([]);
     expect(successors(laneState('F5'), { ownEventsOnly: true }).has(laneState('H3'))).toBe(true);
+  });
+});
+
+describe('a pull request merged while its landing watched', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  it('ends the wait, merges nothing itself, and records the merge once: the card, the floor, and the close', async () => {
+    const writes: string[][] = [];
+    const lanes: string[] = [];
+    const floor: number[] = [];
+    const closes: number[] = [];
+    const ctx = context(new FakeTracker(bot));
+    ctx.afterMerge = (event) => floor.push(event.pr);
+    const { recordMerge } = loadFunctions('../../fix-github-issue/lib/record-merge.ts', ['recordMerge'], {
+      closeIssue: async (_ctx: unknown, issue: number) => { closes.push(issue); }, parkIssue: noop,
+    });
+    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv.includes('mergedAt') ? '2026-11-21T11:11:04Z' : ''),
+      catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      // A person merged it by hand while a third-party check sat queued.
+      awaitGreenChecks: async () => ({ ended: 'MERGED', head: 'h' }),
+      move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane), liveGate: () => ({ ok: true }), trackerIo: noop,
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv), followBase: noop, removeWorktree: noop, recordMerge,
+    });
+    const outcome = await api.land(ctx, { number: 1, title: 'a fix' }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    expect(outcome).toBe('merged');
+    expect(writes.filter((argv) => argv[1] === 'pr' && argv[2] === 'merge')).toEqual([]);
+    expect(lanes.at(-1)).toBe('T1');
+    expect(floor).toEqual([7]);
+    expect(closes).toEqual([1]);
+    // The next run start finds the issue closed and records nothing twice.
+    const again = await recordMerge(ctx, { issue: 1, title: 'a fix', pr: 7, sha: 'h', mergedAt: '', paths: [] }, { place: noop, note: '', by: 'reconcile', comment: '', reason: '', isOpen: () => false });
+    expect(again).toBe('already-closed');
+    expect(closes).toEqual([1]);
+  });
+
+  it('parks a pull request closed while its checks were waited on', async () => {
+    const ctx = context(new FakeTracker(bot));
+    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
+      catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => ({ ended: 'CLOSED', head: 'h' }), move: noop, liveGate: () => ({ ok: true }), trackerIo: noop, mutate: noop,
+    });
+    expect(await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop)).toEqual({ park: 'pull request #7 was closed while its checks were waited on' });
+  });
+
+  it('is found at the next run start when it references its issue with Refs, as the loop\'s own pull requests do', async () => {
+    const recorded: Array<{ issue: number; pr: number; by: string }> = [];
+    const issue = { number: 42, title: 'a leaf', labels: [{ name: 'size: 1' }], blockedBy: { nodes: [] } };
+    const merged = (over: Record<string, unknown>) => ({ number: 70, title: 'fix: a leaf', body: 'Refs #42', headRefName: 'fix/a-leaf-42', mergedAt: '2026-11-21T11:00:00Z', mergeCommit: { oid: 'm'.repeat(40) }, files: [{ path: 'src/a.ts' }], author: { login: bot }, ...over });
+    const run = async (pulls: unknown[]) => {
+      recorded.length = 0;
+      const api = loadFunctions('../loop.ts', ['reconcileMergedPullRequests', 'resolvedBy', 'notALeafLabel'], {
+        ctx: { botLogin: bot }, mergedPullRequests: () => pulls, log: noop, trackerIo: noop, issueRefs,
+        isHeldBy: () => false, HOLD_LABELS: [], CONFIG: { skipLabels: [] }, looksLikeTrunk: () => false, pointsFromLabels: () => 1,
+        DRY_RUN: false, threadOf: () => ({}), refusal: () => null, NOT_A_LEAF: [], MAX_POINTS: 2, place: noop,
+        recordMerge: async (_ctx: unknown, merge: { issue: number; pr: number }, record: { by: string }) => { recorded.push({ issue: merge.issue, pr: merge.pr, by: record.by }); return 'closed'; },
+      });
+      await api.reconcileMergedPullRequests([issue]);
+      return recorded.slice();
+    };
+    expect(await run([merged({})])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
+    // Somebody else's pull request that only refers to the issue did not resolve it.
+    expect(await run([merged({ author: { login: 'someone' } })])).toEqual([]);
+    // A closing keyword still counts, whoever opened it.
+    expect(await run([merged({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' })])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
   });
 });
