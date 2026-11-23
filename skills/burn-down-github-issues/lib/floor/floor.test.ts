@@ -11,6 +11,7 @@ import type { handleIncident } from './incident.ts';
 import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
 import { type FloorCause, floorReason, lineHolds, readSwitch } from './line.ts';
 import { type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
+import { classify, type DeployRun } from './probe.ts';
 
 let scratch: string;
 let status = 200;
@@ -31,7 +32,7 @@ afterAll(() => {
 const PROJECT = { name: 'Test', repo: 'o/floor', remote: 'origin', baseBranch: 'main', evidenceBranch: 'evidence', checkCommand: 'true', installCommand: 'true', conventionDocs: [], sizingScale: 'fib', sharedServices: [], portBase: 9000, portSpan: 10, pathAliases: [], sourceExtensions: ['.ts'], alwaysInvalidates: [], touchPaths: { migration: [], ci: [] }, worktreeRoot: 'wt' } as ProjectConfig;
 
 /** A floor of its own per case, with recording callbacks in its callbacks directory. */
-function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident; readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null; landBlocker?: (issue: number) => string | null } = {}) {
+function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident; readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null; landBlocker?: (issue: number) => string | null; deployRuns?: (sha: string) => DeployRun[] } = {}) {
   const root = join(scratch, name);
   const callbacksDir = join(root, 'callbacks');
   mkdirSync(callbacksDir, { recursive: true });
@@ -70,6 +71,7 @@ function floorFor(name: string, environment: Record<string, unknown> = {}, extra
     handleIncident: extra.repair,
     ...(extra.readIncident ? { readIncident: extra.readIncident } : {}),
     ...(extra.landBlocker ? { landBlocker: extra.landBlocker } : {}),
+    ...(extra.deployRuns ? { deployRuns: extra.deployRuns } : {}),
     waitingAtMerge: () => 2,
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
@@ -565,5 +567,88 @@ describe('the cause on the floor\'s pause', () => {
     status = 200;
     await restarted.walkOnce({ livenessOnly: true });
     expect(f.line()).toBe('go\n');
+  });
+});
+
+describe('deploy evidence', () => {
+  const OTHER = '0123456789abcdef0123456789abcdef01234567';
+  const head = () => git(scratch, 'rev-parse', 'HEAD');
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+  const run = (status: string, conclusion: string | null = null): DeployRun => ({ status, conclusion });
+  const byRuns = (runs: DeployRun[], mergedAt = minutesAgo(5)) =>
+    classify({ deployed: null, sha: OTHER, mergedAt, workflow: 'Deploy', runsFor: () => runs, capMinutes: 180, repoRoot: scratch });
+
+  it('counts a queued, pending, waiting, or running deploy as not deployed', () => {
+    for (const status of ['queued', 'pending', 'waiting', 'requested', 'in_progress']) {
+      expect(byRuns([run(status)])).toEqual({ state: 'not-yet-deployed', reason: `the Deploy run is ${status}` });
+    }
+  });
+
+  it('walks a merge once its deploy run completed successfully, and not when it completed any other way', () => {
+    expect(byRuns([run('completed', 'success')])).toBeNull();
+    expect(byRuns([run('in_progress'), run('completed', 'success')])).toBeNull();
+    expect(byRuns([run('completed', 'failure')])).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy run concluded failure' });
+    expect(byRuns([])).toEqual({ state: 'not-yet-deployed', reason: 'no Deploy run for the merge' });
+  });
+
+  it('lets a deployed revision decide alone, whatever the workflow says', () => {
+    let reads = 0;
+    const runsFor = () => {
+      reads++;
+      return [run('completed', 'success')];
+    };
+    const options = { mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor, capMinutes: 180, repoRoot: scratch };
+    expect(classify({ ...options, deployed: head(), sha: head() })).toBeNull();
+    expect(classify({ ...options, deployed: head(), sha: OTHER })?.state).toBe('not-yet-deployed');
+    expect(reads).toBe(0);
+  });
+
+  it('never walks a merge on elapsed time: past the cap with no evidence it is deploy-unconfirmed', () => {
+    expect(byRuns([run('in_progress')], minutesAgo(181))?.state).toBe('deploy-unconfirmed');
+    expect(byRuns([run('completed', 'success')], minutesAgo(181))).toBeNull();
+    const none = (mergedAt: string) => classify({ deployed: null, sha: OTHER, mergedAt, capMinutes: 180, repoRoot: scratch });
+    expect(none(minutesAgo(5))?.state).toBe('not-yet-deployed');
+    expect(none(minutesAgo(60 * 24 * 30))).toMatchObject({ state: 'deploy-unconfirmed', reason: expect.stringContaining('neither a revisionCommand nor a deployWorkflow') });
+    const unreadable = classify({ deployed: null, sha: OTHER, mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor: () => { throw new Error('HTTP 502'); }, capMinutes: 180, repoRoot: scratch });
+    expect(unreadable).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy runs could not be read (HTTP 502)' });
+  });
+
+  it('walks a merge only after its running deploy completes', async () => {
+    status = 200;
+    const answers = join(scratch, 'deploy-walk-answers');
+    mkdirSync(answers, { recursive: true });
+    writeFileSync(join(answers, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:120', rung: 'exercise', verdict: 'intact', reason: 'The page works.' }] }));
+    // With no deployed revision to read, the walk's checkout is the base as last fetched.
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    let runs = [run('in_progress')];
+    const f = floorFor('deploy-running', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs });
+    f.floor.put({ issue: 12, title: 'fix: a backend thing', pr: 120, sha: OTHER, mergedAt: minutesAgo(30), paths: ['server/a.ts'] });
+    await f.floor.walkOnce();
+    await f.floor.walkOnce();
+    const verdicts = () => readLedger(f.dir).filter((e) => e.itemId === 'pull-request:120').map((e) => e.verdict);
+    expect(verdicts()).toEqual(['not-yet-deployed']);
+    expect(readLedger(f.dir).find((e) => e.itemId === 'pull-request:120')?.reason).toBe('the Deploy run is in_progress');
+    runs = [run('completed', 'success')];
+    await f.floor.walkOnce();
+    expect(verdicts()).toEqual(['not-yet-deployed', 'intact']);
+  });
+
+  it('shows a deploy it cannot confirm in the readout, files nothing, and does not hold the drain on it', async () => {
+    status = 200;
+    const f = floorFor('deploy-unconfirmed', { deployWorkflow: 'Deploy', deployCapMinutes: 60 }, { forge: false, deployRuns: () => [] });
+    f.floor.put({ issue: 13, title: 'fix: a stalled deploy', pr: 130, sha: OTHER, mergedAt: minutesAgo(90), paths: ['server/b.ts'] });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(false);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:130', verdict: 'deploy-unconfirmed' });
+    expect(f.readouts.at(-1)).toContain('PR #130 fix: a stalled deploy: deploy unconfirmed; no Deploy run for the merge; still no deploy evidence 60 minutes after the merge');
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+    expect(f.floor.owed('run')).toHaveLength(0);
+  });
+
+  it('refuses the grace window and an empty workflow name', () => {
+    const { faults } = resolveFloor({ environment: { kind: 'web', baseUrl: 'https://x.test', deployWorkflow: ' ', graceMinutes: 15 } as never });
+    expect(faults.some((f) => f.startsWith('floor.environment.graceMinutes is not read'))).toBe(true);
+    expect(faults.some((f) => f.startsWith('floor.environment.deployWorkflow'))).toBe(true);
   });
 });

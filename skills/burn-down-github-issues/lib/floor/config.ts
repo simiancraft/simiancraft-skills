@@ -37,14 +37,27 @@ export type Environment = {
   healthPaths: HealthPath[];
   /** How long one health request may take before it counts as no response. */
   probeTimeoutMs: number;
-  /** Prints the running commit. Optional; without it items inside `graceMinutes` are `unverified`. */
+  /**
+   * Prints the running commit. Optional; when it prints one, a merge is deployed exactly when that
+   * commit contains it, and `deployWorkflow` is not read.
+   */
   revisionCommand?: string;
+  /**
+   * The workflow (name or file, as `gh run list --workflow` takes it) that deploys the base branch.
+   * Optional; with no deployed revision to read, a merge is deployed once this workflow's run for
+   * the merge commit has completed successfully.
+   */
+  deployWorkflow?: string;
+  /**
+   * Minutes after a merge with still no deploy evidence before it is `deploy-unconfirmed`, a known
+   * unknown shown in the readout, rather than `not-yet-deployed`. Neither is ever walked.
+   */
+  deployCapMinutes: number;
   /** Prints recent logs, read when a walk fails. Optional. */
   logsCommand?: string;
   login?: Login;
   /** Paths the walker may POST to. Default none. */
   safeEndpoints: string[];
-  graceMinutes: number;
   /**
    * Daily windows, in UTC `HH:MM`, when the environment is expected to be down or wrong: a nightly
    * database copy, a scheduled deploy. Inside one a walk still records what it sees but pauses
@@ -87,7 +100,7 @@ const DEFAULT_ENVIRONMENT: Omit<Environment, 'kind' | 'baseUrl'> = {
   probeTimeoutMs: 10_000,
   healthPaths: [],
   safeEndpoints: [],
-  graceMinutes: 15,
+  deployCapMinutes: 180,
   quietWindows: [],
 };
 
@@ -152,7 +165,13 @@ export function resolveFloor(input: FloorConfigInput): { floor: FloorConfig; fau
   if (!Array.isArray(environment.quietWindows) || environment.quietWindows.some((w) => !HHMM.test(w?.start) || !HHMM.test(w?.end))) {
     faults.push('floor.environment.quietWindows must be an array of { start: "HH:MM", end: "HH:MM" } in UTC');
   }
-  if (!positive(environment.graceMinutes)) faults.push('floor.environment.graceMinutes must be a positive integer');
+  if (!positive(environment.deployCapMinutes)) faults.push('floor.environment.deployCapMinutes must be a positive integer');
+  if (environment.deployWorkflow !== undefined && (typeof environment.deployWorkflow !== 'string' || environment.deployWorkflow.trim() === '')) {
+    faults.push('floor.environment.deployWorkflow must be a workflow name or file');
+  }
+  if ('graceMinutes' in (input.environment ?? {})) {
+    faults.push('floor.environment.graceMinutes is not read: a merge is walked only on deploy evidence; set revisionCommand or deployWorkflow, and deployCapMinutes for how long to wait');
+  }
   if (!positive(environment.probeTimeoutMs)) faults.push('floor.environment.probeTimeoutMs must be a positive integer');
   if (environment.driverSkill !== undefined && (typeof environment.driverSkill !== 'string' || environment.driverSkill.trim() === '')) {
     faults.push('floor.environment.driverSkill must be a skill name');

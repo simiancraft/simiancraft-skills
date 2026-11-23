@@ -44,9 +44,11 @@ import {
   TERMINAL,
 } from './ledger.ts';
 import { ghLineage, type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
-import { classify, deployedRevision, describe, probe } from './probe.ts';
+import { classify, type DeployRun, deployedRevision, deployRunsFor, describe, probe } from './probe.ts';
 
 const VERDICT_FILE = 'walk-verdict.json';
+/** Pending verdicts a drain does not wait on: another issue, or deploy evidence, settles them. */
+const WAITS_ON_OTHERS: ReadonlySet<string> = new Set(['owed-by-sibling', 'deploy-unconfirmed']);
 
 /** A merge, as the pipeline's afterMerge hook reports it. */
 export type MergeEvent = { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[]; unseenBase?: string };
@@ -90,6 +92,8 @@ export type FloorOptions = {
   handleIncident?: typeof handleIncident;
   /** The open incident for an item as the tracker reports it; `openIncidentFor`, unless a test supplies its own. */
   readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null;
+  /** The deploy workflow's runs for a merge commit; `deployRunsFor` on the forge, unless a test supplies its own. */
+  deployRuns?: (sha: string) => DeployRun[];
   /** Why a person cannot land an incident's parked fix, or null when they can; `readLandBlocker`, unless a test supplies its own. */
   landBlocker?: (issue: number) => string | null;
 };
@@ -234,14 +238,15 @@ export class Floor {
   }
 
   /**
-   * Items still owed a terminal verdict, less those a person owns and those whose missing effect an
-   * open sibling owns (that sibling's own merge is what settles them): this run's, or every one.
+   * Items still owed a terminal verdict, less those a person owns, those whose missing effect an
+   * open sibling owns (that sibling's own merge is what settles them), and those whose deploy is
+   * unconfirmed past the cap (no walk can settle them): this run's, or every one.
    */
   owed(scope: 'run' | 'all' = 'all'): ListItem[] {
     const ledger = readLedger(this.o.dir);
     const latest = latestByItem(ledger);
     return pending(readList(this.o.dir), ledger).filter(
-      (item) => this.owners.get(item.id)?.owner !== 'person' && latest.get(item.id)?.verdict !== 'owed-by-sibling' && (scope === 'all' || this.mine.has(item.id)),
+      (item) => this.owners.get(item.id)?.owner !== 'person' && !WAITS_ON_OTHERS.has(latest.get(item.id)?.verdict ?? 'present') && (scope === 'all' || this.mine.has(item.id)),
     );
   }
 
@@ -477,27 +482,19 @@ export class Floor {
       const unsettled = pending([...items.values()], readLedger(this.o.dir));
       // An issue whose merge is on the floor and not verified yet has not landed where a walk looks.
       const landing = new Set(unsettled.map((item) => item.ref?.issue).filter((n): n is number => n !== undefined));
+      const workflow = this.env.deployWorkflow;
+      const runsFor = workflow ? (this.o.deployRuns ?? ((sha: string) => deployRunsFor(ctx, workflow, sha))) : undefined;
       for (const item of unsettled) {
         // Owed to a sibling still open, or merged and not yet verified: nothing to look at until it lands.
         const prior = before.get(item.id);
         if (prior?.verdict === 'owed-by-sibling' && prior.sibling !== undefined && (landing.has(prior.sibling) || owedTo(this.lineage(item), prior.sibling))) continue;
-        const state = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, graceMinutes: this.env.graceMinutes, repoRoot: ctx.repoRoot });
-        if (!state) {
+        const undeployed = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, workflow, runsFor, capMinutes: this.env.deployCapMinutes, repoRoot: ctx.repoRoot });
+        if (!undeployed) {
           walkable.push(item);
           continue;
         }
-        if (before.get(item.id)?.verdict === state) continue;
-        this.record(
-          {
-            itemId: item.id,
-            checkedAt: at,
-            deployedRevision: deployed ?? undefined,
-            rung: 'classify',
-            verdict: state,
-            reason: state === 'not-yet-deployed' ? `merge ${item.ref?.sha?.slice(0, 12)} is not an ancestor of the deployed revision` : `no revision signal and inside the ${this.env.graceMinutes}-minute grace window`,
-          },
-          entries,
-        );
+        if (before.get(item.id)?.verdict === undeployed.state) continue;
+        this.record({ itemId: item.id, checkedAt: at, deployedRevision: deployed ?? undefined, rung: 'classify', verdict: undeployed.state, reason: undeployed.reason }, entries);
       }
       if (walkable.length > 0 && quiet) {
         notes.push(`${walkable.length} item(s) wait out the quiet window`);
@@ -820,6 +817,7 @@ export class Floor {
       if (entry.itemId === LIVENESS_ITEM) continue;
       if (entry.verdict === 'present' || entry.verdict === 'intact') verified.push(`${label(entry.itemId)}: ${entry.verdict} (${entry.rung})`);
       else if (entry.verdict === 'not-checkable') headsUp.push(`${label(entry.itemId)}: not checkable; ${entry.reason}`);
+      else if (entry.verdict === 'deploy-unconfirmed') continue;
       else if (entry.verdict === 'owed-by-sibling') pendingLines.push(`${label(entry.itemId)}: owed by sibling #${entry.sibling}, walked again once it closes`);
       else if (!REPAIR.has(entry.verdict)) pendingLines.push(`${label(entry.itemId)}: ${entry.verdict.replaceAll('-', ' ')}`);
     }
@@ -833,6 +831,10 @@ export class Floor {
     }
     // Read against the ledger and the tracker this walk (readOwnership).
     for (const owned of withAPerson(this.owners)) waiting.push(incidentWaiting(label(owned.itemId), owned.incident ?? undefined, owned.landable, owned.entry.verdict));
+    // A deploy the floor cannot confirm stays in front of a person on every readout until evidence arrives.
+    for (const entry of latestByItem(readLedger(this.o.dir)).values()) {
+      if (entry.verdict === 'deploy-unconfirmed' && items.has(entry.itemId)) headsUp.push(`${label(entry.itemId)}: deploy unconfirmed; ${entry.reason}; walked once a deploy is confirmed`);
+    }
     if (this.ownPause()) headsUp.push(this.pauseReadout());
     if (stillPending > 0) pendingLines.push(`${stillPending} item(s) on the floor still owed a verdict`);
     return renderReadout({

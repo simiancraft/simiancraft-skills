@@ -27,7 +27,8 @@ export type Rung = (typeof RUNGS)[number];
 /** Rungs an agent may report; the other two belong to the driver. */
 export const AGENT_RUNGS: ReadonlySet<Rung> = new Set<Rung>(['look', 'exercise', 'fallback', 'exists-in-git']);
 
-export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'unverified', 'owed-by-sibling'] as const;
+/** `unverified` is kept only so ledgers that carry it still read; classification never assigns it. */
+export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'deploy-unconfirmed', 'unverified', 'owed-by-sibling'] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 /** Verdicts that retire an item. Everything else leaves it on the walk list. */
