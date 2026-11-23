@@ -646,9 +646,22 @@ describe('deploy evidence', () => {
     expect(f.floor.owed('run')).toHaveLength(0);
   });
 
-  it('refuses the grace window and an empty workflow name', () => {
-    const { faults } = resolveFloor({ environment: { kind: 'web', baseUrl: 'https://x.test', deployWorkflow: ' ', graceMinutes: 15 } as never });
-    expect(faults.some((f) => f.startsWith('floor.environment.graceMinutes is not read'))).toBe(true);
-    expect(faults.some((f) => f.startsWith('floor.environment.deployWorkflow'))).toBe(true);
+  it('refuses an empty workflow name, and accepts graceMinutes', () => {
+    const { faults } = resolveFloor({ environment: { kind: 'web', baseUrl: 'https://x.test', deployWorkflow: ' ', graceMinutes: 15 } });
+    expect(faults).toEqual(['floor.environment.deployWorkflow must be a workflow name or file']);
+  });
+
+  it('says once at start that graceMinutes decides nothing, and when no merge can be shown deployed', () => {
+    const f = floorFor('deploy-notes', { graceMinutes: 15 });
+    const logs: string[] = [];
+    new Floor({ ...(f.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o, log: (m) => logs.push(m) });
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toContain('graceMinutes no longer decides anything');
+    expect(logs[0]).toContain('set revisionCommand or deployWorkflow');
+    expect(logs[1]).toContain('no merge can be shown deployed: every merge will read deploy-unconfirmed after 180 minutes');
+    const quiet: string[] = [];
+    const g = floorFor('deploy-notes-quiet', { deployWorkflow: 'Deploy' });
+    new Floor({ ...(g.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o, log: (m) => quiet.push(m) });
+    expect(quiet).toEqual([]);
   });
 });

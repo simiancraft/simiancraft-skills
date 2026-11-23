@@ -53,6 +53,8 @@ export type Environment = {
    * unknown shown in the readout, rather than `not-yet-deployed`. Neither is ever walked.
    */
   deployCapMinutes: number;
+  /** Accepted so older configs still load; it decides nothing, and the floor says so when it starts. */
+  graceMinutes?: number;
   /** Prints recent logs, read when a walk fails. Optional. */
   logsCommand?: string;
   login?: Login;
@@ -103,6 +105,21 @@ const DEFAULT_ENVIRONMENT: Omit<Environment, 'kind' | 'baseUrl'> = {
   deployCapMinutes: 180,
   quietWindows: [],
 };
+
+/**
+ * What the floor says once when it starts about how it can tell a merge is deployed: a
+ * `graceMinutes` that decides nothing, and an environment with no deploy evidence at all.
+ */
+export function deployEvidenceNotes(environment: Environment): string[] {
+  const notes: string[] = [];
+  if (environment.graceMinutes !== undefined) {
+    notes.push('floor.environment.graceMinutes no longer decides anything: a merge is walked only on deploy evidence; set revisionCommand or deployWorkflow (deployCapMinutes bounds the wait)');
+  }
+  if (!environment.revisionCommand && !environment.deployWorkflow) {
+    notes.push(`neither revisionCommand nor deployWorkflow is configured, so no merge can be shown deployed: every merge will read deploy-unconfirmed after ${environment.deployCapMinutes} minutes`);
+  }
+  return notes;
+}
 
 /** True when `now` (UTC) falls inside any configured quiet window; windows may cross midnight. */
 export function inQuietWindow(windows: Array<{ start: string; end: string }>, now = new Date()): boolean {
@@ -169,9 +186,7 @@ export function resolveFloor(input: FloorConfigInput): { floor: FloorConfig; fau
   if (environment.deployWorkflow !== undefined && (typeof environment.deployWorkflow !== 'string' || environment.deployWorkflow.trim() === '')) {
     faults.push('floor.environment.deployWorkflow must be a workflow name or file');
   }
-  if ('graceMinutes' in (input.environment ?? {})) {
-    faults.push('floor.environment.graceMinutes is not read: a merge is walked only on deploy evidence; set revisionCommand or deployWorkflow, and deployCapMinutes for how long to wait');
-  }
+
   if (!positive(environment.probeTimeoutMs)) faults.push('floor.environment.probeTimeoutMs must be a positive integer');
   if (environment.driverSkill !== undefined && (typeof environment.driverSkill !== 'string' || environment.driverSkill.trim() === '')) {
     faults.push('floor.environment.driverSkill must be a skill name');

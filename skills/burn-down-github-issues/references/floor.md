@@ -168,8 +168,9 @@ is still running is never judged `absent` or `intact` against the build before i
 `deployCapMinutes` (default 180) with still no evidence it is `deploy-unconfirmed`: the floor looked
 and cannot tell. That is shown in the readout, files no incident, and pauses nothing; the item is
 classified again every walk and walked as soon as evidence appears. With neither knob set, no merge
-can be shown deployed, so every merge ends `deploy-unconfirmed`; set one. `graceMinutes` is refused:
-it walked a merge once a window passed, deployed or not.
+can be shown deployed, so every merge ends `deploy-unconfirmed`, and the floor says so when it
+starts; set one. `graceMinutes` is still accepted but decides nothing, and the floor says that when
+it starts too.
 
 ## Owed by a sibling
 

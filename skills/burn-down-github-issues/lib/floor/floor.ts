@@ -23,7 +23,7 @@ import type { Seat } from '../../../fix-github-issue/lib/engines.ts';
 import { isStopping, RunStopping, sh, stoppableSleep } from '../../../fix-github-issue/lib/shell.ts';
 import { matchesPath } from '../../../fix-github-issue/lib/staleness.ts';
 import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts';
-import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
+import { DRIVER_SKILLS, deployEvidenceNotes, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
 import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { type Diagnosis, diagnose, handleIncident, mergedSince, openIncidentFor } from './incident.ts';
 import { combineCauses, type FloorCause, floorReason, floorUnderHost, floorUnderHostFile, isOutage, type Pause, standingPause } from './line.ts';
@@ -206,6 +206,7 @@ export class Floor {
     this.rehearsal = options.ctx.dryRun || options.baseUrl !== undefined;
     this.checkout = resolve(options.ctx.repoRoot, options.ctx.project.worktreeRoot, 'floor-checkout');
     this.lineageOf = options.lineageOf ?? ghLineage(options.ctx);
+    for (const note of deployEvidenceNotes(this.env)) options.log(`floor: ${note}`);
     const pause = this.pause();
     const under = floorUnderHost(options.switchFile);
     if (pause?.by === 'floor') this.inherited = pause.cause;

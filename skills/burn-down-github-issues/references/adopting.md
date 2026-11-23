@@ -104,7 +104,9 @@ export default {
   // walks the deployed base after every merge and pauses the line when it is wrong; see references/floor.md.
   // A merge is walked only on deploy evidence: set environment.revisionCommand (prints the running SHA)
   // or environment.deployWorkflow (the workflow that deploys the base); deployCapMinutes (default 180)
-  // bounds the wait before a merge is reported deploy-unconfirmed.
+  // bounds the wait before a merge is reported deploy-unconfirmed. With neither set, no merge can be
+  // shown deployed, so every merge reads deploy-unconfirmed after the cap (the floor says so at start).
+  // graceMinutes is still accepted and decides nothing.
 };
 ```
 
