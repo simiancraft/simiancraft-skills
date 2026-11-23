@@ -160,12 +160,13 @@ export function standingStop(comments: Thread, botLogin?: string, since?: string
 
 /**
  * The approval the work still stands on: the newest `approved` record in scope, when nothing newer
- * than it stopped the work for a reason of its own. Only a boundary park (the approval parked by
- * policy) and an outside stop that reruns the work (a host, a signal, a transport failure, a stuck
- * check) may sit above it; a park, a dead letter, a held proof, a seat's hold, or an outside stop
- * that waits on a person each say something happened to the work since. Null when there is no such
- * approval. The record names the head the reviewer read (`sha`) and, when both seats classified
- * the change, the classification (`touches`, comma-separated).
+ * than it judged the change. Only a boundary park (the approval parked by policy) and an outside
+ * stop (a host, a signal, a transport failure, a stuck check, or one of those held for a person
+ * after it repeated) may sit above it, since neither says anything about the change; a park, a dead
+ * letter, a held proof, or a seat's hold each say something happened to the work since. Whether
+ * the head still matches is the caller's question. Null when there is no such approval. The record
+ * names the head the reviewer read (`sha`) and, when both seats classified the change, the
+ * classification (`touches`, comma-separated).
  */
 export function standingApproval(comments: Thread, scope: StopScope = {}): { sha: string; pr?: number; touches: string[] } | null {
   let upTo = comments.length;
@@ -178,7 +179,7 @@ export function standingApproval(comments: Thread, scope: StopScope = {}): { sha
       const pr = Number(stop.fields.pr);
       return { sha: stop.fields.sha, pr: Number.isInteger(pr) && pr > 0 ? pr : undefined, touches: (stop.fields.touches ?? '').split(',').filter(Boolean) };
     }
-    const passing = stop.kind === 'boundary' || (stop.kind === 'outside' && !WAITING.includes(stop.fields.cause ?? ''));
+    const passing = stop.kind === 'boundary' || stop.kind === 'outside';
     if (!passing) return null;
     upTo = at;
   }

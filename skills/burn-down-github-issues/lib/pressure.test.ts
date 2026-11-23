@@ -1476,6 +1476,13 @@ describe('a landing on an approval that still stands at the head', () => {
     expect((await land([approved('H'), outside])).standing?.reviewedSha).toBe('H');
   });
 
+  it('stands through the hold a stuck check earns on its third run in a row: it waits on a person, and judged nothing', async () => {
+    const held = { author: bot, body: stopComment('outside', { cause: 'needs-person', seat: 'landing', after: 'stuck-check', times: 3 }, 'held'), createdAt: '2026-11-21T03:29:00Z' };
+    const { standing, seats } = await land([approved('H'), held]);
+    expect(standing?.reviewedSha).toBe('H');
+    expect(seats).toEqual([]);
+  });
+
   for (const [what, thread, over] of [
     ['the head moved since the approval', [approved('H')], { head: 'H2' }],
     ['the approval is for another commit', [approved('G')], {}],

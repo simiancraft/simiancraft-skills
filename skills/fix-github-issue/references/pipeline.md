@@ -183,7 +183,8 @@ approval still stands on the head in hand. A continuation with no objection (`--
 burndown resuming a pull request whose landing an outside stop interrupted) goes straight to the
 landing, with no draft, no proof, and no review again, when all of these hold: the newest `approved`
 record since the pull request opened has nothing newer than it but a boundary park or an outside
-stop that reruns the work (`standingApproval` in `lib/stop-record.ts`); it names both seats'
+stop, which judges nothing about the change whether it reruns the work or waits on a person
+(`standingApproval` in `lib/stop-record.ts`); it names both seats'
 classification (`touches`, recorded with the approval) and this pull request; the lane and the pull
 request both hold the head it names; the pull request is ready; the base needs no catch-up, by the
 landing's rule for release noise; and the checks on that head are green now, by the newest run under
