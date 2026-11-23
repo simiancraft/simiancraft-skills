@@ -165,12 +165,21 @@ export function isVersionOnlyPackageJsonBump(ctx: Context, cwd: string, sinceSha
   return changed.length > 0 && changed.every((line) => /^[+-]\s*"version":/.test(line));
 }
 
+/** Whether a file is one the adopter's `releaseArtifacts` names: written by the release machinery alone. */
+export function isReleaseArtifact(ctx: Context, file: string): boolean {
+  return (ctx.project.releaseArtifacts ?? []).some((pattern) => matchesPath(file, pattern));
+}
+
 /**
- * Every file the base has changed that this lane does not yet contain, release noise included.
- * Empty means the lane holds the current base. This is the "is it behind at all" question, which
- * decides whether a lane catches up; `staleAgainstBase` is the narrower question of whether that
- * movement reached what a proof or an approval covers, which decides what the catch-up costs.
+ * Whether the base's change to one file, from `sinceSha` to `baseSha`, is release noise: a
+ * configured release artifact, or a package.json whose only change is its "version" field. Release
+ * machinery writes these after every merge, so who made the commit does not matter; the files it
+ * touched decide. Any other package.json change (a dependency, a script) is movement.
  */
+export function isReleaseNoise(ctx: Context, cwd: string, file: string, sinceSha: string, baseSha: string): boolean {
+  return isReleaseArtifact(ctx, file) || (file === 'package.json' && isVersionOnlyPackageJsonBump(ctx, cwd, sinceSha, baseSha));
+}
+
 /**
  * Fetches the base once and answers with the commit it is at. A catch-up judges, compares, and
  * merges against this one commit: a base that moves again between those steps must not let the
@@ -181,6 +190,12 @@ export function fetchBase(ctx: Context, cwd: string): string {
   return sh(ctx, ['git', 'rev-parse', `${ctx.project.remote}/${ctx.project.baseBranch}`], cwd);
 }
 
+/**
+ * Every file the base has changed that this lane does not yet contain, release noise included.
+ * Empty means the lane holds the current base. This is the "is it behind at all" question, which
+ * decides whether a lane catches up; `staleAgainstBase` is the narrower question of whether that
+ * movement reached what a proof or an approval covers, which decides what the catch-up costs.
+ */
 export function behindBase(ctx: Context, cwd: string, baseSha?: string): string[] {
   const target = baseSha ?? fetchBase(ctx, cwd);
   if (sh(ctx, ['git', 'rev-list', '--count', `HEAD..${target}`], cwd) === '0') return [];
@@ -200,9 +215,8 @@ export function behindBase(ctx: Context, cwd: string, baseSha?: string): string[
  */
 export function behindBeyondNoise(ctx: Context, cwd: string, baseSha: string): string[] {
   const behind = behindBase(ctx, cwd, baseSha);
-  const releaseArtifacts: readonly string[] = ctx.project.releaseArtifacts ?? [];
-  if (behind.length === 0 || releaseArtifacts.length === 0) return behind;
-  const artifact = (file: string) => releaseArtifacts.some((pattern) => matchesPath(file, pattern));
+  if (behind.length === 0 || (ctx.project.releaseArtifacts ?? []).length === 0) return behind;
+  const artifact = (file: string) => isReleaseArtifact(ctx, file);
   if (!behind.some(artifact)) return behind;
   const mine = sh(ctx, ['git', 'diff', '--name-only', `${baseSha}...HEAD`], cwd).split('\n').filter(Boolean);
   const closure = importClosure(ctx, cwd, mine);
@@ -223,7 +237,6 @@ export function staleAgainstBase(ctx: Context, cwd: string, sinceSha: string, ba
   // The pinned commit when the caller fetched already; otherwise fetch here and pin for this call.
   const target = baseSha ?? fetchBase(ctx, cwd);
   const alwaysInvalidates: readonly string[] = ctx.project.alwaysInvalidates;
-  const releaseArtifacts: readonly string[] = ctx.project.releaseArtifacts ?? [];
 
   const lines = (out: string) => out.split('\n').filter(Boolean);
 
@@ -232,12 +245,8 @@ export function staleAgainstBase(ctx: Context, cwd: string, sinceSha: string, ba
   // movement out before anything judges freshness. The branch merges without catching up on
   // these files: it does not touch them, so git merges them cleanly, and if a branch ever does
   // touch one, the merge conflicts and fails closed rather than landing anything unreviewed.
-  const machineNoise = (file: string) =>
-    releaseArtifacts.some((pattern) => matchesPath(file, pattern)) ||
-    (file === 'package.json' && isVersionOnlyPackageJsonBump(ctx, cwd, sinceSha, target));
-
   const incoming = lines(sh(ctx, ['git', 'diff', '--name-only', `${sinceSha}...${target}`], cwd)).filter(
-    (file) => !machineNoise(file),
+    (file) => !isReleaseNoise(ctx, cwd, file, sinceSha, target),
   );
   if (incoming.length === 0) return [];
 

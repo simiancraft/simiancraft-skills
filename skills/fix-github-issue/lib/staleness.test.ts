@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, importClosure, isAutomationCommit, resolveSpecifier, staleAgainstBase } from './staleness.ts';
+import { behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, importClosure, isAutomationCommit, isReleaseNoise, resolveSpecifier, staleAgainstBase } from './staleness.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const run = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -102,6 +102,56 @@ describe('staleAgainstBase: did the world move beneath the proof', () => {
     const proofHead = git(lane, 'rev-parse', 'HEAD');
     landUpstream(other, 'bun.lock', 'lock 2\n');
     expect(staleAgainstBase(ctx, lane, proofHead)).toEqual(['bun.lock']);
+  });
+});
+
+/** Puts a package.json on the base and brings the lane up to it, so the next landing on the base is the only package.json movement. */
+function sharedManifest(lane: string, other: string): void {
+  writeFileSync(join(other, 'package.json'), '{\n  "name": "x",\n  "version": "1.0.0",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+  git(other, 'add', 'package.json');
+  git(other, 'commit', '-q', '-m', 'manifest');
+  git(other, 'push', '-q', 'origin', 'development');
+  git(lane, 'fetch', '-q', 'origin');
+  git(lane, 'merge', '-q', '--no-edit', 'origin/development');
+}
+
+describe('isReleaseNoise: which base files count as movement', () => {
+  it('calls a configured release artifact noise, and an unconfigured file movement', () => {
+    const { ctx, lane, other } = repository();
+    (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['CHANGELOG.md', 'deploy/'];
+    const since = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'CHANGELOG.md', '# 1.0.1\n');
+    const base = fetchBase(ctx, lane);
+    expect(isReleaseNoise(ctx, lane, 'CHANGELOG.md', since, base)).toBe(true);
+    expect(isReleaseNoise(ctx, lane, 'deploy/constants.json', since, base)).toBe(true);
+    expect(isReleaseNoise(ctx, lane, 'src/unrelated.ts', since, base)).toBe(false);
+  });
+
+  it('calls a version-only package.json bump noise without any configuration', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    const since = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    expect(isReleaseNoise(ctx, lane, 'package.json', since, fetchBase(ctx, lane))).toBe(true);
+  });
+
+  it('calls a version bump that also changes a dependency movement', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    const since = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "2.0.0" }\n}\n');
+    expect(isReleaseNoise(ctx, lane, 'package.json', since, fetchBase(ctx, lane))).toBe(false);
+  });
+
+  it('is what freshness leaves out: a version-only bump keeps a proof fresh, a dependency change does not', () => {
+    const { ctx, lane, other } = repository();
+    (ctx.project as { alwaysInvalidates: string[] }).alwaysInvalidates = ['bun.lock', 'package.json'];
+    sharedManifest(lane, other);
+    const proofHead = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    expect(staleAgainstBase(ctx, lane, proofHead)).toEqual([]);
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.2",\n  "dependencies": { "a": "2.0.0" }\n}\n');
+    expect(staleAgainstBase(ctx, lane, proofHead)).toEqual(['package.json']);
   });
 });
 
