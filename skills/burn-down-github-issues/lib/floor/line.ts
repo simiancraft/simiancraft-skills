@@ -1,8 +1,9 @@
 /**
  * The line switch as the floor writes it and the loop reads it. A pause the floor writes carries the
  * cause of what it found wrong in its reason, `floor:<cause>: …`, so the kind of pause is readable
- * from the switch file alone and survives a restart. A reason without the `floor:` prefix is a
- * person's, and a person's pause always holds every seam.
+ * from the switch file alone and survives a restart. A host pause, written when a seat failed on a
+ * full disk or exhausted memory, carries `host:`. Any other reason is a person's. A person's pause
+ * and a host pause hold every seam, and only a person releases either.
  *
  * The causes say which state of knowledge the floor is in:
  *   undiagnosed         a walk found something wrong and no diagnosis has answered yet
@@ -16,8 +17,11 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 
-/** The reason the floor writes when it pauses the line; a pause without this prefix is a person's. */
+/** The reason the floor writes when it pauses the line. */
 export const FLOOR_PAUSE = 'floor:';
+
+/** The reason prefix a host pause is written with. */
+export const HOST_PAUSE = 'host:';
 
 export const FLOOR_CAUSES = ['undiagnosed', 'cause-unknown', 'in-repository', 'outside-repository'] as const;
 export type FloorCause = (typeof FLOOR_CAUSES)[number];
@@ -25,7 +29,8 @@ export type FloorCause = (typeof FLOOR_CAUSES)[number];
 /** Where the loop reads the switch: before the appraisal batch, before a lane starts, and before every merge. */
 export type Seam = 'appraisal' | 'dispatch' | 'merge';
 
-export type Pause = { by: 'person' } | { by: 'floor'; cause: FloorCause };
+/** Who wrote a pause: a person, the floor with the cause it recorded, or the host fault handler. */
+export type Pause = { by: 'person' } | { by: 'floor'; cause: FloorCause } | { by: 'host' };
 
 export type Switch = { state: 'go' | 'pause'; reason: string };
 
@@ -44,9 +49,11 @@ export function floorReason(cause: FloorCause, text: string): string {
 
 /**
  * Who wrote a pause, and for the floor, the cause it recorded. A bare `floor:` reason, as an earlier
- * version wrote, recorded no cause: it reads as undiagnosed, which holds what it always held.
+ * version wrote, recorded no cause: it reads as undiagnosed, which holds what it always held. This is
+ * the one reader of a pause's author; everything that writes the switch asks it first.
  */
 export function readPause(reason: string): Pause {
+  if (reason.startsWith(HOST_PAUSE)) return { by: 'host' };
   if (!reason.startsWith(FLOOR_PAUSE)) return { by: 'person' };
   const rest = reason.slice(FLOOR_PAUSE.length);
   const cause = FLOOR_CAUSES.find((c) => rest.startsWith(`${c}:`));
@@ -63,19 +70,26 @@ export function combineCauses(causes: FloorCause[]): FloorCause {
   return 'outside-repository';
 }
 
-/** An outage holds only the merge; a repair, or a person's pause, holds every seam. */
+/** The pause standing on the switch file, or null when it says go. */
+export function standingPause(file: string): Pause | null {
+  const sw = readSwitch(file);
+  return sw.state === 'go' ? null : readPause(sw.reason);
+}
+
+/** An outage holds only the merge; a repair, a host pause, or a person's pause holds every seam. */
 export function isOutage(pause: Pause): boolean {
   return pause.by === 'floor' && pause.cause === 'outside-repository';
 }
 
 /**
  * Whether the switch holds this seam. `incidentFix` is a floor incident's fix at the merge: it is the
- * merge that clears the floor's own pause, so it passes any pause the floor wrote, and never a person's.
+ * merge that clears the floor's own pause, so it passes any pause the floor wrote, and never a person's
+ * or the host's.
  */
 export function lineHolds(sw: Switch, seam: Seam, incidentFix = false): boolean {
   if (sw.state === 'go') return false;
   const pause = readPause(sw.reason);
-  if (pause.by === 'person') return true;
+  if (pause.by !== 'floor') return true;
   if (seam === 'merge') return !incidentFix;
   return !isOutage(pause);
 }

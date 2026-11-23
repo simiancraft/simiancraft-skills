@@ -6,6 +6,7 @@ import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
 import { Floor, FLOOR_PAUSE, incidentWaiting, stillWithAPerson } from './floor.ts';
+import { pauseForHost } from '../host-pause.ts';
 import type { handleIncident } from './incident.ts';
 import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
 import { type FloorCause, floorReason, lineHolds, readSwitch } from './line.ts';
@@ -106,6 +107,31 @@ describe('a walk that finds the environment down', () => {
     status = 200;
     await f.floor.walkOnce({ livenessOnly: true });
     expect(f.line()).toBe('pause\nreleasing tonight\n');
+  });
+
+  it('leaves a host pause for a person to release, and pauses again after their go while still down', async () => {
+    const f = floorFor('host-then-go');
+    status = 503;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(pauseForHost(f.switchFile, 'a host fault (ENOSPC)')).toBe('paused');
+    const host = f.line();
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe(host);
+    writeFileSync(f.switchFile, 'go\n');
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('go\n');
+  });
+
+  it('leaves a host pause in place once the floor is right again: only a person releases it', async () => {
+    const f = floorFor('host-up');
+    status = 200;
+    pauseForHost(f.switchFile, 'a host fault (ENOMEM)');
+    const host = f.line();
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe(host);
   });
 
   it('is expected inside a quiet window: recorded, nothing paused or run', async () => {

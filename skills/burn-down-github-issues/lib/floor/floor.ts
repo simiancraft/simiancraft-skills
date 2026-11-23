@@ -26,7 +26,7 @@ import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts'
 import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
 import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { type Diagnosis, diagnose, handleIncident, mergedSince, openIncidentFor } from './incident.ts';
-import { combineCauses, FLOOR_PAUSE, type FloorCause, floorReason, isOutage, readPause } from './line.ts';
+import { combineCauses, type FloorCause, floorReason, isOutage, type Pause, standingPause } from './line.ts';
 import {
   AGENT_RUNGS,
   AGENT_VERDICTS,
@@ -160,10 +160,8 @@ export class Floor {
     this.rehearsal = options.ctx.dryRun || options.baseUrl !== undefined;
     this.checkout = resolve(options.ctx.repoRoot, options.ctx.project.worktreeRoot, 'floor-checkout');
     this.lineageOf = options.lineageOf ?? ghLineage(options.ctx);
-    if (this.ownPause()) {
-      const pause = readPause(this.switchLines()[1]?.trim() ?? '');
-      if (pause.by === 'floor') this.inherited = pause.cause;
-    }
+    const pause = this.pause();
+    if (pause?.by === 'floor') this.inherited = pause.cause;
   }
 
   /** Merge-up: one list item per merge, so the next walk checks what landed. */
@@ -278,17 +276,23 @@ export class Floor {
   // The line
   // -------------------------------------------------------------------------
 
-  private switchLines(): string[] {
-    return existsSync(this.o.switchFile) ? readFileSync(this.o.switchFile, 'utf8').split('\n') : [];
+  /** The pause on the switch as the loop reads it, or null for go. */
+  private pause(): Pause | null {
+    return standingPause(this.o.switchFile);
   }
 
   private paused(): boolean {
-    const first = this.switchLines()[0]?.trim();
-    return first !== undefined && first !== '' && first !== 'go';
+    return this.pause() !== null;
   }
 
   private ownPause(): boolean {
-    return this.paused() && (this.switchLines()[1]?.startsWith(FLOOR_PAUSE) ?? false);
+    return this.pause()?.by === 'floor';
+  }
+
+  /** A person's pause or a host pause stands: the floor neither replaces nor releases it. */
+  private pausedByOther(): boolean {
+    const pause = this.pause();
+    return pause !== null && pause.by !== 'floor';
   }
 
   /** Items whose newest entry says the environment is wrong, liveness included; quiet-window ones aside. */
@@ -313,13 +317,13 @@ export class Floor {
   }
 
   /**
-   * Pauses for the floor at once, before any diagnosis, unless a person already paused the line:
-   * their reason stands. The items that turned are undiagnosed until their diagnosis answers.
+   * Pauses for the floor at once, before any diagnosis, unless a person or the host already paused
+   * the line: that reason stands. The items that turned are undiagnosed until their diagnosis answers.
    */
   private pauseLine(turned: LedgerEntry[]): void {
     for (const entry of turned) this.diagnosing.add(entry.itemId);
     if (this.rehearsal) return;
-    if (this.paused() && !this.ownPause()) return;
+    if (this.pausedByOther()) return;
     this.writePause();
   }
 
@@ -334,9 +338,14 @@ export class Floor {
     if (this.wrongNow().length > 0) this.writePause();
   }
 
-  /** Releases a pause the floor wrote once nothing is wrong, or restates its cause; never touches a person's. */
+  /**
+   * Settles the line after a walk: while anything is wrong the floor's pause stands, restated with its
+   * cause, and is written again over a go (a person's go releases a host pause, not a wrong floor);
+   * once nothing is wrong the floor releases its own pause. A person's pause or a host pause is never
+   * touched.
+   */
   private releaseLine(): void {
-    if (this.rehearsal || !this.ownPause()) return;
+    if (this.rehearsal || this.pausedByOther()) return;
     const wrong = this.wrongNow();
     const stillWrong = new Set(wrong.map((e) => e.itemId));
     for (const id of [...this.causes.keys()]) if (!stillWrong.has(id)) this.causes.delete(id);
@@ -345,6 +354,7 @@ export class Floor {
       this.writePause();
       return;
     }
+    if (!this.ownPause()) return;
     this.inherited = null;
     writeFileSync(this.o.switchFile, 'go\n');
     this.o.log('floor: nothing on the floor is wrong; line released');
@@ -797,7 +807,7 @@ export class Floor {
 
   /** What the floor's own pause holds, for the readout: an outage holds only the merge, and says how many wait there. */
   private pauseReadout(): string {
-    const pause = readPause(this.switchLines()[1]?.trim() ?? '');
+    const pause = this.pause() ?? { by: 'person' };
     if (!isOutage(pause)) {
       const cause = pause.by === 'floor' ? pause.cause : 'undiagnosed';
       return `the line is paused (${cause}): merges wait and no new lane starts until a walk finds the floor right again`;

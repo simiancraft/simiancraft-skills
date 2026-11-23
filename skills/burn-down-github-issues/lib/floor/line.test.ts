@@ -9,6 +9,9 @@ describe('reading a pause from the line switch', () => {
     expect(readPause(floorReason('outside-repository', 'liveness is down'))).toEqual({ by: 'floor', cause: 'outside-repository' });
     expect(readPause(floorReason('cause-unknown', 'x is absent'))).toEqual({ by: 'floor', cause: 'cause-unknown' });
   });
+  it('reads a host pause as the host\'s, neither a person\'s nor the floor\'s', () => {
+    expect(readPause('host: a host fault (ENOSPC); fix the host, then write go to this file')).toEqual({ by: 'host' });
+  });
   it('reads a floor pause that recorded no cause as undiagnosed', () => {
     expect(readPause('floor: liveness is down; see the ledger on the floor')).toEqual({ by: 'floor', cause: 'undiagnosed' });
   });
@@ -45,6 +48,11 @@ describe('the seams a pause holds', () => {
   it('an incident fix passes the floor\'s own pause of any cause, never a person\'s', () => {
     for (const cause of ['in-repository', 'cause-unknown', 'undiagnosed', 'outside-repository'] as const) expect(lineHolds(floor(cause), 'merge', true)).toBe(false);
     expect(lineHolds(person, 'merge', true)).toBe(true);
+  });
+
+  it('a host pause holds every seam, an incident fix\'s merge included', () => {
+    const host = { state: 'pause' as const, reason: 'host: a host fault (ENOMEM)' };
+    for (const seam of ['appraisal', 'dispatch', 'merge'] as const) expect(lineHolds(host, seam, true)).toBe(true);
   });
 
   it('a person\'s pause holds every seam; go holds none', () => {
