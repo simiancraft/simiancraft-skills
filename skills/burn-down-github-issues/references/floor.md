@@ -246,9 +246,12 @@ repairing under 🔄, and under ⛔, on every walk until it is resolved, once a 
 line names the item's newest verdict and the way out: an approved fix parked at the merge boundary
 is landed with `fix.ts --land <n>` (lifting its label would only hand it to a run that parks it
 again); any other park is handed back by lifting its label.
-Resolved is read fresh on every walk, not remembered from when the incident was filed: the ⛔ line
+Resolved is read fresh on every walk, not remembered from when the incident was filed. Each walk
+reads once who owns every wrong item: the floor while its incident is open with the fix pipeline, a
+person once a label hands it to one, nobody when no incident is open. The readout, the line's
+cause, the drain, and the landing hint all read that one snapshot. The ⛔ line
 stays only while the item's newest ledger verdict is still wrong and its incident is still open with
-a person. An item that walks right, or whose incident is closed or handed back, leaves it (and the
+a person, including an incident an earlier run left parked. An item that walks right, or whose incident is closed or handed back, leaves it (and the
 drain stops treating it as a person's); a tracker that cannot be read leaves the line standing.
 
 A diagnosis whose remedy is `owed-by-sibling` files nothing; see "Owed by a sibling" above.

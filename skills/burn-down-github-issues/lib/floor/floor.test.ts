@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
-import { Floor, FLOOR_PAUSE, incidentWaiting, stillWithAPerson } from './floor.ts';
+import { Floor, FLOOR_PAUSE, incidentWaiting, type IncidentState, type Ownership, readOwnership } from './floor.ts';
 import { pauseForHost } from '../host-pause.ts';
 import type { handleIncident } from './incident.ts';
 import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
@@ -366,9 +366,8 @@ describe('"Needs you" is read fresh at render time', () => {
   const at = (verdict: LedgerEntry['verdict'], itemId = 'pull-request:7'): LedgerEntry => ({ itemId, checkedAt: '2026-11-18T20:10:00Z', rung: 'exercise', verdict, reason: 'r' });
   /** Marks an item as owned by a person, as a walk that found its incident parked would. */
   const own = (floor: Floor, itemId: string, incident: number) => {
-    const inner = floor as unknown as { withAPerson: Set<string>; incidentOf: Map<string, number> };
-    inner.withAPerson.add(itemId);
-    inner.incidentOf.set(itemId, incident);
+    const inner = floor as unknown as { owners: Ownership };
+    inner.owners.set(itemId, { itemId, entry: at('absent', itemId), incident, owner: 'person', landable: false });
   };
 
   it('drops an item whose newest ledger verdict turned present', async () => {
@@ -420,9 +419,40 @@ describe('"Needs you" is read fresh at render time', () => {
     expect(readouts.at(-1)).toContain('fix.ts --land 44');
   });
 
+  it('reads ownership fresh each walk, and the readout and the drain follow it together', async () => {
+    let incident: IncidentState = { number: 45, withAPerson: true };
+    const { floor, readouts, dir } = floorFor('ownership-two-walks', {}, { readIncident: () => incident ?? null, landBlocker: () => 'not parked' });
+    status = 200;
+    appendItem(dir, { id: 'pull-request:11', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 11, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:11'));
+    // An incident an earlier run left parked is a person's on the first walk that reads it.
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('incident #45 is parked for you');
+    expect(floor.owed('all').map((i) => i.id)).toEqual([]);
+    // Handed back to the pipeline: the floor owns it, nothing needs a person, and the drain waits on it.
+    incident = { number: 45, withAPerson: false };
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+    expect(floor.owed('all').map((i) => i.id)).toEqual(['pull-request:11']);
+    // Closed while the item is still wrong: nobody owns it, and nothing changed for a person.
+    incident = null;
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(floor.owed('all').map((i) => i.id)).toEqual(['pull-request:11']);
+  });
+
+  it('keeps what it knew of an item when the tracker cannot be read, and knows nothing of an item it never saw', () => {
+    const latest = latestByItem([at('absent', 'seen'), at('absent', 'new')]);
+    const previous: Ownership = new Map([['seen', { itemId: 'seen', entry: at('absent', 'seen'), incident: 6, owner: 'person' as const, landable: true, cause: 'outside-repository' as const }]]);
+    const owners = readOwnership(latest, () => undefined, previous, () => false);
+    expect(owners.get('seen')).toMatchObject({ owner: 'person', incident: 6, landable: true, cause: 'outside-repository' });
+    expect(owners.get('new')).toMatchObject({ owner: 'unknown', incident: null, landable: false });
+  });
+
   it('follows the incident as the tracker reports it now', () => {
     const latest = latestByItem([at('absent', 'a'), at('absent', 'b'), at('absent', 'c'), at('absent', 'd'), at('absent', 'e'), at('present', 'e')]);
-    const tracker: Record<string, ReturnType<Parameters<typeof stillWithAPerson>[2]>> = {
+    const tracker: Record<string, IncidentState> = {
       a: { number: 1, withAPerson: true }, // still parked
       b: null, // closed
       c: { number: 3, withAPerson: false }, // its label lifted: back with the pipeline
@@ -430,11 +460,15 @@ describe('"Needs you" is read fresh at render time', () => {
       e: { number: 5, withAPerson: true }, // open, but walked right since
     };
     const reads: string[] = [];
-    const kept = stillWithAPerson(['a', 'b', 'c', 'd', 'e'], latest, (id) => {
+    // Each was last seen with a person, as a walk that found its incident parked would leave it.
+    const previous: Ownership = new Map(['a', 'b', 'c', 'd', 'e'].map((id) => [id, { itemId: id, entry: at('absent', id), incident: null, owner: 'person' as const, landable: false }]));
+    const owners = readOwnership(latest, (id) => {
       reads.push(id);
       return tracker[id];
-    });
-    expect(kept.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
+    }, previous, () => false);
+    const people = [...owners.values()].filter((o) => o.owner === 'person');
+    expect(people.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
+    expect([...owners.values()].map((o) => [o.itemId, o.owner])).toEqual([['a', 'person'], ['b', 'nobody'], ['c', 'floor'], ['d', 'person']]);
     // An item the ledger already shows right costs no tracker read.
     expect(reads).not.toContain('e');
   });
