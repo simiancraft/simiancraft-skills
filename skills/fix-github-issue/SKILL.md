@@ -68,7 +68,8 @@ proof is the newest stop on the thread, clears the review and attempt counters,
 counts the redrive as `loop/redrives: N`, and continues the newest open pull request that
 references the issue (a held proof's at Proving, with no objection to answer); `--resume-pr` names that pull request instead. `--land` is a person's
 go-ahead past the merge boundary for a pull request it parked: it lifts only that park, and the pull
-request is re-proved, re-reviewed, and landed with every other gate in force; it refuses a dead
+request is re-proved, re-reviewed, and landed with every other gate in force (or landed at once,
+when its approval still stands on an unchanged, green head); it refuses a dead
 letter or any other park (`references/pipeline.md`, "The merge boundary"). The command exits
 non-zero when the fix failed.
 

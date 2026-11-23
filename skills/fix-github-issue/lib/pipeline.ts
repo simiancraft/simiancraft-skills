@@ -32,7 +32,7 @@ import { recordMerge } from './record-merge.ts';
 import { type CheckObservation, type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
-import { heldComment, loopHoldStands, proofHeldComment, standingStop, stopComment } from './stop-record.ts';
+import { heldComment, loopHoldStands, proofHeldComment, standingApproval, standingStop, stopComment } from './stop-record.ts';
 import { loopNote } from './note.ts';
 
 /**
@@ -968,6 +968,8 @@ async function review(
   cwd: string,
   say: (message: string) => void,
   round: number,
+  /** The worker's classification, recorded with an approval beside the reviewer's. */
+  touches?: WorkerResult['touches'],
 ): Promise<Reviewed | DeadLetter> {
   // A draft is the worker's own statement that the work is not finished. Reviewing one wastes the
   // review and, worse, can approve a branch the worker still intends to push to.
@@ -998,7 +1000,9 @@ async function review(
   if (verdict.decision === 'merge') {
     // The approval is a fact a later run reads from the thread (what stopped the work since is
     // newer than it), so it is recorded there, pinned to the head the reviewer read.
-    mutate(ctx, `record the approval of PR #${pr} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('approved', { sha: reviewedSha, pr }, `**Approved** at \`${reviewedSha.slice(0, 12)}\` on pull request #${pr}; landing next.`)]);
+    // Both seats' classification rides on the record, so a landing of this same head can rest on it.
+    const classified = validTouches(touches) && validTouches(verdict.touches) ? [...new Set([...(touches ?? []), ...(verdict.touches ?? [])])].join(',') : undefined;
+    mutate(ctx, `record the approval of PR #${pr} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('approved', { sha: reviewedSha, pr, touches: classified }, `**Approved** at \`${reviewedSha.slice(0, 12)}\` on pull request #${pr}; landing next.`)]);
     move(ctx, issue, 'F1', `approved at ${reviewedSha.slice(0, 10)}`);
   }
   return { review: verdict, reviewedSha };
@@ -1638,8 +1642,11 @@ export async function reviewAndLand(
   maxPoints: number,
   say: (message: string) => void,
   ceiling: number = maxPoints,
+  /** An approval standing on the head in hand, which goes straight to the landing on the first pass. */
+  standing?: Reviewed,
 ): Promise<FixOutcome> {
   let result = first;
+  let approved = standing;
   let consumed = reviewCount(issue.labels);
   let refreshes = 0;
   // Why the work stopped, carried to the park comment so the reason lives on the issue rather
@@ -1661,40 +1668,48 @@ export async function reviewAndLand(
 
     if (ctx.dryRun) break;
 
-    // No review begins on a stale lane. The proof was captured at the current head; a base that
-    // moved since is merged in first, so the reviewer judges what would actually land. Movement
-    // that reached the paths the proof covers means the world moved beneath the proof: the work
-    // goes back to its author to reacquire it, which is upstream churn and spends no round.
-    const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
-    caughtAtLanding = null;
-    if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
-    if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
-      refreshes += 1;
-      if (refreshes > MAX_BASE_REFRESHES) {
-        return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
+    // An approval that still stands on this very head, judged by the redrive before anything moved
+    // (`approvedAtHead`), is the review: no catch-up is owed and nothing new was pushed.
+    let reviewed: Reviewed | DeadLetter;
+    if (approved) {
+      reviewed = approved;
+      approved = undefined;
+    } else {
+      // No review begins on a stale lane. The proof was captured at the current head; a base that
+      // moved since is merged in first, so the reviewer judges what would actually land. Movement
+      // that reached the paths the proof covers means the world moved beneath the proof: the work
+      // goes back to its author to reacquire it, which is upstream churn and spends no round.
+      const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
+      caughtAtLanding = null;
+      if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
+      if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
+        refreshes += 1;
+        if (refreshes > MAX_BASE_REFRESHES) {
+          return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
+        }
+        say(`base moved into what the proof covers (${current.overlap.join(', ') || 'the branch\'s own change'}); the proof is stale and goes back to be reacquired`);
+        mutate(ctx, `return PR #${pr} to draft for the reproof`, ['gh', 'pr', 'ready', String(pr), '--undo']);
+        result = await runWorker(ctx, issue, cwd, maxPoints, {
+          pr,
+          decision: 'gather-more',
+          adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
+          confidence: 'freshness',
+          blocking: [
+            `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
+          ],
+        }, true);
+        say(`verdict: ${result.verdict}; ${result.reason}`);
+        if (result.verdict === 'failed') return countFailure(ctx, issue, `while reacquiring stale proof: ${result.reason}`, say, pr);
+        const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
+        if (resettled) return resettled.outcome === 'failed' ? countFailure(ctx, issue, resettled.reason, say, pr) : resettled;
+        continue;
       }
-      say(`base moved into what the proof covers (${current.overlap.join(', ') || 'the branch\'s own change'}); the proof is stale and goes back to be reacquired`);
-      mutate(ctx, `return PR #${pr} to draft for the reproof`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-      result = await runWorker(ctx, issue, cwd, maxPoints, {
-        pr,
-        decision: 'gather-more',
-        adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
-        confidence: 'freshness',
-        blocking: [
-          `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
-        ],
-      }, true);
-      say(`verdict: ${result.verdict}; ${result.reason}`);
-      if (result.verdict === 'failed') return countFailure(ctx, issue, `while reacquiring stale proof: ${result.reason}`, say, pr);
-      const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
-      if (resettled) return resettled.outcome === 'failed' ? countFailure(ctx, issue, resettled.reason, say, pr) : resettled;
-      continue;
-    }
 
-    // Reviewing happens here, outside the queue, so lanes review at the same time.
-    if (consumed > 0 || refreshes > 0 || current) move(ctx, issue, 'E1', `PR #${pr} back for review`);
-    const reviewed = await review(ctx, issue, pr, cwd, say, consumed + 1);
+      // Reviewing happens here, outside the queue, so lanes review at the same time.
+      if (consumed > 0 || refreshes > 0 || current) move(ctx, issue, 'E1', `PR #${pr} back for review`);
+      reviewed = await review(ctx, issue, pr, cwd, say, consumed + 1, touches);
+    }
     if ('dlq' in reviewed) return deadLetter(ctx, issue, reviewed.dlq, reviewed.reason, say, pr);
 
     // Merging happens there, one branch at a time, because the base branch is shared.
@@ -2077,6 +2092,48 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
 }
 
 /**
+ * The approval a continuation lands on without proving or reviewing again, or null when the work
+ * owes either. All of these must hold: the newest approval on the thread since the pull request
+ * opened still stands (`standingApproval`: nothing but a boundary park or an outside stop that
+ * reruns the work is newer), it names both seats' classification, it was given to this pull request
+ * at the head the lane and the pull request both hold, the pull request is ready, the base needs no
+ * catch-up (by the landing's own rule for release noise), and the checks on that head are green now,
+ * judged by the best run under each name. A head that moved, an approval for another commit, or
+ * checks that are not green keep the usual path.
+ */
+async function approvedAtHead(
+  ctx: Context,
+  pr: number,
+  cwd: string,
+  comments: Array<{ author?: string; body: string; createdAt?: string }>,
+  since: string,
+  say: (message: string) => void,
+): Promise<Reviewed | null> {
+  const approval = standingApproval(comments, { botLogin: ctx.botLogin, since });
+  if (!approval || (approval.pr !== undefined && approval.pr !== pr)) return null;
+  const touches = validTouches(approval.touches);
+  if (!touches) return null;
+  const sha = approval.sha;
+  if (sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd) !== sha) return null;
+  const view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,isDraft'])) as { headRefOid: string; isDraft: boolean };
+  if (view.headRefOid !== sha || view.isDraft) return null;
+  const base = fetchBase(ctx, cwd);
+  if ((requiresUpToDate(ctx) ? behindBase(ctx, cwd, base) : behindBeyondNoise(ctx, cwd, base)).length > 0) return null;
+  if (ctx.knobs.checks !== 'none') {
+    // One look, no wait: green now, by the landing's own rules, or the usual path.
+    const reviewedChecks = checksOn(ctx, sha);
+    const now = { ...ctx, knobs: { ...ctx.knobs, checksTimeoutMinutes: 0 } };
+    const green = await awaitGreenChecks(now, pr, () => {}, { sha, names: reviewedChecks.names, passedAtReview: reviewedChecks.passed, required: requiredStatusChecks(ctx) });
+    if (green !== null) return null;
+  }
+  say(`PR #${pr} was approved at ${sha.slice(0, 10)}, which it still holds, the base needs no catch-up, and its checks are green; landing on that approval`);
+  return {
+    review: { pr, decision: 'merge', adequacy: `Approved at ${sha.slice(0, 12)}; the approval stands on the thread.`, confidence: 'standing approval', blocking: [], touches },
+    reviewedSha: sha,
+  };
+}
+
+/**
  * Continues an existing pull request instead of opening a second one: the redrive a person makes
  * by lifting a park or a dead letter. The lane is checked out on the pull request's branch, the
  * worker runs in revision mode with the objection that stopped the work as its brief, and the
@@ -2137,8 +2194,20 @@ export async function redriveIssue(
     // request after anything else stopped the work stays, and the merge gate honours it.
     // Read as every reader of the stop reads it: the loop's own records since this pull request opened.
     const opened = () => sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'createdAt', '--jq', '.createdAt']);
-    if (pullHolds(ctx, pull.number).includes('needs-human') && loopHoldStands(standingStop(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin, opened()))) {
+    const thread = () => trackerIo(ctx).view(issue.number)?.comments ?? [];
+    if (pullHolds(ctx, pull.number).includes('needs-human') && loopHoldStands(standingStop(thread(), ctx.botLogin, opened()))) {
       mutate(ctx, `lift needs-human on PR #${pull.number}: the issue's hold was lifted`, ['gh', 'pr', 'edit', String(pull.number), '--remove-label', 'needs-human']);
+    }
+    // Nothing objected, and an approval still stands on this very head: the landing goes ahead on
+    // it, with no draft, no proof, and no review again, each of which would only re-establish what
+    // the record already says and start another CI run on an unchanged head.
+    if (objection === null) {
+      const standing = await approvedAtHead(ctx, pull.number, cwd, thread(), opened(), say);
+      if (standing) {
+        move(ctx, issue, 'F1', `approved at ${standing.reviewedSha.slice(0, 10)}; landing on the standing approval`);
+        const first: WorkerResult = { issue: issue.number, verdict: 'fixed', reason: 'approved earlier at this head', pr: pull.number, branch: pull.branch, touches: standing.review.touches };
+        return await reviewAndLand(ctx, issue, cwd, first, maxPoints, say, ceiling, standing);
+      }
     }
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
     const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);

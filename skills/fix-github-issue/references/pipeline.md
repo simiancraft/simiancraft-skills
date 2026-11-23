@@ -178,8 +178,17 @@ A person can land an approved change the boundary parked with `fix.ts --issue <n
 refuses anything else before it changes a label: no open pull request, a dead letter, or a newest
 park that is not the boundary's (`--redrive` is the command for those). Then it lifts only the park,
 on the issue and the pull request, leaving the review and attempt budgets alone, and continues the
-pull request with no objection, so it is re-proved and re-reviewed rather than recoded. The pull
-master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
+pull request with no objection, so it is re-proved and re-reviewed rather than recoded, unless its
+approval still stands on the head in hand. A continuation with no objection (`--land`, or the
+burndown resuming a pull request whose landing an outside stop interrupted) goes straight to the
+landing, with no draft, no proof, and no review again, when all of these hold: the newest `approved`
+record since the pull request opened has nothing newer than it but a boundary park or an outside
+stop that reruns the work (`standingApproval` in `lib/stop-record.ts`); it names both seats'
+classification (`touches`, recorded with the approval) and this pull request; the lane and the pull
+request both hold the head it names; the pull request is ready; the base needs no catch-up, by the
+landing's rule for release noise; and the checks on that head are green now, by the best run under
+each name. A head that moved, an approval for another commit, or checks that are not green keep the
+path above. The pull master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
 and the pinned merge. Only the boundary is waived, only for that issue, and only when both agents
 classified the change: a missing classification still fails closed. The pull request carries a
 comment that a person cleared it, posted before the remaining gates run.
@@ -409,7 +418,8 @@ Every stop the loop makes is recorded on the issue in one format (`lib/stop-reco
 `<!-- loop-stop kind=<kind> ... -->` marker line, then the words a person and the next seat read.
 The kinds are `park`, `boundary` (the merge boundary's park, which `--land` may waive),
 `dead-letter` (with its `phase`), `proof-held` (with the run, branch, and pull request), `held` (a
-seat's `needs-human` or `needs-decision`, with its `verdict`), and `approved`. One reader,
+seat's `needs-human` or `needs-decision`, with its `verdict`), `outside` (with its `cause` and `seat`),
+and `approved` (with the reviewed `sha`, the pull request, and both seats' `touches`, comma-separated). One reader,
 `readStop`, answers what stopped the work last: the newest record the loop's login wrote, since the
 open pull request was opened. A park or a dead letter is the objection a redrive hands the coder;
 a held proof is proved again; a boundary park or an approval is neither. Threads written before the

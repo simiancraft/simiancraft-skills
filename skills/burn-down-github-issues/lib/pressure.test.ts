@@ -20,7 +20,7 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
 import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
-import { heldComment, loopHoldStands, objectionAfter, proofHeldComment, standingStop, stopComment, stopIn } from '../../fix-github-issue/lib/stop-record.ts';
+import { heldComment, loopHoldStands, objectionAfter, proofHeldComment, standingApproval, standingStop, stopComment, stopIn } from '../../fix-github-issue/lib/stop-record.ts';
 import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
@@ -230,7 +230,7 @@ async function fakeRecordMerge(ctx: Context, merge: { sha: string }, record: { p
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping, whether an environment fault ended it, and whether its lease stands; here none is in doubt.
   // Nor does any pull request carry a person's hold, unless a test says so.
-  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, recordMerge: fakeRecordMerge, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, recordMerge: fakeRecordMerge, approvedAtHead: async () => null, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -303,11 +303,12 @@ describe('an approval is recorded on the thread', () => {
     const lanes: string[] = [];
     const api = loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['review'], {
       isDraft: () => false, dirtyPaths: () => [], sh: () => 'a'.repeat(40), stopComment,
+      validTouches: loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] }).validTouches,
       move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
-      runReviewer: async () => ({ decision, blocking: [], adequacy: 'the receipts show it' }),
+      runReviewer: async () => ({ decision, blocking: [], adequacy: 'the receipts show it', touches: ['migration'] }),
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
     });
-    const result = await api.review(context(new FakeTracker(bot)), { number: 1 }, 7, '/fake', noop, 1);
+    const result = await api.review(context(new FakeTracker(bot)), { number: 1 }, 7, '/fake', noop, 1, ['code']);
     return { result, writes, lanes };
   };
   it('a merge verdict writes an approved stop naming the reviewed head and the pull request', async () => {
@@ -316,6 +317,8 @@ describe('an approval is recorded on the thread', () => {
     const body = writes.find((argv) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
     expect(standingStop([{ author: bot, body }], bot)).toEqual({ kind: 'approved', sha: 'a'.repeat(40) });
     expect(stopIn(body)?.fields.pr).toBe('7');
+    // Both seats' classification, so a landing of the same head can rest on the record.
+    expect(stopIn(body)?.fields.touches).toBe('code,migration');
   });
   it('a rejection writes none', async () => {
     expect((await approve('block')).writes).toEqual([]);
@@ -1418,4 +1421,69 @@ describe('a pull request merged while its landing watched', () => {
     // A closing keyword still counts, whoever opened it.
     expect(await run([merged({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' })])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
   });
+});
+
+describe('a landing on an approval that still stands at the head', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const approved = (sha: string, touches = 'code') => ({ author: bot, body: stopComment('approved', { sha, pr: 7, touches }, `**Approved** at \`${sha}\` on pull request #7; landing next.`), createdAt: '2026-11-21T02:02:00Z' });
+  const boundary = { author: bot, body: stopComment('boundary', {}, 'autoMerge is code-only and the change touches migration'), createdAt: '2026-11-21T02:03:00Z' };
+  /** A redrive with no objection (`--land`, or a continuation) of PR #7, whose lane and remote head are `head`. */
+  const land = async (thread: Array<{ author: string; body: string; createdAt?: string }>, over: { head?: string; behind?: string[]; checks?: string | null; draft?: boolean } = {}) => {
+    const writes: string[][] = [];
+    const seats: string[] = [];
+    let standing: { reviewedSha: string; review: { touches?: string[] } } | undefined;
+    const head = over.head ?? 'H';
+    const sh = (_ctx: unknown, argv: string[]) => {
+      if (argv.includes('createdAt')) return '2026-11-21T00:23:00Z';
+      if (argv.includes('headRefOid,isDraft')) return JSON.stringify({ headRefOid: head, isDraft: over.draft ?? false });
+      return head;
+    };
+    const { validTouches } = loadFunctions(pipeline, ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] });
+    const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue', 'approvedAtHead'], {
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
+      trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, standingApproval, loopHoldStands, validTouches,
+      claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
+      inFlight: new Map(), isDraft: () => over.draft ?? false, sh, catchUp: () => null, move: noop,
+      fetchBase: () => 'B', requiresUpToDate: () => false, behindBase: () => over.behind ?? [], behindBeyondNoise: () => over.behind ?? [],
+      checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => (over.checks === undefined ? null : over.checks),
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+      runWorker: async () => { seats.push('prover'); return { verdict: 'failed', reason: 'stop after recording the seat' }; },
+      countFailure: () => ({ outcome: 'dlq' }), removeWorktree: noop,
+      reviewAndLand: async (_c: unknown, _i: unknown, _cwd: unknown, _first: unknown, _max: unknown, _say: unknown, _ceiling: unknown, given?: typeof standing) => { standing = given; return { outcome: 'merged', reason: 'merged' }; },
+    });
+    const ctx = context(new FakeTracker(bot));
+    await api.redriveIssue(ctx, { number: 1, title: 'a migration', labels: [] }, { number: 7, branch: 'fix/migration-1' }, null, { landing: true });
+    return { writes, seats, standing, undrafted: writes.some((argv) => argv.join(' ') === 'gh pr ready 7 --undo') };
+  };
+
+  it('goes straight to the landing: no draft, no proof, no review', async () => {
+    const { undrafted, seats, standing } = await land([approved('H'), boundary]);
+    expect(undrafted).toBe(false);
+    expect(seats).toEqual([]);
+    expect(standing).toMatchObject({ reviewedSha: 'H', review: { decision: 'merge', touches: ['code'] } });
+  });
+
+  it('stands through an outside stop that reruns the work, as a transport failure in the landing', async () => {
+    const outside = { author: bot, body: stopComment('outside', { cause: 'transport', seat: 'landing' }, 'stopped'), createdAt: '2026-11-21T03:29:00Z' };
+    expect((await land([approved('H'), outside])).standing?.reviewedSha).toBe('H');
+  });
+
+  for (const [what, thread, over] of [
+    ['the head moved since the approval', [approved('H')], { head: 'H2' }],
+    ['the approval is for another commit', [approved('G')], {}],
+    ['the base moved beyond release noise', [approved('H')], { behind: ['src/a.ts'] }],
+    ['the checks are not green by any run', [approved('H')], { checks: 'checks failed: ci (FAILURE)' }],
+    ['the pull request is a draft', [approved('H')], { draft: true }],
+    ['the approval named no classification', [approved('H', '')], {}],
+    ['a dead letter came after the approval', [approved('H'), { author: bot, body: stopComment('dead-letter', { phase: 'landing' }, 'checks failed'), createdAt: '2026-11-21T03:00:00Z' }], {}],
+  ] as const) {
+    it(`keeps the usual path when ${what}`, async () => {
+      const { undrafted, seats, standing } = await land(thread as never, over as never);
+      expect(standing).toBeUndefined();
+      // Back to draft for the proof, unless it already was one.
+      expect(undrafted).toBe(!(over as { draft?: boolean }).draft);
+      expect(seats).toEqual(['prover']);
+    });
+  }
 });

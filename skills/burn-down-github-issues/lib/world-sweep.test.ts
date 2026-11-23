@@ -135,6 +135,8 @@ pred('verdictOutOfBandOverCeiling', ['result', 'points'], m => m.result === 'out
 eq('standingVerdictMerge', 'verdict', 'merge'); eq('verdictMerge', 'verdict', 'merge');
 eq('standingVerdictRejection', 'verdict', 'reject'); eq('standingVerdictGatherMore', 'verdict', 'gather'); eq('noVerdictYet', 'verdict', 'none');
 pred('behindBase', ['movement'], m => m.behind());
+pred('upToDateWithBase', ['movement'], m => !m.behind());
+eq('approvedAtHead', 'verdict', 'merge');
 pred('movementOutsideClosure', ['movement'], m => !m.incoming().some(f => [...m.files, ...m.imports, 'bun.lock'].includes(f)));
 pred('netChangeIntact', ['contribution'], m => m.contribution === m.reviewedContribution);
 eq('checksGreen', 'check', 'green'); pred('smokeConfigured', ['smokeCommand'], m => m.smokeCommand.length > 0);

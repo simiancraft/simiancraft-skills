@@ -80,6 +80,25 @@ const RESUME: Transition[] = [
   { target: 'ticket.work.proving', actions: ['reclaim', 'liftPrHoldMirror', 'prToDraft', 'runProver'] },
 ];
 
+/**
+ * An approval that still stands on the head in hand: the newest approval names this head, nothing
+ * but a boundary park or an outside stop that reruns the work came after it, the base needs no
+ * catch-up, and the checks are green by the best run under each name. Nothing is left to
+ * establish, so the card goes straight to Approved: no draft, no proof, no review again.
+ */
+const LAND_ON_STANDING_APPROVAL: Transition = { target: 'ticket.landing.approved', guard: 'approvedAtHead and checksGreen and upToDateWithBase', actions: ['reclaim', 'liftPrHoldMirror'] };
+
+/**
+ * A person's `fix.ts --land` on a change the merge boundary parked: the park comes off, nothing is
+ * counted, and nobody objected, so the pull request is carried on as a resume is, unless the
+ * approval still stands on its head.
+ */
+const LANDING_CLEARED: Transition[] = [
+  { ...LAND_ON_STANDING_APPROVAL, actions: ['unlabelHold', 'reclaim'] },
+  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['unlabelHold', 'reclaim', 'prToDraft', 'markResuming'] },
+  { target: 'ticket.work.proving', actions: ['unlabelHold', 'reclaim', 'prToDraft', 'runProver'] },
+];
+
 /** Transitions every ticket state inherits, tried before its own only for the events named here. */
 const TICKET_WIDE: Record<string, Transition | Transition[]> = {
   ISSUE_CLOSED: [
@@ -482,7 +501,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.landing.catchingUp', guard: 'behindBase' },
                   { target: 'ticket.review.evidenceUnderReview' },
                 ],
-                RESUMED: RESUME,
+                RESUMED: [LAND_ON_STANDING_APPROVAL, ...RESUME],
                 // A person lifted a hold by hand; the run start finds the card here, the objection on the thread.
                 REDRIVEN: REDRIVE,
                 // The reviewer's seat finds the pull request in draft: it was never declared complete.
@@ -791,6 +810,7 @@ export const MACHINE: StateNode = {
               on: {
                 HOLD_REMOVED: { target: 'ticket.reconcile', actions: ['unparkPr', 'keepPrForReuse'] },
                 REDRIVEN: REDRIVE,
+                LANDING_CLEARED,
                 LANDED_BY_HAND: { target: 'ticket.terminal.merged' },
               },
             },

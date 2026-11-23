@@ -159,6 +159,32 @@ export function standingStop(comments: Thread, botLogin?: string, since?: string
 }
 
 /**
+ * The approval the work still stands on: the newest `approved` record in scope, when nothing newer
+ * than it stopped the work for a reason of its own. Only a boundary park (the approval parked by
+ * policy) and an outside stop that reruns the work (a host, a signal, a transport failure, a stuck
+ * check) may sit above it; a park, a dead letter, a held proof, a seat's hold, or an outside stop
+ * that waits on a person each say something happened to the work since. Null when there is no such
+ * approval. The record names the head the reviewer read (`sha`) and, when both seats classified
+ * the change, the classification (`touches`, comma-separated).
+ */
+export function standingApproval(comments: Thread, scope: StopScope = {}): { sha: string; pr?: number; touches: string[] } | null {
+  let upTo = comments.length;
+  for (;;) {
+    const found = newestStop(comments.slice(0, upTo), scope);
+    if (!found) return null;
+    const { stop, at } = found;
+    if (stop.kind === 'approved') {
+      if (!stop.fields.sha) return null;
+      const pr = Number(stop.fields.pr);
+      return { sha: stop.fields.sha, pr: Number.isInteger(pr) && pr > 0 ? pr : undefined, touches: (stop.fields.touches ?? '').split(',').filter(Boolean) };
+    }
+    const passing = stop.kind === 'boundary' || (stop.kind === 'outside' && !WAITING.includes(stop.fields.cause ?? ''));
+    if (!passing) return null;
+    upTo = at;
+  }
+}
+
+/**
  * Whether `needs-human` stands because the loop held the work for a person: a held proof, or an
  * outside stop that waits on a person. The pickup lifts that hold, on the issue and on the pull
  * request; any other `needs-human` is a person's own, and stays.
