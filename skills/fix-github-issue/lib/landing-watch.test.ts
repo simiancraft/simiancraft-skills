@@ -49,12 +49,15 @@ describe('the landing watch', () => {
         { name: 'preview', status: 'QUEUED', conclusion: '', detailsUrl: 'https://deploy.example/run/1' },
         { name: 'tests', status: 'IN_PROGRESS', conclusion: '', workflowName: 'CI' },
         { context: 'legacy', state: 'PENDING', targetUrl: 'https://legacy.example/x' },
+        { name: 'deploy', status: 'WAITING', conclusion: '', workflowName: 'Release' },
       ],
     }).io);
     expect(watch.observe().checks.map((c) => [c.name, c.queued, c.provider])).toEqual([
       ['preview', true, 'deploy.example'],
       ['tests', false, 'CI'],
       ['legacy', false, 'legacy.example'],
+      // An environment's approval waits on a person, not on the provider: never stuck.
+      ['deploy', false, 'Release'],
     ]);
   });
 

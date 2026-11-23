@@ -17,7 +17,7 @@ export type CheckObservation = {
   status: CheckStatus;
   /** The tracker's own word for it (`SUCCESS`, `FAILURE`, `QUEUED`, ...), or null when it gave none. */
   verdict: string | null;
-  /** A check run the provider has not started: queued, requested, or waiting, never in progress. */
+  /** A check run the provider has not started: queued or requested, never in progress, and never waiting on a person's approval. */
   queued: boolean;
   /** Who runs it: the workflow, or the host its details link to; `unknown provider` when neither is given. */
   provider: string;
@@ -50,8 +50,11 @@ export type CheckNode = {
 
 const PASSED = new Set(['SUCCESS', 'NEUTRAL']);
 const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
-/** A check run's statuses before its provider starts it. */
-const NOT_STARTED = new Set(['QUEUED', 'REQUESTED', 'WAITING', 'PENDING']);
+/**
+ * A check run's statuses before its provider starts it. Not `WAITING`: that run waits on a person
+ * (an environment's required reviewer), and no provider queue is stuck behind it.
+ */
+const NOT_STARTED = new Set(['QUEUED', 'REQUESTED', 'PENDING']);
 
 /**
  * What a node reached. SKIPPED and CANCELLED are neither a pass nor a failure: no verdict was
