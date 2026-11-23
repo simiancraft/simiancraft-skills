@@ -28,7 +28,7 @@ export type Rung = (typeof RUNGS)[number];
 export const AGENT_RUNGS: ReadonlySet<Rung> = new Set<Rung>(['look', 'exercise', 'fallback', 'exists-in-git']);
 
 /** `unverified` is kept only so ledgers that carry it still read; classification never assigns it. */
-export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'deploy-unconfirmed', 'unverified', 'owed-by-sibling'] as const;
+export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'deploy-unconfirmed', 'deploy-failed', 'unverified', 'owed-by-sibling'] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 /** Verdicts that retire an item. Everything else leaves it on the walk list. */
@@ -38,8 +38,8 @@ export const TERMINAL: ReadonlySet<Verdict> = new Set<Verdict>(['present', 'inta
  * `owed-by-sibling`, which the driver keeps only when it names an open sibling under the trunk.
  */
 export const AGENT_VERDICTS: ReadonlySet<Verdict> = new Set<Verdict>(['present', 'intact', 'not-checkable', 'absent', 'owed-by-sibling']);
-/** Verdicts that mean the environment is wrong and an incident is owed. */
-export const REPAIR: ReadonlySet<Verdict> = new Set<Verdict>(['absent', 'down']);
+/** Verdicts that mean the environment is wrong and an incident is owed; a failed deploy is one. */
+export const REPAIR: ReadonlySet<Verdict> = new Set<Verdict>(['absent', 'down', 'deploy-failed']);
 
 export type LedgerEntry = {
   itemId: string;

@@ -587,7 +587,7 @@ describe('deploy evidence', () => {
   it('walks a merge once its deploy run completed successfully, and not when it completed any other way', () => {
     expect(byRuns([run('completed', 'success')])).toBeNull();
     expect(byRuns([run('in_progress'), run('completed', 'success')])).toBeNull();
-    expect(byRuns([run('completed', 'failure')])).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy run concluded failure' });
+    expect(byRuns([run('completed', 'skipped')])).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy run concluded skipped' });
     expect(byRuns([])).toEqual({ state: 'not-yet-deployed', reason: 'no Deploy run for the merge' });
   });
 
@@ -644,6 +644,41 @@ describe('deploy evidence', () => {
     expect(f.line()).toBe('go\n');
     expect(f.calls('on-walk-fail')).toBe(0);
     expect(f.floor.owed('run')).toHaveLength(0);
+  });
+
+  it('judges a failed or cancelled deploy run a failed deploy at once, with its URL', () => {
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'startup_failure']) {
+      expect(byRuns([{ status: 'completed', conclusion, url: 'https://ci.test/runs/9' }])).toEqual({ state: 'deploy-failed', reason: `the Deploy run for the merge concluded ${conclusion}: https://ci.test/runs/9` });
+    }
+    // A rerun under way is a wait again, not a failure.
+    expect(byRuns([run('in_progress'), run('completed', 'failure')])?.state).toBe('not-yet-deployed');
+  });
+
+  it('treats a failed deploy as wrong: pauses the line and files an incident, and a later green run walks it', async () => {
+    status = 200;
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    const answers = join(scratch, 'deploy-failed-answers');
+    mkdirSync(answers, { recursive: true });
+    writeFileSync(join(answers, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:140', rung: 'look', verdict: 'present', reason: 'The change is there.' }] }));
+    const filed: string[] = [];
+    const repair: typeof handleIncident = async (_ctx, options) => {
+      filed.push(`${options.entry.verdict}: ${options.entry.reason}`);
+      options.onDiagnosed?.('in-repository');
+      return { issue: 41, created: true, fix: null, diagnosis: null, withAPerson: false, cause: 'in-repository' };
+    };
+    let runs: DeployRun[] = [{ status: 'completed', conclusion: 'failure', url: 'https://ci.test/runs/7' }];
+    const f = floorFor('deploy-failed', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs, repair });
+    f.floor.put({ issue: 14, title: 'fix: a broken bundle', pr: 140, sha: OTHER, mergedAt: minutesAgo(10), paths: ['src/c.ts'] });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(true);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'deploy-failed', reason: 'the Deploy run for the merge concluded failure: https://ci.test/runs/7' });
+    expect(filed).toEqual(['deploy-failed: the Deploy run for the merge concluded failure: https://ci.test/runs/7']);
+    expect(f.line()).toStartWith(`pause\n${floorReason('in-repository', 'pull-request:140 is deploy-failed')}`);
+    expect(f.calls('on-walk-fail')).toBe(1);
+    runs = [{ status: 'completed', conclusion: 'success' }, ...runs];
+    await f.floor.walkOnce();
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'present' });
+    expect(f.line()).toBe('go\n');
   });
 
   it('refuses an empty workflow name, and accepts graceMinutes', () => {

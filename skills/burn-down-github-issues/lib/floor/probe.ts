@@ -6,7 +6,7 @@
  * merge whether there is evidence it is deployed: the deployed revision contains it, or, with no
  * revision to read, the deploy workflow's run for the merge commit completed successfully. Time
  * alone is never evidence: a merge without any is `not-yet-deployed`, and past the cap
- * `deploy-unconfirmed`. Either way it is not walked.
+ * `deploy-unconfirmed`. A deploy run that failed is `deploy-failed`, a wrong verdict. None is walked.
  */
 
 import type { Context } from '../../../fix-github-issue/lib/context.ts';
@@ -68,36 +68,44 @@ export function includesCommit(repoRoot: string, deployed: string, sha: string):
 }
 
 /** One run of the deploy workflow for a commit, as the forge lists it. */
-export type DeployRun = { status: string; conclusion: string | null };
+export type DeployRun = { status: string; conclusion: string | null; url?: string };
 
 /** The deploy workflow's runs for a commit; throws when the forge cannot be read. */
 export function deployRunsFor(ctx: Context, workflow: string, sha: string): DeployRun[] {
-  const raw = sh(ctx, ['gh', 'run', 'list', '--workflow', workflow, '--commit', sha, '--limit', '20', '--json', 'status,conclusion']);
+  const raw = sh(ctx, ['gh', 'run', 'list', '--workflow', workflow, '--commit', sha, '--limit', '20', '--json', 'status,conclusion,url']);
   return JSON.parse(raw) as DeployRun[];
 }
 
+/** Conclusions that mean the deploy ran and broke, or was stopped: a fact about the merge, not a wait. */
+const FAILED: ReadonlySet<string> = new Set(['failure', 'cancelled', 'timed_out', 'startup_failure']);
+
 /**
  * Whether the runs show the commit deployed: one run that completed successfully does. A run
- * queued, pending, waiting, requested, or in progress has not deployed it yet, and one that
- * completed any other way did not deploy it.
+ * queued, pending, waiting, requested, or in progress has not deployed it yet. With none of those,
+ * a newest run that failed, was cancelled, timed out, or never started is a failed deploy; one that
+ * completed any other way (skipped, neutral) did not deploy it.
  */
-export function judgeDeployRuns(workflow: string, runs: DeployRun[]): { deployed: boolean; reason: string } {
+export function judgeDeployRuns(workflow: string, runs: DeployRun[]): { deployed: boolean; failed?: true; reason: string } {
   if (runs.some((run) => run.status === 'completed' && run.conclusion === 'success')) return { deployed: true, reason: `${workflow} completed successfully` };
   const unfinished = runs.find((run) => run.status !== 'completed');
   if (unfinished) return { deployed: false, reason: `the ${workflow} run is ${unfinished.status}` };
   const finished = runs[0];
+  if (finished && FAILED.has(finished.conclusion ?? '')) {
+    return { deployed: false, failed: true, reason: `the ${workflow} run for the merge concluded ${finished.conclusion}${finished.url ? `: ${finished.url}` : ''}` };
+  }
   if (finished) return { deployed: false, reason: `the ${workflow} run concluded ${finished.conclusion ?? 'without a conclusion'}` };
   return { deployed: false, reason: `no ${workflow} run for the merge` };
 }
 
 /** A merge with no evidence it is deployed: not walked, and why. */
-export type Undeployed = { state: 'not-yet-deployed' | 'deploy-unconfirmed'; reason: string };
+export type Undeployed = { state: 'not-yet-deployed' | 'deploy-unconfirmed' | 'deploy-failed'; reason: string };
 
 /**
  * Classifies an item before any agent runs; null means walk it. An item without a merge SHA is
  * always walked. A deployed revision, when one was read, decides alone; without one, the deploy
  * workflow's runs for the merge do. A merge with no evidence stays `not-yet-deployed` until
  * `capMinutes` after it merged, then is `deploy-unconfirmed`: the floor looked and cannot tell.
+ * A failed deploy run is `deploy-failed` at once, whatever the time.
  */
 export function classify(options: {
   /** The revision `revisionCommand` printed; null when unset or unreadable. */
@@ -120,13 +128,14 @@ export function classify(options: {
     if (includesCommit(repoRoot, deployed, sha)) return null;
     reason = `merge ${sha.slice(0, 12)} is not an ancestor of the deployed revision ${deployed.slice(0, 12)}`;
   } else if (workflow && runsFor) {
-    let judged: { deployed: boolean; reason: string };
+    let judged: ReturnType<typeof judgeDeployRuns>;
     try {
       judged = judgeDeployRuns(workflow, runsFor(sha));
     } catch (error) {
       judged = { deployed: false, reason: `the ${workflow} runs could not be read (${(error as Error).message})` };
     }
     if (judged.deployed) return null;
+    if (judged.failed) return { state: 'deploy-failed', reason: judged.reason };
     reason = judged.reason;
   } else {
     reason = 'no deploy evidence: neither a revisionCommand nor a deployWorkflow is configured';
