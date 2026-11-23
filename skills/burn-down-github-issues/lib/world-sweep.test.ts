@@ -139,7 +139,7 @@ pred('upToDateWithBase', ['movement'], m => !m.behind());
 eq('approvedAtHead', 'verdict', 'merge');
 pred('movementOutsideClosure', ['movement'], m => !m.incoming().some(f => [...m.files, ...m.imports, 'bun.lock'].includes(f)));
 pred('netChangeIntact', ['contribution'], m => m.contribution === m.reviewedContribution);
-eq('checksGreen', 'check', 'green'); pred('smokeConfigured', ['smokeCommand'], m => m.smokeCommand.length > 0);
+eq('checksGreen', 'check', 'green'); pred('noCheckFailed', ['check'], m => m.check !== 'red'); pred('smokeConfigured', ['smokeCommand'], m => m.smokeCommand.length > 0);
 eq('smokePassed', 'smokeExit', 0); eq('walkPassed', 'walkExit', 0); eq('nothingRemains', 'remainder', 0);
 const facts = (m: Model) => (guard: string) => {
   if (!predicates[guard]) throw new Error(`unmodelled guard: ${guard}`);

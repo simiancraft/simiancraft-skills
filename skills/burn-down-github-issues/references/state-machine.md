@@ -139,7 +139,7 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): the approval standing on the head, the base current, and the checks green by their newest run, to F1 (no draft, proof, or review again); behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
+| E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): the approval standing on the head, the base current, and no check failed by its newest run, to F1 (no draft, proof, or review again; checks still running are waited on in F3); behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
 | E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head, and record an `approved` stop naming it on the issue); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card on), else gather-more to D2 (spend a round; the prover reacquires proof with the reviewer's words as the brief) and block to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
 
 ### Landing (the pull master; serial)
@@ -247,7 +247,7 @@ failing is a seat short, not the machine failing, so the panel answers no `AGENT
 |---|---|
 | H1 Needs decision | `HOLD_REMOVED`: a trunk to C6 (new epoch, forced revisit); a leaf to A1 (size label off; the answer may change the size) |
 | H2 Needs human | `HOLD_REMOVED` to reconcile (the capped counter cleared first); a held proof with an open pull request reconciles to D3 or E1 and is resumed at Proving, one without a pull request to B1, where its `coded` announcement is proved rather than coded again |
-| H3 Parked | `HOLD_REMOVED` to B1 (PR unparked and kept for reuse; the redrive continues the branch, never opens a second PR); `LANDING_CLEARED` (a person's `fix.ts --land`): the approval standing on the head, the base current, and the checks green by their newest run, to F1 (no draft, proof, or review again); else behind the base to F2 and from there to D2, or D2; `LANDED_BY_HAND` to T1 |
+| H3 Parked | `HOLD_REMOVED` to B1 (PR unparked and kept for reuse; the redrive continues the branch, never opens a second PR); `LANDING_CLEARED` (a person's `fix.ts --land`): the approval standing on the head, the base current, and no check failed by its newest run, to F1 (no draft, proof, or review again; checks still running are waited on in F3); else behind the base to F2 and from there to D2, or D2; `LANDED_BY_HAND` to T1 |
 
 ### Terminal
 

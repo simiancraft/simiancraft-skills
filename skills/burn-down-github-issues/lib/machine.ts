@@ -89,11 +89,12 @@ const RESUME: Transition[] = [
 
 /**
  * An approval that still stands on the head in hand: the newest approval names this head, nothing
- * but a boundary park or an outside stop that reruns the work came after it, the base needs no
- * catch-up, and the checks are green by the newest run under each name. Nothing is left to
- * establish, so the card goes straight to Approved: no draft, no proof, no review again.
+ * but a boundary park or an outside stop came after it, the base needs no catch-up, and no check
+ * has failed by the newest run under each name. Nothing is left to establish, so the card goes
+ * straight to Approved: no draft, no proof, no review again; checks still running are the landing's
+ * to wait on.
  */
-const LAND_ON_STANDING_APPROVAL: Transition = { target: 'ticket.landing.approved', guard: 'approvedAtHead and checksGreen and upToDateWithBase', actions: ['reclaim', 'liftPrHoldMirror'] };
+const LAND_ON_STANDING_APPROVAL: Transition = { target: 'ticket.landing.approved', guard: 'approvedAtHead and noCheckFailed and upToDateWithBase', actions: ['reclaim', 'liftPrHoldMirror'] };
 
 /**
  * A person's `fix.ts --land` on a change the merge boundary parked: the park comes off, nothing is
