@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
-import { Floor, FLOOR_PAUSE, incidentWaiting, stillWithAPerson } from './floor.ts';
+import { Floor, FLOOR_PAUSE, incidentWaiting, type IncidentState, type Ownership, readOwnership } from './floor.ts';
 import { pauseForHost } from '../host-pause.ts';
 import type { handleIncident } from './incident.ts';
 import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
 import { type FloorCause, floorReason, lineHolds, readSwitch } from './line.ts';
 import { type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
+import { classify, type DeployRun } from './probe.ts';
 
 let scratch: string;
 let status = 200;
@@ -31,7 +32,7 @@ afterAll(() => {
 const PROJECT = { name: 'Test', repo: 'o/floor', remote: 'origin', baseBranch: 'main', evidenceBranch: 'evidence', checkCommand: 'true', installCommand: 'true', conventionDocs: [], sizingScale: 'fib', sharedServices: [], portBase: 9000, portSpan: 10, pathAliases: [], sourceExtensions: ['.ts'], alwaysInvalidates: [], touchPaths: { migration: [], ci: [] }, worktreeRoot: 'wt' } as ProjectConfig;
 
 /** A floor of its own per case, with recording callbacks in its callbacks directory. */
-function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident; readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null; landBlocker?: (issue: number) => string | null } = {}) {
+function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident; readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null; landBlocker?: (issue: number) => string | null; deployRuns?: (sha: string) => DeployRun[] } = {}) {
   const root = join(scratch, name);
   const callbacksDir = join(root, 'callbacks');
   mkdirSync(callbacksDir, { recursive: true });
@@ -70,6 +71,7 @@ function floorFor(name: string, environment: Record<string, unknown> = {}, extra
     handleIncident: extra.repair,
     ...(extra.readIncident ? { readIncident: extra.readIncident } : {}),
     ...(extra.landBlocker ? { landBlocker: extra.landBlocker } : {}),
+    ...(extra.deployRuns ? { deployRuns: extra.deployRuns } : {}),
     waitingAtMerge: () => 2,
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
@@ -366,9 +368,8 @@ describe('"Needs you" is read fresh at render time', () => {
   const at = (verdict: LedgerEntry['verdict'], itemId = 'pull-request:7'): LedgerEntry => ({ itemId, checkedAt: '2026-11-18T20:10:00Z', rung: 'exercise', verdict, reason: 'r' });
   /** Marks an item as owned by a person, as a walk that found its incident parked would. */
   const own = (floor: Floor, itemId: string, incident: number) => {
-    const inner = floor as unknown as { withAPerson: Set<string>; incidentOf: Map<string, number> };
-    inner.withAPerson.add(itemId);
-    inner.incidentOf.set(itemId, incident);
+    const inner = floor as unknown as { owners: Ownership };
+    inner.owners.set(itemId, { itemId, entry: at('absent', itemId), incident, owner: 'person', landable: false });
   };
 
   it('drops an item whose newest ledger verdict turned present', async () => {
@@ -420,9 +421,40 @@ describe('"Needs you" is read fresh at render time', () => {
     expect(readouts.at(-1)).toContain('fix.ts --land 44');
   });
 
+  it('reads ownership fresh each walk, and the readout and the drain follow it together', async () => {
+    let incident: IncidentState = { number: 45, withAPerson: true };
+    const { floor, readouts, dir } = floorFor('ownership-two-walks', {}, { readIncident: () => incident ?? null, landBlocker: () => 'not parked' });
+    status = 200;
+    appendItem(dir, { id: 'pull-request:11', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 11, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:11'));
+    // An incident an earlier run left parked is a person's on the first walk that reads it.
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('incident #45 is parked for you');
+    expect(floor.owed('all').map((i) => i.id)).toEqual([]);
+    // Handed back to the pipeline: the floor owns it, nothing needs a person, and the drain waits on it.
+    incident = { number: 45, withAPerson: false };
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+    expect(floor.owed('all').map((i) => i.id)).toEqual(['pull-request:11']);
+    // Closed while the item is still wrong: nobody owns it, and nothing changed for a person.
+    incident = null;
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(floor.owed('all').map((i) => i.id)).toEqual(['pull-request:11']);
+  });
+
+  it('keeps what it knew of an item when the tracker cannot be read, and knows nothing of an item it never saw', () => {
+    const latest = latestByItem([at('absent', 'seen'), at('absent', 'new')]);
+    const previous: Ownership = new Map([['seen', { itemId: 'seen', entry: at('absent', 'seen'), incident: 6, owner: 'person' as const, landable: true, cause: 'outside-repository' as const }]]);
+    const owners = readOwnership(latest, () => undefined, previous, () => false);
+    expect(owners.get('seen')).toMatchObject({ owner: 'person', incident: 6, landable: true, cause: 'outside-repository' });
+    expect(owners.get('new')).toMatchObject({ owner: 'unknown', incident: null, landable: false });
+  });
+
   it('follows the incident as the tracker reports it now', () => {
     const latest = latestByItem([at('absent', 'a'), at('absent', 'b'), at('absent', 'c'), at('absent', 'd'), at('absent', 'e'), at('present', 'e')]);
-    const tracker: Record<string, ReturnType<Parameters<typeof stillWithAPerson>[2]>> = {
+    const tracker: Record<string, IncidentState> = {
       a: { number: 1, withAPerson: true }, // still parked
       b: null, // closed
       c: { number: 3, withAPerson: false }, // its label lifted: back with the pipeline
@@ -430,11 +462,15 @@ describe('"Needs you" is read fresh at render time', () => {
       e: { number: 5, withAPerson: true }, // open, but walked right since
     };
     const reads: string[] = [];
-    const kept = stillWithAPerson(['a', 'b', 'c', 'd', 'e'], latest, (id) => {
+    // Each was last seen with a person, as a walk that found its incident parked would leave it.
+    const previous: Ownership = new Map(['a', 'b', 'c', 'd', 'e'].map((id) => [id, { itemId: id, entry: at('absent', id), incident: null, owner: 'person' as const, landable: false }]));
+    const owners = readOwnership(latest, (id) => {
       reads.push(id);
       return tracker[id];
-    });
-    expect(kept.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
+    }, previous, () => false);
+    const people = [...owners.values()].filter((o) => o.owner === 'person');
+    expect(people.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
+    expect([...owners.values()].map((o) => [o.itemId, o.owner])).toEqual([['a', 'person'], ['b', 'nobody'], ['c', 'floor'], ['d', 'person']]);
     // An item the ledger already shows right costs no tracker read.
     expect(reads).not.toContain('e');
   });
@@ -531,5 +567,136 @@ describe('the cause on the floor\'s pause', () => {
     status = 200;
     await restarted.walkOnce({ livenessOnly: true });
     expect(f.line()).toBe('go\n');
+  });
+});
+
+describe('deploy evidence', () => {
+  const OTHER = '0123456789abcdef0123456789abcdef01234567';
+  const head = () => git(scratch, 'rev-parse', 'HEAD');
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+  const run = (status: string, conclusion: string | null = null): DeployRun => ({ status, conclusion });
+  const byRuns = (runs: DeployRun[], mergedAt = minutesAgo(5)) =>
+    classify({ deployed: null, sha: OTHER, mergedAt, workflow: 'Deploy', runsFor: () => runs, capMinutes: 180, repoRoot: scratch });
+
+  it('counts a queued, pending, waiting, or running deploy as not deployed', () => {
+    for (const status of ['queued', 'pending', 'waiting', 'requested', 'in_progress']) {
+      expect(byRuns([run(status)])).toEqual({ state: 'not-yet-deployed', reason: `the Deploy run is ${status}` });
+    }
+  });
+
+  it('walks a merge once its deploy run completed successfully, and not when it completed any other way', () => {
+    expect(byRuns([run('completed', 'success')])).toBeNull();
+    expect(byRuns([run('in_progress'), run('completed', 'success')])).toBeNull();
+    expect(byRuns([run('completed', 'skipped')])).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy run concluded skipped' });
+    expect(byRuns([])).toEqual({ state: 'not-yet-deployed', reason: 'no Deploy run for the merge' });
+  });
+
+  it('lets a deployed revision decide alone, whatever the workflow says', () => {
+    let reads = 0;
+    const runsFor = () => {
+      reads++;
+      return [run('completed', 'success')];
+    };
+    const options = { mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor, capMinutes: 180, repoRoot: scratch };
+    expect(classify({ ...options, deployed: head(), sha: head() })).toBeNull();
+    expect(classify({ ...options, deployed: head(), sha: OTHER })?.state).toBe('not-yet-deployed');
+    expect(reads).toBe(0);
+  });
+
+  it('never walks a merge on elapsed time: past the cap with no evidence it is deploy-unconfirmed', () => {
+    expect(byRuns([run('in_progress')], minutesAgo(181))?.state).toBe('deploy-unconfirmed');
+    expect(byRuns([run('completed', 'success')], minutesAgo(181))).toBeNull();
+    const none = (mergedAt: string) => classify({ deployed: null, sha: OTHER, mergedAt, capMinutes: 180, repoRoot: scratch });
+    expect(none(minutesAgo(5))?.state).toBe('not-yet-deployed');
+    expect(none(minutesAgo(60 * 24 * 30))).toMatchObject({ state: 'deploy-unconfirmed', reason: expect.stringContaining('neither a revisionCommand nor a deployWorkflow') });
+    const unreadable = classify({ deployed: null, sha: OTHER, mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor: () => { throw new Error('HTTP 502'); }, capMinutes: 180, repoRoot: scratch });
+    expect(unreadable).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy runs could not be read (HTTP 502)' });
+  });
+
+  it('walks a merge only after its running deploy completes', async () => {
+    status = 200;
+    const answers = join(scratch, 'deploy-walk-answers');
+    mkdirSync(answers, { recursive: true });
+    writeFileSync(join(answers, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:120', rung: 'exercise', verdict: 'intact', reason: 'The page works.' }] }));
+    // With no deployed revision to read, the walk's checkout is the base as last fetched.
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    let runs = [run('in_progress')];
+    const f = floorFor('deploy-running', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs });
+    f.floor.put({ issue: 12, title: 'fix: a backend thing', pr: 120, sha: OTHER, mergedAt: minutesAgo(30), paths: ['server/a.ts'] });
+    await f.floor.walkOnce();
+    await f.floor.walkOnce();
+    const verdicts = () => readLedger(f.dir).filter((e) => e.itemId === 'pull-request:120').map((e) => e.verdict);
+    expect(verdicts()).toEqual(['not-yet-deployed']);
+    expect(readLedger(f.dir).find((e) => e.itemId === 'pull-request:120')?.reason).toBe('the Deploy run is in_progress');
+    runs = [run('completed', 'success')];
+    await f.floor.walkOnce();
+    expect(verdicts()).toEqual(['not-yet-deployed', 'intact']);
+  });
+
+  it('shows a deploy it cannot confirm in the readout, files nothing, and does not hold the drain on it', async () => {
+    status = 200;
+    const f = floorFor('deploy-unconfirmed', { deployWorkflow: 'Deploy', deployCapMinutes: 60 }, { forge: false, deployRuns: () => [] });
+    f.floor.put({ issue: 13, title: 'fix: a stalled deploy', pr: 130, sha: OTHER, mergedAt: minutesAgo(90), paths: ['server/b.ts'] });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(false);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:130', verdict: 'deploy-unconfirmed' });
+    expect(f.readouts.at(-1)).toContain('PR #130 fix: a stalled deploy: deploy unconfirmed; no Deploy run for the merge; still no deploy evidence 60 minutes after the merge');
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+    expect(f.floor.owed('run')).toHaveLength(0);
+  });
+
+  it('judges a failed or cancelled deploy run a failed deploy at once, with its URL', () => {
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'startup_failure']) {
+      expect(byRuns([{ status: 'completed', conclusion, url: 'https://ci.test/runs/9' }])).toEqual({ state: 'deploy-failed', reason: `the Deploy run for the merge concluded ${conclusion}: https://ci.test/runs/9` });
+    }
+    // A rerun under way is a wait again, not a failure.
+    expect(byRuns([run('in_progress'), run('completed', 'failure')])?.state).toBe('not-yet-deployed');
+  });
+
+  it('treats a failed deploy as wrong: pauses the line and files an incident, and a later green run walks it', async () => {
+    status = 200;
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    const answers = join(scratch, 'deploy-failed-answers');
+    mkdirSync(answers, { recursive: true });
+    writeFileSync(join(answers, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:140', rung: 'look', verdict: 'present', reason: 'The change is there.' }] }));
+    const filed: string[] = [];
+    const repair: typeof handleIncident = async (_ctx, options) => {
+      filed.push(`${options.entry.verdict}: ${options.entry.reason}`);
+      options.onDiagnosed?.('in-repository');
+      return { issue: 41, created: true, fix: null, diagnosis: null, withAPerson: false, cause: 'in-repository' };
+    };
+    let runs: DeployRun[] = [{ status: 'completed', conclusion: 'failure', url: 'https://ci.test/runs/7' }];
+    const f = floorFor('deploy-failed', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs, repair });
+    f.floor.put({ issue: 14, title: 'fix: a broken bundle', pr: 140, sha: OTHER, mergedAt: minutesAgo(10), paths: ['src/c.ts'] });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(true);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'deploy-failed', reason: 'the Deploy run for the merge concluded failure: https://ci.test/runs/7' });
+    expect(filed).toEqual(['deploy-failed: the Deploy run for the merge concluded failure: https://ci.test/runs/7']);
+    expect(f.line()).toStartWith(`pause\n${floorReason('in-repository', 'pull-request:140 is deploy-failed')}`);
+    expect(f.calls('on-walk-fail')).toBe(1);
+    runs = [{ status: 'completed', conclusion: 'success' }, ...runs];
+    await f.floor.walkOnce();
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'present' });
+    expect(f.line()).toBe('go\n');
+  });
+
+  it('refuses an empty workflow name, and accepts graceMinutes', () => {
+    const { faults } = resolveFloor({ environment: { kind: 'web', baseUrl: 'https://x.test', deployWorkflow: ' ', graceMinutes: 15 } });
+    expect(faults).toEqual(['floor.environment.deployWorkflow must be a workflow name or file']);
+  });
+
+  it('says once at start that graceMinutes decides nothing, and when no merge can be shown deployed', () => {
+    const f = floorFor('deploy-notes', { graceMinutes: 15 });
+    const logs: string[] = [];
+    new Floor({ ...(f.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o, log: (m) => logs.push(m) });
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toContain('graceMinutes no longer decides anything');
+    expect(logs[0]).toContain('set revisionCommand or deployWorkflow');
+    expect(logs[1]).toContain('no merge can be shown deployed: every merge will read deploy-unconfirmed after 180 minutes');
+    const quiet: string[] = [];
+    const g = floorFor('deploy-notes-quiet', { deployWorkflow: 'Deploy' });
+    new Floor({ ...(g.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o, log: (m) => quiet.push(m) });
+    expect(quiet).toEqual([]);
   });
 });

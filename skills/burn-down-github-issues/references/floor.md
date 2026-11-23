@@ -43,10 +43,11 @@ floor: {
     healthPaths: ['/', { path: '/graphql', method: 'POST', body: '{"query":"{__typename}"}', headers: { 'content-type': 'application/json' } }],
     probeTimeoutMs: 10000,
     revisionCommand: 'curl -s https://staging.example.com/version', // optional; prints the running SHA
+    deployWorkflow: 'Deploy', // optional; the workflow that deploys the base, read when there is no running SHA
+    deployCapMinutes: 180, // how long a merge waits for deploy evidence before it is `deploy-unconfirmed`
     logsCommand: 'your-host logs --tail 200', // optional; read when a walk fails
     login: { url: 'https://staging.example.com/login', userEnv: 'FLOOR_USER', passwordEnv: 'FLOOR_PASSWORD' },
     safeEndpoints: [], // paths the walker may POST to; default none
-    graceMinutes: 15, // with no revisionCommand, how long after a merge an item stays `unverified`
     quietWindows: [{ start: '02:00', end: '02:30' }], // UTC; a nightly rebuild is not an incident
   },
   walks: [
@@ -69,9 +70,10 @@ anything that looks like a value, and the values live only in the shell that sta
 
 1. **Liveness.** The driver fetches the base URL and every health path itself, no agent. A path
    that does not answer 2xx or 3xx is `down`, and nothing else is walked this time.
-2. **Classify.** Each pending item with a merge SHA is checked against the deployed revision:
-   `not-yet-deployed` when it is not an ancestor, `unverified` inside the grace window when there
-   is no revision signal. Recorded only when the verdict changes. An item `owed-by-sibling` is not
+2. **Classify.** Each pending item with a merge SHA is walked only on evidence that its merge is
+   deployed (see "Deploy evidence" below); without it the item is `not-yet-deployed`, and
+   `deploy-unconfirmed` once `deployCapMinutes` have passed since the merge. Recorded only when the
+   verdict changes. An item `owed-by-sibling` is not
    walked while that sibling is open, or merged with its own floor item not yet verified.
 3. **Walk.** One agent turn for every remaining item, in a read-only checkout at the deployed
    revision, with the standing walks whose paths match the item's. An item whose issue is known
@@ -142,12 +144,37 @@ logo"). The ledger entry carries `itemId`, `checkedAt`, `deployedRevision`, `run
 | `not-checkable` | terminal | looking would need a side effect or credentials the config does not give; the reason says which |
 | `absent` | wrong | the deployed revision includes the merge and the change is not there |
 | `down` | wrong | liveness failed |
+| `deploy-failed` | wrong | the deploy run for the merge failed, was cancelled, timed out, or never started; the reason carries the run's URL |
 | `not-yet-deployed` | pending | walked again next time |
-| `unverified` | pending | walked again next time |
+| `deploy-unconfirmed` | pending | still no deploy evidence `deployCapMinutes` after the merge; named under ⚠️ on every readout, never an incident, and the drain does not wait on it; walked once evidence arrives |
+| `unverified` | pending | no longer assigned; read in older ledgers only |
 | `owed-by-sibling` | pending | the missing effect belongs to the open sibling issue in `sibling`; walked again once that sibling lands |
 
 `not-checkable` is a known unknown kept honest by its reason, never a default; an item the walker
 did not reach gets no entry and is walked again.
+
+## Deploy evidence
+
+A merge is deployed when there is evidence of it, never because time has passed:
+
+- **`revisionCommand`** prints the running commit: the merge is deployed when that commit
+  contains it. When the command prints one, it decides alone.
+- **`deployWorkflow`**, read when there is no running commit to compare: the merge is deployed once
+  a run of that workflow (its name or file, as `gh run list --workflow` takes it) for the merge
+  commit has completed successfully. A run that is queued, pending, waiting, requested, or in
+  progress has not deployed it yet. When none is, and the newest run failed, was cancelled, timed
+  out, or never started, the merge is `deploy-failed`: a wrong verdict, with the run's URL in its
+  reason, that pauses the line and files an incident diagnosed like any other (a broken build or
+  bundle is a fault in the repository). A later successful run clears it.
+
+A merge without evidence is `not-yet-deployed` and is not walked, so a backend change whose deploy
+is still running is never judged `absent` or `intact` against the build before it. After
+`deployCapMinutes` (default 180) with still no evidence it is `deploy-unconfirmed`: the floor looked
+and cannot tell. That is shown in the readout, files no incident, and pauses nothing; the item is
+classified again every walk and walked as soon as evidence appears. With neither knob set, no merge
+can be shown deployed, so every merge ends `deploy-unconfirmed`, and the floor says so when it
+starts; set one. `graceMinutes` is still accepted but decides nothing, and the floor says that when
+it starts too.
 
 ## Owed by a sibling
 
@@ -246,9 +273,12 @@ repairing under 🔄, and under ⛔, on every walk until it is resolved, once a 
 line names the item's newest verdict and the way out: an approved fix parked at the merge boundary
 is landed with `fix.ts --land <n>` (lifting its label would only hand it to a run that parks it
 again); any other park is handed back by lifting its label.
-Resolved is read fresh on every walk, not remembered from when the incident was filed: the ⛔ line
+Resolved is read fresh on every walk, not remembered from when the incident was filed. Each walk
+reads once who owns every wrong item: the floor while its incident is open with the fix pipeline, a
+person once a label hands it to one, nobody when no incident is open. The readout, the line's
+cause, the drain, and the landing hint all read that one snapshot. The ⛔ line
 stays only while the item's newest ledger verdict is still wrong and its incident is still open with
-a person. An item that walks right, or whose incident is closed or handed back, leaves it (and the
+a person, including an incident an earlier run left parked. An item that walks right, or whose incident is closed or handed back, leaves it (and the
 drain stops treating it as a person's); a tracker that cannot be read leaves the line standing.
 
 A diagnosis whose remedy is `owed-by-sibling` files nothing; see "Owed by a sibling" above.

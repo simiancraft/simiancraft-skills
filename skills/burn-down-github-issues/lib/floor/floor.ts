@@ -23,7 +23,7 @@ import type { Seat } from '../../../fix-github-issue/lib/engines.ts';
 import { isStopping, RunStopping, sh, stoppableSleep } from '../../../fix-github-issue/lib/shell.ts';
 import { matchesPath } from '../../../fix-github-issue/lib/staleness.ts';
 import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts';
-import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
+import { DRIVER_SKILLS, deployEvidenceNotes, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
 import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { type Diagnosis, diagnose, handleIncident, mergedSince, openIncidentFor } from './incident.ts';
 import { combineCauses, type FloorCause, floorReason, floorUnderHost, floorUnderHostFile, isOutage, type Pause, standingPause } from './line.ts';
@@ -44,9 +44,11 @@ import {
   TERMINAL,
 } from './ledger.ts';
 import { ghLineage, type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
-import { classify, deployedRevision, describe, probe } from './probe.ts';
+import { classify, type DeployRun, deployedRevision, deployRunsFor, describe, probe } from './probe.ts';
 
 const VERDICT_FILE = 'walk-verdict.json';
+/** Pending verdicts a drain does not wait on: another issue, or deploy evidence, settles them. */
+const WAITS_ON_OTHERS: ReadonlySet<string> = new Set(['owed-by-sibling', 'deploy-unconfirmed']);
 
 /** A merge, as the pipeline's afterMerge hook reports it. */
 export type MergeEvent = { issue: number; title: string; pr: number; sha: string; mergedAt: string; paths: string[]; unseenBase?: string };
@@ -90,33 +92,78 @@ export type FloorOptions = {
   handleIncident?: typeof handleIncident;
   /** The open incident for an item as the tracker reports it; `openIncidentFor`, unless a test supplies its own. */
   readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null;
+  /** The deploy workflow's runs for a merge commit; `deployRunsFor` on the forge, unless a test supplies its own. */
+  deployRuns?: (sha: string) => DeployRun[];
   /** Why a person cannot land an incident's parked fix, or null when they can; `readLandBlocker`, unless a test supplies its own. */
   landBlocker?: (issue: number) => string | null;
 };
 
 /** An open incident as the tracker reports it now; undefined when the tracker could not be read. */
-type IncidentState = { number: number; withAPerson: boolean } | null | undefined;
+export type IncidentState = { number: number; withAPerson: boolean } | null | undefined;
 
 /**
- * Who still needs a person, judged at render time rather than when the incident was filed: an item
- * stays only while its newest ledger verdict is still wrong and its incident is still open with a
- * person. An item that walked right, or whose incident closed or went back to the pipeline, drops
- * out. A tracker that cannot be read keeps the item: an unconfirmed resolution is not one.
+ * Who owns a floor problem now: the floor (its incident is open with the fix pipeline), a person
+ * (its incident is open with a person's label), nobody (no incident is open for it), or unknown
+ * (the tracker could not be read and no earlier walk saw the item).
  */
-export function stillWithAPerson(
-  owned: Iterable<string>,
+export type Owner = 'floor' | 'person' | 'nobody' | 'unknown';
+
+/** One wrong item: its newest ledger entry, its open incident, and who owns the problem. */
+export type OwnedItem = {
+  itemId: string;
+  entry: LedgerEntry;
+  incident: number | null;
+  owner: Owner;
+  /** A person owns it and its incident's fix is approved and parked: they land it rather than lift its label. */
+  landable: boolean;
+  /** Where a diagnosis this run placed the remedy; absent while none has, so the inherited cause stands. */
+  cause?: FloorCause;
+  /** Turned wrong, and no diagnosis has answered for it yet. */
+  diagnosing?: true;
+};
+
+/** Every item the ledger shows wrong now, by id, with its owner. An item absent from it is not wrong. */
+export type Ownership = Map<string, OwnedItem>;
+
+/**
+ * Reads who owns each wrong item from the ledger and the tracker as they stand now, never from
+ * what was true when an incident was filed. An item the ledger shows right costs no tracker read.
+ * A tracker that cannot be read keeps what the previous snapshot knew of the item: an unconfirmed
+ * resolution is not one. The diagnosis an item carries (`cause`, `diagnosing`) follows it from the
+ * previous snapshot while it stays wrong.
+ */
+export function readOwnership(
   latest: Map<string, LedgerEntry>,
   readIncident: (itemId: string) => IncidentState,
-): Array<{ itemId: string; entry: LedgerEntry; incident: number | null }> {
-  const kept: Array<{ itemId: string; entry: LedgerEntry; incident: number | null }> = [];
-  for (const itemId of owned) {
-    const entry = latest.get(itemId);
-    if (!entry || !REPAIR.has(entry.verdict)) continue;
+  previous: Ownership,
+  landable: (issue: number) => boolean,
+): Ownership {
+  const now: Ownership = new Map();
+  for (const [itemId, entry] of latest) {
+    if (!REPAIR.has(entry.verdict)) continue;
+    const before = previous.get(itemId);
+    const carried = { ...(before?.cause ? { cause: before.cause } : {}), ...(before?.diagnosing ? { diagnosing: true as const } : {}) };
     const incident = readIncident(itemId);
-    if (incident === null || incident?.withAPerson === false) continue;
-    kept.push({ itemId, entry, incident: incident?.number ?? null });
+    if (incident === undefined) {
+      now.set(itemId, before ? { ...before, entry } : { itemId, entry, incident: null, owner: 'unknown', landable: false, ...carried });
+    } else if (incident === null) {
+      now.set(itemId, { itemId, entry, incident: null, owner: 'nobody', landable: false, ...carried });
+    } else {
+      const person = incident.withAPerson;
+      now.set(itemId, { itemId, entry, incident: incident.number, owner: person ? 'person' : 'floor', landable: person && landable(incident.number), ...carried });
+    }
   }
-  return kept;
+  return now;
+}
+
+/** The items a person owns, in the order the ledger lists them. */
+export function withAPerson(owners: Ownership): OwnedItem[] {
+  return [...owners.values()].filter((owned) => owned.owner === 'person');
+}
+
+/** What a person must act on, as a comparable string: a change in it is news for the readout. */
+function personSignature(owners: Ownership): string {
+  return JSON.stringify(withAPerson(owners).map((o) => [o.itemId, o.incident, o.landable]).sort());
 }
 
 type AgentVerdictFile = { entries: Array<{ itemId: string; rung: string; verdict: string; reason: string; evidence?: string; sibling?: unknown }> };
@@ -132,13 +179,12 @@ export class Floor {
   private stopped = false;
   private draining = false;
   private lastWrong = false;
-  /** Items whose incident a person now owns: walked every time, but a drain does not wait on them. */
-  private readonly withAPerson = new Set<string>();
   private readonly openedAt = new Date().toISOString();
-  /** Items whose incident is parked at the merge boundary with an approved fix: a person lands it, not lifts it. */
-  private readonly landable = new Set<string>();
-  /** Open incidents by item, for the readout. */
-  private readonly incidentOf = new Map<string, number>();
+  /**
+   * Who owns each wrong item, read fresh once per walk (`readOwnership`): the readout, the line's
+   * cause, the drain, and the landing hint all read this one snapshot.
+   */
+  private owners: Ownership = new Map();
   /** Items whose incident's fix merged, by that incident: the fix has to deploy before another try. */
   private readonly fixedBy = new Map<string, number>();
   /** Ids this run put on the floor; the drain waits on these, not on everything ever listed. */
@@ -148,10 +194,6 @@ export class Floor {
   private readonly lineageOf: LineageOf;
   /** Lineages read during the current walk, by issue; the tracker can change between walks. */
   private lineages = new Map<number, Lineage | null>();
-  /** What each wrong item's diagnosis said about where its remedy lies; the line's cause is read from these. */
-  private readonly causes = new Map<string, FloorCause>();
-  /** Items that turned wrong and that no diagnosis has answered for yet. */
-  private readonly diagnosing = new Set<string>();
   /**
    * The cause on a floor pause an earlier run left, for wrong items this run has no diagnosis of:
    * an incident a person already owns is not diagnosed again, and its cause should not be lost.
@@ -164,6 +206,7 @@ export class Floor {
     this.rehearsal = options.ctx.dryRun || options.baseUrl !== undefined;
     this.checkout = resolve(options.ctx.repoRoot, options.ctx.project.worktreeRoot, 'floor-checkout');
     this.lineageOf = options.lineageOf ?? ghLineage(options.ctx);
+    for (const note of deployEvidenceNotes(this.env)) options.log(`floor: ${note}`);
     const pause = this.pause();
     const under = floorUnderHost(options.switchFile);
     if (pause?.by === 'floor') this.inherited = pause.cause;
@@ -196,14 +239,15 @@ export class Floor {
   }
 
   /**
-   * Items still owed a terminal verdict, less those a person owns and those whose missing effect an
-   * open sibling owns (that sibling's own merge is what settles them): this run's, or every one.
+   * Items still owed a terminal verdict, less those a person owns, those whose missing effect an
+   * open sibling owns (that sibling's own merge is what settles them), and those whose deploy is
+   * unconfirmed past the cap (no walk can settle them): this run's, or every one.
    */
   owed(scope: 'run' | 'all' = 'all'): ListItem[] {
     const ledger = readLedger(this.o.dir);
     const latest = latestByItem(ledger);
     return pending(readList(this.o.dir), ledger).filter(
-      (item) => !this.withAPerson.has(item.id) && latest.get(item.id)?.verdict !== 'owed-by-sibling' && (scope === 'all' || this.mine.has(item.id)),
+      (item) => this.owners.get(item.id)?.owner !== 'person' && !WAITS_ON_OTHERS.has(latest.get(item.id)?.verdict ?? 'present') && (scope === 'all' || this.mine.has(item.id)),
     );
   }
 
@@ -236,7 +280,8 @@ export class Floor {
       }
     }
     if (this.owed(scope).length > 0) return;
-    if (this.withAPerson.size > 0) this.o.log(`floor: clear but for ${[...this.withAPerson].join(', ')}, which a person owns`);
+    const people = withAPerson(this.owners);
+    if (people.length > 0) this.o.log(`floor: clear but for ${people.map((o) => o.itemId).join(', ')}, which a person owns`);
     else this.o.log('floor: clear; every merge is verified');
   }
 
@@ -303,13 +348,18 @@ export class Floor {
 
   /** Items whose newest entry says the environment is wrong, liveness included; quiet-window ones aside. */
   private wrongNow(): LedgerEntry[] {
-    return [...latestByItem(readLedger(this.o.dir)).values()].filter((entry) => REPAIR.has(entry.verdict) && !entry.quiet);
+    return [...this.owners.values()].map((owned) => owned.entry).filter((entry) => !entry.quiet);
   }
 
   /** The cause the line carries now: what every wrong item's diagnosis said, or that none has yet. */
   private lineCause(wrong: LedgerEntry[]): FloorCause {
     if (wrong.length === 0) return 'undiagnosed';
-    return combineCauses(wrong.map((e) => (this.diagnosing.has(e.itemId) ? 'undiagnosed' : (this.causes.get(e.itemId) ?? this.inherited ?? 'undiagnosed'))));
+    return combineCauses(
+      wrong.map((e) => {
+        const owned = this.owners.get(e.itemId);
+        return owned?.diagnosing ? 'undiagnosed' : (owned?.cause ?? this.inherited ?? 'undiagnosed');
+      }),
+    );
   }
 
   private writePause(): void {
@@ -327,7 +377,10 @@ export class Floor {
    * the line: that reason stands. The items that turned are undiagnosed until their diagnosis answers.
    */
   private pauseLine(turned: LedgerEntry[]): void {
-    for (const entry of turned) this.diagnosing.add(entry.itemId);
+    for (const entry of turned) {
+      const owned = this.owners.get(entry.itemId);
+      if (owned) owned.diagnosing = true;
+    }
     if (this.rehearsal) return;
     if (this.pausedByOther()) return;
     this.writePause();
@@ -338,8 +391,9 @@ export class Floor {
    * pause with it. `null` is no new answer (an incident a person already owns), so what was known stands.
    */
   private diagnosed(itemId: string, cause: FloorCause | null): void {
-    this.diagnosing.delete(itemId);
-    if (cause !== null) this.causes.set(itemId, cause);
+    const owned = this.owners.get(itemId);
+    if (owned) delete owned.diagnosing;
+    if (owned && cause !== null) owned.cause = cause;
     if (this.rehearsal || !this.ownPause()) return;
     if (this.wrongNow().length > 0) this.writePause();
   }
@@ -354,9 +408,6 @@ export class Floor {
   private releaseLine(): void {
     if (this.rehearsal || this.pausedByOther()) return;
     const wrong = this.wrongNow();
-    const stillWrong = new Set(wrong.map((e) => e.itemId));
-    for (const id of [...this.causes.keys()]) if (!stillWrong.has(id)) this.causes.delete(id);
-    for (const id of [...this.diagnosing]) if (!stillWrong.has(id)) this.diagnosing.delete(id);
     const underHost = existsSync(floorUnderHostFile(this.o.switchFile));
     if (underHost) rmSync(floorUnderHostFile(this.o.switchFile), { force: true });
     if (!this.ownPause()) {
@@ -392,7 +443,7 @@ export class Floor {
     const at = new Date().toISOString();
     const entries: LedgerEntry[] = [];
     const before = latestByItem(readLedger(this.o.dir));
-    const owners = this.ownership();
+    const owners = personSignature(this.owners);
     const items = new Map(readList(this.o.dir).map((item) => [item.id, item]));
     const quiet = inQuietWindow(this.env.quietWindows);
     const notes: string[] = [];
@@ -432,27 +483,19 @@ export class Floor {
       const unsettled = pending([...items.values()], readLedger(this.o.dir));
       // An issue whose merge is on the floor and not verified yet has not landed where a walk looks.
       const landing = new Set(unsettled.map((item) => item.ref?.issue).filter((n): n is number => n !== undefined));
+      const workflow = this.env.deployWorkflow;
+      const runsFor = workflow ? (this.o.deployRuns ?? ((sha: string) => deployRunsFor(ctx, workflow, sha))) : undefined;
       for (const item of unsettled) {
         // Owed to a sibling still open, or merged and not yet verified: nothing to look at until it lands.
         const prior = before.get(item.id);
         if (prior?.verdict === 'owed-by-sibling' && prior.sibling !== undefined && (landing.has(prior.sibling) || owedTo(this.lineage(item), prior.sibling))) continue;
-        const state = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, graceMinutes: this.env.graceMinutes, repoRoot: ctx.repoRoot });
-        if (!state) {
+        const undeployed = classify({ deployed, sha: item.ref?.sha, mergedAt: item.ref?.mergedAt, workflow, runsFor, capMinutes: this.env.deployCapMinutes, repoRoot: ctx.repoRoot });
+        if (!undeployed) {
           walkable.push(item);
           continue;
         }
-        if (before.get(item.id)?.verdict === state) continue;
-        this.record(
-          {
-            itemId: item.id,
-            checkedAt: at,
-            deployedRevision: deployed ?? undefined,
-            rung: 'classify',
-            verdict: state,
-            reason: state === 'not-yet-deployed' ? `merge ${item.ref?.sha?.slice(0, 12)} is not an ancestor of the deployed revision` : `no revision signal and inside the ${this.env.graceMinutes}-minute grace window`,
-          },
-          entries,
-        );
+        if (before.get(item.id)?.verdict === undeployed.state) continue;
+        this.record({ itemId: item.id, checkedAt: at, deployedRevision: deployed ?? undefined, rung: 'classify', verdict: undeployed.state, reason: undeployed.reason }, entries);
       }
       if (walkable.length > 0 && quiet) {
         notes.push(`${walkable.length} item(s) wait out the quiet window`);
@@ -495,6 +538,9 @@ export class Floor {
       }
       wrong = entries.filter((entry) => REPAIR.has(entry.verdict));
     }
+    // Who owns each wrong item, read once from the ledger and the tracker as they stand now; a
+    // rehearsal reads neither, and keeps what the floor knew.
+    if (!this.rehearsal) this.owners = this.readOwners();
     if (wrong.length > 0 && !quiet) {
       const turned = wrong.filter((entry) => {
         const prior = before.get(entry.itemId);
@@ -509,7 +555,7 @@ export class Floor {
           this.checkpoint();
           // An item still wrong with its incident open is that incident's business: the pipeline
           // or a person has it. Only a new failure, or one whose incident closed, is worked again.
-          if (!turned.includes(entry) && this.incidentOpen(entry.itemId)) continue;
+          if (!turned.includes(entry) && (this.owners.get(entry.itemId)?.incident ?? null) !== null) continue;
           // A fix that merged but has not deployed yet is not a failed fix: wait for its walk.
           const fix = this.fixedBy.get(entry.itemId);
           if (fix !== undefined && pending([...items.values()], readLedger(this.o.dir)).some((item) => item.ref?.issue === fix)) {
@@ -535,13 +581,12 @@ export class Floor {
     // walk has cleared is still wrong. A rehearsal writes no ledger, so it answers for itself.
     this.lastWrong = this.rehearsal ? wrong.length > 0 : this.wrongNow().length > 0;
 
-    if (!this.rehearsal) this.refreshOwnership();
     const stillPending = pending([...items.values()], readLedger(this.o.dir)).length;
     const readout = this.readout(entries, items, incidents, health, notes, stillPending);
     // What a person must act on changed (an incident closed, handed back, or became landable): news,
     // even on a walk that recorded nothing new.
     const news =
-      entries.some((e) => e.itemId !== LIVENESS_ITEM) || before.get(LIVENESS_ITEM)?.verdict !== live.verdict || notes.length > 0 || this.ownership() !== owners;
+      entries.some((e) => e.itemId !== LIVENESS_ITEM) || before.get(LIVENESS_ITEM)?.verdict !== live.verdict || notes.length > 0 || personSignature(this.owners) !== owners;
     const walked: WalkResult = { at, entries, wrong: this.lastWrong, pending: stillPending, incidents, readout };
     if (news) {
       if (this.o.print) this.o.print(readout);
@@ -673,50 +718,17 @@ export class Floor {
     return this.o.readIncident ? this.o.readIncident(itemId) : openIncidentFor(this.o.ctx, itemId);
   }
 
-  /** Who owns what, as the readout shows it: each item a person owns, its incident, and whether it is landable. */
-  private ownership(): string {
-    return JSON.stringify([...this.withAPerson].sort().map((id) => [id, this.incidentOf.get(id) ?? null, this.landable.has(id)]));
-  }
-
-  private incidentOpen(itemId: string): boolean {
-    try {
-      const open = this.readIncident(itemId);
-      if (open?.withAPerson) this.withAPerson.add(itemId);
-      if (open) this.incidentOf.set(itemId, open.number);
-      if (open?.withAPerson) this.noteLandable(itemId, open.number);
-      return open !== null;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Re-reads who owns each item a person was last seen owning, from the ledger and the tracker as
-   * they stand now, and whether each one's fix is landable, so the readout and the drain never act
-   * on an incident state cached when it was filed.
-   */
-  private refreshOwnership(): void {
-    const latest = latestByItem(readLedger(this.o.dir));
+  /** The snapshot for this walk: `readOwnership` over the ledger now, with a tracker read that fails read as unknown. */
+  private readOwners(): Ownership {
     const read = (itemId: string): IncidentState => {
       try {
         return this.readIncident(itemId);
-      } catch {
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
         return undefined;
       }
     };
-    const kept = stillWithAPerson(this.withAPerson, latest, read);
-    const keep = new Set(kept.map((k) => k.itemId));
-    for (const itemId of [...this.withAPerson]) {
-      if (keep.has(itemId)) continue;
-      this.withAPerson.delete(itemId);
-      this.incidentOf.delete(itemId);
-      this.landable.delete(itemId);
-    }
-    for (const { itemId, incident } of kept) {
-      if (incident === null) continue;
-      this.incidentOf.set(itemId, incident);
-      this.noteLandable(itemId, incident);
-    }
+    return readOwnership(latestByItem(readLedger(this.o.dir)), read, this.owners, (issue) => this.landable(issue));
   }
 
   /** Where an item's issue sits in a carved trunk, read once per walk; null without an issue or a readable one. */
@@ -745,13 +757,13 @@ export class Floor {
   }
 
   /** Whether a person lands this incident's fix (`fix.ts --land`) rather than lifting its label; unknown reads as no. */
-  private noteLandable(itemId: string, issue: number): void {
-    this.landable.delete(itemId);
-    if (!issue || this.o.ctx.dryRun) return;
+  private landable(issue: number): boolean {
+    if (!issue || this.o.ctx.dryRun) return false;
     try {
-      if ((this.o.landBlocker ? this.o.landBlocker(issue) : readLandBlocker(this.o.ctx, issue)) === null) this.landable.add(itemId);
+      return (this.o.landBlocker ? this.o.landBlocker(issue) : readLandBlocker(this.o.ctx, issue)) === null;
     } catch (error) {
       if (error instanceof RunStopping || isStopping()) throw error;
+      return false;
     }
   }
 
@@ -771,11 +783,13 @@ export class Floor {
         diagnosis,
         onDiagnosed: (cause) => this.diagnosed(entry.itemId, cause),
       });
-      if (result.withAPerson) this.withAPerson.add(entry.itemId);
-      else this.withAPerson.delete(entry.itemId);
-      this.incidentOf.set(entry.itemId, result.issue);
-      if (result.withAPerson) this.noteLandable(entry.itemId, result.issue);
-      else this.landable.delete(entry.itemId);
+      // The incident's owner as handleIncident just read it from the tracker.
+      const owned = this.owners.get(entry.itemId);
+      if (owned) {
+        owned.incident = result.issue || null;
+        owned.owner = result.withAPerson ? 'person' : result.issue ? 'floor' : 'nobody';
+        owned.landable = result.withAPerson && this.landable(result.issue);
+      }
       return { issue: result.issue, outcome: result.fix?.outcome ?? (result.withAPerson ? 'with a person' : 'filed'), cause: result.cause };
     } catch (error) {
       if (error instanceof RunStopping) throw error;
@@ -804,22 +818,23 @@ export class Floor {
       if (entry.itemId === LIVENESS_ITEM) continue;
       if (entry.verdict === 'present' || entry.verdict === 'intact') verified.push(`${label(entry.itemId)}: ${entry.verdict} (${entry.rung})`);
       else if (entry.verdict === 'not-checkable') headsUp.push(`${label(entry.itemId)}: not checkable; ${entry.reason}`);
+      else if (entry.verdict === 'deploy-unconfirmed') continue;
       else if (entry.verdict === 'owed-by-sibling') pendingLines.push(`${label(entry.itemId)}: owed by sibling #${entry.sibling}, walked again once it closes`);
       else if (!REPAIR.has(entry.verdict)) pendingLines.push(`${label(entry.itemId)}: ${entry.verdict.replaceAll('-', ' ')}`);
     }
     // Only what a person must act on is waiting on them, and it stays there every walk until they
     // do, walked this time or not; a failure the floor is still repairing is in flight.
-    for (const entry of entries.filter((e) => REPAIR.has(e.verdict) && !this.withAPerson.has(e.itemId))) {
+    for (const entry of entries.filter((e) => REPAIR.has(e.verdict) && this.owners.get(e.itemId)?.owner !== 'person')) {
       const incident = incidents.find((i) => i.itemId === entry.itemId);
       const text = `${label(entry.itemId)} is ${entry.verdict}: ${entry.reason}`;
       if (incident) pendingLines.push(`${text}; incident #${incident.issue}: ${incident.outcome}, walked again next time`);
       else headsUp.push(text);
     }
-    // Already re-read against the ledger and the tracker this walk (refreshOwnership).
-    const latest = latestByItem(readLedger(this.o.dir));
-    for (const itemId of this.withAPerson) {
-      const issue = this.incidentOf.get(itemId);
-      waiting.push(incidentWaiting(label(itemId), issue, this.landable.has(itemId), latest.get(itemId)?.verdict));
+    // Read against the ledger and the tracker this walk (readOwnership).
+    for (const owned of withAPerson(this.owners)) waiting.push(incidentWaiting(label(owned.itemId), owned.incident ?? undefined, owned.landable, owned.entry.verdict));
+    // A deploy the floor cannot confirm stays in front of a person on every readout until evidence arrives.
+    for (const entry of latestByItem(readLedger(this.o.dir)).values()) {
+      if (entry.verdict === 'deploy-unconfirmed' && items.has(entry.itemId)) headsUp.push(`${label(entry.itemId)}: deploy unconfirmed; ${entry.reason}; walked once a deploy is confirmed`);
     }
     if (this.ownPause()) headsUp.push(this.pauseReadout());
     if (stillPending > 0) pendingLines.push(`${stillPending} item(s) on the floor still owed a verdict`);

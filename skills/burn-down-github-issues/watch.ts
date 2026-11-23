@@ -57,7 +57,7 @@ const EVENT = new RegExp(
     'line-switch',
     'paused',
     'liveness: down',
-    ': (present|intact|absent|not-checkable|not-yet-deployed|unverified|owed-by-sibling) by',
+    ': (present|intact|absent|not-checkable|not-yet-deployed|deploy-unconfirmed|deploy-failed|unverified|owed-by-sibling) by',
     'incident',
     'Walking \\d+',
     'nothing on the floor',
