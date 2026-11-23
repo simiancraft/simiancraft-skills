@@ -1232,14 +1232,14 @@ describe('a prover that needs a person', () => {
     expect(card.actions.slice(-4)).toEqual(['liftPrHoldMirror', 'prToDraft', 'runProver', 'moveCard']);
   });
 
-  const redrive = (thread: Array<{ author: string; body: string }>) => {
+  const redrive = (thread: Array<{ author: string; body: string; createdAt?: string }>, opened = 'h') => {
     const writes: string[][] = [];
     const reproofs: boolean[] = [];
     const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
       trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, pullHolds: () => ['needs-human'],
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
-      inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
+      inFlight: new Map(), isDraft: () => true, sh: (_ctx: unknown, argv: string[]) => (argv.includes('createdAt') ? opened : 'h'), catchUp: () => null,
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
       runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
         reproofs.push(reproof);
@@ -1253,6 +1253,11 @@ describe('a prover that needs a person', () => {
     const { writes, reproofs } = await redrive([{ author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs credentials') }]);
     expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--remove-label', 'needs-human']);
     expect(reproofs).toEqual([true]);
+  });
+
+  it('reads the stop since the pull request opened: a held proof from an earlier attempt lifts nothing', async () => {
+    const { writes } = await redrive([{ author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1' }, 'needs credentials'), createdAt: '2026-09-01T00:00:00Z' }], '2026-09-02T00:00:00Z');
+    expect(writes.filter((argv: string[]) => argv.includes('--remove-label'))).toEqual([]);
   });
 
   it("leaves a person's needs-human on the pull request when something else stopped the work last", async () => {

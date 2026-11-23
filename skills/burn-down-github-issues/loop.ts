@@ -937,10 +937,10 @@ function lastObjection(issue: number, pull: number): string | null {
   if (!opened) throw new Error(`pull request #${pull} has no creation time`);
   const raw = sh(ctx, [
     'gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq',
-    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.createdAt > "${opened}") | { author: .author.login, body }]`,
+    '[.comments[] | { author: .author.login, body, createdAt }]',
   ]);
   // A held proof that a person has since lifted is not an objection: the work is proved again.
-  const stop = standingStop(JSON.parse(raw || '[]') as Array<{ author: string; body: string }>, ctx.botLogin);
+  const stop = standingStop(JSON.parse(raw || '[]') as Array<{ author: string; body: string; createdAt?: string }>, ctx.botLogin, opened);
   return stop?.kind === 'objection' ? stop.text.trim() || null : null;
 }
 

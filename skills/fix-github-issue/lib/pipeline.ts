@@ -2058,7 +2058,9 @@ export async function redriveIssue(
     // the pull request's `needs-human` is that hold's mirror; it comes off with it, or the merge
     // gate would refuse the very work the person released. A label a person put on the pull
     // request after anything else stopped the work stays, and the merge gate honours it.
-    if (pullHolds(ctx, pull.number).includes('needs-human') && standingStop(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin)?.kind === 'proof-held') {
+    // Read as every reader of the stop reads it: the loop's own records since this pull request opened.
+    const opened = () => sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'createdAt', '--jq', '.createdAt']);
+    if (pullHolds(ctx, pull.number).includes('needs-human') && standingStop(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin, opened())?.kind === 'proof-held') {
       mutate(ctx, `lift needs-human on PR #${pull.number}: the issue's hold was lifted`, ['gh', 'pr', 'edit', String(pull.number), '--remove-label', 'needs-human']);
     }
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
