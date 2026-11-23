@@ -367,5 +367,18 @@ export async function handleIncident(
   enrichBlockers(ctx, [live]);
   const fix = await fixIssue(ctx, live, { maxPoints: options.maxPoints });
   ctx.log(`incident #${issue}: ${fix.outcome}; ${fix.reason}`);
-  return { issue, created: existing === null, fix, diagnosis, withAPerson: fix.outcome !== 'merged', cause: causeOf(diagnosis) };
+  return { issue, created: existing === null, fix, diagnosis, withAPerson: ownedNow(ctx, entry.itemId), cause: causeOf(diagnosis) };
+}
+
+/**
+ * Whether a person owns the incident after its fix ran, read from the tracker as it stands now: a
+ * fix that did not merge (unjudged, busy, stopped) is the pipeline's to retry, not a person's. A
+ * tracker that cannot be read keeps the incident with a person, as the floor's readout does.
+ */
+function ownedNow(ctx: Context, itemId: string): boolean {
+  try {
+    return openIncidentFor(ctx, itemId)?.withAPerson ?? false;
+  } catch {
+    return true;
+  }
 }
