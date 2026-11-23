@@ -114,6 +114,12 @@ export type Context = {
   onLane?: (event: LaneEvent) => void;
   /** The decision panel an agent-raised `needs-decision` is weighed by before it holds; absent, the hold is applied directly. */
   panel?: PanelSetup;
+  /**
+   * Told when a seat failed on the host (a full disk, exhausted memory), with the reason. A driver
+   * with a line pauses it here, and reruns the work once the line is resumed; the seat's settlement
+   * (`settleEnvironmentFault`) has already counted nothing. A throw is logged, never propagated.
+   */
+  onHostFault?: (reason: string) => void;
   /** When set, every mutation goes here instead of to gh: a fake tracker under test. */
   io?: { write: (op: { description: string; argv: string[] }) => void; view?: (n: number) => unknown; search?: (q: string) => unknown };
 };
@@ -150,6 +156,7 @@ export function createContext(options: {
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;
   panel?: PanelSetup;
+  onHostFault?: (reason: string) => void;
   /** A test supplies its own; production reads it from gh. */
   botLogin?: string;
   io?: Context['io'];
@@ -181,6 +188,7 @@ export function createContext(options: {
     onClosed: options.onClosed,
     onLane: options.onLane,
     panel: options.panel,
+    onHostFault: options.onHostFault,
     io: options.io,
   };
 }

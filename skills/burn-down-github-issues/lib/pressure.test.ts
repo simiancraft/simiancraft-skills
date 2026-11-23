@@ -219,9 +219,9 @@ describe('tracker and checks pressure', () => {
 // Actual private functions are evaluated in memory with explicit fake dependencies. No import
 // of loop.ts, subprocess, source edit, or live tracker is involved.
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
-  // Every settlement asks whether the run is stopping and whether its lease stands; here neither is in doubt.
+  // Every settlement asks whether the run is stopping, whether an environment fault ended it, and whether its lease stands; here none is in doubt.
   // Nor does any pull request carry a person's hold, unless a test says so.
-  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleEnvironmentFault: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);

@@ -224,7 +224,9 @@ echo go > <worktreeRoot>/runs/line-switch        # release
 With a `floor` block in the config, every merge the loop makes goes up onto
 `<worktreeRoot>/floor/`, and the loop walks the deployed base on a cadence. A walk that finds it
 wrong pauses the line with a reason beginning `floor:`; once nothing on the floor is wrong the
-floor releases its own pause, and never one a person set. At the end of a run the loop keeps
+floor releases its own pause, and never one a person set. A seat that fails on the host (a full
+disk, exhausted memory) pauses the line with a reason beginning `host:`, and only a person releases
+it. At the end of a run the loop keeps
 walking until its merges are verified there, up to `floor.drainMinutes`. The block, the walk, the
 callbacks, and the first-run order are in `references/floor.md`.
 

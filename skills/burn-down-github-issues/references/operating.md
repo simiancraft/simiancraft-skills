@@ -138,8 +138,17 @@ and then nothing until it resumes. That silence is the point, not a hang. `cat` 
 see the state and the reason. A reason beginning `floor:` was written by the floor and names what
 it found wrong, after the cause it knows (`floor:undiagnosed:`, `floor:cause-unknown:`,
 `floor:in-repository:`, or `floor:outside-repository:`; `floor.md`, "The line"); the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
-more, and the floor releases its own pause once nothing on it is wrong. A reason without that
-prefix was written by a person, and only a person clears it:
+more, and the floor releases its own pause once nothing on it is wrong. A reason beginning `host:`
+was written when a seat failed on the host (`ENOSPC` or `ENOMEM`): an environment fault, which
+judged nothing about the work. The lane counted nothing and wrote no hold or dead letter; its claim
+was released and its worktree cleared (unpushed commits are kept under `refs/loop/rescued/`), and
+the issue carries `loop/environment-fault: <code>@<seat>`. It replaces a floor pause, so an incident's fix
+is held too, but never a person's. Free the disk or the memory, then release it by hand; the run
+takes the issue up again once the line is resumed, and the next run does if this one has ended. If
+the same issue fails on the same code again before the seat that hit it finishes cleanly, the work itself is taken to be filling the disk or the
+memory, and that failure is counted as an ordinary one. When the pause itself cannot be written,
+the run stops as on a signal instead. Any other reason was written by a
+person, and only a person clears it, as they clear a `host:` one:
 `echo go > <worktreeRoot>/runs/line-switch`.
 
 ## What is not a bug
@@ -196,7 +205,11 @@ same board pointer `card.ts` reads, so a carve nobody dispatched from the loop i
 A failed turn is not lost work. An agent killed at its cap, and one that exited badly, are counted
 and written on the issue, and each says the same thing there: what the lane holds is not trusted, and
 anything already pushed survives. A stop and a lost lease write nothing on the issue at all, by
-design; their record is the kept lane and the log. In every one of the four cases, read the issue's
+design; their record is the kept lane and the log. To stop one seat's agent without stopping the
+run, `kill` its pid (SIGTERM, not `kill -9`): an environment fault, so the turn is not counted,
+nothing is held, the lane is cleared, and the next run reruns the work. To keep it from running
+again, add a hold label (`loop/parked` or `needs-human`) as well. A `kill -9` cannot be told from
+the kernel's out-of-memory kill and counts as a failed attempt. In every one of these cases, read the issue's
 pull requests before deciding what to do with the card: a redrive continues from the pushed head,
 while carving or re-working starts again from nothing. `gh pr list --search <issue>` answers that in
 one line.

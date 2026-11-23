@@ -54,6 +54,7 @@ import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
 import { Floor } from './lib/floor/floor.ts';
 import { lineHolds, readSwitch as readLineSwitch, type Seam } from './lib/floor/line.ts';
 import { INCIDENT_LABEL, incidentHold, recentMerges, revertOf } from './lib/floor/incident.ts';
+import { pauseForHost } from './lib/host-pause.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
@@ -577,6 +578,18 @@ const ctx = createContext({
   holdAtBoundary: (issue, change) => incidentHold(issue, () => revertOf(change.cwd, change.base, recentMerges(ctx, issue.number, FLOOR_DIR))),
   // The pipeline has already placed the card in Merged by the time this fires.
   afterMerge: (event) => FLOOR?.put(event),
+  // A seat that failed on the host pauses the line. A pause that cannot be written (the disk is the
+  // thing that is full) would leave nothing holding the line, so the run stops instead, as on a signal.
+  onHostFault: (reason) => {
+    if (DRY_RUN) return;
+    try {
+      const done = pauseForHost(SWITCH_FILE, reason);
+      log(done === 'paused' ? `line paused for ${reason}; fix the host, then write go to ${SWITCH_FILE}` : `${reason}; the line is already paused by a person, whose reason stands`);
+    } catch (error) {
+      log(`${reason}, and the pause could not be written (${(error as Error).message.split('\n')[0]}); stopping the run`);
+      process.kill(process.pid, 'SIGTERM');
+    }
+  },
 });
 
 /**
@@ -1399,6 +1412,10 @@ async function workOn(item: WorkItem): Promise<void> {
   const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
   if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
   if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
+  // A host fault paused the line and judged nothing, so the refill may take the issue up again:
+  // it waits for go like any lane, and so reruns once the host is fixed. A person's stop is
+  // not handed back in this run, or the work they stopped would start again at once.
+  if (result.outcome === 'unjudged' && result.fault && result.fault !== 'stopped') ADMISSION.readmit(issue.number);
 }
 
 /** `--floor <mode>`: the floor alone, under the instance lock, so it never races a running loop. */

@@ -161,6 +161,28 @@ as a failure: every list that answers a machine's report ends in a branch with n
 agent that fails leaves the card resting in its queue with the failure recorded; no machine
 failure anywhere becomes a person's hold.
 
+A seat whose run ends on an environment fault raises `ENVIRONMENT_FAULT` instead, from any lane
+of appraisal, carving, work, review, or the panel. An environment fault is a failure of the place
+the work ran, not of the work: the host ran out of disk (`ENOSPC`) or memory (`ENOMEM`), or a stop
+signal the driver did not send, a person's most likely, ended the agent. The work was not judged,
+which is a different fact from judged and failed, so nothing is counted, dead-lettered, or held:
+appraisal returns to A1, carving to C1, work to B1 with no pull request open and to D3 with one (the
+next run resumes a driverless pull request through Proving), review to E1, and the panel gives its
+round back and re-derives the card from its facts. The claim is released and the lane cleared for
+the rerun (commits no remote has are kept under `refs/loop/rescued/`). A host fault also sends the
+line `PAUSE`, and the burndown takes the issue up again in the same run once the line is resumed; a
+person's stop is rerun by the next run, not this one, so the work they stopped does not start again
+at once.
+
+The one exception is a host fault the work itself causes, such as tests that fill the disk. The
+first host fault on an issue leaves the marker `loop/environment-fault: <code>@<seat>`; the same code again
+on its rerun, with the marker still on the issue, is the work's doing, and the driver raises
+`AGENT_FAILED` for it, with a reason that says the work reproduced the fault, and takes the marker
+off. The seat that hit the fault takes the marker off too when it next finishes without one, so
+only a repeat before that seat gets past the faulted point is charged. A person's stop is never charged. The driver's own kills (the cap, a stop, a lost lease) and a
+crash's signals stay `AGENT_FAILED` or the stop they are; see
+`fix-github-issue/references/pipeline.md`.
+
 Only F5 holds the merge lock; F2, F3, and F4 run outside it so one stale branch does not stall
 the queue, and F5 re-checks freshness on re-entry.
 

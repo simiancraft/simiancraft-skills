@@ -52,10 +52,12 @@ instead of it. Like the coder, it never chases the base itself.
 `lib/prove.ts` exports `runProve(ctx, issue, cwd, coded, brief)`. It runs the seat and returns its
 answer, or `failed` when the answer cannot be believed: a crash, a kill at the cap, an unknown
 verdict, a `proved` that names no pull request or is pinned to a head other than the lane's, or an
-`unprovable` that tells the coder nothing to fix. The control file is `loop-proof.json`. The
-driver deletes the coder's `loop-code.json` before the prover starts; when `loop-proof.json` is
-missing and `loop-code.json` exists after the turn, the failure says the prover answered in the
-coder's file. That answer is not read.
+`unprovable` that tells the coder nothing to fix. A prover whose run ends on an environment fault (a
+full disk, exhausted memory, or a person's `kill`) is not `failed`: `runProve` throws an
+`EnvironmentFault`, and the pipeline counts no attempt and reruns the work later. The control file
+is `loop-proof.json`. The driver deletes the coder's `loop-code.json` before the prover starts;
+when `loop-proof.json` is missing and `loop-code.json` exists after the turn, the failure says the
+prover answered in the coder's file. That answer is not read.
 
 ## Hard dependencies
 

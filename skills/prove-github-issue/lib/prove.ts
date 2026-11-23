@@ -8,7 +8,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { agentCapMs, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { agentCapMs, logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { type GateEnvironment, gateCommand, gateEnvironment, type ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE, PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
@@ -123,7 +123,10 @@ export async function runProve(
     GATE: gateText(ctx.project, head, coded.gated),
     CI_COVERAGE: ciCoverageText(ctx.project),
   });
-  const { logPath, exitCode, notRun, timedOut } = await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt);
+  const run = await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt);
+  // A prover stopped from outside, or one that failed on the host, did not fail: the pipeline
+  // settles it as an environment fault, counting nothing.
+  const { logPath, exitCode, notRun, timedOut } = refuseEnvironmentFault(run, 'prover', issue.number);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the prover was not run' };
   if (exitCode !== 0) {
     return fail(
