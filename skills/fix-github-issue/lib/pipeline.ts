@@ -25,7 +25,7 @@ import { followBase } from './follow-base.ts';
 import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
-import { dirtyPaths, inFlight, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
+import { dirtyPaths, heldLane, inFlight, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, rateLimitedIn, rateLimitResetAt, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { recordMerge } from './record-merge.ts';
@@ -2005,22 +2005,6 @@ export async function fixIssue(
     // learns to treat the main checkout as a valid agent working directory.
     open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number, () => heldLane(ctx, issue.number))),
   }, async (cwd) => await workIssue(ctx, issue, cwd, maxPoints, ceiling, say));
-}
-
-/**
- * Whether the issue's lane is one the loop's own hold for a person kept: the newest stop on its
- * thread is that hold (a held proof, or an outside stop that waits on a person), and a hold retires
- * its lane like any exit, which keeps a lane holding the seat's uncommitted work. That work is the
- * issue's own, and the pickup after the hold continues on it rather than dead-lettering it. A thread
- * that cannot be read is not that knowledge.
- */
-export function heldLane(ctx: Context, issue: number): boolean {
-  try {
-    return loopHoldStands(standingStop(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin));
-  } catch (error) {
-    if (error instanceof RunStopping || isStopping()) throw error;
-    return false;
-  }
 }
 
 /** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */

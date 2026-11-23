@@ -15,8 +15,8 @@ import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
-import { dirtyPaths, inFlight, rescueRef } from './lane.ts';
-import { type FixOutcome, heldLane, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
+import { dirtyPaths, heldLane, inFlight, judgeLane, rescueRef } from './lane.ts';
+import { type FixOutcome, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
@@ -211,42 +211,7 @@ export function claimHolder(ctx: Context, issue: number, cache: Map<number, stri
   return cache.get(issue) ?? null;
 }
 
-/**
- * `held-at-head`: a lane at the pull request's head whose uncommitted work the loop's own hold for a
- * person kept (`heldLane`); it is the issue's own, and the pickup continues on it.
- */
-export type LaneJudgement =
-  | { kind: 'no-lane' | 'clean-at-head' | 'held-at-head' }
-  | { kind: 'dirty' | 'off-head'; reason: string }
-  | { kind: 'unreadable'; reason: string };
-
-/** Judge local work before asking the tracker, without publishing or changing the lane. */
-export function judgeLane(ctx: Context, issue: number, readHead: () => string): LaneJudgement {
-  const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
-  if (!existsSync(dir)) return { kind: 'no-lane' };
-  let head: string;
-  let held = false;
-  let reading = 'git status --porcelain';
-  try {
-    const dirty = dirtyPaths(ctx, dir);
-    held = dirty.length > 0 && heldLane(ctx, issue);
-    if (dirty.length > 0 && !held) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
-    reading = 'git rev-parse HEAD';
-    head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
-  } catch (error) {
-    if (error instanceof RunStopping || isStopping()) throw error;
-    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: ${reading} failed (${(error as Error).message})` };
-  }
-  let remoteHead: string;
-  try {
-    remoteHead = readHead();
-  } catch (error) {
-    if (error instanceof RunStopping || isStopping()) throw error;
-    return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
-  }
-  if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
-  return { kind: held ? 'held-at-head' : 'clean-at-head' };
-}
+export { judgeLane, type LaneJudgement } from './lane.ts';
 
 /**
  * Pull requests a dead run left behind, paired with the worktree and verdict to resume them from.

@@ -1044,9 +1044,10 @@ it('claim and head read errors during a stop propagate even without RunStopping'
     dirtyPaths: () => [], sh: () => 'head', trackerIo: () => ({}),
     readTree: () => { throw stop; }, liveClaim: noop,
   };
-  const api = loadFunctions('../../fix-github-issue/lib/resume.ts', ['claimHolder', 'judgeLane'], deps);
+  const api = loadFunctions('../../fix-github-issue/lib/resume.ts', ['claimHolder'], deps);
+  const lane = loadFunctions('../../fix-github-issue/lib/lane.ts', ['judgeLane'], { ...deps, heldLane: () => false });
   expect(() => api.claimHolder({}, 92, new Map())).toThrow(stop);
-  expect(() => api.judgeLane({ project: {} }, 92, () => { throw stop; })).toThrow(stop);
+  expect(() => lane.judgeLane({ project: {} }, 92, () => { throw stop; })).toThrow(stop);
 });
 
 

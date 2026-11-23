@@ -10,8 +10,10 @@ import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Context } from './context.ts';
 import { CONTROL_FILES, inLaneScratch } from './control-files.ts';
+import { trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { acquirePidLock } from './pid-lock.ts';
-import { sh } from './shell.ts';
+import { isStopping, RunStopping, sh } from './shell.ts';
+import { loopHoldStands, standingStop } from './stop-record.ts';
 
 /** Porcelain status of a worktree, minus the loop's own control files and a seat's untracked in-lane scratch. */
 export function dirtyPaths(ctx: Context, cwd: string): string[] {
@@ -299,4 +301,57 @@ export function assertNotMainCheckout(ctx: Context, cwd: string, role: string): 
   if (resolve(cwd) === resolve(ctx.repoRoot)) {
     throw new Error(`refusing to run ${role} in the main checkout (${ctx.repoRoot}); it must run in a worktree`);
   }
+}
+
+/**
+ * Whether the issue's lane is one the loop's own hold for a person kept: the newest stop on its
+ * thread is that hold (a held proof, or an outside stop that waits on a person), and a hold retires
+ * its lane like any exit, which keeps a lane holding the seat's uncommitted work. That work is the
+ * issue's own, and the pickup after the hold continues on it rather than dead-lettering it. A thread
+ * that cannot be read is not that knowledge.
+ */
+export function heldLane(ctx: Context, issue: number): boolean {
+  try {
+    return loopHoldStands(standingStop(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin));
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return false;
+  }
+}
+
+/**
+ * `held-at-head`: a lane at the pull request's head whose uncommitted work the loop's own hold for a
+ * person kept (`heldLane`); it is the issue's own, and the pickup continues on it.
+ */
+export type LaneJudgement =
+  | { kind: 'no-lane' | 'clean-at-head' | 'held-at-head' }
+  | { kind: 'dirty' | 'off-head'; reason: string }
+  | { kind: 'unreadable'; reason: string };
+
+/** Judge local work before asking the tracker, without publishing or changing the lane. */
+export function judgeLane(ctx: Context, issue: number, readHead: () => string): LaneJudgement {
+  const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(dir)) return { kind: 'no-lane' };
+  let head: string;
+  let held = false;
+  let reading = 'git status --porcelain';
+  try {
+    const dirty = dirtyPaths(ctx, dir);
+    held = dirty.length > 0 && heldLane(ctx, issue);
+    if (dirty.length > 0 && !held) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
+    reading = 'git rev-parse HEAD';
+    head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: ${reading} failed (${(error as Error).message})` };
+  }
+  let remoteHead: string;
+  try {
+    remoteHead = readHead();
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
+  }
+  if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
+  return { kind: held ? 'held-at-head' : 'clean-at-head' };
 }
