@@ -9,7 +9,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { agentCapMs, logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
-import type { ProjectConfig } from '../../fix-github-issue/lib/config.ts';
+import { type GateEnvironment, gateCommand, gateEnvironment, type ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE, PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
@@ -28,8 +28,11 @@ export type ProveResult = {
   branch?: string;
   /** The head the proof is pinned to. For `proved`, the lane's head. */
   sha?: string;
-  /** The deciding command run at the lane head, passed through as the prover reports it. */
-  gateRun?: { command: string; sha: string; exitCode: number };
+  /**
+   * The deciding command run at the lane head, as the prover reports it. `environment` is the
+   * driver's: `ci-shaped` only when the recorded command is the one carrying the CI environment.
+   */
+  gateRun?: { command: string; sha: string; exitCode: number; environment?: GateEnvironment };
   /** For `unprovable`: what the coder must fix. */
   brief?: string;
   touches?: Touch[];
@@ -55,13 +58,27 @@ export function decidingCommand(project: ProjectConfig, head: string, gated: str
 /** Render commands directly: inserted template values are not expanded a second time. */
 export function gateText(project: ProjectConfig, head: string, gated: string): string {
   const command = decidingCommand(project, head, gated);
+  const check = gateCommand(project, project.checkCommand);
   if (command === null) {
-    return `The coder ran \`${project.checkCommand}\` on \`${gated}\`, the head you are proving. Its gate stands and CI is the second opinion; do not run it again.`;
+    return `The coder ran \`${check}\` on \`${gated}\`, the head you are proving. Its gate stands and CI is the second opinion; do not run it again.`;
   }
   const prerequisite = (!gated || head !== gated) && command !== project.checkCommand
-    ? ` Then run \`${project.checkCommand}\` first; the coder's gate no longer stands on this head.`
+    ? ` Then run \`${check}\` first; the coder's gate no longer stands on this head.`
     : '';
-  return `At the lane head \`${head}\`, run \`${project.installCommand}\`.${prerequisite} Then run the deciding command \`${command}\` on this head. If any run fails, return \`unprovable\` with what failed. Record only the deciding command in \`gateRun\`: command exactly as given, the full SHA it ran at, and the numeric exitCode.`;
+  const environment = gateEnvironment(project) === 'ci-shaped'
+    ? 'The gate commands carry the CI job\'s environment shape; run them exactly as given, and name the run `ci-shaped` beside its receipt.'
+    : 'The gate runs in this lane\'s environment, which may differ from the CI job\'s; name the run `lane` beside its receipt.';
+  return `At the lane head \`${head}\`, run \`${project.installCommand}\`.${prerequisite} Then run the deciding command \`${gateCommand(project, command)}\` on this head. If any run fails, return \`unprovable\` with what failed. Record only the deciding command in \`gateRun\`: command exactly as given, the full SHA it ran at, and the numeric exitCode. ${environment}`;
+}
+
+/**
+ * The environment a recorded gate run ran in, as the driver reads it from the command: the CI
+ * shape only when the command is the one that carries it, whatever the prover claims.
+ */
+export function gateRunEnvironment(project: ProjectConfig, command: unknown): GateEnvironment {
+  if (gateEnvironment(project) === 'lane' || typeof command !== 'string') return 'lane';
+  const shaped = [project.ciCommand, project.checkCommand].filter((c): c is string => c !== undefined).map((c) => gateCommand(project, c));
+  return shaped.includes(command) ? 'ci-shaped' : 'lane';
 }
 
 function ciCoverageText(project: ProjectConfig): string {
@@ -126,6 +143,7 @@ export async function runProve(
   if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
     return fail(issue.number, `prover verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}`);
   }
+  if (result.gateRun && typeof result.gateRun === 'object') result.gateRun.environment = gateRunEnvironment(ctx.project, result.gateRun.command);
   result.touches = Array.isArray(result.touches) ? result.touches.filter((t) => TOUCHES.includes(t)) : undefined;
   if (result.verdict === 'proved') {
     if (!Number.isInteger(Number(result.pr)) || Number(result.pr) <= 0) return fail(issue.number, `proved without naming the pull request; log ends: ${logTail(logPath)}`);

@@ -5,6 +5,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gateCommand, gateEnvironment } from './config.ts';
 import type { Context } from './context.ts';
 import { APPRAISAL_FILE, CARVING_FILE, CODE_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE, PANEL_JUDGMENT_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PROOF_FILE, REVIEW_FILE, VERDICT_FILE } from './control-files.ts';
 import { ENGINES, isFixture, type Seat, seatLabel } from './engines.ts';
@@ -178,7 +179,8 @@ export function renderTemplate(ctx: Context, template: string, vars: Record<stri
     REPO: ctx.project.repo,
     BASE_BRANCH: ctx.project.baseBranch,
     EVIDENCE_BRANCH: ctx.project.evidenceBranch,
-    CHECK_COMMAND: ctx.project.checkCommand,
+    CHECK_COMMAND: gateCommand(ctx.project, ctx.project.checkCommand),
+    GATE_ENVIRONMENT: gateEnvironment(ctx.project),
     INSTALL_COMMAND: ctx.project.installCommand,
     CONVENTION_DOCS: ctx.project.conventionDocs.map((d) => `\`${d}\``).join(', '),
     SIZING_SCALE: ctx.project.sizingScale,

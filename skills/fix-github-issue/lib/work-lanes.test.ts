@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
-import { decidingCommand, gateText, runProve } from '../../prove-github-issue/lib/prove.ts';
-import { agentCapMs } from './agent.ts';
+import { decidingCommand, gateRunEnvironment, gateText, runProve } from '../../prove-github-issue/lib/prove.ts';
+import { agentCapMs, renderTemplate } from './agent.ts';
 import { ENGINES } from './engines.ts';
-import { ciCommandFault, type ProjectConfig } from './config.ts';
+import { ciCommandFault, ciEnvironmentFault, gateCommand, gateEnvironment, type ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
 import { placeWork } from './pipeline.ts';
 import { codedComment, latestStep, unprovedComment } from './work-markers.ts';
@@ -405,7 +405,7 @@ describe("the prover's answer is believed only on the head it was given", () => 
       try {
         const result = await runProve(ctx, issue(n), dir, { branch, gated: '' }, { kind: 'handoff', text: 'h' });
         expect(result.verdict).toBe('proved');
-        expect(result.gateRun).toEqual(gateRun);
+        expect(result.gateRun).toEqual({ ...gateRun, environment: 'lane' });
         expect(prompt).toContain(gateText(ctx.project, sha, ''));
         expect(prompt).not.toMatch(/\{\{[A-Z_]+\}\}/);
         if (ciCommand) {
@@ -502,4 +502,75 @@ describe('the lane prompts', () => {
     expect(prompts.code).not.toContain('prove-work-on-github');
     expect(prompts.prove).toContain('You push nothing to `{{BRANCH}}`');
   });
+});
+
+describe("the gate runs in the CI job's environment shape when one is configured", () => {
+  const CI_ENV = { SST_RESOURCE_App: '{"name":"app","stage":"test"}', STAGE: "it's test" };
+  const shaped = { ...PROJECT, checkCommand: 'bun run check', ciCommand: 'bun run ci', ciEnvironment: CI_ENV } as ProjectConfig;
+
+  it('allows an omitted environment and rejects unusable supplied values', () => {
+    expect(ciEnvironmentFault(undefined)).toBeNull();
+    expect(ciEnvironmentFault({})).toBeNull();
+    expect(ciEnvironmentFault(CI_ENV)).toBeNull();
+    for (const value of [null, 'STAGE=test', ['STAGE=test'], { STAGE: 1 }, { 'NOT-A-NAME': 'x' }, { '1STAGE': 'x' }, { 'A B': 'x' }]) {
+      expect(ciEnvironmentFault(value)).toContain('project.ciEnvironment');
+    }
+  });
+
+  it('leaves the command and the environment as the lane when nothing is configured', () => {
+    expect(gateEnvironment(PROJECT)).toBe('lane');
+    expect(gateEnvironment({ ...PROJECT, ciEnvironment: {} })).toBe('lane');
+    expect(gateCommand(PROJECT, 'bun run check')).toBe('bun run check');
+  });
+
+  it('exports every variable, quoted, to every part of a compound command and nowhere else', () => {
+    expect(gateEnvironment(shaped)).toBe('ci-shaped');
+    const command = gateCommand(shaped, 'printf "%s|" "$STAGE" && printf "%s" "$SST_RESOURCE_App"');
+    const run = Bun.spawnSync(['sh', '-c', `${command}; printf "|%s" "\${STAGE:-unset}"`], { env: { PATH: process.env.PATH ?? '' }, stdout: 'pipe' });
+    expect(run.stdout.toString()).toBe(`it's test|${CI_ENV.SST_RESOURCE_App}|unset`);
+  });
+
+  it("hands the prover the CI-shaped deciding command and prerequisite, and names the environment", () => {
+    const head = 'a'.repeat(40);
+    const text = gateText(shaped, head, 'b'.repeat(40));
+    expect(text).toContain(`deciding command \`${gateCommand(shaped, 'bun run ci')}\``);
+    expect(text).toContain(`run \`${gateCommand(shaped, 'bun run check')}\` first`);
+    expect(text).toContain('`ci-shaped`');
+    expect(text).not.toContain('`lane`');
+    expect(gateText({ ...PROJECT, checkCommand: 'bun run check' }, head, '')).toContain('name the run `lane`');
+  });
+
+  it('gives the coder and reviewer the CI-shaped check command and its environment name', () => {
+    const ctx = context(new FakeTracker(BOT), '');
+    ctx.project = shaped;
+    expect(renderTemplate(ctx, '{{CHECK_COMMAND}} / {{GATE_ENVIRONMENT}}', {})).toBe(`${gateCommand(shaped, 'bun run check')} / ci-shaped`);
+    ctx.project = PROJECT;
+    expect(renderTemplate(ctx, '{{CHECK_COMMAND}} / {{GATE_ENVIRONMENT}}', {})).toBe('true / lane');
+  });
+
+  it('names a recorded run ci-shaped only when its command carries the CI environment', () => {
+    expect(gateRunEnvironment(shaped, gateCommand(shaped, 'bun run ci'))).toBe('ci-shaped');
+    expect(gateRunEnvironment(shaped, gateCommand(shaped, 'bun run check'))).toBe('ci-shaped');
+    expect(gateRunEnvironment(shaped, 'bun run ci')).toBe('lane');
+    expect(gateRunEnvironment(shaped, undefined)).toBe('lane');
+    expect(gateRunEnvironment(PROJECT, 'true')).toBe('lane');
+  });
+
+  for (const [n, recorded, expected] of [
+    [60, true, 'ci-shaped'],
+    [61, false, 'lane'],
+  ] as const) {
+    it(`stamps the proof's gateRun ${expected} from the command the prover recorded`, async () => {
+      const dir = lane(n);
+      const branch = `fix/shaped-${n}`;
+      const sha = code(dir, branch);
+      const command = recorded ? gateCommand(shaped, 'bun run ci') : 'bun run ci';
+      const answer = answerFile(`proved-${n}`, { issue: n, verdict: 'proved', reason: 'proved', pr: n, sha, gateRun: { command, sha, exitCode: 0, environment: 'ci-shaped' } });
+      const ctx = context(new FakeTracker(BOT), answer);
+      ctx.project = shaped;
+      const result = await runProve(ctx, issue(n), dir, { branch, gated: '' }, { kind: 'handoff', text: 'h' });
+      expect(result.verdict).toBe('proved');
+      expect(result.gateRun).toEqual({ command, sha, exitCode: 0, environment: expected });
+    });
+  }
 });

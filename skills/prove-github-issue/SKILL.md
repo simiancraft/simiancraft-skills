@@ -39,7 +39,11 @@ when the head differs from the coder's gated commit, or that commit is unknown; 
 head the coder's gate stands and is not rerun. Before an owed run it runs `installCommand`; on a
 changed or unknown gated head it runs `checkCommand` first, even with `ciCommand` configured.
 It records only the deciding command in `gateRun`, with the exact command, full SHA, and numeric
-exit code. A failing run is `unprovable`. Focused evidence comes in addition to that run, never
+exit code. With `project.ciEnvironment` configured, every gate command it is handed runs in a
+subshell exporting those variables, so the run has the CI job's environment shape rather than the
+lane's; the driver stamps `gateRun.environment` as `ci-shaped` only when the recorded command is the
+one carrying that environment, and `lane` otherwise, and the prover names the same word beside
+the run's receipt. A failing run is `unprovable`. Focused evidence comes in addition to that run, never
 instead of it. Like the coder, it never chases the base itself.
 
 ## How the driver checks the answer
