@@ -84,6 +84,31 @@ export type FloorOptions = {
   lineageOf?: LineageOf;
 };
 
+/** An open incident as the tracker reports it now; undefined when the tracker could not be read. */
+type IncidentState = { number: number; withAPerson: boolean } | null | undefined;
+
+/**
+ * Who still needs a person, judged at render time rather than when the incident was filed: an item
+ * stays only while its newest ledger verdict is still wrong and its incident is still open with a
+ * person. An item that walked right, or whose incident closed or went back to the pipeline, drops
+ * out. A tracker that cannot be read keeps the item: an unconfirmed resolution is not one.
+ */
+export function stillWithAPerson(
+  owned: Iterable<string>,
+  latest: Map<string, LedgerEntry>,
+  readIncident: (itemId: string) => IncidentState,
+): Array<{ itemId: string; entry: LedgerEntry; incident: number | null }> {
+  const kept: Array<{ itemId: string; entry: LedgerEntry; incident: number | null }> = [];
+  for (const itemId of owned) {
+    const entry = latest.get(itemId);
+    if (!entry || !REPAIR.has(entry.verdict)) continue;
+    const incident = readIncident(itemId);
+    if (incident === null || incident?.withAPerson === false) continue;
+    kept.push({ itemId, entry, incident: incident?.number ?? null });
+  }
+  return kept;
+}
+
 type AgentVerdictFile = { entries: Array<{ itemId: string; rung: string; verdict: string; reason: string; evidence?: string; sibling?: unknown }> };
 
 /** The reason the floor writes when it pauses the line; a pause without this prefix is a person's. */
@@ -426,6 +451,7 @@ export class Floor {
     // walk has cleared is still wrong. A rehearsal writes no ledger, so it answers for itself.
     this.lastWrong = this.rehearsal ? wrong.length > 0 : this.wrongNow().length > 0;
 
+    if (!this.rehearsal) this.refreshOwnership();
     const stillPending = pending([...items.values()], readLedger(this.o.dir)).length;
     const readout = this.readout(entries, items, incidents, health, notes, stillPending);
     const news = entries.some((e) => e.itemId !== LIVENESS_ITEM) || before.get(LIVENESS_ITEM)?.verdict !== live.verdict || notes.length > 0;
@@ -567,6 +593,30 @@ export class Floor {
     }
   }
 
+  /**
+   * Re-reads who owns each item a person was last seen owning, from the ledger and the tracker as
+   * they stand now, so the readout and the drain never act on an incident state cached when it was
+   * filed.
+   */
+  private refreshOwnership(): void {
+    const latest = latestByItem(readLedger(this.o.dir));
+    const read = (itemId: string): IncidentState => {
+      try {
+        return openIncidentFor(this.o.ctx, itemId);
+      } catch {
+        return undefined;
+      }
+    };
+    const kept = stillWithAPerson(this.withAPerson, latest, read);
+    const keep = new Set(kept.map((k) => k.itemId));
+    for (const itemId of [...this.withAPerson]) {
+      if (keep.has(itemId)) continue;
+      this.withAPerson.delete(itemId);
+      this.incidentOf.delete(itemId);
+    }
+    for (const { itemId, incident } of kept) if (incident !== null) this.incidentOf.set(itemId, incident);
+  }
+
   /** Where an item's issue sits in a carved trunk, read once per walk; null without an issue or a readable one. */
   private lineage(item: ListItem): Lineage | null {
     const issue = item.ref?.issue;
@@ -649,9 +699,11 @@ export class Floor {
       if (incident) pendingLines.push(`${text}; incident #${incident.issue}: ${incident.outcome}, walked again next time`);
       else headsUp.push(text);
     }
+    // Already re-read against the ledger and the tracker this walk (refreshOwnership).
+    const latest = latestByItem(readLedger(this.o.dir));
     for (const itemId of this.withAPerson) {
       const issue = this.incidentOf.get(itemId);
-      waiting.push(`${label(itemId)} is still wrong and incident ${issue ? `#${issue}` : '(see floor/incident)'} is parked for you: fix it, close it, or lift its label to hand it back`);
+      waiting.push(`${label(itemId)} is still ${latest.get(itemId)?.verdict ?? 'wrong'} and incident ${issue ? `#${issue}` : '(see floor/incident)'} is parked for you: fix it, close it, or lift its label to hand it back`);
     }
     if (this.ownPause()) headsUp.push('the merge line is paused until a walk finds the floor right again');
     if (stillPending > 0) pendingLines.push(`${stillPending} item(s) on the floor still owed a verdict`);

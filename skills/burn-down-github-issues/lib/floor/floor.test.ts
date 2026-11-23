@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
-import { Floor, FLOOR_PAUSE } from './floor.ts';
-import { appendEntry, appendItem, readLedger, readList } from './ledger.ts';
+import { Floor, FLOOR_PAUSE, stillWithAPerson } from './floor.ts';
+import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
 import { type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
 
 let scratch: string;
@@ -310,5 +310,54 @@ describe('owedTo and the lineage text', () => {
     expect(text).toContain('carved from trunk #9 (trunk)');
     expect(text).toContain('- #11 sibling');
     expect(text).toContain('Acceptance: the sibling holds.');
+  });
+});
+
+describe('"Needs you" is read fresh at render time', () => {
+  const at = (verdict: LedgerEntry['verdict'], itemId = 'pull-request:7'): LedgerEntry => ({ itemId, checkedAt: '2026-11-18T20:10:00Z', rung: 'exercise', verdict, reason: 'r' });
+  /** Marks an item as owned by a person, as a walk that found its incident parked would. */
+  const own = (floor: Floor, itemId: string, incident: number) => {
+    const inner = floor as unknown as { withAPerson: Set<string>; incidentOf: Map<string, number> };
+    inner.withAPerson.add(itemId);
+    inner.incidentOf.set(itemId, incident);
+  };
+
+  it('drops an item whose newest ledger verdict turned present', async () => {
+    const { floor, readouts, dir } = floorFor('needs-you-resolved');
+    appendItem(dir, { id: 'pull-request:7', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 7, sha: 'abc' } });
+    appendEntry(dir, at('absent'));
+    own(floor, 'pull-request:7', 41);
+    appendEntry(dir, at('present'));
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).not.toContain('parked for you');
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+  });
+
+  it('keeps an item still wrong when the tracker cannot confirm its incident closed', async () => {
+    const { floor, readouts, dir } = floorFor('needs-you-wrong');
+    appendItem(dir, { id: 'pull-request:8', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 8, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:8'));
+    own(floor, 'pull-request:8', 42);
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('PR #8 move the page is still absent and incident #42 is parked for you');
+  });
+
+  it('follows the incident as the tracker reports it now', () => {
+    const latest = latestByItem([at('absent', 'a'), at('absent', 'b'), at('absent', 'c'), at('absent', 'd'), at('absent', 'e'), at('present', 'e')]);
+    const tracker: Record<string, ReturnType<Parameters<typeof stillWithAPerson>[2]>> = {
+      a: { number: 1, withAPerson: true }, // still parked
+      b: null, // closed
+      c: { number: 3, withAPerson: false }, // its label lifted: back with the pipeline
+      d: undefined, // unreadable
+      e: { number: 5, withAPerson: true }, // open, but walked right since
+    };
+    const reads: string[] = [];
+    const kept = stillWithAPerson(['a', 'b', 'c', 'd', 'e'], latest, (id) => {
+      reads.push(id);
+      return tracker[id];
+    });
+    expect(kept.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
+    // An item the ledger already shows right costs no tracker read.
+    expect(reads).not.toContain('e');
   });
 });
