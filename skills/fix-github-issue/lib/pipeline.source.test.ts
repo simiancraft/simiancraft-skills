@@ -49,7 +49,7 @@ describe('a person landing past the merge boundary', () => {
     expect(fix).toContain('LAND ? null : OBJECTION');
   });
   it('continues a held proof on its open pull request at Proving, with or without --redrive', () => {
-    expect(fix).toContain('REDRIVE || LAND || PROOF_HELD ? PULLS.find');
-    expect(fix).toContain('const OBJECTION: string | null = PROOF_HELD ? null :');
+    expect(fix).toContain('REDRIVE || LAND || LOOP_HOLD ? PULLS.find');
+    expect(fix).toContain("const OBJECTION: string | null = STANDING?.kind === 'proof-held' ? null :");
   });
 });

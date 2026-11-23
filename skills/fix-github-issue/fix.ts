@@ -40,7 +40,7 @@ import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from 
 import { clearCount, ensureLabels, isDlqLabel, liftDlq, recordRedrive, redriveCount } from './lib/labels.ts';
 import { readLandBlocker } from './lib/land.ts';
 import { fixIssue, type Issue, redriveIssue } from './lib/pipeline.ts';
-import { standingStop } from './lib/stop-record.ts';
+import { loopHoldStands, objectionAfter, standingStop } from './lib/stop-record.ts';
 import { guardCli } from './lib/cli.ts';
 import { log, mutate, sh, step } from './lib/shell.ts';
 import { installStopHandler } from './lib/stop.ts';
@@ -217,7 +217,8 @@ const STANDING = (() => {
   const comments = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | { author: .author.login, body, createdAt }]'])) as Array<{ author: string; body: string; createdAt: string }>;
   return standingStop(comments, ctx.botLogin, inHand?.createdAt);
 })();
-const PROOF_HELD = STANDING?.kind === 'proof-held';
+/** The loop's own hold stands: a held proof, or an outside stop that waited on a person. A redrive lifts it, and the pickup continues the pull request. */
+const LOOP_HOLD = loopHoldStands(STANDING);
 
 // An open pull request to continue: named, or the newest open one that references the issue.
 const RESUME_PR = (() => {
@@ -235,7 +236,7 @@ const RESUME_PR = (() => {
     }
     return found;
   }
-  return REDRIVE || LAND || PROOF_HELD ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
+  return REDRIVE || LAND || LOOP_HOLD ? PULLS.find((pr) => pr.state === 'OPEN' && !pr.merged) : undefined;
 })();
 
 // `--land` waives the merge boundary and nothing else, so everything it needs is checked before
@@ -311,10 +312,10 @@ const LIFT = (() => {
       mutate(ctx, `lift loop/parked on #${ISSUE_NUMBER} (redrive)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'loop/parked']);
       lifted.push('loop/parked');
     }
-    // A held proof is the one `needs-human` a redrive lifts: the code is done, and the person
-    // running this is the one the prover asked for. Any other `needs-human` stays a person's to lift.
-    if (PROOF_HELD && labels.some((l) => l.name === 'needs-human')) {
-      mutate(ctx, `lift needs-human on #${ISSUE_NUMBER} (redrive of a held proof)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'needs-human']);
+    // The loop's own hold is the one `needs-human` a redrive lifts: the person running this is the
+    // one it asked for. Any other `needs-human` stays a person's to lift.
+    if (LOOP_HOLD && labels.some((l) => l.name === 'needs-human')) {
+      mutate(ctx, `lift needs-human on #${ISSUE_NUMBER} (redrive of the loop's hold)`, ['gh', 'issue', 'edit', String(ISSUE_NUMBER), '--remove-label', 'needs-human']);
       lifted.push('needs-human');
     }
     if (lifted.length > 0) recordRedrive(ctx, ISSUE_NUMBER, redriveCount(labels));
@@ -323,18 +324,18 @@ const LIFT = (() => {
     if (RESUME_PR && !DRY_RUN) {
       const held = sh(ctx, ['gh', 'pr', 'view', String(RESUME_PR.number), '--json', 'labels', '--jq', '.labels[].name'])
         .split('\n')
-        .filter((name) => name === 'loop/parked' || isDlqLabel(name) || (PROOF_HELD && name === 'needs-human'));
+        .filter((name) => name === 'loop/parked' || isDlqLabel(name) || (LOOP_HOLD && name === 'needs-human'));
       for (const name of held) mutate(ctx, `lift ${name} on PR #${RESUME_PR.number} (redrive)`, ['gh', 'pr', 'edit', String(RESUME_PR.number), '--remove-label', name]);
     }
   };
 })();
-if (REDRIVE) issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !(PROOF_HELD && l.name === 'needs-human') && !/^loop\/(reviews|attempts):/.test(l.name));
+if (REDRIVE) issue.labels = issue.labels.filter((l) => !isDlqLabel(l.name) && l.name !== 'loop/parked' && !(LOOP_HOLD && l.name === 'needs-human') && !/^loop\/(reviews|attempts):/.test(l.name));
 
 /**
  * The objection that stopped the work last time: the newest dead-letter or park comment on the
  * thread. A held proof is none, so its pull request goes to Proving, not to a coder.
  */
-const OBJECTION: string | null = PROOF_HELD ? null : (STANDING?.kind === 'objection' ? STANDING.text.trim() : '') || 'The pull request was stopped before it could land; finish it and re-prove it.';
+const OBJECTION: string | null = STANDING?.kind === 'proof-held' ? null : objectionAfter(STANDING) || 'The pull request was stopped before it could land; finish it and re-prove it.';
 
 // A landing has no objection to answer: the work was approved and only the boundary stopped it,
 // so the pull request goes to Proving and review, not back to a coder.

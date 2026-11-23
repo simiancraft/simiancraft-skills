@@ -15,7 +15,9 @@
 import { readFileSync } from 'node:fs';
 import type { Context } from './context.ts';
 import { ensureLabel } from './labels.ts';
+import { loopNote } from './note.ts';
 import { mutate } from './shell.ts';
+import { stopComment } from './stop-record.ts';
 
 /** The host conditions, by errno code: the machine's, never the work's, the first time. */
 export const HOST_FAULT_KINDS = ['ENOSPC', 'ENOMEM'] as const;
@@ -161,23 +163,104 @@ export function clearFaultMarkers(ctx: Context, issue: number, role: string, say
 }
 
 /**
- * What a settled fault came to. `free`: the work was not judged; nothing is counted and the work
- * is rerun later. `charged`: the same host fault came back on the rerun, so the work reproduced it,
- * and the caller settles it as an ordinary failure with `reason`.
+ * An outside stop: the work stopped for a reason the change did not cause. Its cause decides what
+ * follows. `host` (a full disk or exhausted memory), `signal` (a stop this driver did not send), and
+ * `transport` (the tracker unreachable) end a run that judged nothing, and the work reruns. `base`
+ * (a gate that fails on the untouched base) and `needs-person` (a seat that needs access, a
+ * credential, or a record it may not touch) end a run that cannot go on without a person, and the
+ * work waits on one with its pull request held open. Whatever the cause, nothing is counted, no
+ * pull request is closed, and the stop is recorded on the issue (`loop-stop kind=outside`).
+ */
+export type OutsideCause = 'host' | 'signal' | 'transport' | 'base' | 'needs-person';
+
+/** The causes a person answers; every other cause reruns the work. */
+export const WAITS_ON_A_PERSON: readonly OutsideCause[] = ['base', 'needs-person'];
+
+/** The cause behind a fault a run ended on. */
+export function causeOf(fault: Fault): OutsideCause {
+  return isHostFault(fault) ? 'host' : 'signal';
+}
+
+/**
+ * A stop to settle: a fault a run ended on (its cause follows from it), or a seat's word that the
+ * work needs a person, with the seat and its reason.
+ */
+export type OutsideStop = { fault: Fault } | { cause: 'base' | 'needs-person'; seat: 'coder' | 'prover'; reason: string };
+
+/**
+ * What a settled stop came to. `free`: the work was not judged; nothing is counted, and it reruns
+ * or waits on a person by its cause. `charged`: the same host fault came back on the rerun, so the
+ * work reproduced it, and the caller settles it as an ordinary failure with `reason`.
  */
 export type FaultSettlement = { charged: false; reason: string } | { charged: true; reason: string };
 
+/** Where a held pull request stands while it waits, and the record the hold leaves instead of the default one. */
+export type HoldOptions = { pr?: number; continuation?: boolean; record?: string };
+
+/** Writes that only report a stop: a failure is logged, and the settlement stands without it. */
+function report(ctx: Context, say: (message: string) => void, description: string, argv: string[]): void {
+  try {
+    mutate(ctx, description, argv);
+  } catch (error) {
+    say(`could not ${description}: ${(error as Error).message.split('\n')[0]}`);
+  }
+}
+
 /**
- * The one place an environment fault is settled, whichever seat it came from. A host fault asks the
- * driver to pause the line (`onHostFault`), whether or not it is charged, since the host is in that
- * state either way. A person's stop is always free. A host fault is free the first time and leaves
- * its marker; the same kind again, with the marker on the issue, is charged and the marker comes off.
- * A marker that cannot be written is only logged: the fault stays free.
+ * The one place an outside stop is settled, whichever seat or driver met it.
+ *
+ * A fault: a host fault asks the driver to pause the line (`onHostFault`), charged or not, since the
+ * host is in that state either way; it is free the first time and leaves its marker
+ * (`loop/environment-fault: <code>@<seat>`), and the same kind again, with the marker on the issue,
+ * is charged and the marker comes off. A signal and a transport failure are always free. A free
+ * fault is recorded on the issue, and the work reruns.
+ *
+ * A seat's word that the work needs a person: the issue carries `needs-human`, and the pull request,
+ * when there is one, stays open with `needs-human` on it too and a pointer to the issue; a pull
+ * request this work was continuing goes back to draft. The record says why and how the hold comes
+ * off (`options.record` replaces the default words, as a held proof's own does).
  */
-export function settleEnvironmentFault(ctx: Context, issue: { number: number; labels: Array<{ name: string }> }, fault: Fault, where: string, say: (message: string) => void): FaultSettlement {
+export function settleOutsideStop(
+  ctx: Context,
+  issue: { number: number; labels: Array<{ name: string }> },
+  stop: OutsideStop,
+  where: string,
+  say: (message: string) => void,
+  options: HoldOptions = {},
+): FaultSettlement {
+  if ('fault' in stop) return settleFault(ctx, issue, stop.fault, where, say);
+  const { cause, seat, reason } = stop;
+  const { pr, continuation } = options;
+  const why = cause === 'base' ? 'a gate fails on the untouched base, which is not this change\'s to fix' : 'the work needs a person';
+  const body =
+    options.record ??
+    stopComment('outside', { cause, seat, pr }, [
+      `**Held for a person:** ${why}. ${pr ? `Pull request #${pr} stays open as a draft.` : 'Nothing was closed.'}`,
+      '',
+      reason.trim(),
+      '',
+      `Remove the \`needs-human\` label from this issue once that is resolved: the next burndown run continues ${pr ? `#${pr}` : 'the work'}, or run the fix command with \`--redrive\` to do it at once.`,
+    ].join('\n'));
+  // The record first, then the label that hides the issue from selection: a crash between the two
+  // leaves an issue that is still selectable, never one held without a reason on its thread.
+  mutate(ctx, `record the hold on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', body]);
+  mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+  if (pr) {
+    if (continuation) mutate(ctx, `return PR #${pr} to draft while it is held`, ['gh', 'pr', 'ready', String(pr), '--undo']);
+    mutate(ctx, `label PR #${pr} needs-human`, ['gh', 'pr', 'edit', String(pr), '--add-label', 'needs-human']);
+    const held = seat === 'prover' ? 'Held for a person while proving' : 'Held for a person';
+    mutate(ctx, `note the hold on PR #${pr}`, ['gh', 'pr', 'comment', String(pr), '--body', loopNote(`${held}; the reason and how to lift the hold are on #${issue.number}. Not to be merged while \`needs-human\` is on this pull request.`)]);
+  }
+  return { charged: false, reason: `${why}: ${reason}` };
+}
+
+function settleFault(ctx: Context, issue: { number: number; labels: Array<{ name: string }> }, fault: Fault, where: string, say: (message: string) => void): FaultSettlement {
   const what = `${describeFault(fault)}${where ? ` in ${where}` : ''} on #${issue.number}`;
+  const record = (rerun: string) =>
+    report(ctx, say, `record the outside stop on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('outside', { cause: causeOf(fault), seat: fault.role ? seatOf(fault.role) : undefined }, `**Stopped outside the change:** ${what}. The work was not judged and nothing was counted; ${rerun}.`)]);
   if (!isHostFault(fault)) {
     say(`${what}; the work was not judged: nothing is counted, and it is rerun on a later pass`);
+    record('it is rerun on a later pass');
     return { charged: false, reason: `${what}; not judged` };
   }
   try {
@@ -212,5 +295,6 @@ export function settleEnvironmentFault(ctx: Context, issue: { number: number; la
   } catch (error) {
     say(`could not mark the free fault (${(error as Error).message.split('\n')[0]}); a repeat will be free too`);
   }
+  record('it is rerun once the line is resumed');
   return { charged: false, reason: `${what}; not judged` };
 }

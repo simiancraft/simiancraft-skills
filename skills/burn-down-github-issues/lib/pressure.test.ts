@@ -7,6 +7,7 @@ import { Card, fire, laneKey, laneState, successors } from './simulate.ts';
 import { Carving, type CarvingDeps } from './carving.ts';
 import { LANES } from './lanes.ts';
 import { RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
@@ -18,7 +19,7 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
 import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
-import { heldComment, proofHeldComment, standingStop, stopComment, stopIn } from '../../fix-github-issue/lib/stop-record.ts';
+import { heldComment, loopHoldStands, objectionAfter, proofHeldComment, standingStop, stopComment, stopIn } from '../../fix-github-issue/lib/stop-record.ts';
 import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
@@ -221,7 +222,7 @@ describe('tracker and checks pressure', () => {
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
   // Every settlement asks whether the run is stopping, whether an environment fault ended it, and whether its lease stands; here none is in doubt.
   // Nor does any pull request carry a person's hold, unless a test says so.
-  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleEnvironmentFault: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  deps = { pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -1179,9 +1180,10 @@ describe('a prover that needs a person', () => {
     const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdProof'], {
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
       move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
-      proofHeldComment, heldComment, loopNote, liveGate: () => ({ ok: true }),
+      proofHeldComment, heldComment, loopNote, liveGate: () => ({ ok: true }), settleOutsideStop,
     });
-    const ctx = { ...context(new FakeTracker(bot)), dryRun: false, runId: 'run-1' };
+    // The settlement writes through the context's tracker, into the same list.
+    const ctx = { ...context(new FakeTracker(bot)), io: { write: (op: { argv: string[] }) => writes.push(op.argv) }, dryRun: false, runId: 'run-1' };
     const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat };
     return api.settleTerminalVerdict(ctx, { number: 1, title: 't', labels: [] }, result, 2, noop, pr).then((outcome: unknown) => ({ outcome, writes, lanes }));
   };
@@ -1234,7 +1236,7 @@ describe('a prover that needs a person', () => {
     ];
     let reads = 0;
     const api = loadFunctions('../loop.ts', ['lastObjection'], {
-      ctx: { botLogin: bot }, standingStop,
+      ctx: { botLogin: bot }, standingStop, objectionAfter,
       sh: () => (++reads === 1 ? '2026-09-20T00:00:00Z' : JSON.stringify(thread)),
     });
     expect(api.lastObjection(1, 7)).toBeNull();
@@ -1262,7 +1264,7 @@ describe('a prover that needs a person', () => {
     const reproofs: boolean[] = [];
     const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
-      trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, pullHolds: () => ['needs-human'],
+      trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, loopHoldStands, pullHolds: () => ['needs-human'],
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: (_ctx: unknown, argv: string[]) => (argv.includes('createdAt') ? opened : 'h'), catchUp: () => null,
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),

@@ -426,6 +426,24 @@ asymmetry between the first two is deliberate: a stop interrupts a worker that m
 while a cap kills one that, by definition, had not. A seat that ends on an environment fault, a
 person's signal among them, was not judged, and settles as `unjudged`; see below.
 
+### Outside stops
+
+An outside stop is a stop the change did not cause, settled in one place, `settleOutsideStop`
+(`lib/environment-fault.ts`), by its cause:
+
+| Cause | Where it comes from | What follows |
+|---|---|---|
+| `host` | a run ended on `ENOSPC` or `ENOMEM` | the line pauses; the work reruns (a repeat is charged; see below) |
+| `signal` | a stop signal the driver did not send | the work reruns on a later run |
+| `needs-person` | a prover's `needs-human` | the work waits on a person with its pull request held open |
+
+Whatever the cause, nothing is counted, no pull request is closed, and the stop is recorded on the
+issue as a `loop-stop kind=outside` record naming the cause and the seat (a held proof keeps its own
+`proof-held` record). A hold that waits on a person labels the issue and the pull request
+`needs-human`; a redrive, or the next run once a person lifts the label, takes it off both and
+continues the work. Through an outside stop the pickup reads the stop behind it, so a rerun answers
+the same objection it was answering.
+
 ### Environment faults
 
 An environment fault is a run that ended for a reason outside the work: the host ran out of disk or
@@ -442,9 +460,9 @@ Every seat that runs an agent refuses such a run with `refuseEnvironmentFault`, 
 `EnvironmentFault`: the coder, the prover, the reviewer, the answer's confirmer, the appraiser and
 its close confirmer, the carver and its confirmer, and the decision panel's seats. A thrown error
 with either errno code, from the driver's own writes or a command it ran, is the same fault. Each
-driver settles it through `settleEnvironmentFault`, the one place the rule lives:
+driver settles it through `settleOutsideStop`, the one place the rule lives:
 
-- Nothing is counted, dead-lettered, or held. The fix pipeline settles the lane as `unjudged`,
+- Nothing is counted, dead-lettered, or held, and the stop is recorded on the issue. The fix pipeline settles the lane as `unjudged`,
   releases the claim, and clears the lane so the rerun starts clean (commits no remote has are kept
   under `refs/loop/rescued/`); kept dirty, a later run would have sent it to the work dead letter.
   The appraisal returns `unjudged` with `retry`, the knife counts no carve, and the panel gives its
@@ -463,7 +481,7 @@ driver settles it through `settleEnvironmentFault`, the one place the rule lives
   past the faulted point, so a much later fault of the same code is a new occasion and free again.
   Another seat's clean run leaves it: a clean coder run says nothing about the prover's disk. A
   marker that names no seat is cleared by any seat's clean run. A
-  different code is free again too. A person's stop is never charged and leaves no marker.
+  different code is free again too. A person's stop is never charged and leaves no marker, only its record.
 
 Two endings cannot be told apart from a person's and are left as failures: SIGKILL, which the
 kernel's out-of-memory killer also sends, and an engine that exits 0 when interrupted (`claude -p`

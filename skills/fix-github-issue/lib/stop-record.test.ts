@@ -4,7 +4,7 @@ import { isBotMarker } from '../../carve-github-issue/lib/tree.ts';
 import type { Context } from './context.ts';
 import { parkIssue, sendToDlq } from './labels.ts';
 import { landBlocker } from './land.ts';
-import { heldComment, objectionOf, proofHeldComment, readStop, standingStop, stopComment, stopIn } from './stop-record.ts';
+import { heldComment, loopHoldStands, objectionAfter, proofHeldComment, readStop, standingStop, stopComment, stopIn } from './stop-record.ts';
 
 const BOT = 'loop-bot';
 const BOUNDARY = 'autoMerge is code-only and the change touches code, stored-string';
@@ -79,10 +79,12 @@ describe('readStop: one reader, one scope', () => {
     expect(readStop([at(park, '2026-09-03')], { botLogin: BOT, since: '2026-09-02' })?.kind).toBe('park');
   });
   it('hands a coder an objection only for a park or a dead letter', () => {
-    expect(objectionOf(stopIn(park))).toBe('parked for a reason');
-    expect(objectionOf(stopIn(stopComment('boundary', {}, BOUNDARY)))).toBeNull();
-    expect(objectionOf(stopIn(held))).toBeNull();
-    expect(objectionOf(null)).toBeNull();
+    const after = (body: string) => objectionAfter(standingStop([{ author: BOT, body }], BOT));
+    expect(after(park)).toBe('parked for a reason');
+    expect(after(stopComment('dead-letter', { phase: 'work' }, 'Moved to the work dead-letter queue.'))).toBe('Moved to the work dead-letter queue.');
+    expect(after(stopComment('boundary', {}, BOUNDARY))).toBeNull();
+    expect(after(held)).toBeNull();
+    expect(objectionAfter(null)).toBeNull();
   });
   it('standingStop reads a boundary park and an approval as neither an objection nor a hold', () => {
     expect(standingStop([{ author: BOT, body: stopComment('boundary', {}, BOUNDARY) }], BOT)).toEqual({ kind: 'boundary' });
@@ -95,5 +97,28 @@ describe('landBlocker reads the stop record', () => {
   it('a boundary record lets --land through; a park record does not', () => {
     expect(landBlocker(['loop/parked'], [{ body: stopComment('boundary', {}, BOUNDARY), createdAt: at(5) }], at(5))).toBeNull();
     expect(landBlocker(['loop/parked'], [{ body: stopComment('boundary', {}, BOUNDARY), createdAt: at(5) }, { body: stopComment('park', {}, 'the issue changed under the review'), createdAt: at(9) }], at(9))).toMatch(/not the merge boundary/);
+  });
+});
+
+describe('an outside stop on the thread', () => {
+  const outside = (cause: string, seat: string, text = 'stopped outside the change') => ({ author: BOT, body: stopComment('outside', { cause, seat }, text) });
+  const park = { author: BOT, body: stopComment('park', {}, 'answer the review') };
+  it('carries the stop behind it, so a rerun answers the same objection', () => {
+    const stop = standingStop([park, outside('host', 'reviewer')], BOT);
+    expect(stop).toMatchObject({ kind: 'outside', cause: 'host', seat: 'reviewer', behind: { kind: 'objection', text: 'answer the review' } });
+    expect(objectionAfter(stop)).toBe('answer the review');
+    expect(loopHoldStands(stop)).toBe(false);
+  });
+  it("is the loop's hold when it waits on a person, and hands the coder its own words when nothing stands behind it", () => {
+    const held = standingStop([outside('needs-person', 'coder', 'the gate needs a vendor key')], BOT);
+    expect(loopHoldStands(held)).toBe(true);
+    expect(objectionAfter(held)).toBe('the gate needs a vendor key');
+    expect(loopHoldStands(standingStop([outside('base', 'coder')], BOT))).toBe(true);
+    // A rerun cause with nothing behind it is no objection: the pickup proves again.
+    expect(objectionAfter(standingStop([outside('signal', 'prover')], BOT))).toBeNull();
+  });
+  it('a held proof is the loop\'s hold too, and a seat\'s ask is not', () => {
+    expect(loopHoldStands(standingStop([{ author: BOT, body: proofHeldComment('r', { branch: 'b' }, 'x') }], BOT))).toBe(true);
+    expect(loopHoldStands(standingStop([{ author: BOT, body: heldComment('needs-human', 'x') }], BOT))).toBe(false);
   });
 });

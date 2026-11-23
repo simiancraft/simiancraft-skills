@@ -117,7 +117,7 @@ export type Context = {
   /**
    * Told when a seat failed on the host (a full disk, exhausted memory), with the reason. A driver
    * with a line pauses it here, and reruns the work once the line is resumed; the seat's settlement
-   * (`settleEnvironmentFault`) has already counted nothing. A throw is logged, never propagated.
+   * (`settleOutsideStop`) has already counted nothing. A throw is logged, never propagated.
    */
   onHostFault?: (reason: string) => void;
   /** When set, every mutation goes here instead of to gh: a fake tracker under test. */

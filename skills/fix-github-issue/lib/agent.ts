@@ -113,7 +113,7 @@ export function stopSignalOf(signalCode: string | null, exitCode: number): strin
 /**
  * Throws an `EnvironmentFault` when the run ended on one: a full disk, exhausted memory, or a stop
  * signal from outside the driver. Every seat that runs an agent calls this before it reads the run's
- * exit, so such a run reaches its driver's settlement (`settleEnvironmentFault`) instead of being
+ * exit, so such a run reaches its driver's settlement (`settleOutsideStop`) instead of being
  * read as the seat's failure, a failure that would be counted against the work.
  */
 export function refuseEnvironmentFault(run: AgentRun, role: string, issue: number): AgentRun {

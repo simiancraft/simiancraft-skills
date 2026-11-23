@@ -22,7 +22,7 @@ import type { Context } from './context.ts';
 import { CONFIRMATION_FILE, PROOF_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
-import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from './environment-fault.ts';
+import { type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
@@ -30,7 +30,7 @@ import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, st
 import { boundaryWaived } from './land.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
-import { heldComment, proofHeldComment, standingStop, stopComment } from './stop-record.ts';
+import { heldComment, loopHoldStands, proofHeldComment, standingStop, stopComment } from './stop-record.ts';
 import { loopNote } from './note.ts';
 
 /**
@@ -1457,12 +1457,8 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 function holdProof(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void, pr?: number): FixOutcome {
   holdLease(ctx, issue.number, 'hold the proof for a person');
   const branch = result.branch ?? '';
-  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', proofHeldComment(ctx.runId, { branch, pr }, result.reason)]);
-  mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
-  if (pr) {
-    mutate(ctx, `label PR #${pr} needs-human`, ['gh', 'pr', 'edit', String(pr), '--add-label', 'needs-human']);
-    mutate(ctx, `note the hold on PR #${pr}`, ['gh', 'pr', 'comment', String(pr), '--body', loopNote(`Held for a person while proving; the reason and how to lift the hold are on #${issue.number}. Not to be merged while \`needs-human\` is on this pull request.`)]);
-  }
+  // An outside stop that waits on a person, recorded as the held proof it is.
+  settleOutsideStop(ctx, issue, { cause: 'needs-person', seat: 'prover', reason: result.reason }, 'proving', say, { pr, record: proofHeldComment(ctx.runId, { branch, pr }, result.reason) });
   say(`the prover needs a person; ${pr ? `PR #${pr} stays open, ` : ''}held with needs-human`);
   move(ctx, issue, 'H2', `proof held: ${result.reason}`.slice(0, 120));
   retireLane(ctx, issue.number, say);
@@ -1973,14 +1969,14 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
   }
   // Nor is an environment fault: a full disk, exhausted memory, or a person's stop says nothing
-  // about the work, which was not judged. It is settled in one place (`settleEnvironmentFault`):
-  // nothing is counted or held, the next placement puts the card by its facts, the lane is cleared
-  // for the rerun here (so the cleanup below has nothing left to retire), and a host fault pauses
-  // the line. The one charged case, the same host fault again on the rerun, falls through and is
-  // settled below as the ordinary failure it then is.
+  // about the work, which was not judged. It is an outside stop, settled in one place
+  // (`settleOutsideStop`): nothing is counted or held, the stop is recorded on the issue, the next
+  // placement puts the card by its facts, the lane is cleared for the rerun here (so the cleanup
+  // below has nothing left to retire), and a host fault pauses the line. The one charged case, the
+  // same host fault again on the rerun, falls through and is settled below as the failure it then is.
   const fault = environmentFaultOf(error);
   if (fault) {
-    const settled = settleEnvironmentFault(ctx, issue, fault, lane ?? '', say);
+    const settled = settleOutsideStop(ctx, issue, { fault }, lane ?? '', say);
     if (!settled.charged) {
       clearLaneForRerun(ctx, issue.number, say);
       return { outcome: { outcome: 'unjudged', reason: settled.reason, fault: fault.kind }, keepLane: true };
@@ -2059,13 +2055,14 @@ export async function redriveIssue(
     // no CI run. Then the base: a redriven pull request has usually sat, and no revision begins on
     // a stale lane.
     // The issue's hold is the one selection and the live gate read, and it is lifted, or this
-    // redrive would not have passed the gate. When the newest stop on the thread is a held proof,
-    // the pull request's `needs-human` is that hold's mirror; it comes off with it, or the merge
+    // redrive would not have passed the gate. When the newest stop on the thread is the loop's own
+    // hold (a held proof, or an outside stop that waited on a person), the pull request's
+    // `needs-human` is that hold's mirror; it comes off with it, or the merge
     // gate would refuse the very work the person released. A label a person put on the pull
     // request after anything else stopped the work stays, and the merge gate honours it.
     // Read as every reader of the stop reads it: the loop's own records since this pull request opened.
     const opened = () => sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'createdAt', '--jq', '.createdAt']);
-    if (pullHolds(ctx, pull.number).includes('needs-human') && standingStop(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin, opened())?.kind === 'proof-held') {
+    if (pullHolds(ctx, pull.number).includes('needs-human') && loopHoldStands(standingStop(trackerIo(ctx).view(issue.number)?.comments ?? [], ctx.botLogin, opened()))) {
       mutate(ctx, `lift needs-human on PR #${pull.number}: the issue's hold was lifted`, ['gh', 'pr', 'edit', String(pull.number), '--remove-label', 'needs-human']);
     }
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);

@@ -26,7 +26,7 @@ import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } f
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
-import { environmentFaultOf, type Fault, rememberFaultMarkers, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
+import { environmentFaultOf, type Fault, rememberFaultMarkers, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
@@ -363,10 +363,10 @@ export function refusedAsTrunk(tree: Tree, release: boolean | undefined): boolea
 /**
  * A seat of the appraisal ended on an environment fault (a full disk, no memory, a person's stop).
  * The issue was not judged: nothing is counted and the next run appraises it again, unless the same
- * host fault came back on that rerun, which `settleEnvironmentFault` charges as an ordinary failure.
+ * host fault came back on that rerun, which `settleOutsideStop` charges as an ordinary failure.
  */
 function settleAppraisalFault(ctx: Context, issue: Issue, cap: number, fault: Fault, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
-  const settled = settleEnvironmentFault(ctx, issue, fault, 'appraisal', say);
+  const settled = settleOutsideStop(ctx, issue, { fault }, 'appraisal', say);
   if (settled.charged) return countFailedAppraisal(ctx, issue, cap, settled.reason, logPath, say);
   return { verdict: 'failed', reason: settled.reason, retry: true, unjudged: true };
 }

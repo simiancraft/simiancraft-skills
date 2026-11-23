@@ -63,9 +63,9 @@ const REDRIVE: Transition[] = [
  * on the issue, is the work's own doing, and the driver raises AGENT_FAILED for it instead.
  */
 const ENVIRONMENT_FAULT_IN_WORK: Transition[] = [
-  { target: 'ticket.ready.ready', guard: 'noOpenPr', actions: ['markFreeFault', 'releaseClaim', 'clearLaneForRerun'] },
+  { target: 'ticket.ready.ready', guard: 'noOpenPr', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
   // A pull request with no driver: the next run resumes it through Proving, as any driverless one.
-  { target: 'ticket.work.drafted', actions: ['markFreeFault', 'releaseClaim', 'clearLaneForRerun'] },
+  { target: 'ticket.work.drafted', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
 ];
 
 /**
@@ -163,7 +163,7 @@ export const MACHINE: StateNode = {
           initial: 'inbox',
           // Every phase answers a machine failure in every one of its lanes, into its own queue:
           // a throw between two agent turns is a failure too, and no lane may drop it.
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] }, ENVIRONMENT_FAULT: { target: 'ticket.appraisal.inbox', actions: ['markFreeFault'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] }, ENVIRONMENT_FAULT: { target: 'ticket.appraisal.inbox', actions: ['markFreeFault', 'recordOutsideStop'] } },
           states: {
             inbox: {
               lane: { key: 'A1', name: 'Inbox', description: 'On the board, unsized, not yet looked at' },
@@ -247,7 +247,7 @@ export const MACHINE: StateNode = {
 
         carving: {
           initial: 'toCarve',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] }, ENVIRONMENT_FAULT: { target: 'ticket.carving.toCarve', actions: ['markFreeFault', 'releaseClaim'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] }, ENVIRONMENT_FAULT: { target: 'ticket.carving.toCarve', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim'] } },
           states: {
             toCarve: {
               lane: { key: 'C1', name: 'To carve', description: 'Sized over the ceiling; waiting for the knife' },
@@ -463,7 +463,7 @@ export const MACHINE: StateNode = {
           initial: 'readyForReview',
           on: {
             AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
-            ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'releaseClaim', 'clearLaneForRerun'] },
+            ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
           },
           states: {
             readyForReview: {
@@ -744,7 +744,7 @@ export const MACHINE: StateNode = {
                 PANEL_HOLD: { target: 'ticket.human.needsDecision', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'labelHold'] },
                 // A seat that ended on an environment fault weighed nothing: the round is given back,
                 // no hold is written, and the work that raised the question is rerun later.
-                ENVIRONMENT_FAULT: { target: 'ticket.reconcile', actions: ['unlabelDeliberating', 'restorePanelCount', 'markFreeFault', 'releaseClaim'] },
+                ENVIRONMENT_FAULT: { target: 'ticket.reconcile', actions: ['unlabelDeliberating', 'restorePanelCount', 'markFreeFault', 'recordOutsideStop', 'releaseClaim'] },
               },
             },
           },

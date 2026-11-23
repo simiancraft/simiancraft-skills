@@ -13,6 +13,7 @@ import { REVIEW_FILE } from './control-files.ts';
 import { EnvironmentFault, environmentFaultOf, faultMarker, hostFaultIn, rememberFaultMarkers } from './environment-fault.ts';
 import { weighHold } from './panel.ts';
 import { move, recordThrow } from './pipeline.ts';
+import { stopIn } from './stop-record.ts';
 
 const HERE = import.meta.dir;
 let scratch: string;
@@ -215,7 +216,7 @@ describe('a fix lane that ends on an environment fault', () => {
     expect(labelsOf(io, 19)).toContain(faultMarker('ENOMEM'));
   });
 
-  it("from a person's stop: judges nothing, marks nothing, and does not pause the line, however often", () => {
+  it("from a person's stop: judges nothing, marks nothing, records the outside stop, and does not pause the line, however often", () => {
     const io = new FakeTracker('loop-bot', [fakeIssue(9, { labels: [{ name: 'size: 1' }] })]);
     const paused: string[] = [];
     const ctx = context([], io, (reason) => paused.push(reason));
@@ -226,7 +227,10 @@ describe('a fix lane that ends on an environment fault', () => {
       expect(recorded.outcome.outcome).toBe('unjudged');
       expect(recorded.outcome.fault).toBe('stopped');
     }
-    expect(io.writes).toHaveLength(0);
+    // Only the record of each stop: no count, no marker, no hold.
+    expect(io.writes).toHaveLength(2);
+    expect(io.writes.every((w) => w.argv[2] === 'comment' && stopIn(w.argv.at(-1) ?? '')?.kind === 'outside')).toBe(true);
+    expect(stopIn(io.writes[0].argv.at(-1) ?? '')?.fields).toEqual({ cause: 'signal', seat: 'coder' });
     expect(paused).toHaveLength(0);
   });
 });

@@ -41,7 +41,7 @@ import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
 import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
-import { standingStop } from '../fix-github-issue/lib/stop-record.ts';
+import { objectionAfter, standingStop } from '../fix-github-issue/lib/stop-record.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
@@ -941,7 +941,7 @@ function lastObjection(issue: number, pull: number): string | null {
   ]);
   // A held proof that a person has since lifted is not an objection: the work is proved again.
   const stop = standingStop(JSON.parse(raw || '[]') as Array<{ author: string; body: string; createdAt?: string }>, ctx.botLogin, opened);
-  return stop?.kind === 'objection' ? stop.text.trim() || null : null;
+  return objectionAfter(stop);
 }
 
 /**

@@ -17,7 +17,7 @@ import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } f
 import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
-import { environmentFaultOf, rememberFaultMarkers, settleEnvironmentFault } from '../../fix-github-issue/lib/environment-fault.ts';
+import { environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
@@ -954,7 +954,7 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
       // host fault again on that rerun is charged, as the failed turn it then is.
       const fault = environmentFaultOf(error);
       const fresh = readTree(ctx, issue.number, io);
-      const settled = fault ? settleEnvironmentFault(ctx, { number: issue.number, labels: fresh.issue.labels }, fault, 'the carve', say) : null;
+      const settled = fault ? settleOutsideStop(ctx, { number: issue.number, labels: fresh.issue.labels }, { fault }, 'the carve', say) : null;
       if (!settled) await countFailure(k, fresh, `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
       else if (settled.charged) await countFailure(k, fresh, settled.reason, null);
     } catch (second) {

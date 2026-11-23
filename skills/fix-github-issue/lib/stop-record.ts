@@ -8,8 +8,9 @@
  * The kinds are the ways work stops: `park` (handed to a person with a reason), `boundary` (an
  * approved change the merge boundary kept for a person), `dead-letter` (a machine gave up, with its
  * `phase`), `proof-held` (a prover asked for a person after the code was pushed), `held` (a seat
- * asked for a person or a decision, with its `verdict`), and `approved` (a review approved the head
- * named by `sha`; the newest record says the work was not stopped since).
+ * asked for a person or a decision, with its `verdict`), `outside` (a stop the change did not cause,
+ * with its `cause` and `seat`; see `environment-fault.ts`), and `approved` (a review approved the
+ * head named by `sha`; the newest record says the work was not stopped since).
  *
  * One reader, `readStop`, answers "what stopped this work last": the newest record the loop wrote,
  * since the pull request in hand was opened. Threads written before the record existed are read
@@ -21,8 +22,8 @@ import { noteText } from './note.ts';
 
 export const STOP = 'loop-stop';
 
-export type StopKind = 'park' | 'boundary' | 'dead-letter' | 'proof-held' | 'held' | 'approved';
-const KINDS: StopKind[] = ['park', 'boundary', 'dead-letter', 'proof-held', 'held', 'approved'];
+export type StopKind = 'park' | 'boundary' | 'dead-letter' | 'proof-held' | 'held' | 'outside' | 'approved';
+const KINDS: StopKind[] = ['park', 'boundary', 'dead-letter', 'proof-held', 'held', 'outside', 'approved'];
 
 /** A stop as read: its kind, the fields its marker carries, and the words below the marker. */
 export type StopRecord = { kind: StopKind; fields: { [key: string]: string }; text: string };
@@ -95,21 +96,23 @@ export function stopIn(body: string): StopRecord | null {
  */
 export type StopScope = { botLogin?: string; since?: string };
 
-/** What stopped the work last: the newest stop record in scope, oldest comment first; null when none. */
-export function readStop(comments: Array<{ author?: string; body: string; createdAt?: string }>, scope: StopScope = {}): StopRecord | null {
+type Thread = Array<{ author?: string; body: string; createdAt?: string }>;
+
+/** The newest stop record in scope and where it sits on the thread. */
+function newestStop(comments: Thread, scope: StopScope): { stop: StopRecord; at: number } | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const { author, body, createdAt } = comments[i];
     if (scope.botLogin !== undefined && author !== scope.botLogin) continue;
     if (scope.since !== undefined && createdAt !== undefined && createdAt <= scope.since) continue;
     const stop = stopIn(body);
-    if (stop) return stop;
+    if (stop) return { stop, at: i };
   }
   return null;
 }
 
-/** The objection a stop hands the next coder: a park's or a dead letter's words; null for any other stop. */
-export function objectionOf(stop: StopRecord | null): string | null {
-  return stop && (stop.kind === 'park' || stop.kind === 'dead-letter') ? stop.text : null;
+/** What stopped the work last: the newest stop record in scope, oldest comment first; null when none. */
+export function readStop(comments: Thread, scope: StopScope = {}): StopRecord | null {
+  return newestStop(comments, scope)?.stop ?? null;
 }
 
 /**
@@ -124,13 +127,23 @@ export type StandingStop =
   | { kind: 'held'; text: string }
   | { kind: 'boundary' }
   | { kind: 'approved'; sha: string }
+  | { kind: 'outside'; cause: string; seat: string; text: string; behind: StandingStop }
   | null;
 
-/** `readStop`, read as what the pickup does with it. */
-export function standingStop(comments: Array<{ author?: string; body: string; createdAt?: string }>, botLogin?: string, since?: string): StandingStop {
-  const stop = readStop(comments, { botLogin, since });
-  if (!stop) return null;
+/** The causes of an outside stop that wait on a person; the others rerun the work (`environment-fault.ts`). */
+const WAITING = ['base', 'needs-person'];
+
+/**
+ * `readStop`, read as what the pickup does with it. An outside stop carries the stop behind it,
+ * since it says the work was interrupted, not what the work was answering.
+ */
+export function standingStop(comments: Thread, botLogin?: string, since?: string): StandingStop {
+  const found = newestStop(comments, { botLogin, since });
+  if (!found) return null;
+  const { stop } = found;
   switch (stop.kind) {
+    case 'outside':
+      return { kind: 'outside', cause: stop.fields.cause ?? '', seat: stop.fields.seat ?? '', text: stop.text, behind: standingStop(comments.slice(0, found.at), botLogin, since) };
     case 'park':
     case 'dead-letter':
       return { kind: 'objection', text: stop.text };
@@ -143,6 +156,29 @@ export function standingStop(comments: Array<{ author?: string; body: string; cr
     case 'approved':
       return { kind: 'approved', sha: stop.fields.sha ?? '' };
   }
+}
+
+/**
+ * Whether `needs-human` stands because the loop held the work for a person: a held proof, or an
+ * outside stop that waits on a person. The pickup lifts that hold, on the issue and on the pull
+ * request; any other `needs-human` is a person's own, and stays.
+ */
+export function loopHoldStands(stop: StandingStop): boolean {
+  return stop?.kind === 'proof-held' || (stop?.kind === 'outside' && WAITING.includes(stop.cause));
+}
+
+/**
+ * The objection the pickup hands a coder, or null when the pickup proves again. A park's or a dead
+ * letter's words; through an outside stop, the stop behind it; and when an outside stop that waited
+ * on a person stopped the coder with nothing behind it, its own words, so the coder carries on.
+ */
+export function objectionAfter(stop: StandingStop): string | null {
+  if (!stop) return null;
+  if (stop.kind === 'objection') return stop.text.trim() || null;
+  if (stop.kind !== 'outside') return null;
+  const behind = objectionAfter(stop.behind);
+  if (behind) return behind;
+  return WAITING.includes(stop.cause) && stop.seat === 'coder' ? stop.text.trim() || null : null;
 }
 
 // ---------------------------------------------------------------------------

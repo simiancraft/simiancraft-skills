@@ -165,7 +165,8 @@ A seat whose run ends on an environment fault raises `ENVIRONMENT_FAULT` instead
 of appraisal, carving, work, review, or the panel. An environment fault is a failure of the place
 the work ran, not of the work: the host ran out of disk (`ENOSPC`) or memory (`ENOMEM`), or a stop
 signal the driver did not send, a person's most likely, ended the agent. The work was not judged,
-which is a different fact from judged and failed, so nothing is counted, dead-lettered, or held:
+which is a different fact from judged and failed, so nothing is counted, dead-lettered, or held,
+and the stop is recorded on the issue (`loop-stop kind=outside`, with its cause and seat):
 appraisal returns to A1, carving to C1, work to B1 with no pull request open and to D3 with one (the
 next run resumes a driverless pull request through Proving), review to E1, and the panel gives its
 round back and re-derives the card from its facts. The claim is released and the lane cleared for
