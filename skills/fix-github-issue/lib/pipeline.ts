@@ -1871,12 +1871,16 @@ export async function claimLane(
  * recorded on the issue: the worktree is then the only record of what happened. A crash never runs
  * the cleanup, which is exactly when the resume path should get its chance. A claim refused returns
  * its outcome and opens nothing.
+ *
+ * `admit` judges what is already on disk under the claim, before the lane is opened: a refusal it
+ * returns is the outcome, and the lane is kept as it was found, since what it holds is a person's
+ * to read.
  */
 export async function withLane(
   ctx: Context,
   issue: Issue,
   say: (message: string) => void,
-  lane: { ceiling: number; lift?: () => void; pr?: number; open: () => string },
+  lane: { ceiling: number; lift?: () => void; pr?: number; admit?: () => FixOutcome | null; open: () => string },
   work: (cwd: string) => Promise<FixOutcome>,
 ): Promise<FixOutcome> {
   const handle = await claimLane(ctx, trackerIo(ctx), issue.number, lane.ceiling, say, lane.lift);
@@ -1888,6 +1892,11 @@ export async function withLane(
   });
   let keepLane = false;
   try {
+    const refused = lane.admit?.();
+    if (refused) {
+      keepLane = true;
+      return refused;
+    }
     const cwd = lane.open();
     inFlight.set(issue.number, { dir: cwd, busy: false });
     // Awaited, not returned: a returned promise would run the cleanup below while the work it
@@ -2176,7 +2185,8 @@ export async function redriveIssue(
   objection: string | null,
   /** `landing`: a person's --land; with no objection, the brief says the change was approved and parked by policy. */
   /** `lift`: the person's removal of the hold, made under this run's claim; see `claimLane`. */
-  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean; lift?: () => void } = {},
+  /** `admit`: the caller's judgement of the lane already on disk, made under the claim; see `withLane`. */
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean; lift?: () => void; admit?: () => FixOutcome | null } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   rememberFaultMarkers(ctx, issue.number, issue.labels);
@@ -2192,6 +2202,7 @@ export async function redriveIssue(
     ceiling,
     lift: options.lift,
     pr: pull.number,
+    admit: options.admit,
     open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeAtPullRequest(ctx, issue.number, pull.branch)),
   }, async (cwd) => {
     if (ctx.dryRun) {

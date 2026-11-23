@@ -36,9 +36,9 @@ import { parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines
 import { ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
-import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
+import { type FixOutcome, fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
-import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
+import { findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { objectionAfter, standingStop } from '../fix-github-issue/lib/stop-record.ts';
@@ -866,28 +866,6 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
 async function resumePull({ issue, pull }: { issue: Issue; pull: { number: number; branch: string } }): Promise<void> {
   await waitForGo(`#${issue.number}`, 'dispatch');
 
-  const holder = claimHolder(ctx, issue.number, new Map());
-  if (holder) {
-    place(issue.number, issue.title, 'W3', holder.slice(0, 120));
-    return;
-  }
-  const judgement = judgeLane(ctx, issue.number, () => {
-    const view: { headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'headRefOid']));
-    return view.headRefOid;
-  });
-  if (judgement.kind === 'dirty' || judgement.kind === 'off-head') {
-    try {
-      parkForInspection(ctx, issue.number, judgement.reason);
-    } catch (error) {
-      if (error instanceof RunStopping || isStopping()) throw error;
-      log(`#${issue.number}  could not record the dead letter: ${(error as Error).message}`);
-    }
-    return;
-  }
-  if (judgement.kind === 'unreadable') {
-    log(`#${issue.number}  PR #${pull.number} not resumed this run: ${judgement.reason}`);
-    return;
-  }
   let objection: string | null;
   try {
     objection = lastObjection(issue.number, pull.number);
@@ -895,7 +873,29 @@ async function resumePull({ issue, pull }: { issue: Issue; pull: { number: numbe
     log(`#${issue.number}  PR #${pull.number} not resumed this run: its thread could not be read (${(error as Error).message.split('\n')[0]})`);
     return;
   }
-  const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+  // The lane is judged under the redrive's claim, so no other run can change it between the
+  // judgement and the work; another run's claim reads as busy and the card waits in W3.
+  const admit = (): FixOutcome | null => {
+    const judgement = judgeLane(ctx, issue.number, () => {
+      const view: { headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'headRefOid']));
+      return view.headRefOid;
+    });
+    if (judgement.kind === 'dirty' || judgement.kind === 'off-head') {
+      try {
+        parkForInspection(ctx, issue.number, judgement.reason);
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        log(`#${issue.number}  could not record the dead letter: ${(error as Error).message}`);
+      }
+      return { outcome: 'left-alone', reason: judgement.reason };
+    }
+    if (judgement.kind === 'unreadable') {
+      log(`#${issue.number}  PR #${pull.number} not resumed this run: ${judgement.reason}`);
+      return { outcome: 'left-alone', reason: judgement.reason };
+    }
+    return null;
+  };
+  const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer, admit });
   if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
   // A host fault judged nothing: the resume runs again in this run, once the line says go, as a
   // Ready card a host fault ended is readmitted. A person's stop is not handed back, nor a transport

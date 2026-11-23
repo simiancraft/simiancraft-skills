@@ -228,6 +228,11 @@ issue is open, and the issue gets a work dead letter. Once the issue is closed, 
 come back for it, so `reconcile` commits the lane's working tree, untracked files included, onto its
 HEAD under the same `refs/loop/rescued/issue-<n>/<sha>`, removes the lane, and logs that ref once.
 A lane whose branch still has an open pull request, or whose work cannot be saved, is kept.
+A stranded lane that holds a proof beside uncommitted work, or one a driverless resume finds dirty
+or off its pull request's head, gets the same work dead letter instead of a resume; the resume
+judges the lane only once it holds the issue's claim. An untracked `.proof/` or `.proof-<name>/`
+in a lane is a seat's scratch, never uncommitted work; seats are given a scratch directory under
+the run directory (`scratch/issue-<n>/<seat>`) for it.
 
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.

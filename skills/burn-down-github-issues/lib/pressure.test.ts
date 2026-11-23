@@ -940,14 +940,14 @@ describe('pauses left by a closed trunk', () => {
   });
 });
 
-describe('resume dispatch judges the lane before continuing', () => {
+describe('resume dispatch judges the lane under the claim before continuing', () => {
   const entry = { issue: { number: 92, title: 'resume', labels: [] }, pull: { number: 100, branch: 'fix/resume-92' } };
   function dispatch(kind: string, overrides: Record<string, unknown> = {}) {
     const calls: string[] = [];
+    let holder: string | null = null;
     const api = loadFunctions('../loop.ts', ['resumePull'], {
       ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' }, isHostFaultKind,
       waitForGo: async () => { calls.push('wait'); },
-      claimHolder: () => { calls.push('claim'); return null; },
       judgeLane: (_ctx: unknown, issue: number, readHead: () => string) => {
         calls.push('judge'); expect(issue).toBe(92); expect(readHead()).toBe('remote-head');
         return { kind, reason: 'lane reason' };
@@ -959,21 +959,26 @@ describe('resume dispatch judges the lane before continuing', () => {
       parkForInspection: (_ctx: unknown, issue: number, reason: string) => {
         expect(issue).toBe(92); expect(reason).toBe('lane reason'); calls.push('park');
       },
-      log: () => calls.push('log'), place: (...args: unknown[]) => { calls.push('place'); expect(args).toEqual([92, 'resume', 'W3', 'held']); },
+      log: () => calls.push('log'), place: (...args: unknown[]) => { calls.push('place'); expect(args).toEqual([92, 'resume', 'W3', 'claim by elsewhere stands']); },
       lastObjection: (issue: number, pull: number) => { expect([issue, pull]).toEqual([92, 100]); calls.push('objection'); return 'revise'; },
-      redriveIssue: async (_ctx: unknown, issue: unknown, pull: unknown, objection: string) => {
-        expect([issue, pull, objection]).toEqual([entry.issue, entry.pull, 'revise']); calls.push('redrive'); return { outcome: 'merged' };
+      // The redrive as withLane runs it: the claim, then the caller's judgement under it, then the work.
+      redriveIssue: async (_ctx: unknown, issue: unknown, pull: unknown, objection: string, options: { admit?: () => { outcome: string } | null }) => {
+        expect([issue, pull, objection]).toEqual([entry.issue, entry.pull, 'revise']);
+        calls.push('claim');
+        if (holder) return { outcome: 'busy', reason: holder };
+        const refused = options.admit?.();
+        if (refused) return refused;
+        calls.push('redrive'); return { outcome: 'merged' };
       },
       ...overrides,
     });
-    return { run: () => api.resumePull(entry), calls };
+    return { run: () => api.resumePull(entry), calls, hold: (by: string) => { holder = by; } };
   }
   for (const kind of ['dirty', 'off-head', 'unreadable']) {
     for (const fails of [false, true]) it(`${kind} never continues, including a failed dead-letter write (${fails})`, async () => {
       const d = dispatch(kind, fails ? { parkForInspection: () => { throw new Error('write failed'); } } : {});
       await d.run();
-      expect(d.calls.slice(0, 3)).toEqual(['wait', 'claim', 'judge']);
-      expect(d.calls).not.toContain('objection');
+      expect(d.calls.slice(0, 4)).toEqual(['wait', 'objection', 'claim', 'judge']);
       expect(d.calls).not.toContain('redrive');
       if (kind === 'unreadable') { expect(d.calls).not.toContain('park'); expect(d.calls).toContain('log'); }
       else if (!fails) expect(d.calls).toContain('park');
@@ -982,7 +987,7 @@ describe('resume dispatch judges the lane before continuing', () => {
   for (const kind of ['no-lane', 'clean-at-head']) it(`${kind} continues with the objection`, async () => {
     const d = dispatch(kind);
     await d.run();
-    expect(d.calls).toEqual(['wait', 'claim', 'judge', 'objection', 'redrive']);
+    expect(d.calls).toEqual(['wait', 'objection', 'claim', 'judge', 'redrive']);
   });
   it('queues a resume a host fault left unjudged to run again, as a host fault readmits Ready work', async () => {
     const reruns: unknown[] = [];
@@ -1014,14 +1019,15 @@ describe('resume dispatch judges the lane before continuing', () => {
     expect((await run(true, 'ENOSPC')).calls).toEqual(['resume']);
     expect((await run(true, 'ENOSPC', { ...stranded, rerun: true })).calls).toEqual(['wait', 'resume']);
   });
-  it('does not judge or park a held lane', async () => {
-    const d = dispatch('dirty', { claimHolder: () => 'held' });
+  it("does not judge or park a lane another run's claim holds; the card waits in W3", async () => {
+    const d = dispatch('dirty');
+    d.hold('claim by elsewhere stands');
     await d.run();
-    expect(d.calls).toEqual(['wait', 'place']);
+    expect(d.calls).toEqual(['wait', 'objection', 'claim', 'place']);
   });
-  for (const read of ['claimHolder', 'judgeLane']) it(`propagates a stop from ${read}`, async () => {
+  it('does not swallow a stop from judgeLane; the redrive settles it under its claim', async () => {
     const stop = new Error('stopping');
-    const d = dispatch('dirty', { [read]: () => { throw stop; } });
+    const d = dispatch('dirty', { judgeLane: () => { throw stop; } });
     await expect(d.run()).rejects.toThrow(stop);
     expect(d.calls).not.toContain('park');
     expect(d.calls).not.toContain('redrive');
@@ -1509,5 +1515,35 @@ describe('a landing on a standing approval with the review budget spent', () => 
   });
   it('still dead-letters a path that would review', async () => {
     expect((await run()).calls).toEqual(['dlq:review']);
+  });
+});
+
+describe('withLane judges what is on disk under its claim', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const run = (admit: () => unknown) => {
+    const calls: string[] = [];
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane'], {
+      trackerIo: noop, liveGate: () => ({ ok: true }), inFlight: new Map(),
+      claim: async () => { calls.push('claim'); return { release: () => calls.push('release') }; },
+      keepClaimed: () => () => calls.push('lease ends'),
+      retireLane: () => calls.push('retire'),
+      recordThrow: (_c: unknown, _i: unknown, error: Error) => { calls.push(`record ${error.message}`); return { outcome: { outcome: 'stopped', reason: error.message }, keepLane: true }; },
+    });
+    const lane = { ceiling: 2, pr: 7, admit: () => { calls.push('admit'); return admit(); }, open: () => { calls.push('open'); return '/lane'; } };
+    return api.withLane(context(new FakeTracker(bot)), { number: 1 }, noop, lane, async () => { calls.push('work'); return { outcome: 'merged', reason: 'm' }; }).then((outcome: unknown) => ({ outcome, calls }));
+  };
+  it('a refusal is the outcome: nothing opened or worked, the claim released, and the lane kept', async () => {
+    const { outcome, calls } = await run(() => ({ outcome: 'left-alone', reason: 'dirty' }));
+    expect(outcome).toEqual({ outcome: 'left-alone', reason: 'dirty' });
+    expect(calls).toEqual(['claim', 'admit', 'lease ends', 'release']);
+  });
+  it('an admitted lane is opened, worked, and retired', async () => {
+    const { calls } = await run(() => null);
+    expect(calls).toEqual(['claim', 'admit', 'open', 'work', 'lease ends', 'release', 'retire']);
+  });
+  it('a throw from the judgement is settled as this lane\'s, under the claim', async () => {
+    const { outcome, calls } = await run(() => { throw new Error('stop'); });
+    expect(outcome).toEqual({ outcome: 'stopped', reason: 'stop' });
+    expect(calls).toEqual(['claim', 'admit', 'record stop', 'lease ends', 'release']);
   });
 });
