@@ -5,7 +5,7 @@
  * `references/the-record.md`.
  */
 
-import type { Comment, Fingerprint, OrderRung, Relation, Seam, Tree } from './tree.ts';
+import type { Comment, Fingerprint, Node, OrderRung, Relation, Seam, Tree } from './tree.ts';
 
 export type CriterionStatus = 'open' | 'completed' | 'deferred' | 'withdrawn' | 'orphaned';
 export type ChildStatus = 'open' | 'closed-completed' | 'closed-not-planned' | 'superseded' | 'deleted';
@@ -16,7 +16,10 @@ export type Ledger = Array<{
   /** Piece index into the record's children; null when unowned. */
   owner: number | null;
   status: CriterionStatus;
-  /** The comment id a withdrawal cites. */
+  /**
+   * The edit a withdrawal cites: a comment on the trunk's thread (its node id, database id, or
+   * `#issuecomment-N` link), or `body:<hash>` for the trunk body whose rewrite withdrew it.
+   */
   cite?: string;
   /** For a deferred criterion, the spike piece it waits on. */
   waitsOn?: number;
@@ -260,10 +263,28 @@ export function carryIds(previous: Ledger, criteria: Array<{ text: string }>): A
 }
 
 /**
+ * The edit a withdrawal cites, in its canonical form, while that edit still stands on the trunk;
+ * null once it does not. `body:<hash>` stands while the trunk's body hashes to it. A comment cite
+ * (node id, database id, or a link ending `#issuecomment-N`, with an optional `#...` suffix after
+ * an id) stands while that comment is on the thread, and comes back as the comment's node id.
+ */
+export function withdrawalCite(cite: string | undefined, trunk: Pick<Node, 'bodyHash' | 'comments'>): string | null {
+  const raw = (cite ?? '').trim();
+  if (!raw) return null;
+  const body = /^body:([0-9a-f]+)$/i.exec(raw);
+  if (body) return body[1].toLowerCase() === trunk.bodyHash ? `body:${trunk.bodyHash}` : null;
+  const link = /issuecomment-(\d+)/.exec(raw);
+  const key = link ? link[1] : raw.split('#')[0];
+  const found = trunk.comments.find((c) => c.id === key || String(c.databaseId) === key);
+  return found ? found.id : null;
+}
+
+/**
  * The ledger for the criteria as they stand now, carrying owners and statuses from the previous
  * ledger and re-judging each owner's state from the tree: closed COMPLETED completes, closed
  * NOT_PLANNED or deleted orphans, reopened returns to open, a spike closed makes its deferred
- * criteria open and unowned, and a withdrawal stands only while its cited comment is unchanged.
+ * criteria open and unowned, and a withdrawal stands only while the edit it cites stands
+ * (`withdrawalCite`): its comment is still on the thread, or the trunk's body still hashes to it.
  */
 export function buildLedger(previous: Ledger | null, criteria: Array<{ id: string; text: string }>, record: Record | null, tree: Tree): Ledger {
   const byId = new Map((previous ?? []).map((row) => [row.id, row]));
@@ -273,16 +294,13 @@ export function buildLedger(previous: Ledger | null, criteria: Array<{ id: strin
     if (!rc || rc.number === null) return null;
     return { rc, node: [...tree.children, ...tree.blockers].find((n) => n.number === rc.number) ?? null };
   };
-  const commentHashes = new Map(tree.issue.comments.map((c) => [c.id, c.body]));
   return criteria.map(({ id, text }) => {
     const prior = byId.get(id);
     if (!prior) return { id, text, owner: null, status: 'open' as const };
     const row: Ledger[number] = { ...prior, id, text };
     if (prior.status === 'withdrawn') {
-      const cite = prior.cite ?? '';
-      const citedId = cite.split('#')[0];
-      const live = commentHashes.has(citedId);
-      return live ? row : { ...row, status: 'open', cite: undefined };
+      const cite = withdrawalCite(prior.cite, tree.issue);
+      return cite ? { ...row, owner: null, cite } : { ...row, status: 'open', cite: undefined };
     }
     const owner = childOf(prior.owner);
     if (owner) {

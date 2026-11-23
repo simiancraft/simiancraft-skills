@@ -796,6 +796,42 @@ describe('carveIssue', () => {
     expect(lines.some((l) => l.issue === 10 && l.mode === 'revisit' && l.point === 'carver-answered' && l.carverVerdict === 'still-good')).toBe(true);
   });
 
+  test('a criterion the trunk body withdrew stays withdrawn on later revisits, from the newest live record', async () => {
+    const { io, ctx, children } = await carved();
+    // A person rewrites the trunk; the rewrite drops A3.
+    io.write({ argv: ['gh', 'issue', 'edit', '10', '--body', 'Criteria: A1 A2; A3 is diagnosed above and no longer asked'], description: 'a person rewrites #10' });
+    const cite = `body:${readTree(ctx, 10, io).issue.bodyHash}`;
+    const withdrawnLedger = carving(10).ledger.map((r) => (r.id === 'A3' ? { ...r, owner: null, status: 'withdrawn' as const, cite } : r));
+    const yes = fixture('yes', confirmation(10, 'revisit', 'still-good', true));
+    const first = await carveIssue(ctx, issue10, knobs(fixture('sg', revisit(10, 'still-good', { ledger: withdrawnLedger })), yes), io);
+    expect(first.outcome).toBe('still-good');
+    // A leaf closes; the next revisit starts from the newest live record, where A3 is withdrawn.
+    io.close(children[0]);
+    const prompts: string[] = [];
+    const engine = ENGINES[knobs('', '').seats.carver.engine];
+    const original = engine.command;
+    engine.command = (cwd, prompt, model, effort) => {
+      prompts.push(prompt);
+      return original(cwd, prompt, model, effort);
+    };
+    try {
+      const rolled = withdrawnLedger.map((r) => (r.owner === 0 ? { ...r, status: 'completed' as const } : r));
+      const second = await carveIssue(ctx, issue10, knobs(fixture('sg2', revisit(10, 'still-good', { ledger: rolled })), yes), io);
+      expect(second.outcome).toBe('still-good');
+      expect(prompts[0]).toContain(`"id": "A3",\n    "text": "an authors table",\n    "owner": null,\n    "status": "withdrawn",\n    "cite": "${cite}"`);
+      const r = readTree(ctx, 10, io).record as Record;
+      expect(r.ledger.find((l) => l.id === 'A3')).toMatchObject({ status: 'withdrawn', cite });
+      // A carver that re-derives A3 from the original inventory is refused before the confirmer runs.
+      io.reopen(children[0]);
+      const rederived = carving(10).ledger;
+      const third = await carveIssue(ctx, issue10, knobs(fixture('sg3', revisit(10, 'still-good', { ledger: rederived })), yes), io);
+      expect(third.outcome).toBe('failed');
+      expect(third.reason).toMatch(/A3 was withdrawn by body:/);
+    } finally {
+      engine.command = original;
+    }
+  });
+
   test('a question pauses exactly the owner of the affected criterion; removing the hold redrives into a new epoch', async () => {
     const { io, ctx, children } = await carved();
     const out = await carveIssue(ctx, issue10, knobs(fixture('tu', revisit(10, 'too-uncertain', { affected: ['A3'] })), fixture('ho', confirmation(10, 'revisit', 'hand-off-agree', true))), io);
