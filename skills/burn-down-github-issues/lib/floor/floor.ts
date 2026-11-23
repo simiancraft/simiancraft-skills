@@ -14,7 +14,7 @@
  *   on-walk-fail  a callback slot run when an item turns wrong, before the incident
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { readResult, renderPrompt, runAgent } from '../../../fix-github-issue/lib/agent.ts';
 import { runCallback, runCallbackPrompt } from '../../../fix-github-issue/lib/callbacks.ts';
@@ -26,7 +26,7 @@ import { type Line, renderReadout } from '../../../emoji-readout/lib/readout.ts'
 import { DRIVER_SKILLS, type FloorConfig, type FloorState, inQuietWindow, nextWalkMinutes, type Walk } from './config.ts';
 import { readLandBlocker } from '../../../fix-github-issue/lib/land.ts';
 import { type Diagnosis, diagnose, handleIncident, mergedSince, openIncidentFor } from './incident.ts';
-import { combineCauses, type FloorCause, floorReason, isOutage, type Pause, standingPause } from './line.ts';
+import { combineCauses, type FloorCause, floorReason, floorUnderHost, floorUnderHostFile, isOutage, type Pause, standingPause } from './line.ts';
 import {
   AGENT_RUNGS,
   AGENT_VERDICTS,
@@ -165,7 +165,9 @@ export class Floor {
     this.checkout = resolve(options.ctx.repoRoot, options.ctx.project.worktreeRoot, 'floor-checkout');
     this.lineageOf = options.lineageOf ?? ghLineage(options.ctx);
     const pause = this.pause();
+    const under = floorUnderHost(options.switchFile);
     if (pause?.by === 'floor') this.inherited = pause.cause;
+    else if (under?.by === 'floor') this.inherited = under.cause;
   }
 
   /** Merge-up: one list item per merge, so the next walk checks what landed. */
@@ -343,10 +345,11 @@ export class Floor {
   }
 
   /**
-   * Settles the line after a walk: while anything is wrong the floor's pause stands, restated with its
-   * cause, and is written again over a go (a person's go releases a host pause, not a wrong floor);
-   * once nothing is wrong the floor releases its own pause. A person's pause or a host pause is never
-   * touched.
+   * Settles the line after a walk. The floor restates its own pause while anything is wrong and
+   * releases it once nothing is; a person's pause or a host pause is never touched. A person who
+   * writes go over the floor's pause is obeyed: the floor pauses again only when another item turns
+   * wrong (`pauseLine`). A go that cleared a host pause, which had replaced the floor's, cleared the
+   * host only: the floor's pause is restored if anything is still wrong.
    */
   private releaseLine(): void {
     if (this.rehearsal || this.pausedByOther()) return;
@@ -354,11 +357,18 @@ export class Floor {
     const stillWrong = new Set(wrong.map((e) => e.itemId));
     for (const id of [...this.causes.keys()]) if (!stillWrong.has(id)) this.causes.delete(id);
     for (const id of [...this.diagnosing]) if (!stillWrong.has(id)) this.diagnosing.delete(id);
+    const underHost = existsSync(floorUnderHostFile(this.o.switchFile));
+    if (underHost) rmSync(floorUnderHostFile(this.o.switchFile), { force: true });
+    if (!this.ownPause()) {
+      if (!underHost || wrong.length === 0) return;
+      this.writePause();
+      this.o.log('floor: the host pause was cleared and the floor is still wrong; its pause is restored');
+      return;
+    }
     if (wrong.length > 0) {
       this.writePause();
       return;
     }
-    if (!this.ownPause()) return;
     this.inherited = null;
     writeFileSync(this.o.switchFile, 'go\n');
     this.o.log('floor: nothing on the floor is wrong; line released');

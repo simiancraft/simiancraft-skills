@@ -70,6 +70,22 @@ export function combineCauses(causes: FloorCause[]): FloorCause {
   return 'outside-repository';
 }
 
+/**
+ * Where a host pause keeps the floor pause it replaced. A person's go after fixing the host clears
+ * the host pause only: the floor restores its own pause on its next walk if anything is still wrong.
+ */
+export function floorUnderHostFile(switchFile: string): string {
+  return `${switchFile}.floor-under-host`;
+}
+
+/** The floor pause a host pause replaced, or null when there is none. */
+export function floorUnderHost(switchFile: string): Pause | null {
+  const file = floorUnderHostFile(switchFile);
+  if (!existsSync(file)) return null;
+  const pause = readPause(readFileSync(file, 'utf8').trim());
+  return pause.by === 'floor' ? pause : null;
+}
+
 /** The pause standing on the switch file, or null when it says go. */
 export function standingPause(file: string): Pause | null {
   const sw = readSwitch(file);

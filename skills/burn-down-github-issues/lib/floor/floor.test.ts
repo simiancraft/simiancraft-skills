@@ -119,12 +119,29 @@ describe('a walk that finds the environment down', () => {
     const host = f.line();
     await f.floor.walkOnce({ livenessOnly: true });
     expect(f.line()).toBe(host);
+    // The person fixes the disk and writes go: that clears the host pause, not the floor's.
     writeFileSync(f.switchFile, 'go\n');
     await f.floor.walkOnce({ livenessOnly: true });
     expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
     status = 200;
     await f.floor.walkOnce({ livenessOnly: true });
     expect(f.line()).toBe('go\n');
+  });
+
+  it("obeys a person's go over its own pause, and pauses again only when an item newly turns wrong", async () => {
+    const f = floorFor('person-go');
+    status = 503;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}`);
+    writeFileSync(f.switchFile, 'go\n');
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('go\n');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    status = 503;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
+    status = 200;
   });
 
   it('leaves a host pause in place once the floor is right again: only a person releases it', async () => {
