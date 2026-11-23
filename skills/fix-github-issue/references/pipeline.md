@@ -309,7 +309,8 @@ The pull master runs inside the driver's process rather than as its own, so merg
 while a run is alive. A run that dies after opening pull requests does not strand them outright: the
 next start resumes each stranded pull request from the prover's verdict file its lane still holds
 (or, in a lane an older run left, the single worker's),
-before selecting anything new. Result-file clearing is role-specific precisely so that starting a
+in the same work pool as new lanes and ahead of them in its queue, so a resume waiting on its
+checks holds one slot rather than the run. Result-file clearing is role-specific precisely so that starting a
 reviewer does not destroy the verdict this resume depends on.
 
 The verdict is trusted only as far as it can be corroborated: it must name the issue whose lane it

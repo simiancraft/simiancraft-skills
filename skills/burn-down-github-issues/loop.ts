@@ -38,7 +38,7 @@ import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
 import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
-import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
+import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
 import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
@@ -1242,6 +1242,8 @@ async function main(): Promise<void> {
   FLOOR?.start();
 
   ensureLabels(ctx);
+  // Pull requests a dead run left in a lane of this machine, resumed in the work pool below.
+  let stranded: Stranded[] = [];
   if (!DRY_RUN) {
     reconcile(ctx, new Set(openPullRequestIssueRefs()));
 
@@ -1268,39 +1270,62 @@ async function main(): Promise<void> {
       place(issue.number, issue.title, 'H1', 'decision review interrupted');
     }
 
-    // Resume before selecting anything new: a stranded pull request is finished work, and landing
-    // it first also moves the base before fresh lanes cut their branches from it. Re-read the
-    // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
-    // `--only` bounds resumption too: a run restricted to #12 must not land a stranded #34.
-    const stranded = findStranded(ctx, allIssues().filter((issue) => !ONLY || ONLY.has(issue.number)), CONFIG.skipLabels);
+    // Found now, resumed in the work pool beside new lanes. Re-read the issues rather than reusing
+    // the repair pass's snapshot; the repair may have moved labels. `--only` bounds resumption too:
+    // a run restricted to #12 must not land a stranded #34.
+    stranded = findStranded(ctx, allIssues().filter((issue) => !ONLY || ONLY.has(issue.number)), CONFIG.skipLabels);
     for (const entry of stranded) place(entry.issue.number, entry.issue.title, 'E1', `resumed PR #${entry.result.pr}`);
-    await resumeStranded(
-      ctx,
-      stranded,
-      CONCURRENCY,
-      MAX_POINTS,
-    );
   }
 
-  // The sweep: finish what a crash left announced, repair torn claims and pauses, and hand the
-  // knife every trunk the tracker says needs it, so closes, edits, and holds made outside the loop
-  // are seen before anything new is selected.
   // Every seat reads the base as it is now: the knife and the appraisers judge against the
   // fetched ref, and the lanes below are cut from it.
   if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
 
-  step('Sweeping trunks, claims, and pauses');
-  await CARVING.sweep(allIssues());
-
   // Every card where its facts put it, before any lane moves one: the board is resumed from, so it
   // has to be right at the start of a run, not only after the run has touched a card. The
-  // placement is also the queue every seat below takes from.
-  let placement = await placeBacklog(allIssues());
+  // placement is also the queue the first lanes take from. One read serves the placement and the
+  // sweep, so the sweep never sees a label this run's own lanes wrote.
+  const backlog = allIssues();
+  const placement = await placeBacklog(backlog);
 
-  // Appraisal first, and on its own timeline. Workers only ever pick up something already judged
-  // real and sized, so the expensive population never pays for a worktree to discover an issue was
-  // already fixed. This queue drains: once the window is appraised there is nothing here to do.
-  if (!SKIP_APPRAISAL) {
+  // A pull request waiting for a driver is resumed in the same pool as new work, never ahead of
+  // it: a resume waits on its checks, and a lane cut meanwhile catches up with whatever base the
+  // resume's merge leaves at its own seams. A lane the stranded walk found is resumed from there.
+  const strandedHere = new Set(stranded.map((entry) => entry.issue.number));
+  const driverless = DRY_RUN ? [] : selectResumable(placement).filter(({ issue }) => !strandedHere.has(issue.number));
+  const resumable = driverless.slice(0, LIMIT);
+  for (const { issue, pull } of driverless.slice(LIMIT)) log(`  #${issue.number} not resumed: over this run's limit of ${LIMIT} (PR #${pull.number}; --limit raises it)`);
+  // A card already Ready has been judged, and each lane reads its issue again through the live
+  // gate before it claims, so a close, an edit, or a hold made outside the loop is still seen. The
+  // first lanes start now rather than after the sweep and the sizing stage below.
+  const ready = selectCandidates(placement);
+  const room = Math.max(0, LIMIT - resumable.length);
+  const candidates = ready.slice(0, room);
+  // An issue left out by the limit is Ready, not held: say so, or it reads as silently skipped.
+  for (const issue of ready.slice(room)) log(`  #${issue.number} not selected: over this run's limit of ${LIMIT} (--limit raises it)`);
+  // Recorded before any lane runs, so the refill neither repeats this batch nor leaves it out of `--limit`.
+  ADMISSION.start([...resumable.map(({ issue }) => issue.number), ...candidates.map((issue) => issue.number)]);
+  const first: WorkItem[] = [
+    ...stranded.map((entry): WorkItem => ({ kind: 'stranded', issue: entry.issue, entry })),
+    ...resumable.map(({ issue, pull }): WorkItem => ({ kind: 'driverless', issue, pull })),
+    ...candidates.map((issue): WorkItem => ({ kind: 'ready', issue })),
+  ];
+  const inHand = new Set(first.map((item) => item.issue.number));
+
+  // The startup work, beside the first lanes. The sweep finishes what a crash left announced,
+  // repairs torn claims and pauses, and hands the knife every trunk the tracker says needs it; the
+  // sizing stage then appraises the Inbox, and its size callback carves what is over the ceiling.
+  // The issues already in hand are left out of the sweep: their lanes own them now. The refill is
+  // first asked once this settles, so what it carved and sized joins the pool then.
+  const startup = (async () => {
+    step('Sweeping trunks, claims, and pauses');
+    await CARVING.sweep(backlog.filter((issue) => !inHand.has(issue.number)));
+    if (SKIP_APPRAISAL) return;
+    // Placed again rather than reused: the sweep may have moved labels the Inbox depends on.
+    const inbox = await placeBacklog(allIssues());
+    // Appraisal on its own timeline. Workers only ever pick up something already judged real and
+    // sized, so the expensive population never pays for a worktree to discover an issue was
+    // already fixed. This queue drains: once the window is appraised there is nothing here to do.
     await waitForGo('appraisal', 'appraisal');
     // The same lock the standalone appraiser holds, so a heartbeat and a burndown never size the
     // same issue at once. Held only around the sizing stage; the lanes hold loop.lock.
@@ -1313,65 +1338,63 @@ async function main(): Promise<void> {
       SKIP_APPRAISAL_THIS_RUN = true;
     }
     try {
-      if (!SKIP_APPRAISAL_THIS_RUN) for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);
+      if (!SKIP_APPRAISAL_THIS_RUN) for (const n of await sizeTheWindow(inbox)) ADMISSION.appraised.add(n);
     } finally {
       releaseAppraisal();
     }
-  }
+  })();
 
-  // Placed again rather than reused: the appraisal above has just changed the labels the
-  // placement depends on, and a worker must see them.
-  if (!SKIP_APPRAISAL && !SKIP_APPRAISAL_THIS_RUN) placement = await placeBacklog(allIssues());
-  // Finished work first: a pull request waiting for a driver lands before anything new starts,
-  // which also moves the base before fresh lanes are cut from it.
-  const stranded = DRY_RUN ? [] : selectResumable(placement);
-  const resumable = stranded.slice(0, LIMIT);
-  for (const { issue, pull } of stranded.slice(LIMIT)) log(`  #${issue.number} not resumed: over this run's limit of ${LIMIT} (PR #${pull.number}; --limit raises it)`);
-  const ready = selectCandidates(placement);
-  const room = Math.max(0, LIMIT - resumable.length);
-  const candidates = ready.slice(0, room);
-  // An issue left out by the limit is Ready, not held: say so, or it reads as silently skipped.
-  for (const issue of ready.slice(room)) log(`  #${issue.number} not selected: over this run's limit of ${LIMIT} (--limit raises it)`);
-  if (resumable.length > 0) {
-    step(`Resuming ${resumable.length} pull request(s) with no driver`);
-    log(resumable.map((r) => `#${r.issue.number} (PR #${r.pull.number})`).join(', '));
-    await pool(
-      resumable,
-      CONCURRENCY,
-      resumePull,
-      ({ issue }) => `#${issue.number}`,
-    );
+  // One queue, resumes first, every item counted against `concurrency`. Nothing queued can still
+  // mean work this run makes: children the knife carves during the startup work (unsized, so the
+  // refill appraises them first), or a dependent a resumed merge frees. The pool asks the refill
+  // before it calls the run idle.
+  if (first.length > 0) {
+    step(`Working ${first.length} issue(s), ${Math.min(CONCURRENCY, first.length)} at a time; more join as lanes settle`);
+    log(first.map(describeWorkItem).join(', '));
   }
-  // Recorded before any lane runs, so the refill neither repeats this batch nor leaves it out of `--limit`.
-  ADMISSION.start([...resumable.map(({ issue }) => issue.number), ...candidates.map((issue) => issue.number)]);
-  // Nothing Ready yet can still mean work this run made: children the knife carved during the sizing
-  // above (unsized, so the placement after it left them in the Inbox), or a dependent a resumed merge
-  // freed. Ask the refill once before calling the run idle.
-  const first = candidates.length > 0 ? candidates : await ADMISSION.admit();
-  if (first.length === 0) {
-    if (resumable.length === 0) log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
-    await finish();
-    return;
-  }
-
-  step(`Working ${first.length} issue(s), ${Math.min(CONCURRENCY, first.length)} at a time; more join as lanes settle`);
-  log(first.map((i) => `#${i.number}`).join(', '));
+  let worked = 0;
   await refillingPool(
     first,
     CONCURRENCY,
-    async (issue) => {
-      await waitForGo(`#${issue.number}`, 'dispatch');
-      // The pipeline places the card at every seam from Coding on; the two ways it can decline to
-      // start are placed here, since no lane of its own ever saw the issue.
-      const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
-      if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
-      if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
+    async (item) => {
+      worked++;
+      await workOn(item);
     },
-    ADMISSION.admit,
-    (issue) => `#${issue.number}`,
+    async () => (await ADMISSION.admit()).map((issue): WorkItem => ({ kind: 'ready', issue })),
+    (item) => `#${item.issue.number}`,
+    { until: startup },
   );
+  await startup;
+  if (worked === 0) log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
 
   await finish();
+}
+
+/**
+ * One item of the work pool: a pull request a dead run stranded in a lane here, the loop's own pull
+ * request with no driver, or a Ready card. Each holds one of `concurrency`'s slots while it runs.
+ */
+type WorkItem =
+  | { kind: 'stranded'; issue: Issue; entry: Stranded }
+  | { kind: 'driverless'; issue: Issue; pull: { number: number; branch: string } }
+  | { kind: 'ready'; issue: Issue };
+
+function describeWorkItem(item: WorkItem): string {
+  if (item.kind === 'stranded') return `#${item.issue.number} (resume PR #${item.entry.result.pr})`;
+  if (item.kind === 'driverless') return `#${item.issue.number} (resume PR #${item.pull.number})`;
+  return `#${item.issue.number}`;
+}
+
+async function workOn(item: WorkItem): Promise<void> {
+  if (item.kind === 'stranded') return resumeOneStranded(ctx, item.entry, MAX_POINTS);
+  if (item.kind === 'driverless') return resumePull(item);
+  const { issue } = item;
+  await waitForGo(`#${issue.number}`, 'dispatch');
+  // The pipeline places the card at every seam from Coding on; the two ways it can decline to
+  // start are placed here, since no lane of its own ever saw the issue.
+  const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+  if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+  if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
 }
 
 /** `--floor <mode>`: the floor alone, under the instance lock, so it never races a running loop. */

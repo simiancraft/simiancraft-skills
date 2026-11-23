@@ -192,7 +192,8 @@ only selection of the unsized window and the board lines.
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
 carried on issues by the `size: N` labels. An issue sized above the band, whether by the appraiser
 or already on the tracker, is the knife's (see "Carving and revisits"); an unsized issue is sized
-by the appraiser, which runs as its own cheap population ahead of the workers.
+by the appraiser, which runs as its own cheap population beside the workers: a card is worked only
+once it is sized, and a card already Ready does not wait for the Inbox to be sized.
 
 Where the issue prescribes a remedy that contradicts a written convention (the files
 `conventionDocs` names, or what the surrounding code plainly does), the convention wins and the work continues:
@@ -241,7 +242,11 @@ itself idle: the base is fetched, the backlog placed again (which refreshes the 
 the knife carved meanwhile are in it), unsized cards in the window are appraised under
 `appraise.lock`, and the Ready cards not yet handed to a worker this run join the pool. So a
 dependent whose blocker this run merged, a child carved mid-run, and a trunk's released remainder
-are worked in the run that made them eligible. Every admission counts against `--limit` and every
+are worked in the run that made them eligible. The pool's first queue holds the resumes ahead of
+the Ready cards: pull requests a dead run stranded in a lane here, then the loop's own pull requests
+with no driver. Each holds one of `concurrency`'s slots while it waits on its checks, so a slow
+resume costs one slot rather than every Ready card's start; a lane cut meanwhile catches up with
+the base the resume's merge moves at its own seams. Every admission counts against `--limit` and every
 appraisal against `--appraise-limit`; an issue is handed to a worker at most once per run, so a lane
 that settles without closing its issue (a busy claim, a failed worker) is not retried until the next
 run. A stopping run admits nothing. Changes made outside the run (a person's close, a hold removed,
@@ -274,13 +279,18 @@ that answers `exhausted` releases the trunk (`loop/released`), and the loop runs
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.
 
-At the start of every run, after stranded pull requests are resumed, the sweep reads the open
+At the start of every run, beside the first lanes, the sweep reads the open
 backlog three times: first every issue carrying a trunk, claim, or pause label (finish an
 unfinished announcement, clear a claim whose run died, remove a torn pause, redrive a trunk whose
 hold a person removed, revisit a trunk whose fingerprint moved); second every unlabelled issue that
 is oversized inside the window or has an open child at any age; third every leaf whose blocker is
 closed not planned or gone (its open parent is revisited, else it goes to a person) and every pause
-a closed trunk left behind. `--only` restricts all three passes.
+a closed trunk left behind. `--only` restricts all three passes. The issues the first lanes and
+resumes took are left out of it, since their lanes own them, and the sizing stage runs after it.
+The first lanes are selected from the placement made before the sweep: a Ready card has been
+judged, and each lane reads its issue again through the live gate before it claims, so a close or
+a hold made outside the loop is still seen. The refill is not asked until the sweep and the sizing
+stage settle; then the children they carved and sized join the pool.
 
 ## The pool
 
