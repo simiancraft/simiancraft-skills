@@ -200,10 +200,23 @@ describe('the build gate', () => {
     expect(await awaitGreenChecks(cancelled.ctx, 1, () => {}, EXPECT, cancelled.io)).toContain('optional-lint (cancelled)');
   });
 
-  it('still refuses at once on a check that failed, whatever else its name carries', async () => {
+  it('judges a name by its best run: a pass on the head stands beside a later run that failed', async () => {
+    // A second run on an unchanged head lost its runner; the first had passed.
     const w = world('required', () => [node('build', 'SUCCESS'), node('build', 'FAILURE')]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBe(0);
+  });
+
+  it('refuses at once on a name whose only finished run failed and nothing under it runs', async () => {
+    const w = world('required', () => [node('build', 'FAILURE'), node('build', 'SKIPPED')]);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
     expect(w.waited()).toBe(0);
+  });
+
+  it('waits on a rerun of a failed name, and lands when it passes', async () => {
+    const w = world('required', (clock) => [node('build', 'FAILURE'), clock < 90_000 ? node('build', '') : node('build', 'SUCCESS')]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBeGreaterThanOrEqual(90_000);
   });
 
   it('lands a complete green list at once', async () => {
@@ -310,5 +323,44 @@ describe('a transport failure while the checks are waited on', () => {
     expect(transportFailureIn('dial tcp: lookup api.github.com: i/o timeout')).toBe(true);
     expect(transportFailureIn('checks failed: build (FAILURE)')).toBe(false);
     expect(transportFailureIn('HTTP 404: Not Found')).toBe(false);
+  });
+});
+
+describe('a check its provider queued and never started', () => {
+  afterEach(resetStop);
+  const queued = (name: string) => ({ name, status: 'QUEUED', conclusion: '', detailsUrl: 'https://deploy.example/run/1' });
+  const running = (name: string) => ({ name, status: 'IN_PROGRESS', conclusion: '', workflowName: 'CI' });
+
+  it('is named stuck past the threshold, with its provider, and ends the wait as an outside stop rather than a timeout', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [GREEN, queued('preview')] as never, { timeoutMinutes: 120 });
+    const thrown = await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io).then(() => null, (error: unknown) => error);
+    expect(environmentFaultOf(thrown)).toMatchObject({ kind: 'stuck-check', check: 'preview', provider: 'deploy.example' });
+    expect(w.waited()).toBe(30 * 60_000);
+    expect(said.at(-1)).toContain('preview (deploy.example, queued 30 minutes and never started)');
+  });
+
+  it('takes its threshold from stuckCheckMinutes', async () => {
+    const w = world('required', () => [GREEN, queued('preview')] as never, { timeoutMinutes: 120 });
+    (w.ctx.knobs as { stuckCheckMinutes?: number }).stuckCheckMinutes = 5;
+    await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io).catch(() => null);
+    expect(w.waited()).toBe(5 * 60_000);
+  });
+
+  it('is never stuck once started, however long it runs', async () => {
+    const w = world('required', () => [GREEN, running('integration')] as never, { timeoutMinutes: 60 });
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks still unfinished: integration, after 60 minutes');
+  });
+
+  it('counts from when the watch first saw it, not from when the wait began', async () => {
+    const w = world('required', (clock) => (clock < 20 * 60_000 ? [GREEN] : [GREEN, queued('preview')]) as never, { timeoutMinutes: 120, openSuites: (clock) => (clock < 20 * 60_000 ? [suite('ci', 1)] : []) });
+    await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io).catch(() => null);
+    expect(w.waited()).toBeGreaterThanOrEqual(50 * 60_000);
+  });
+
+  it('holds nothing under a name that already passed', async () => {
+    const w = world('required', () => [GREEN, queued('build')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBe(0);
   });
 });

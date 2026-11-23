@@ -69,7 +69,10 @@ export default {
   // requiredChecks or by branch protection must have PASSED on the landing head: one that was only
   // skipped or cancelled is waited on, so never list a job that is skipped on pull requests by
   // design; a cancelled check is waited on under any name, until a run passes or a person reruns
-  // it), agentTimeoutMinutes
+  // it), stuckCheckMinutes (how long a check may sit queued, never started by its provider, before
+  // the landing calls it stuck and stops, naming the check and its provider, instead of waiting out
+  // checksTimeoutMinutes into a dead letter; 30 by default; a check that has started is never
+  // stuck), agentTimeoutMinutes
   // (how long an agent may run before the driver kills it: a number for every seat, or a map by
   // seat; 45 by default. Hitting the cap means the turn is doing too much, and the answer is a
   // smaller turn, not a longer cap; raise this only where one run of your own gate honestly
@@ -290,7 +293,9 @@ said so in the log.
 
 Changing config requires restarting a running loop; it does not reread the file.
 Set `checksTimeoutMinutes` to cover the slowest required workflow plus runner queue time.
-The default 45 minutes assumes healthy CI.
+The default 45 minutes assumes healthy CI. Set `stuckCheckMinutes` above the longest time a
+healthy provider leaves a check queued before starting it; the default 30 minutes assumes runners
+are usually available.
 
 ## The board
 

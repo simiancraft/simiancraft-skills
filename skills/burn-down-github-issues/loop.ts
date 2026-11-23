@@ -76,6 +76,7 @@ type LoopKnobs = {
   checks: 'required' | 'none';
   requiredChecks?: string[];
   idleCheckSuiteApps?: string[];
+  stuckCheckMinutes?: number;
   smokeTimeoutMinutes: number;
   pointScale: number[];
   maxWorkerAttempts: number;
@@ -555,6 +556,7 @@ const ctx = createContext({
     checks: CONFIG.checks,
     requiredChecks: CONFIG.requiredChecks,
     idleCheckSuiteApps: CONFIG.idleCheckSuiteApps,
+    stuckCheckMinutes: CONFIG.stuckCheckMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
     pointScale: CONFIG.pointScale,
     maxWorkerAttempts: CONFIG.maxWorkerAttempts,

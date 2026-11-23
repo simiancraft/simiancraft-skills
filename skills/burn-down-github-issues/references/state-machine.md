@@ -166,7 +166,8 @@ of appraisal, carving, work, review, landing, or the panel. An environment fault
 place the work ran, not of the work: the host ran out of disk (`ENOSPC`) or memory (`ENOMEM`), a stop
 signal the driver did not send, a person's most likely, ended the agent, or the tracker could not be
 reached (a transport failure the checks wait's retries outlasted, or any step's command failing in
-transport). The work was not judged,
+transport), or a check the landing waited on sat queued, never started by its provider, past
+`stuckCheckMinutes` (`stuck-check`). The work was not judged,
 which is a different fact from judged and failed, so nothing is counted, dead-lettered, or held,
 and the stop is recorded on the issue (`loop-stop kind=outside`, with its cause and seat):
 appraisal returns to A1, carving to C1, work to B1 with no pull request open and to D3 with one (the
@@ -174,8 +175,9 @@ next run resumes a driverless pull request through Proving), review and landing 
 round back and re-derives the card from its facts. The claim is released and the lane cleared for
 the rerun (commits no remote has are kept under `refs/loop/rescued/`). A host fault also sends the
 line `PAUSE`, and the burndown takes the issue up again in the same run once the line is resumed; a
-person's stop and a transport failure are rerun by the next run, not this one, so the work a person
-stopped does not start again at once and a tracker that is down is not retried in a loop.
+person's stop, a transport failure, and a stuck check are rerun by the next run, not this one, so the
+work a person stopped does not start again at once and a tracker or a provider that is down is not
+retried in a loop.
 
 The one exception is a host fault the work itself causes, such as tests that fill the disk. The
 first host fault on an issue leaves the marker `loop/environment-fault: <code>@<seat>`; the same code again

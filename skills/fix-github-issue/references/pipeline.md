@@ -211,9 +211,11 @@ registered list too. A landing waits until every expected check is present and g
 head, every other check shown is green, and no check suite GitHub has opened on the head is
 incomplete; suite data that cannot be read is waited on, never assumed. Checks are judged by name, since
 a head can carry several nodes under one name (a run the repository's concurrency rule cancelled, the
-skipped jobs of a run made while the pull request was a draft, and the run that counts): a name passes
-on a node that succeeded, fails on a node that failed, and has no verdict yet when all it carries is
-skipped or cancelled. A check that need not have run may rest on skipped; one that must may not, or a landing
+skipped jobs of a run made while the pull request was a draft, a rerun, and the run that counts), and
+by the best run under each: a name passes on a node that succeeded, whatever its siblings say (a later
+run on the same head that lost its runner does not undo a pass already there); with no pass it is
+still running while any node under it runs, fails when a node failed and nothing under it runs, and
+has no verdict yet when all it carries is skipped or cancelled. A check that need not have run may rest on skipped; one that must may not, or a landing
 could merge with no check having run, which branch protection alone does not prevent. Which checks
 must have run is the written list (`requiredChecks` and the base branch's required status checks) and
 every check that had passed on the head the reviewer read, since the approval counted on those. It is
@@ -242,6 +244,14 @@ to Merged, the merge onto the floor, the base followed, the lane removed, and th
 pointer); the loop merges nothing itself. One observed closed ends the wait as a park: a person
 closed it, and a person decides what follows. The run start's reconcile records a merge no landing
 watched the same way.
+
+A check whose provider queued it and never started it is stuck, not slow: a deploy-preview
+integration can leave its check `queued` for hours after its own job finished. Once every node under
+a name with no pass has sat queued for `stuckCheckMinutes` (30 by default) since the watch first saw
+it, the wait ends as an outside stop with cause `stuck-check`, naming the check, its provider (the
+workflow, or the host its details link to), and the minutes it sat, instead of waiting out
+`checksTimeoutMinutes` into a landing dead letter. A check that has started is never stuck, however
+long it runs, and a commit status (which cannot tell queued from running) never is either.
 
 ## Staying current, and when proof goes stale
 
@@ -450,6 +460,7 @@ An outside stop is a stop the change did not cause, settled in one place, `settl
 | `host` | a run ended on `ENOSPC` or `ENOMEM` | the line pauses; the work reruns (a repeat is charged; see below) |
 | `signal` | a stop signal the driver did not send | the work reruns on a later run |
 | `transport` | the tracker could not be reached (`TRANSPORT` in `lib/shell.ts`: a failed or timed-out connection, a 502, 503, or 504) | the work reruns on a later run; the checks wait first retries its read with backoff for up to five minutes |
+| `stuck-check` | a check its provider queued and never started, past `stuckCheckMinutes` (30 by default) while the landing waited on it | the work reruns on a later run; the stop names the check, its provider, and how long it sat queued |
 | `base` | a coder's `needs-human` with `"outside": "base"` on a pull request | the work waits on a person with its pull request held open in draft |
 | `needs-person` | a prover's `needs-human`, or a coder's on a pull request | the work waits on a person with its pull request held open |
 

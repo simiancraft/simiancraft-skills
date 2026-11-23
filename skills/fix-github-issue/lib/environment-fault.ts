@@ -22,15 +22,18 @@ import { stopComment } from './stop-record.ts';
 /** The host conditions, by errno code: the machine's, never the work's, the first time. */
 export const HOST_FAULT_KINDS = ['ENOSPC', 'ENOMEM'] as const;
 export type HostFaultKind = (typeof HOST_FAULT_KINDS)[number];
-/** `stopped`: a stop signal this driver did not send, a person's most likely. `transport`: the tracker could not be reached. */
-export type EnvironmentFaultKind = HostFaultKind | 'stopped' | 'transport';
+/**
+ * `stopped`: a stop signal this driver did not send, a person's most likely. `transport`: the
+ * tracker could not be reached. `stuck-check`: a check its provider queued and never started.
+ */
+export type EnvironmentFaultKind = HostFaultKind | 'stopped' | 'transport' | 'stuck-check';
 
 /**
  * What a run that ended on an environment fault carries: the kind, the signal for a stop, and the
  * role of the seat that ran into it. A fault the driver hit in its own work (a worktree it could
  * not write) names no role.
  */
-export type Fault = { kind: EnvironmentFaultKind; signal?: string; role?: string };
+export type Fault = { kind: EnvironmentFaultKind; signal?: string; role?: string; check?: string; provider?: string };
 
 /** The codes, and the strerror text a command such as git or a shell prints for them instead. */
 const PATTERNS: Array<[RegExp, HostFaultKind]> = [
@@ -96,6 +99,7 @@ export function environmentFaultOf(error: unknown): Fault | null {
 export function describeFault(fault: Fault): string {
   if (fault.kind === 'stopped') return `a stop signal (${fault.signal ?? 'unknown'}) this driver did not send`;
   if (fault.kind === 'transport') return 'a transport failure reaching the tracker';
+  if (fault.kind === 'stuck-check') return `a check stuck in its provider's queue (${fault.check ?? 'unnamed check'}, by ${fault.provider ?? 'unknown provider'})`;
   return `a host fault (${fault.kind})`;
 }
 
@@ -172,21 +176,23 @@ export function clearFaultMarkers(ctx: Context, issue: number, role: string, say
 
 /**
  * An outside stop: the work stopped for a reason the change did not cause. Its cause decides what
- * follows. `host` (a full disk or exhausted memory), `signal` (a stop this driver did not send), and
- * `transport` (the tracker unreachable) end a run that judged nothing, and the work reruns. `base`
+ * follows. `host` (a full disk or exhausted memory), `signal` (a stop this driver did not send),
+ * `transport` (the tracker unreachable), and `stuck-check` (a check its provider queued and never
+ * started, which the checks wait names) end a run that judged nothing, and the work reruns. `base`
  * (a gate that fails on the untouched base) and `needs-person` (a seat that needs access, a
  * credential, or a record it may not touch) end a run that cannot go on without a person, and the
  * work waits on one with its pull request held open. Whatever the cause, nothing is counted, no
  * pull request is closed, and the stop is recorded on the issue (`loop-stop kind=outside`).
  */
-export type OutsideCause = 'host' | 'signal' | 'transport' | 'base' | 'needs-person';
+export type OutsideCause = 'host' | 'signal' | 'transport' | 'stuck-check' | 'base' | 'needs-person';
 
 /** The causes a person answers; every other cause reruns the work. */
 export const WAITS_ON_A_PERSON: readonly OutsideCause[] = ['base', 'needs-person'];
 
 /** The cause behind a fault a run ended on. */
 export function causeOf(fault: Fault): OutsideCause {
-  return isHostFault(fault) ? 'host' : fault.kind === 'transport' ? 'transport' : 'signal';
+  if (isHostFault(fault)) return 'host';
+  return fault.kind === 'transport' || fault.kind === 'stuck-check' ? fault.kind : 'signal';
 }
 
 /**

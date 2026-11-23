@@ -29,7 +29,7 @@ import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktr
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { recordMerge } from './record-merge.ts';
-import { type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
+import { type CheckObservation, type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
 import { heldComment, loopHoldStands, proofHeldComment, standingStop, stopComment } from './stop-record.ts';
@@ -650,6 +650,9 @@ export function requiredStatusChecks(ctx: Context, read: (argv: string[]) => str
  */
 export type ChecksWait = string | null | { ended: 'MERGED' | 'CLOSED'; head: string };
 
+/** How long a check may sit queued, never started by its provider, before the checks wait calls it stuck (`stuckCheckMinutes`). */
+export const DEFAULT_STUCK_CHECK_MINUTES = 30;
+
 /** How long the checks wait keeps retrying a tracker it cannot reach before it settles as an outside stop. */
 export const TRANSPORT_WINDOW_MS = 5 * 60_000;
 
@@ -662,6 +665,7 @@ export async function awaitGreenChecks(
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<ChecksWait> {
   const deadline = io.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
+  const stuckAfterMs = (ctx.knobs.stuckCheckMinutes ?? DEFAULT_STUCK_CHECK_MINUTES) * 60_000;
   const wait = async (why: string, ms: number): Promise<string | null> => {
     const left = deadline - io.now();
     if (left <= 0) return `${why}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
@@ -746,32 +750,51 @@ export async function awaitGreenChecks(
     }
     if (rollup.length === 0 && (ctx.knobs.checks === 'none' || !expect)) return null;
 
-    const failed = rollup.filter((c) => c.status === 'failed');
+    // A head can carry several nodes under one name: a run the repository cancelled, the skipped
+    // jobs of a run made while the pull request was a draft, a rerun, and the run that counts. Judged
+    // by name, then, and by the best run under it: a name passes on a node that passed, whatever its
+    // siblings say, since a later run that lost its runner says nothing a passing run on the same
+    // head did not already settle. A name with no pass is still running while any node under it
+    // runs, and failed when one failed and nothing under it runs.
+    const byName = new Map<string, CheckObservation[]>();
+    for (const c of rollup) byName.set(c.name, [...(byName.get(c.name) ?? []), c]);
+    const has = (nodes: CheckObservation[], status: CheckStatus) => nodes.some((c) => c.status === status);
+    const failed = [...byName.values()].filter((nodes) => !has(nodes, 'passed') && !has(nodes, 'pending') && has(nodes, 'failed'));
     if (failed.length > 0) {
-      return `checks failed: ${failed.map((c) => `${c.name} (${c.verdict})`).join(', ')}`;
+      return `checks failed: ${failed.map((nodes) => `${nodes[0].name} (${[...new Set(nodes.filter((c) => c.status === 'failed').map((c) => c.verdict))].join(', ')})`).join(', ')}`;
     }
 
-    const pending = rollup.filter((c) => c.status === 'pending');
+    const pending = [...byName.values()].filter((nodes) => !has(nodes, 'passed') && has(nodes, 'pending'));
     if (pending.length > 0) {
-      const gaveUp = await wait(`checks still unfinished: ${pending.map((c) => c.name).join(', ')}`, 30_000);
+      // A check its provider never started, queued past the threshold, is stuck, not slow: waiting
+      // out the checks timeout on it ends in a dead letter for a change nobody faulted. It ends the
+      // wait as an outside stop that names the check and its provider.
+      const now = io.now();
+      const stuck = pending
+        .map((nodes) => nodes.filter((c) => c.status === 'pending'))
+        .filter((running) => running.every((c) => c.queued) && now - Math.min(...running.map((c) => c.firstSeen)) >= stuckAfterMs)
+        .map((running) => ({ check: running[0].name, provider: running[0].provider, minutes: Math.round((now - Math.min(...running.map((c) => c.firstSeen))) / 60_000) }));
+      if (stuck.length > 0) {
+        const named = stuck.map((s) => `${s.check} (${s.provider}, queued ${s.minutes} minutes and never started)`).join(', ');
+        say(`stuck check(s) on PR #${pr}: ${named}`);
+        throw new EnvironmentFault({ kind: 'stuck-check', check: stuck[0].check, provider: stuck[0].provider }, 'landing', `a check on PR #${pr} is stuck in its provider's queue: ${named}`);
+      }
+      const gaveUp = await wait(`checks still unfinished: ${pending.map((nodes) => nodes[0].name).join(', ')}`, 30_000);
       if (gaveUp) return gaveUp;
       continue;
     }
 
-    // A head can carry several nodes under one name: a run the repository cancelled, the skipped
-    // jobs of a run made while the pull request was a draft, and the run that counts. Judged by
-    // name, then: a name passes on a node that passed. A name somebody expects is not satisfied by
-    // being skipped, or a landing could merge with no check having run; a cancelled node with no
-    // passing sibling has no verdict either. Which names must have run: the written list, the
-    // config's and the base branch's, and every check that had passed on the head the reviewer read.
-    // Not every name that head carried: a repository can have jobs skipped on every pull request by
-    // design (a release, a deploy on push), those were skipped at review too, and waiting for them
-    // to pass would hold every landing to the timeout. A check that passed at review and is only
-    // skipped now is the other case: it stopped running, and the approval counted on it.
+    // What is left under a name with no pass is skipped or cancelled. A name somebody expects is
+    // not satisfied by being skipped, or a landing could merge with no check having run; a cancelled
+    // node with no passing sibling has no verdict either. Which names must have run: the written
+    // list, the config's and the base branch's, and every check that had passed on the head the
+    // reviewer read. Not every name that head carried: a repository can have jobs skipped on every
+    // pull request by design (a release, a deploy on push), those were skipped at review too, and
+    // waiting for them to pass would hold every landing to the timeout. A check that passed at
+    // review and is only skipped now is the other case: it stopped running, and the approval counted on it.
     const mustRun = new Set([...authoritative, ...(expect?.passedAtReview ?? [])]);
-    const byName = new Map<string, CheckStatus[]>();
-    for (const c of rollup) byName.set(c.name, [...(byName.get(c.name) ?? []), c.status]);
     const unjudged = [...byName.entries()]
+      .map(([name, nodes]) => [name, nodes.map((c) => c.status)] as const)
       .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || mustRun.has(name)))
       .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
     if (unjudged.length > 0) {

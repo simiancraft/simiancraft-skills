@@ -186,6 +186,13 @@ export type PipelineKnobs = {
    * is the adopter's statement that the app runs nothing here; a later first run is not detected.
    */
   idleCheckSuiteApps?: string[];
+  /**
+   * How long a check may sit queued, never started by its provider, before the checks wait calls it
+   * stuck and ends the landing as an outside stop naming the check and its provider, instead of
+   * waiting out `checksTimeoutMinutes` into a dead letter. Unset is 30 minutes. A check that has
+   * started is never stuck, however long it runs.
+   */
+  stuckCheckMinutes?: number;
   /** How long `project.smokeCommand` may run before the landing goes to `loop/dlq: landing`. */
   smokeTimeoutMinutes: number;
   /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
@@ -408,6 +415,10 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   const idleCheckSuiteApps = (merged as Knobs).idleCheckSuiteApps;
   if (idleCheckSuiteApps !== undefined && !(Array.isArray(idleCheckSuiteApps) && idleCheckSuiteApps.every((slug) => typeof slug === 'string' && slug.length > 0))) {
     faults.push('idleCheckSuiteApps must be an array of GitHub App slugs');
+  }
+  const stuckCheckMinutes = (merged as Knobs).stuckCheckMinutes;
+  if (stuckCheckMinutes !== undefined && !(typeof stuckCheckMinutes === 'number' && Number.isFinite(stuckCheckMinutes) && stuckCheckMinutes > 0)) {
+    faults.push('stuckCheckMinutes must be a positive number of minutes');
   }
   const checks = (merged as Knobs).checks;
   if (checks !== undefined && !['required', 'none'].includes(checks as string)) {

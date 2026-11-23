@@ -157,6 +157,7 @@ const ctx = createContext({
     checks: CONFIG.checks,
     requiredChecks: CONFIG.requiredChecks,
     idleCheckSuiteApps: CONFIG.idleCheckSuiteApps,
+    stuckCheckMinutes: CONFIG.stuckCheckMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
     pointScale: CONFIG.pointScale,
     maxWorkerAttempts: CONFIG.maxWorkerAttempts,
