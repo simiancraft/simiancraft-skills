@@ -6,7 +6,8 @@
  * with no owner and, sometimes, a finished pull request with a verdict file nobody read.
  */
 
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
@@ -77,6 +78,10 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
       }
     })();
     if (dirty) {
+      if (rescueClosedLane(ctx, Number(issue), dir)) {
+        repaired++;
+        continue;
+      }
       ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
       parkForInspection(ctx, Number(issue), `An earlier run left uncommitted work in its lane (${judged}) and no pull request. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
       continue;
@@ -98,6 +103,62 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
   }
 
   if (repaired > 0) ctx.log(`reconcile: cleared ${repaired} abandoned worktree(s) from an earlier run`);
+}
+
+/**
+ * A closed issue's lane that holds uncommitted work and no pull request. Nothing hands a closed
+ * issue to a worker again and parking writes nothing on a closed issue, so a lane kept for
+ * inspection would be kept, and logged, on every start. Its uncommitted paths, untracked files
+ * included, are committed onto its HEAD through a scratch index (the lane's own index and files are
+ * untouched) and kept under `refs/loop/rescued/`, as `resetLane` keeps unpushed commits; then the
+ * worktree is removed, and the one line saying where the work went is logged by the run that
+ * removed it. Returns false, and the lane is kept as before, when the issue cannot be read as
+ * closed, when an open pull request is on the lane's branch or the open pull requests cannot be
+ * read, or when the work cannot be saved: removing is the irreversible act.
+ */
+export function rescueClosedLane(ctx: Context, issue: number, dir: string): boolean {
+  const io = trackerIo(ctx);
+  try {
+    if (io.view(issue)?.state !== 'CLOSED') return false;
+    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir);
+    if (branch !== 'HEAD' && io.openPullBranches().includes(branch)) {
+      ctx.log(`reconcile: #${issue} is closed, but pull request branch ${branch} is still open; leaving its lane in place`);
+      return false;
+    }
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return false;
+  }
+
+  let saved: string | null = null;
+  let scratch: string | null = null;
+  try {
+    if (dirtyPaths(ctx, dir).length > 0) {
+      const index = join((scratch = mkdtempSync(join(tmpdir(), 'rescue-index-'))), 'index');
+      const git = (...args: string[]) => sh(ctx, ['env', `GIT_INDEX_FILE=${index}`, 'git', '-c', 'user.name=fix-github-issue', '-c', 'user.email=fix-github-issue@localhost', ...args], dir);
+      git('read-tree', 'HEAD');
+      git('add', '-A');
+      const tree = git('write-tree');
+      const commit = git('commit-tree', tree, '-p', 'HEAD', '-m', `rescued: uncommitted work in the lane for closed issue #${issue}`);
+      saved = `refs/loop/rescued/issue-${issue}/${commit.slice(0, 12)}`;
+      git('update-ref', saved, commit);
+    }
+  } catch (error) {
+    ctx.log(`reconcile: #${issue} is closed, but the uncommitted work in its lane could not be saved (${(error as Error).message.split('\n')[0]})`);
+    return false;
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
+
+  try {
+    sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
+  } catch {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  ctx.log(saved
+    ? `reconcile: #${issue} is closed; saved the uncommitted work in ${dir} as ${saved} and removed the lane`
+    : `reconcile: #${issue} is closed; removed the scratch worktree ${dir}, which held no uncommitted work of its own`);
+  return true;
 }
 
 /** Who else holds a live claim on an issue, if anyone; read once per issue, and fail closed. */
