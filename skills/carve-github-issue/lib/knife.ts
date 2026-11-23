@@ -948,6 +948,7 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
       // is cleared below, and the driver would place a card that is no longer this run's to place.
       return { outcome: 'lease-lost', reason: error instanceof LeaseLostError ? 'this run lost its lease on the issue' : `this run lost its lease on the issue, and then threw: ${(error as Error).message.split('\n')[0]}` };
     }
+    let held: string | null = null;
     try {
       // An environment fault (a full disk, no memory, a person's stop) is not a failed carve: the
       // trunk was not judged, nothing is counted, and the next visit carves it again. Only the same
@@ -957,12 +958,15 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
       const settled = fault ? settleOutsideStop(ctx, { number: issue.number, labels: fresh.issue.labels }, { fault }, 'the carve', say) : null;
       if (!settled) await countFailure(k, fresh, `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
       else if (settled.charged) await countFailure(k, fresh, settled.reason, null);
+      else if (settled.held) held = settled.reason;
     } catch (second) {
       say(`could not count the failed carve: ${(second as Error).message.split('\n')[0]}`);
     }
     // The count can await a callback, and the lease can run out under it; asked once more before
     // the cleanup clears the mark, so the driver is not told to place a card it no longer holds.
     if (leaseLost(ctx, issue.number)) return { outcome: 'lease-lost', reason: `this run lost its lease on the issue while settling a throw: ${(error as Error).message.split('\n')[0]}` };
+    // A hold is the settlement, not a throw the driver must place from the tracker.
+    if (held) return { outcome: 'held', reason: held };
     throw error;
   } finally {
     stopRenewing();

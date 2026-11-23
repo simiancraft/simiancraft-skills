@@ -1487,3 +1487,27 @@ describe('a landing on an approval that still stands at the head', () => {
     });
   }
 });
+
+describe('a landing on a standing approval with the review budget spent', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const run = (standing?: unknown) => {
+    const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
+    const calls: string[] = [];
+    const api = loadFunctions(pipeline, ['reviewAndLand'], {
+      reviewCount: () => 3, sh: () => 'h', catchUp: () => null, move: noop, mutate: noop, MAX_BASE_REFRESHES: 3,
+      review: async () => { calls.push('review'); return { review: { decision: 'merge', blocking: [] }, reviewedSha: 'h' }; },
+      serializePullMaster: (_ctx: unknown, _issue: unknown, _say: unknown, action: () => unknown) => action(),
+      land: async () => { calls.push('land'); return 'merged'; },
+      deadLetter: (_ctx: unknown, _issue: unknown, phase: string) => { calls.push(`dlq:${phase}`); return { outcome: 'dlq' }; },
+    });
+    return api.reviewAndLand(ctx, { number: 1, labels: [] }, '/fake', { pr: 7, touches: ['code'] }, 2, noop, 2, standing).then((result: { outcome: string }) => ({ result, calls }));
+  };
+  it('lands: it runs no review, so the spent budget does not stop it', async () => {
+    const { result, calls } = await run({ review: { pr: 7, decision: 'merge', blocking: [], touches: ['code'] }, reviewedSha: 'h' });
+    expect(result.outcome).toBe('merged');
+    expect(calls).toEqual(['land']);
+  });
+  it('still dead-letters a path that would review', async () => {
+    expect((await run()).calls).toEqual(['dlq:review']);
+  });
+});

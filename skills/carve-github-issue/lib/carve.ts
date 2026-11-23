@@ -150,7 +150,8 @@ export type CarveOutcome = {
   /** `lease-lost`: this run's own lease on the trunk ran out mid-carve; unlike `busy`, nobody else's claim was seen, and the card is not this run's to place. */
   /** `not-run`: a dry run reached a seat it does not run; nothing was tried, so nothing failed. */
   /** `work-whole`: a first carving's confirmed `small-enough` or `indivisible`; the issue is worked as one piece. */
-  outcome: CarveVerdict | RevisitVerdict | 'work-whole' | 'busy' | 'lease-lost' | 'not-run' | 'resumed' | 'left-alone' | 'failed' | 'dlq';
+  /** `held`: the same rerunning outside stop came back run after run, and the trunk now waits on a person. */
+  outcome: CarveVerdict | RevisitVerdict | 'work-whole' | 'held' | 'busy' | 'lease-lost' | 'not-run' | 'resumed' | 'left-alone' | 'failed' | 'dlq';
   reason: string;
   generation?: number;
   children?: number[];

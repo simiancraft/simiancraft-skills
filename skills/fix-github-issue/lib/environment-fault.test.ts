@@ -344,3 +344,18 @@ describe('a decision panel whose seat fails on the host', () => {
     expect(io.view(50)!.comments.some((c) => c.body.includes('outcome=hold'))).toBe(false);
   }, 20_000);
 });
+
+describe('appraisal and carve honor a held repeat', () => {
+  it('an appraisal reads as held for a person, not as a free fault to retry', async () => {
+    const { recordAppraisalThrow } = await import('../../appraise-github-issues/lib/appraise.ts');
+    const io = new FakeTracker('loop-bot', [fakeIssue(33)]);
+    const earlier = stopComment('outside', { cause: 'transport', seat: 'appraiser' }, 'earlier');
+    io.comment(33, 'loop-bot', earlier);
+    io.comment(33, 'loop-bot', earlier);
+    const ctx = context([], io);
+    const outcome = recordAppraisalThrow(ctx, { number: 33, title: 't', labels: [], createdAt: '2026-01-01T00:00:00Z' } as never, 3, new Error('error connecting to api.github.com'), () => {});
+    expect(outcome).toMatchObject({ verdict: 'needs-human', held: true });
+    expect(outcome.retry).toBeUndefined();
+    expect(labelsOf(io, 33)).toContain('needs-human');
+  });
+});

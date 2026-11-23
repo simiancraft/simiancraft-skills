@@ -73,6 +73,8 @@ export type AppraisalOutcome = {
   deadLetter?: boolean;
   /** True when a seat ended on an environment fault: nothing was counted, and the next run appraises it again. */
   unjudged?: boolean;
+  /** True when the same rerunning outside stop came back run after run, and the issue now waits on a person (`needs-human`). */
+  held?: boolean;
   /** How a decision panel settled a `needs-decision`, when one sat: `proceed` sends the issue back to be appraised. */
   panel?: 'proceed' | 'hold';
 };
@@ -368,6 +370,7 @@ export function refusedAsTrunk(tree: Tree, release: boolean | undefined): boolea
 function settleAppraisalFault(ctx: Context, issue: Issue, cap: number, fault: Fault, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
   const settled = settleOutsideStop(ctx, issue, { fault }, 'appraisal', say);
   if (settled.charged) return countFailedAppraisal(ctx, issue, cap, settled.reason, logPath, say);
+  if (settled.held) return { verdict: 'needs-human', reason: settled.reason, held: true };
   return { verdict: 'failed', reason: settled.reason, retry: true, unjudged: true };
 }
 

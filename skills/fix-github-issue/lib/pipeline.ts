@@ -1665,12 +1665,13 @@ export async function reviewAndLand(
   let parkKind: 'park' | 'boundary' = 'park';
   // A budget already spent when the work arrives here (a resume, a redrive nobody reset) is the
   // review queue's, as it is when the last round is spent below: a machine's limit, not a person's call.
-  if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun) {
+  // A landing on a standing approval runs no review, so a spent budget does not stop it.
+  if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun && !standing) {
     return deadLetter(ctx, issue, 'review', `The review budget of ${consumed} rounds was already spent when this pull request came back for review.`, say, result.pr);
   }
   /** A catch-up the merge gate already made, whose movement reached this work: the next pass reproves from it. */
   let caughtAtLanding: CaughtUp | null = null;
-  while (consumed < ctx.knobs.maxReviewRounds) {
+  while (approved || consumed < ctx.knobs.maxReviewRounds) {
     if (!result.pr) return deadLetter(ctx, issue, 'work', 'The worker reported a fix but named no pull request.', say);
     const pr = result.pr;
     const touches = result.touches;

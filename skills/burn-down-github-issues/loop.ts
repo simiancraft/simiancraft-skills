@@ -1110,7 +1110,7 @@ async function sizeTheWindow(placement: Placement, { skip = () => false, limit =
           // card says which. Never left saying Appraising, and never an uncounted retry.
           try {
             const counted = recordAppraisalThrow(ctx, issue, CONFIG.maxAppraiseAttempts, error as Error, (m) => log(`#${issue.number}  ${m}`));
-            place(issue.number, issue.title, counted.deadLetter ? 'Q1' : 'A1', counted.reason.slice(0, 120));
+            place(issue.number, issue.title, counted.deadLetter ? 'Q1' : counted.held ? 'H2' : 'A1', counted.reason.slice(0, 120));
           } catch (second) {
             log(`#${issue.number}  could not record the failed appraisal: ${(second as Error).message.split('\n')[0]}`);
             place(issue.number, issue.title, 'A1', `appraiser threw: ${(error as Error).message}`.slice(0, 120));
