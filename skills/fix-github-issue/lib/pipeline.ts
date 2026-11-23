@@ -354,15 +354,16 @@ function remoteBranchHead(ctx: Context, cwd: string, branch: string): string | n
 }
 
 /**
- * Whether a lane behind `baseSha` lacks only release noise (`behindBeyondNoise` is empty), which
- * the merge brings in, so no catch-up is owed and no new head restarts CI. Never when the base
- * requires an up-to-date branch: GitHub then refuses the merge until the lane holds every base
- * commit. `skipNoise` is that answer when the caller already read it; otherwise it is read here,
- * and only once the movement is known to be noise.
+ * Whether a lane owes a catch-up to `baseSha`: it lacks base commits beyond release noise
+ * (`behindBeyondNoise`), or lacks any while the base requires an up-to-date branch, since GitHub
+ * then refuses the merge until the lane holds every base commit. Release noise alone the merge
+ * brings in, with no new head to restart CI. `strict` is that rule when the caller already read it;
+ * otherwise it is read here, for the pull request `pr`, and only once the movement is known to be noise.
  */
-function behindOnlyByNoise(ctx: Context, cwd: string, baseSha: string, skipNoise?: boolean, pr?: number): boolean {
-  if (skipNoise === false || behindBeyondNoise(ctx, cwd, baseSha).length > 0) return false;
-  return skipNoise ?? !requiresUpToDate(ctx, pr);
+function catchUpOwed(ctx: Context, cwd: string, baseSha: string, strict?: boolean, pr?: number): boolean {
+  if (behindBeyondNoise(ctx, cwd, baseSha).length > 0) return true;
+  if (behindBase(ctx, cwd, baseSha).length === 0) return false;
+  return strict ?? requiresUpToDate(ctx, pr);
 }
 
 /**
@@ -376,7 +377,7 @@ async function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (messag
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return 'current';
-  if (behindOnlyByNoise(ctx, cwd, baseSha)) {
+  if (!catchUpOwed(ctx, cwd, baseSha)) {
     say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up ${why}`);
     return 'current';
   }
@@ -948,7 +949,7 @@ export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message
  * current base: not a revision, not a review, not a merge. A lane that is behind merges the base in
  * (never a rebase) and pushes; what that costs is decided separately, by whether the movement
  * reached the paths the proof or the approval covers. The one exception is a base that moved only
- * by release noise (`behindOnlyByNoise`), which the merge brings in without a catch-up.
+ * by release noise (`catchUpOwed`), which the merge brings in without a catch-up.
  *
  * `since` is the commit the standing proof or verdict was pinned to. Returns null when the lane
  * already holds the base, or lacks only release noise; `conflict` when the merge could not apply, which the pipeline never
@@ -982,7 +983,7 @@ export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: st
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return null;
-  if (behindOnlyByNoise(ctx, cwd, baseSha, options.skipNoise, options.pr)) {
+  if (!catchUpOwed(ctx, cwd, baseSha, options.skipNoise === undefined ? undefined : !options.skipNoise, options.pr)) {
     say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up`);
     return null;
   }
@@ -1229,8 +1230,7 @@ async function land(
       // The commit fetched is the commit compared and the commit remembered. The remote-tracking
       // ref is shared with every other lane, so reading it again could name a commit never checked.
       const checked = fetchBase(ctx, cwd);
-      const beyondNoise = behindBeyondNoise(ctx, cwd, checked);
-      if ((skipNoise ? beyondNoise : behindBase(ctx, cwd, checked)).length === 0) {
+      if (!catchUpOwed(ctx, cwd, checked, !skipNoise)) {
         baseSeen = checked;
         lastLook = checked;
         return 'fresh';
@@ -1242,7 +1242,7 @@ async function land(
       const moved = commitsBehind(ctx, cwd, checked, lastLook);
       lastLook = checked;
       movers.unshift(...moved);
-      const byNoise = beyondNoise.length === 0;
+      const byNoise = behindBeyondNoise(ctx, cwd, checked).length === 0;
       if (byNoise) noiseMoves += 1;
       else refreshes += 1;
       const total = refreshes + noiseMoves;
@@ -2209,7 +2209,7 @@ async function approvedAtHead(
   const view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,isDraft'])) as { headRefOid: string; isDraft: boolean };
   if (view.headRefOid !== sha || view.isDraft) return null;
   const base = fetchBase(ctx, cwd);
-  if ((requiresUpToDate(ctx, pr) ? behindBase(ctx, cwd, base) : behindBeyondNoise(ctx, cwd, base)).length > 0) return null;
+  if (catchUpOwed(ctx, cwd, base, undefined, pr)) return null;
   if (ctx.knobs.checks !== 'none') {
     // One look, no wait: a check that has failed on this head keeps the usual path. Checks still
     // running, or yet to register, are the landing's to wait on: its watch waits for them, and

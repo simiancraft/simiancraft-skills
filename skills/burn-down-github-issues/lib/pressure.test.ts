@@ -618,7 +618,7 @@ describe('runtime moves and settlement', () => {
       return '';
     };
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
-    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, behindBeyondNoise: behindBase, requiresUpToDate: () => true, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
@@ -638,7 +638,7 @@ describe('runtime moves and settlement', () => {
     };
     const landWith = (strict: boolean) => {
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         // The lane is behind by a changelog alone, on every look.
@@ -673,7 +673,7 @@ describe('runtime moves and settlement', () => {
         return '';
       };
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_NOISE_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         fetchBase: () => { current = next(); return 'A'; },
@@ -730,7 +730,7 @@ describe('a floor incident at the merge boundary', () => {
       if (argv.at(-1) === '.parents[0].sha') return 'A';
       return '';
     };
-    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase', 'mergeAllowed'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase', 'mergeAllowed'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], boundaryWaived, waiverNoted: new Set(),
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
       behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
@@ -1059,7 +1059,7 @@ describe('catch-up stop boundaries', () => {
       const acts: string[] = [];
       const api = loadFunctions(pipeline, [name], {
         yieldToStop: async () => { if (++gates === stopAt) throw new RunStopping('stop'); },
-        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'], behindOnlyByNoise: () => false,
+        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'], catchUpOwed: () => true,
         staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch',
         move: () => acts.push('F2'), updateFromBase: () => { acts.push('merge'); return false; },
       });
@@ -1075,7 +1075,7 @@ describe('catch-up stop boundaries', () => {
       let gates = 0;
       const api = loadFunctions(pipeline, [name], {
         yieldToStop: async () => { if (++gates > 2) throw new RunStopping('after push'); },
-        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [], behindOnlyByNoise: () => false,
+        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [], catchUpOwed: () => true,
         staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop, updateFromBase: () => true,
       });
       const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
@@ -1088,7 +1088,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     let gates = 0;
     const api = loadFunctions(pipeline, ['reviewAndLand', 'catchUp'], {
-      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], behindOnlyByNoise: () => false,
+      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], catchUpOwed: () => true,
       staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
       yieldToStop: async () => { if (++gates === 3 && stopped) throw new RunStopping('stop'); },
       deadLetter: () => acts.push('deadLetter'), mutate: () => acts.push('ready'),
@@ -1103,7 +1103,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     let gates = 0;
     const api = loadFunctions(pipeline, ['land', 'catchUp'], {
-      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], behindOnlyByNoise: () => false,
+      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], catchUpOwed: () => true,
       staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
       yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
       mutate: (_ctx: unknown, _why: string, argv: string[]) => acts.push(argv.includes('--undo') ? 'draft' : 'ready'),
@@ -1116,7 +1116,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     const api = loadFunctions(pipeline, ['runWorker', 'seamCatchUp'], {
       placeWork: () => ({ kind: 'prove', coded: { branch: 'fix/x', sha: 'head', gated: 'head' }, sha: 'head', handoff: 'h' }),
-      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false, behindOnlyByNoise: () => false,
+      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false, catchUpOwed: () => true,
       yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
       recordAttempt: () => acts.push('attempt'), runProve: () => acts.push('prove'), move: noop,
     });
@@ -1129,7 +1129,7 @@ describe('release noise at every catch-up', () => {
   const pipeline = '../../fix-github-issue/lib/pipeline.ts';
   // A release commit: a configured changelog and a version-only package.json bump. `beyond` is what `behindBeyondNoise` leaves.
   const load = (name: string, beyond: string[], upToDateRequired: boolean, merges: string[]) =>
-    loadFunctions(pipeline, [name, 'behindOnlyByNoise'], {
+    loadFunctions(pipeline, [name, 'catchUpOwed'], {
       fetchBase: () => 'base', behindBase: () => ['CHANGELOG.md', 'package.json'], behindBeyondNoise: () => beyond,
       requiresUpToDate: () => upToDateRequired, staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop,
       updateFromBase: () => { merges.push('merge'); return true; },
@@ -1159,7 +1159,7 @@ describe('release noise at every catch-up', () => {
   it('a landing that already read the protection does not read it again', async () => {
     const merges: string[] = [];
     let reads = 0;
-    const api = loadFunctions(pipeline, ['catchUp', 'behindOnlyByNoise'], {
+    const api = loadFunctions(pipeline, ['catchUp', 'catchUpOwed'], {
       fetchBase: () => 'base', behindBase: () => ['CHANGELOG.md'], behindBeyondNoise: () => [],
       requiresUpToDate: () => { reads += 1; return true; }, staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop,
       updateFromBase: () => { merges.push('merge'); return true; },
@@ -1375,7 +1375,7 @@ describe('a prover that needs a person', () => {
   it('refuses the merge while needs-human is on the pull request, whatever the issue carries', async () => {
     const writes: string[][] = [];
     const ctx = context(new FakeTracker(bot));
-    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
@@ -1404,7 +1404,7 @@ describe('a pull request merged while its landing watched', () => {
     const { recordMerge } = loadFunctions('../../fix-github-issue/lib/record-merge.ts', ['recordMerge'], {
       closeIssue: async (_ctx: unknown, issue: number) => { closes.push(issue); }, parkIssue: noop,
     });
-    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv.includes('mergedAt') ? '2026-11-21T11:11:04Z' : argv.includes('mergeCommit') ? 'm'.repeat(40) : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
@@ -1430,7 +1430,7 @@ describe('a pull request merged while its landing watched', () => {
 
   it('parks a pull request closed while its checks were waited on', async () => {
     const ctx = context(new FakeTracker(bot));
-    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
@@ -1480,7 +1480,7 @@ describe('a landing on an approval that still stands at the head', () => {
       return head;
     };
     const { validTouches } = loadFunctions(pipeline, ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] });
-    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue', 'approvedAtHead'], {
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue', 'approvedAtHead', 'catchUpOwed'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
       trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, standingApproval, loopHoldStands, validTouches,
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
