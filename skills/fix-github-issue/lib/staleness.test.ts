@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { behindBase, behindBeyondNoise, fetchBase, importClosure, resolveSpecifier, staleAgainstBase } from './staleness.ts';
+import { behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, importClosure, isReleaseNoise, resolveSpecifier, staleAgainstBase } from './staleness.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const run = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -105,6 +105,56 @@ describe('staleAgainstBase: did the world move beneath the proof', () => {
   });
 });
 
+/** Puts a package.json on the base and brings the lane up to it, so the next landing on the base is the only package.json movement. */
+function sharedManifest(lane: string, other: string): void {
+  writeFileSync(join(other, 'package.json'), '{\n  "name": "x",\n  "version": "1.0.0",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+  git(other, 'add', 'package.json');
+  git(other, 'commit', '-q', '-m', 'manifest');
+  git(other, 'push', '-q', 'origin', 'development');
+  git(lane, 'fetch', '-q', 'origin');
+  git(lane, 'merge', '-q', '--no-edit', 'origin/development');
+}
+
+describe('isReleaseNoise: which base files count as movement', () => {
+  it('calls a configured release artifact noise, and an unconfigured file movement', () => {
+    const { ctx, lane, other } = repository();
+    (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['CHANGELOG.md', 'deploy/'];
+    const since = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'CHANGELOG.md', '# 1.0.1\n');
+    const base = fetchBase(ctx, lane);
+    expect(isReleaseNoise(ctx, lane, 'CHANGELOG.md', since, base)).toBe(true);
+    expect(isReleaseNoise(ctx, lane, 'deploy/constants.json', since, base)).toBe(true);
+    expect(isReleaseNoise(ctx, lane, 'src/unrelated.ts', since, base)).toBe(false);
+  });
+
+  it('calls a version-only package.json bump noise without any configuration', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    const since = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    expect(isReleaseNoise(ctx, lane, 'package.json', since, fetchBase(ctx, lane))).toBe(true);
+  });
+
+  it('calls a version bump that also changes a dependency movement', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    const since = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "2.0.0" }\n}\n');
+    expect(isReleaseNoise(ctx, lane, 'package.json', since, fetchBase(ctx, lane))).toBe(false);
+  });
+
+  it('is what freshness leaves out: a version-only bump keeps a proof fresh, a dependency change does not', () => {
+    const { ctx, lane, other } = repository();
+    (ctx.project as { alwaysInvalidates: string[] }).alwaysInvalidates = ['bun.lock', 'package.json'];
+    sharedManifest(lane, other);
+    const proofHead = git(lane, 'rev-parse', 'HEAD');
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    expect(staleAgainstBase(ctx, lane, proofHead)).toEqual([]);
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.2",\n  "dependencies": { "a": "2.0.0" }\n}\n');
+    expect(staleAgainstBase(ctx, lane, proofHead)).toEqual(['package.json']);
+  });
+});
+
 describe('behindBeyondNoise: what a landing must catch up on', () => {
   const withArtifacts = (ctx: Context) => {
     (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['changelog/'];
@@ -135,16 +185,32 @@ describe('behindBeyondNoise: what a landing must catch up on', () => {
     expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['changelog/1.0.1.md']);
   });
 
-  it('keeps a version-only package.json bump, which code can read and no adopter declared', () => {
+  it('is empty when the base moved only by a release commit: a configured changelog and a version-only package.json bump', () => {
     const { ctx, lane, other } = repository();
-    writeFileSync(join(other, 'package.json'), '{ "name": "x", "version": "1.0.0" }\n');
-    git(other, 'add', 'package.json');
-    git(other, 'commit', '-q', '-m', 'manifest');
+    (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['CHANGELOG.md'];
+    sharedManifest(lane, other);
+    writeFileSync(join(other, 'CHANGELOG.md'), '# 1.0.1\n');
+    writeFileSync(join(other, 'package.json'), '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    git(other, 'add', 'CHANGELOG.md', 'package.json');
+    git(other, 'commit', '-q', '-m', 'chore(release): 1.0.1 [skip ci]');
     git(other, 'push', '-q', 'origin', 'development');
-    git(lane, 'fetch', '-q', 'origin');
-    git(lane, 'merge', '-q', '--no-edit', 'origin/development');
-    landUpstream(other, 'package.json', '{ "name": "x", "version": "1.0.1" }\n');
-    expect(behindBeyondNoise(withArtifacts(ctx), lane, fetchBase(ctx, lane))).toEqual(['package.json']);
+    const base = fetchBase(ctx, lane);
+    expect(behindBase(ctx, lane, base)).toEqual(['CHANGELOG.md', 'package.json']);
+    expect(behindBeyondNoise(ctx, lane, base)).toEqual([]);
+  });
+
+  it('treats a version-only package.json bump as noise with no release artifacts configured', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "1.0.0" }\n}\n');
+    expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual([]);
+  });
+
+  it('keeps a version bump that also changes a dependency', () => {
+    const { ctx, lane, other } = repository();
+    sharedManifest(lane, other);
+    landUpstream(other, 'package.json', '{\n  "name": "x",\n  "version": "1.0.1",\n  "dependencies": { "a": "2.0.0" }\n}\n');
+    expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['package.json']);
   });
 
   it('keeps a release artifact the work imports: the change has to be checked with its new contents', () => {
@@ -160,6 +226,45 @@ describe('behindBeyondNoise: what a landing must catch up on', () => {
     landUpstream(other, 'src/version.ts', "export const version = '1.0.1';\n");
     (ctx.project as { releaseArtifacts: string[] }).releaseArtifacts = ['src/version.ts'];
     expect(behindBeyondNoise(ctx, lane, fetchBase(ctx, lane))).toEqual(['src/version.ts']);
+  });
+});
+
+describe('commitsBehind: who moved the base', () => {
+  function landAs(other: string, author: string, file: string, subject: string): void {
+    writeFileSync(join(other, file), `${subject}\n`);
+    git(other, 'add', file);
+    git(other, '-c', `user.name=${author}`, '-c', `user.email=${author}@example.com`, 'commit', '-q', '-m', subject);
+    git(other, 'push', '-q', 'origin', 'development');
+  }
+
+  it('names each commit by author and subject, newest first, whoever made it', () => {
+    const { ctx, lane, other } = repository();
+    landAs(other, 'someone', 'src/unrelated.ts', 'change the unrelated module');
+    landAs(other, 'release-bot', 'CHANGELOG.md', 'chore(release): 1.0.1 [skip ci]');
+    const commits = commitsBehind(ctx, lane, fetchBase(ctx, lane));
+    expect(commits.map((commit) => [commit.subject, commit.author])).toEqual([
+      ['chore(release): 1.0.1 [skip ci]', 'release-bot'],
+      ['change the unrelated module', 'someone'],
+    ]);
+  });
+
+  it('leaves out commits a base already looked at contained', () => {
+    const { ctx, lane, other } = repository();
+    landAs(other, 'someone', 'src/unrelated.ts', 'first move');
+    const seen = fetchBase(ctx, lane);
+    landAs(other, 'someone', 'deploy.json', 'second move');
+    expect(commitsBehind(ctx, lane, fetchBase(ctx, lane), seen).map((commit) => commit.subject)).toEqual(['second move']);
+  });
+
+  it('is empty when the lane holds the base', () => {
+    const { ctx, lane } = repository();
+    expect(commitsBehind(ctx, lane, fetchBase(ctx, lane))).toEqual([]);
+  });
+
+  it('names commits by short sha, subject, and author, and counts the rest', () => {
+    const commits = Array.from({ length: 8 }, (_, i) => ({ sha: `${i}`.repeat(40), author: 'bot', subject: `move ${i}` }));
+    expect(describeCommits(commits.slice(0, 1))).toBe('0000000000 "move 0" (bot)');
+    expect(describeCommits(commits)).toEndWith('"move 5" (bot), and 2 more');
   });
 });
 

@@ -43,10 +43,11 @@ floor: {
     healthPaths: ['/', { path: '/graphql', method: 'POST', body: '{"query":"{__typename}"}', headers: { 'content-type': 'application/json' } }],
     probeTimeoutMs: 10000,
     revisionCommand: 'curl -s https://staging.example.com/version', // optional; prints the running SHA
+    deployWorkflow: 'Deploy', // optional; the workflow that deploys the base, read when there is no running SHA
+    deployCapMinutes: 180, // how long a merge waits for deploy evidence before it is `deploy-unconfirmed`
     logsCommand: 'your-host logs --tail 200', // optional; read when a walk fails
     login: { url: 'https://staging.example.com/login', userEnv: 'FLOOR_USER', passwordEnv: 'FLOOR_PASSWORD' },
     safeEndpoints: [], // paths the walker may POST to; default none
-    graceMinutes: 15, // with no revisionCommand, how long after a merge an item stays `unverified`
     quietWindows: [{ start: '02:00', end: '02:30' }], // UTC; a nightly rebuild is not an incident
   },
   walks: [
@@ -69,14 +70,20 @@ anything that looks like a value, and the values live only in the shell that sta
 
 1. **Liveness.** The driver fetches the base URL and every health path itself, no agent. A path
    that does not answer 2xx or 3xx is `down`, and nothing else is walked this time.
-2. **Classify.** Each pending item with a merge SHA is checked against the deployed revision:
-   `not-yet-deployed` when it is not an ancestor, `unverified` inside the grace window when there
-   is no revision signal. Recorded only when the verdict changes.
+2. **Classify.** Each pending item with a merge SHA is walked only on evidence that its merge is
+   deployed (see "Deploy evidence" below); without it the item is `not-yet-deployed`, and
+   `deploy-unconfirmed` once `deployCapMinutes` have passed since the merge. Recorded only when the
+   verdict changes. An item `owed-by-sibling` is not
+   walked while that sibling is open, or merged with its own floor item not yet verified.
 3. **Walk.** One agent turn for every remaining item, in a read-only checkout at the deployed
-   revision, with the standing walks whose paths match the item's. The driver validates each
-   verdict against the vocabulary below before it reaches the ledger. A passing item's card moves
-   to **Verified on the floor**.
-4. **On a failure.** An item that has just turned `down` or `absent` pauses the line and runs
+   revision, with the standing walks whose paths match the item's. An item whose issue is known
+   carries that issue's body, and the walker judges the item against that acceptance, not against
+   the outcome of the trunk it was carved from; a carved child also carries the trunk's open
+   children. The driver validates each verdict against the vocabulary below before it reaches the
+   ledger. A passing item's card moves to **Verified on the floor**.
+4. **On a failure.** A carved child that has just turned `absent` while its trunk has open
+   children is diagnosed first, before anything pauses (see "Owed by a sibling" below). Then an
+   item that has just turned `down` or `absent` pauses the line and runs
    `on-walk-fail`; an item that stays wrong does neither again on later walks, so a notifier in
    `on-walk-fail` hears about an outage once, not every walk. Then each wrong item is diagnosed and its
    incident filed (or found) and worked; see below.
@@ -118,7 +125,8 @@ list, so a crash mid-write loses at most one line and the next walk re-derives i
 `id` and `text` are required; the first item with an id wins, so producers append blindly. Without
 `ref` an item is free text the walker reads as an instruction ("the header now shows the new
 logo"). The ledger entry carries `itemId`, `checkedAt`, `deployedRevision`, `rung`, `verdict`,
-`reason`, and optionally `evidence`, plus `quiet` on an entry recorded inside a quiet window.
+`reason`, and optionally `evidence`, plus `quiet` on an entry recorded inside a quiet window and
+`sibling` on an `owed-by-sibling` entry.
 
 | Rung | Meaning |
 |---|---|
@@ -136,11 +144,62 @@ logo"). The ledger entry carries `itemId`, `checkedAt`, `deployedRevision`, `run
 | `not-checkable` | terminal | looking would need a side effect or credentials the config does not give; the reason says which |
 | `absent` | wrong | the deployed revision includes the merge and the change is not there |
 | `down` | wrong | liveness failed |
+| `deploy-failed` | wrong | the deploy run for the merge failed, timed out, or never started, or was cancelled with no later run containing the merge; the reason carries the run's URL |
 | `not-yet-deployed` | pending | walked again next time |
-| `unverified` | pending | walked again next time |
+| `deploy-unconfirmed` | pending | still no deploy evidence `deployCapMinutes` after the merge; named under ⚠️ on every readout, never an incident, and the drain does not wait on it; walked once evidence arrives |
+| `unverified` | pending | no longer assigned; read in older ledgers only |
+| `owed-by-sibling` | pending | the missing effect belongs to the open sibling issue in `sibling`; walked again once that sibling lands |
 
 `not-checkable` is a known unknown kept honest by its reason, never a default; an item the walker
 did not reach gets no entry and is walked again.
+
+## Deploy evidence
+
+A merge is deployed when there is evidence of it, never because time has passed:
+
+- **`revisionCommand`** prints the running commit: the merge is deployed when that commit
+  contains it. When the command prints one, it decides alone.
+- **`deployWorkflow`**, read when there is no running commit to compare: the merge is deployed once
+  a run of that workflow (its name or file, as `gh run list --workflow` takes it) for the merge
+  commit has completed successfully. A run that is queued, pending, waiting, requested, or in
+  progress has not deployed it yet. When none is, and the newest run failed, was cancelled, timed
+  out, or never started, the merge is `deploy-failed`: a wrong verdict, with the run's URL in its
+  reason, that pauses the line and files an incident diagnosed like any other (a broken build or
+  bundle is a fault in the repository). A later successful run clears it. A cancelled run is
+  judged against the workflow's later runs on the base branch first: a workflow that cancels in
+  progress cancels each back-to-back merge's run for the next, so a later run for a commit that
+  contains the merge carries it (deployed once that run succeeds, `not-yet-deployed` while it has
+  not), and the merge is `deploy-failed` only when nothing later contains it.
+
+A merge without evidence is `not-yet-deployed` and is not walked, so a backend change whose deploy
+is still running is never judged `absent` or `intact` against the build before it. After
+`deployCapMinutes` (default 180) with still no evidence it is `deploy-unconfirmed`: the floor looked
+and cannot tell. That is shown in the readout, files no incident, and pauses nothing; the item is
+classified again every walk and walked as soon as evidence appears. With neither knob set, no merge
+can be shown deployed, so every merge ends `deploy-unconfirmed`, and the floor says so when it
+starts; set one. `graceMinutes` is still accepted but decides nothing, and the floor says that when
+it starts too.
+
+## Owed by a sibling
+
+A trunk carved into children has its outcome spread across them: one child changes what new
+installs create while its sibling migrates the rows that already exist. The first child's merge
+can be correct while the trunk's outcome is still missing, and that missing part is the open
+sibling's work, not a failure. Two checks keep it that way.
+
+- **The walker.** It sees the item's own acceptance and the trunk's open children, and records
+  `owed-by-sibling` with `sibling` set when what it finds missing is an effect an open sibling
+  owns. The driver keeps that verdict only when `sibling` names a child open under the same trunk;
+  naming anything else leaves the effect with nobody coming to supply it, so it is recorded
+  `absent`.
+- **The diagnosis.** A carved child that turns `absent` with open siblings is diagnosed before the
+  line pauses. A diagnosis whose remedy is `owed-by-sibling` and names an open sibling is recorded
+  as that verdict after the `absent`, so the item is not wrong: nothing pauses, `on-walk-fail` does
+  not run, and no incident is filed or fixed. Any other diagnosis is the one the incident uses.
+
+An item owed by a sibling is not walked again while that sibling is open, or while the sibling's
+own merge is on the floor and not yet verified; then it is walked again against its acceptance.
+The drain does not wait on it, since the sibling's merge, not this run's, is what settles it.
 
 ## The callbacks
 
@@ -163,14 +222,39 @@ itself is not a callback: an interlock never depends on a file an adopter might 
 
 ## The line
 
-A wrong walk writes `pause` and a reason beginning `floor:` to `<worktreeRoot>/runs/line-switch`,
-naming everything on the floor that is wrong. It never overwrites a pause a person set, and it
+A wrong walk writes `pause` and a reason beginning `floor:<cause>:` to
+`<worktreeRoot>/runs/line-switch`, naming everything on the floor that is wrong. The cause says
+what the floor knows about where the remedy lies, so the kind of pause is readable from the switch
+and survives a restart:
+
+| Cause | What the floor knows |
+|---|---|
+| `undiagnosed` | something is wrong and no diagnosis has answered yet; the walk writes this at once |
+| `cause-unknown` | a diagnosis ran and could not say (it failed, or gave no usable answer) |
+| `in-repository` | the diagnosis places the remedy in this repository (`fix-forward` or `revert`) |
+| `outside-repository` | the diagnosis places the remedy outside it: a vendor or host outage, a reindex, a config value |
+
+Each diagnosis restates the pause as soon as it answers. With several items wrong the pause is
+`outside-repository` only when every one is; any item that is the repository's, or not known to be
+anyone's, makes it the stricter cause. A bare `floor:` reason from an earlier version reads as
+`undiagnosed`. It never overwrites a pause a person set, and it
 releases only its own, on the first walk that finds nothing on the floor wrong. After an incident's
 fix merges, that is the next walk, so a cadence like `wrong ? 2 : …` keeps the wait short. An item
 whose incident a person owns holds the pause until it walks clean or someone clears the switch. A
 person who writes `go` while the floor is still wrong is obeyed: the floor pauses again only when
-another item turns wrong. What a paused
-line holds is listed once in `operating.md`, "When the line is paused".
+another item turns wrong.
+
+The cause decides what the pause holds. Every cause but `outside-repository` is a repair: the
+floor's own fault, or one nobody can yet say is not, so merges wait, no new lane starts, and the
+incident's fix runs first. Lanes already under way finish their turn and wait at the merge; nothing
+is stopped. `outside-repository` is an outage: the remedy is not code, so the pause holds only the
+merge (merging is what deploys into the downed environment). Appraisal, carving, coding, proving,
+and review go on, new lanes start, and approved pull requests stack in the landing line. The floor
+keeps walking on its cadence; the first walk that finds the floor right lifts the pause, and the
+stacked pull requests land one at a time through the pull master, each caught up to the one before,
+each walked as it deploys. The readout shows an outage under ⚠️ with the count of pull requests
+waiting at the merge. What a paused line holds, seam by seam, is listed once in `operating.md`,
+"When the line is paused".
 
 ## Incidents
 
@@ -180,9 +264,28 @@ honest confidence. The floor files an issue labelled `floor/incident` with all o
 open one for the item) and hands it to `fix-github-issue` like any other issue. Its fix merges
 through the floor's own pause (it is the merge that makes the next walk come back clean) but still
 waits on a pause a person set; it lands through a pull master of its own, since the lanes' one may
-be held by a lane waiting at that very pause, and its merge goes up onto the floor too. The readout lists an incident the floor is
-repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it.
+be held by a lane waiting at that very pause, and its merge goes up onto the floor too. A fix that
+repairs forward lands without a person, as any change `autoMerge` allows does. A fix that undoes a
+recently merged pull request (the culprit the incident names, or any merge still on the floor)
+parks at the merge boundary whatever `autoMerge` says, on every path that lands it (the floor's, a
+resumed lane, an ordinary one), because its premise is a walk of a live environment and a walk can
+be wrong (a deploy still running reads as absent). The fix undoes a merge when it is a `git revert`
+of it, deletes a file the merge added, restores one it deleted, puts back a line the merge removed,
+or only removes lines the merge added from a file; a change that rewrites the merge's lines into
+new ones is a forward repair. A person confirms a parked one with `fix.ts --land`. The readout lists an incident the floor is
+repairing under 🔄, and under ⛔, on every walk until it is resolved, once a person owns it. Its ⛔
+line names the item's newest verdict and the way out: an approved fix parked at the merge boundary
+is landed with `fix.ts --land <n>` (lifting its label would only hand it to a run that parks it
+again); any other park is handed back by lifting its label.
+Resolved is read fresh on every walk, not remembered from when the incident was filed. Each walk
+reads once who owns every wrong item: the floor while its incident is open with the fix pipeline, a
+person once a label hands it to one, nobody when no incident is open. The readout, the line's
+cause, the drain, and the landing hint all read that one snapshot. The ⛔ line
+stays only while the item's newest ledger verdict is still wrong and its incident is still open with
+a person, including an incident an earlier run left parked. An item that walks right, or whose incident is closed or handed back, leaves it (and the
+drain stops treating it as a person's); a tracker that cannot be read leaves the line standing.
 
+A diagnosis whose remedy is `owed-by-sibling` files nothing; see "Owed by a sibling" above.
 A diagnosis whose remedy is outside the repository (a reindex, a config value, a vendor outage)
 parks the incident for a person instead. An incident with a person, parked or dead-lettered or
 held, is not worked again, and neither is one still open in the pipeline; the item is still

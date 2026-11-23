@@ -33,14 +33,16 @@ import { invokeRootFrom, loadProjectConfig, parseOnly, repoRootFrom } from '../f
 import { createContext } from '../fix-github-issue/lib/context.ts';
 import { reportPreflight } from './lib/preflight.ts';
 import { parseSeat, type Seat, seatLabel } from '../fix-github-issue/lib/engines.ts';
-import { closeIssue, ensureLabels, HOLD_LABELS, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
+import { ensureLabels, HOLD_LABELS, isDlqLabel, isHeldBy, repairDurableState, reviewCount } from '../fix-github-issue/lib/labels.ts';
 import { claimLock } from '../fix-github-issue/lib/lane.ts';
 import { DELIBERATING_LABEL, deliberatingSince, holdInterruptedPanel, PANEL_DEFAULTS, type PanelKnobs, type PanelSetup } from '../fix-github-issue/lib/panel.ts';
-import { fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
+import { type FixOutcome, fixIssue, type Issue, redriveIssue } from '../fix-github-issue/lib/pipeline.ts';
 import { pool, refillingPool } from '../fix-github-issue/lib/pool.ts';
-import { claimHolder, findStranded, judgeLane, parkForInspection, reconcile, resumeStranded } from '../fix-github-issue/lib/resume.ts';
-import { isStopping, log, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
+import { findStranded, judgeLane, parkForInspection, reconcile, resumeOneStranded, type Stranded } from '../fix-github-issue/lib/resume.ts';
+import { isStopping, log, mutate, RunStopping, sh, step, stoppableSleep, teeConsole } from '../fix-github-issue/lib/shell.ts';
 import { importClosure } from '../fix-github-issue/lib/staleness.ts';
+import { objectionAfter, standingStop } from '../fix-github-issue/lib/stop-record.ts';
+import { isHostFaultKind } from '../fix-github-issue/lib/environment-fault.ts';
 import { appraiseIssue, assertConfirmCloses, recordAppraisalThrow, allOpenIssues, looksLikeTrunk, pointsFromLabels, resolveCallbacksDir, selectForAppraisal } from '../appraise-github-issues/lib/appraise.ts';
 import { refusal, trackerIo } from '../carve-github-issue/lib/claims.ts';
 import { readTree } from '../carve-github-issue/lib/tree.ts';
@@ -49,9 +51,12 @@ import { waitForBoard, createBoardWriter, placeByFacts, readBoardPointer } from 
 import { Carving } from './lib/carving.ts';
 import { placeSizeCallbacks as renderSizeCallbacks } from './lib/place-callbacks.ts';
 import { issueRefs } from './lib/refs.ts';
+import { recordMerge } from '../fix-github-issue/lib/record-merge.ts';
 import { type FloorConfigInput, resolveFloor } from './lib/floor/config.ts';
-import { Floor, FLOOR_PAUSE } from './lib/floor/floor.ts';
-import { INCIDENT_LABEL } from './lib/floor/incident.ts';
+import { Floor } from './lib/floor/floor.ts';
+import { lineHolds, readSwitch as readLineSwitch, type Seam } from './lib/floor/line.ts';
+import { INCIDENT_LABEL, incidentHold, recentMerges, revertOf } from './lib/floor/incident.ts';
+import { pauseForHost } from './lib/host-pause.ts';
 import { configureStatus, elapsed, lineState, mark, pulse, setLine, stamp, startPulse } from './status.ts';
 import { installStopHandler } from '../fix-github-issue/lib/stop.ts';
 import { guardCli } from '../fix-github-issue/lib/cli.ts';
@@ -71,6 +76,7 @@ type LoopKnobs = {
   checks: 'required' | 'none';
   requiredChecks?: string[];
   idleCheckSuiteApps?: string[];
+  stuckCheckMinutes?: number;
   smokeTimeoutMinutes: number;
   pointScale: number[];
   maxWorkerAttempts: number;
@@ -231,7 +237,7 @@ const CARVE_PROMPTS = join(HERE, '..', 'carve-github-issue', 'prompts');
  * repository, so this answers with the main checkout wherever it is invoked from.
  */
 /** Every flag this command reads is named here and in USAGE; a source test holds the three together. */
-export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat', 'walker', 'floor', 'base-url'] } as const;
+export const CLI = { flags: ['dry-run', 'no-appraise', 'silent'], options: ['limit', 'concurrency', 'only', 'max-points', 'appraise-limit', 'pulse', 'closure', 'issue', 'worker', 'reviewer', 'confirmer', 'appraiser', 'carver', 'carve-confirmer', 'callback-seat', 'walker', 'floor', 'base-url'] } as const;
 export const USAGE = `burn-down-github-issues: appraise, carve, work, review, and land a repository's open issues, headless.
 Run it from inside the target repository. With no flags it starts a REAL run on the whole window.
 
@@ -239,6 +245,7 @@ Run it from inside the target repository. With no flags it starts a REAL run on 
 
   --dry-run               rehearse: no agent is run and nothing is written; say what would happen
   --limit <n>             work at most n issues this run
+  --concurrency <n>       work at most n issues at once (default: the config's)
   --only <n,n,...>        restrict the run to these issues, in appraisal, selection, and the sweep
   --max-points <n>        the largest size a worker may take on (default: the config's)
   --no-appraise           skip the sizing pass
@@ -323,34 +330,31 @@ const RUN_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'runs');
 // batch, before each issue is dispatched, and inside the pull master before every merge. The
 // floor, when configured, pauses it when a walk finds the deployed base wrong and releases its own
 // pause once nothing is; a person flips it with `echo pause > <runs>/line-switch`. Absent means
-// go; an unknown word means pause.
+// go; an unknown word means pause. A person's pause, and a floor pause that is a repair, hold all
+// three seams; a floor pause for an outage holds only the merge (`lib/floor/line.ts`).
 // ---------------------------------------------------------------------------
 
 const SWITCH_FILE = join(RUN_DIR, 'line-switch');
 const FLOOR_DIR = resolve(REPO_ROOT, PROJECT.worktreeRoot, 'floor');
 const SWITCH_POLL_MS = 30 * 1000;
 
-function readSwitch(): { state: 'go' | 'pause'; reason: string } {
-  if (!existsSync(SWITCH_FILE)) return { state: 'go', reason: '' };
-  const [first = '', ...rest] = readFileSync(SWITCH_FILE, 'utf8').split('\n');
-  const word = first.trim().toLowerCase();
-  return { state: word === 'go' ? 'go' : 'pause', reason: rest.join(' ').trim() || first.trim() };
-}
+const readSwitch = () => readLineSwitch(SWITCH_FILE);
 
 /**
  * Holds until the switch says go. The log gets one line per pause; the operator board gets the
  * elapsed pause on every poll, so a paused line is never mistaken for a quiet one.
  */
-async function waitForGo(where: string, passFloorPause = false): Promise<void> {
+async function waitForGo(where: string, seam: Seam, incidentFix = false): Promise<void> {
   let announced = false;
   for (;;) {
     // A paused line holds a card for as long as it takes; a stop ends the hold, and the lane with it.
     if (isStopping()) throw new RunStopping(`the run is stopping; no longer holding ${where}`);
     const sw = readSwitch();
     // An incident's fix is the merge that clears the floor's own pause; a person's pause still holds it.
-    if (sw.state === 'go' || (passFloorPause && sw.reason.startsWith(FLOOR_PAUSE))) {
+    // An outage holds only the merge, so work before it goes on.
+    if (!lineHolds(sw, seam, incidentFix)) {
       if (sw.state === 'go') setLine('active');
-      if (announced) log(`line is go again; resuming ${where}`);
+      if (announced) log(sw.state === 'go' ? `line is go again; resuming ${where}` : `the pause now holds only the merge; resuming ${where}`);
       return;
     }
     setLine('paused', sw.reason);
@@ -396,18 +400,21 @@ function countOption(name: string, fallback: number): number {
   return parsed;
 }
 const LIMIT = countOption('limit', CONFIG.limit);
-// Per-run ambition knob: a one-off ceiling raise belongs on the command line, not in the durable
-// config, whose value is what unattended runs get.
-const MAX_POINTS = (() => {
-  const raw = opt('max-points');
-  if (raw === undefined) return CONFIG.maxPoints;
+/** A positive option: zero or a mistyped value refuses rather than running with nothing or NaN. */
+function positive(name: string, fallback: number): number {
+  const raw = opt(name);
+  if (raw === undefined) return fallback;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    console.error(`--max-points expects a positive integer, got '${raw}'`);
+    console.error(`--${name} expects a positive integer, got '${raw}'`);
     process.exit(1);
   }
   return parsed;
-})();
+}
+// Per-run knobs: a one-off ceiling raise, or fewer lanes while something else shares the machine,
+// belongs on the command line, not in the durable config, whose value is what unattended runs get.
+const MAX_POINTS = positive('max-points', CONFIG.maxPoints);
+const CONCURRENCY = positive('concurrency', CONFIG.concurrency);
 // One named issue is what the sibling fix skill is; the loop is selection over a backlog.
 if (opt('issue') !== undefined) {
   console.error('--issue moved to the fix-github-issue skill: bun run <skill-dir>/fix.ts --issue <n>');
@@ -549,6 +556,7 @@ const ctx = createContext({
     checks: CONFIG.checks,
     requiredChecks: CONFIG.requiredChecks,
     idleCheckSuiteApps: CONFIG.idleCheckSuiteApps,
+    stuckCheckMinutes: CONFIG.stuckCheckMinutes,
     smokeTimeoutMinutes: CONFIG.smokeTimeoutMinutes,
     pointScale: CONFIG.pointScale,
     maxWorkerAttempts: CONFIG.maxWorkerAttempts,
@@ -565,11 +573,27 @@ const ctx = createContext({
   // An incident's fix is the merge that clears the floor's own pause, so it passes that pause;
   // a person's pause holds it like any other.
   mayMerge: async (issue) => {
-    await waitForGo('the merge queue', issue.labels.some((label) => label.name === INCIDENT_LABEL));
+    await waitForGo('the merge queue', 'merge', issue.labels.some((label) => label.name === INCIDENT_LABEL));
     return { ok: true } as const;
   },
+  // Passing the floor's pause is not landing unattended when the fix undoes reviewed work: an
+  // incident's fix that reverts a recent merge parks at the merge boundary whatever autoMerge says,
+  // on every path that lands it (the floor's, a resume, a lane). A forward repair lands.
+  holdAtBoundary: (issue, change) => incidentHold(issue, () => revertOf(change.cwd, change.base, recentMerges(ctx, issue.number, FLOOR_DIR))),
   // The pipeline has already placed the card in Merged by the time this fires.
   afterMerge: (event) => FLOOR?.put(event),
+  // A seat that failed on the host pauses the line. A pause that cannot be written (the disk is the
+  // thing that is full) would leave nothing holding the line, so the run stops instead, as on a signal.
+  onHostFault: (reason) => {
+    if (DRY_RUN) return;
+    try {
+      const done = pauseForHost(SWITCH_FILE, reason);
+      log(done === 'paused' ? `line paused for ${reason}; fix the host, then write go to ${SWITCH_FILE}` : `${reason}; the line is already paused by a person, whose reason stands`);
+    } catch (error) {
+      log(`${reason}, and the pause could not be written (${(error as Error).message.split('\n')[0]}); stopping the run`);
+      process.kill(process.pid, 'SIGTERM');
+    }
+  },
 });
 
 /**
@@ -593,6 +617,8 @@ const FLOOR: Floor | null =
         log,
         baseUrl: opt('base-url'),
         print: (readout) => console.log(`\n${readout}\n`),
+        // Approved pull requests in the lanes' landing line: what an outage stacks at the merge.
+        waitingAtMerge: () => ctx.landingLine?.length ?? 0,
         // A walk that passes is the machine's WALKED event: the card moves to Verified on the floor.
         onWalked: (item, entry, incident) => {
           if (!item.ref?.issue) return;
@@ -647,10 +673,11 @@ function notALeafLabel(issue: Issue): string | null {
 }
 
 /**
- * A merge the pull master landed but never recorded: the process died between `gh pr merge` and
- * the issue close, so the issue is still open and sized and would be fixed a second time. Merged
- * pull requests that reference an open, unheld, sized issue close it with a pointer, and the merge
- * goes on the floor as it would have. Runs under the lock before anything is selected.
+ * A merge nobody recorded: the process died between `gh pr merge` and the issue close, or a person
+ * merged the pull request while no landing watched it, so the issue is still open and sized and
+ * would be fixed a second time. Merged pull requests that resolve an open, unheld, sized issue are
+ * recorded as the landing records its own (`recordMerge`): the card to Merged, the merge onto the
+ * floor, and the issue closed with a pointer. Runs under the lock before anything is selected.
  */
 type Merged = {
   number: number;
@@ -660,7 +687,41 @@ type Merged = {
   mergedAt: string;
   mergeCommit: { oid: string } | null;
   files: Array<{ path: string }>;
+  author?: { login?: string };
 };
+
+/**
+ * The issues a merged pull request resolves: those a closing keyword names, and, for a pull request
+ * the loop opened, the issue its branch names the way a coder is told to (`fix/<words>-<issue>`)
+ * when its body also references that issue (`Refs #<issue>`). The loop's own pull requests
+ * reference their issue with `Refs`, never a closing keyword, so the keyword alone misses them; a
+ * branch name alone is not a resolution.
+ */
+function resolvedBy(pr: Merged, botLogin: string): number[] {
+  const refs = issueRefs([pr], 'closing');
+  const own = loopPullIssue(pr, botLogin);
+  if (own !== null) refs.push(own);
+  return [...new Set(refs)];
+}
+
+/** The issue a merged pull request the loop opened was for, or null when the loop did not open it. */
+function loopPullIssue(pr: Merged, botLogin: string): number | null {
+  const branch = /^fix\/.+-(\d{1,6})$/.exec(pr.headRefName);
+  if (pr.author?.login !== botLogin || !branch) return null;
+  const issue = Number(branch[1]);
+  return issueRefs([{ title: '', body: pr.body, headRefName: '' }], 'owning').includes(issue) ? issue : null;
+}
+
+/**
+ * The holds the loop itself puts on an issue (a person's hand-off, a decision, a park, a dead
+ * letter), or null when the issue also carries a hold of a person's own (`loop/skip`, a configured
+ * skip label, a pause), which no merge lifts.
+ */
+function loopHolds(labels: Array<{ name: string }>, skipLabels: string[]): string[] | null {
+  const LOOP_HOLDS = ['needs-human', 'needs-decision', 'loop/parked'];
+  const holds = labels.map((l) => l.name).filter((name) => HOLD_LABELS.includes(name) || skipLabels.includes(name) || isDlqLabel(name));
+  return holds.every((name) => LOOP_HOLDS.includes(name) || isDlqLabel(name)) ? holds : null;
+}
 
 /** Pull requests merged into the base within the reconciliation window, read once per run. */
 const mergedPullRequests = (() => {
@@ -682,7 +743,7 @@ const mergedPullRequests = (() => {
         '--search',
         `merged:>=${since}`,
         '--json',
-        'number,title,body,headRefName,mergedAt,mergeCommit,files',
+        'number,title,body,headRefName,mergedAt,mergeCommit,files,author',
       ]),
     ) as Merged[];
     return cached;
@@ -700,12 +761,16 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
   const open = new Map(all.map((issue) => [issue.number, issue]));
   const io = trackerIo(ctx);
   for (const pr of merged) {
-    // Only a closing keyword counts: a merged pull request that mentions an issue did not
-    // necessarily resolve it, and closing a trunk or a held leaf by reconciliation is a wrong close.
-    for (const ref of new Set(issueRefs([pr], 'closing'))) {
+    // Only a resolution counts: a merged pull request that mentions an issue did not necessarily
+    // resolve it, and closing a trunk or a held leaf by reconciliation is a wrong close.
+    for (const ref of resolvedBy(pr, ctx.botLogin)) {
       const issue = open.get(ref);
       if (!issue) continue;
-      if (isHeldBy(issue.labels, CONFIG.skipLabels) || issue.labels.some((l) => HOLD_LABELS.includes(l.name))) continue;
+      // A held issue is recorded only for the loop's own pull request, which a person merged by
+      // hand while the loop held it; the loop's holds then come off, and a person's own stand.
+      const held = isHeldBy(issue.labels, CONFIG.skipLabels) || issue.labels.some((l) => HOLD_LABELS.includes(l.name));
+      const lift = held ? (loopPullIssue(pr, ctx.botLogin) === ref ? loopHolds(issue.labels, CONFIG.skipLabels) : null) : [];
+      if (lift === null) continue;
       if (notALeafLabel(issue) || looksLikeTrunk(issue)) continue;
       if ((issue.blockedBy?.nodes ?? []).some((b) => !(b.state === 'CLOSED' && b.stateReason === 'COMPLETED'))) continue;
       if (pointsFromLabels(issue.labels) === null) continue; // an unsized issue was never the loop's merge
@@ -713,24 +778,23 @@ async function reconcileMergedPullRequests(all: Issue[]): Promise<void> {
       if (!DRY_RUN) {
         const tree = threadOf(issue.number);
         if (!tree) continue;
-        const why = refusal(tree, MAX_POINTS);
+        const why = refusal(lift.length > 0 ? { ...tree, issue: { ...tree.issue, labels: tree.issue.labels.filter((l) => !lift.includes(l.name)) } } : tree, MAX_POINTS);
         if (why) {
           log(`repair: #${issue.number} is referenced by merged PR #${pr.number} but is not closed, because ${why}`);
           continue;
         }
       }
-      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} closes it; closing with a pointer`);
-      await closeIssue(ctx, issue.number, `Resolved by #${pr.number}, merged at ${pr.mergedAt}. The run that merged it did not finish recording the close.`, {
-        kind: 'merged',
-        pr: pr.number,
-        mergeSha: pr.mergeCommit?.oid,
-        reason: `merged #${pr.number} by reconciliation`,
+      log(`repair: #${issue.number} is open but PR #${pr.number} merged at ${pr.mergedAt} resolves it; recording the merge`);
+      const sha = pr.mergeCommit?.oid ?? '';
+      await recordMerge(ctx, { issue: issue.number, title: pr.title, pr: pr.number, sha, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) }, {
+        place: (note) => place(issue.number, issue.title, 'T1', note),
+        note: `PR #${pr.number} ${sha.slice(0, 10)} (recovered)`,
         by: 'reconcile',
+        comment: `Resolved by #${pr.number}, merged at ${pr.mergedAt}. No run recorded the merge when it landed.`,
+        reason: `merged #${pr.number} by reconciliation`,
       });
-      place(issue.number, issue.title, 'T1', `PR #${pr.number} ${(pr.mergeCommit?.oid ?? '').slice(0, 10)} (recovered)`);
-      if (!DRY_RUN && pr.mergeCommit) {
-        FLOOR?.put({ issue: issue.number, title: pr.title, pr: pr.number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt, paths: pr.files.map((f) => f.path) });
-      }
+      for (const label of lift) mutate(ctx, `lift ${label} on #${issue.number}`, ['gh', 'issue', 'edit', String(issue.number), '--remove-label', label]);
+      if (lift.length > 0) log(`repair: #${issue.number} was held when PR #${pr.number} merged by hand; recorded the merge and lifted ${lift.join(', ')}`);
       open.delete(ref);
     }
   }
@@ -827,30 +891,8 @@ async function placeBacklog(all: Issue[]): Promise<Placement> {
 }
 
 async function resumePull({ issue, pull }: { issue: Issue; pull: { number: number; branch: string } }): Promise<void> {
-  await waitForGo(`#${issue.number}`);
+  await waitForGo(`#${issue.number}`, 'dispatch');
 
-  const holder = claimHolder(ctx, issue.number, new Map());
-  if (holder) {
-    place(issue.number, issue.title, 'W3', holder.slice(0, 120));
-    return;
-  }
-  const judgement = judgeLane(ctx, issue.number, () => {
-    const view: { headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'headRefOid']));
-    return view.headRefOid;
-  });
-  if (judgement.kind === 'dirty' || judgement.kind === 'off-head') {
-    try {
-      parkForInspection(ctx, issue.number, judgement.reason);
-    } catch (error) {
-      if (error instanceof RunStopping || isStopping()) throw error;
-      log(`#${issue.number}  could not record the dead letter: ${(error as Error).message}`);
-    }
-    return;
-  }
-  if (judgement.kind === 'unreadable') {
-    log(`#${issue.number}  PR #${pull.number} not resumed this run: ${judgement.reason}`);
-    return;
-  }
   let objection: string | null;
   try {
     objection = lastObjection(issue.number, pull.number);
@@ -858,8 +900,34 @@ async function resumePull({ issue, pull }: { issue: Issue; pull: { number: numbe
     log(`#${issue.number}  PR #${pull.number} not resumed this run: its thread could not be read (${(error as Error).message.split('\n')[0]})`);
     return;
   }
-  const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+  // The lane is judged under the redrive's claim, so no other run can change it between the
+  // judgement and the work; another run's claim reads as busy and the card waits in W3.
+  const admit = (): FixOutcome | null => {
+    const judgement = judgeLane(ctx, issue.number, () => {
+      const view: { headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'headRefOid']));
+      return view.headRefOid;
+    });
+    if (judgement.kind === 'dirty' || judgement.kind === 'off-head') {
+      try {
+        parkForInspection(ctx, issue.number, judgement.reason);
+      } catch (error) {
+        if (error instanceof RunStopping || isStopping()) throw error;
+        log(`#${issue.number}  could not record the dead letter: ${(error as Error).message}`);
+      }
+      return { outcome: 'left-alone', reason: judgement.reason };
+    }
+    if (judgement.kind === 'unreadable') {
+      log(`#${issue.number}  PR #${pull.number} not resumed this run: ${judgement.reason}`);
+      return { outcome: 'left-alone', reason: judgement.reason };
+    }
+    return null;
+  };
+  const result = await redriveIssue(ctx, issue, pull, objection, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer, admit });
   if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+  // A host fault judged nothing: the resume runs again in this run, once the line says go, as a
+  // Ready card a host fault ended is readmitted. A person's stop is not handed back, nor a transport
+  // failure, which the next run retries rather than this one in a loop while the tracker is down.
+  if (result.outcome === 'unjudged' && isHostFaultKind(result.fault)) RERUNS.push({ kind: 'driverless', issue, pull });
 }
 
 /**
@@ -900,7 +968,8 @@ function selectResumable(placement: Placement): Array<{ issue: Issue; pull: { nu
 
 /**
  * The newest reason the loop itself left on the thread for stopping this pull request, which is
- * the brief a redriven worker gets. Bound to the work in hand: only the loop's own comments, and
+ * the brief a redriven worker gets. A held proof, newest, is no objection: the prover asked for
+ * a person, a person lifted the hold, and the pull request is proved again. Bound to the work in hand: only the loop's own comments, and
  * only those written after this pull request was opened, since an issue's thread also holds the
  * stops of earlier attempts that this pull request never met. Null when the loop never stopped
  * this work: it only lost its driver, and it is resumed from Proving with no objection to answer.
@@ -911,9 +980,11 @@ function lastObjection(issue: number, pull: number): string | null {
   if (!opened) throw new Error(`pull request #${pull} has no creation time`);
   const raw = sh(ctx, [
     'gh', 'issue', 'view', String(issue), '--json', 'comments', '--jq',
-    `[.comments[] | select(.author.login == "${ctx.botLogin}") | select(.createdAt > "${opened}") | select(.body | test("dead-letter queue|parked|Parked"))] | last | .body // ""`,
+    '[.comments[] | { author: .author.login, body, createdAt }]',
   ]);
-  return raw.trim() || null;
+  // A held proof that a person has since lifted is not an objection: the work is proved again.
+  const stop = standingStop(JSON.parse(raw || '[]') as Array<{ author: string; body: string; createdAt?: string }>, ctx.botLogin, opened);
+  return objectionAfter(stop);
 }
 
 /**
@@ -1066,7 +1137,7 @@ async function sizeTheWindow(placement: Placement, { skip = () => false, limit =
           // card says which. Never left saying Appraising, and never an uncounted retry.
           try {
             const counted = recordAppraisalThrow(ctx, issue, CONFIG.maxAppraiseAttempts, error as Error, (m) => log(`#${issue.number}  ${m}`));
-            place(issue.number, issue.title, counted.deadLetter ? 'Q1' : 'A1', counted.reason.slice(0, 120));
+            place(issue.number, issue.title, counted.deadLetter ? 'Q1' : counted.held ? 'H2' : 'A1', counted.reason.slice(0, 120));
           } catch (second) {
             log(`#${issue.number}  could not record the failed appraisal: ${(second as Error).message.split('\n')[0]}`);
             place(issue.number, issue.title, 'A1', `appraiser threw: ${(error as Error).message}`.slice(0, 120));
@@ -1132,7 +1203,7 @@ const ADMISSION = createAdmission<Issue>({
   fetchBase: () => sh(ctx, ['git', 'fetch', REMOTE, BASE]),
   place: () => placeBacklog(allIssues()),
   appraise: async (placement, skip, limit) => {
-    await waitForGo('appraisal');
+    await waitForGo('appraisal', 'appraisal');
     let release: () => void;
     try {
       release = claimLock(ctx, 'appraise.lock');
@@ -1234,6 +1305,8 @@ async function main(): Promise<void> {
   FLOOR?.start();
 
   ensureLabels(ctx);
+  // Pull requests a dead run left in a lane of this machine, resumed in the work pool below.
+  let stranded: Stranded[] = [];
   if (!DRY_RUN) {
     reconcile(ctx, new Set(openPullRequestIssueRefs()));
 
@@ -1260,40 +1333,63 @@ async function main(): Promise<void> {
       place(issue.number, issue.title, 'H1', 'decision review interrupted');
     }
 
-    // Resume before selecting anything new: a stranded pull request is finished work, and landing
-    // it first also moves the base before fresh lanes cut their branches from it. Re-read the
-    // issues rather than reusing the repair pass's snapshot; the repair may have moved labels.
-    // `--only` bounds resumption too: a run restricted to #12 must not land a stranded #34.
-    const stranded = findStranded(ctx, allIssues().filter((issue) => !ONLY || ONLY.has(issue.number)), CONFIG.skipLabels);
+    // Found now, resumed in the work pool beside new lanes. Re-read the issues rather than reusing
+    // the repair pass's snapshot; the repair may have moved labels. `--only` bounds resumption too:
+    // a run restricted to #12 must not land a stranded #34.
+    stranded = findStranded(ctx, allIssues().filter((issue) => !ONLY || ONLY.has(issue.number)), CONFIG.skipLabels);
     for (const entry of stranded) place(entry.issue.number, entry.issue.title, 'E1', `resumed PR #${entry.result.pr}`);
-    await resumeStranded(
-      ctx,
-      stranded,
-      CONFIG.concurrency,
-      MAX_POINTS,
-    );
   }
 
-  // The sweep: finish what a crash left announced, repair torn claims and pauses, and hand the
-  // knife every trunk the tracker says needs it, so closes, edits, and holds made outside the loop
-  // are seen before anything new is selected.
   // Every seat reads the base as it is now: the knife and the appraisers judge against the
   // fetched ref, and the lanes below are cut from it.
   if (!DRY_RUN) sh(ctx, ['git', 'fetch', REMOTE, BASE]);
 
-  step('Sweeping trunks, claims, and pauses');
-  await CARVING.sweep(allIssues());
-
   // Every card where its facts put it, before any lane moves one: the board is resumed from, so it
   // has to be right at the start of a run, not only after the run has touched a card. The
-  // placement is also the queue every seat below takes from.
-  let placement = await placeBacklog(allIssues());
+  // placement is also the queue the first lanes take from. One read serves the placement and the
+  // sweep, so the sweep never sees a label this run's own lanes wrote.
+  const backlog = allIssues();
+  const placement = await placeBacklog(backlog);
 
-  // Appraisal first, and on its own timeline. Workers only ever pick up something already judged
-  // real and sized, so the expensive population never pays for a worktree to discover an issue was
-  // already fixed. This queue drains: once the window is appraised there is nothing here to do.
-  if (!SKIP_APPRAISAL) {
-    await waitForGo('appraisal');
+  // A pull request waiting for a driver is resumed in the same pool as new work, never ahead of
+  // it: a resume waits on its checks, and a lane cut meanwhile catches up with whatever base the
+  // resume's merge leaves at its own seams. A lane the stranded walk found is resumed from there.
+  const strandedHere = new Set(stranded.map((entry) => entry.issue.number));
+  const driverless = DRY_RUN ? [] : selectResumable(placement).filter(({ issue }) => !strandedHere.has(issue.number));
+  const resumable = driverless.slice(0, LIMIT);
+  for (const { issue, pull } of driverless.slice(LIMIT)) log(`  #${issue.number} not resumed: over this run's limit of ${LIMIT} (PR #${pull.number}; --limit raises it)`);
+  // A card already Ready has been judged, and each lane reads its issue again through the live
+  // gate before it claims, so a close, an edit, or a hold made outside the loop is still seen. The
+  // first lanes start now rather than after the sweep and the sizing stage below.
+  const ready = selectCandidates(placement);
+  const room = Math.max(0, LIMIT - resumable.length);
+  const candidates = ready.slice(0, room);
+  // An issue left out by the limit is Ready, not held: say so, or it reads as silently skipped.
+  for (const issue of ready.slice(room)) log(`  #${issue.number} not selected: over this run's limit of ${LIMIT} (--limit raises it)`);
+  // Recorded before any lane runs, so the refill neither repeats this batch nor leaves it out of `--limit`.
+  ADMISSION.start([...resumable.map(({ issue }) => issue.number), ...candidates.map((issue) => issue.number)]);
+  const first: WorkItem[] = [
+    ...stranded.map((entry): WorkItem => ({ kind: 'stranded', issue: entry.issue, entry })),
+    ...resumable.map(({ issue, pull }): WorkItem => ({ kind: 'driverless', issue, pull })),
+    ...candidates.map((issue): WorkItem => ({ kind: 'ready', issue })),
+  ];
+  const inHand = new Set(first.map((item) => item.issue.number));
+
+  // The startup work, beside the first lanes. The sweep finishes what a crash left announced,
+  // repairs torn claims and pauses, and hands the knife every trunk the tracker says needs it; the
+  // sizing stage then appraises the Inbox, and its size callback carves what is over the ceiling.
+  // The issues already in hand are left out of the sweep: their lanes own them now. The refill is
+  // first asked once this settles, so what it carved and sized joins the pool then.
+  const startup = (async () => {
+    step('Sweeping trunks, claims, and pauses');
+    await CARVING.sweep(backlog.filter((issue) => !inHand.has(issue.number)));
+    if (SKIP_APPRAISAL) return;
+    // Placed again rather than reused: the sweep may have moved labels the Inbox depends on.
+    const inbox = await placeBacklog(allIssues());
+    // Appraisal on its own timeline. Workers only ever pick up something already judged real and
+    // sized, so the expensive population never pays for a worktree to discover an issue was
+    // already fixed. This queue drains: once the window is appraised there is nothing here to do.
+    await waitForGo('appraisal', 'appraisal');
     // The same lock the standalone appraiser holds, so a heartbeat and a burndown never size the
     // same issue at once. Held only around the sizing stage; the lanes hold loop.lock.
     let releaseAppraisal: () => void;
@@ -1305,65 +1401,89 @@ async function main(): Promise<void> {
       SKIP_APPRAISAL_THIS_RUN = true;
     }
     try {
-      if (!SKIP_APPRAISAL_THIS_RUN) for (const n of await sizeTheWindow(placement)) ADMISSION.appraised.add(n);
+      if (!SKIP_APPRAISAL_THIS_RUN) for (const n of await sizeTheWindow(inbox)) ADMISSION.appraised.add(n);
     } finally {
       releaseAppraisal();
     }
-  }
+  })();
 
-  // Placed again rather than reused: the appraisal above has just changed the labels the
-  // placement depends on, and a worker must see them.
-  if (!SKIP_APPRAISAL && !SKIP_APPRAISAL_THIS_RUN) placement = await placeBacklog(allIssues());
-  // Finished work first: a pull request waiting for a driver lands before anything new starts,
-  // which also moves the base before fresh lanes are cut from it.
-  const stranded = DRY_RUN ? [] : selectResumable(placement);
-  const resumable = stranded.slice(0, LIMIT);
-  for (const { issue, pull } of stranded.slice(LIMIT)) log(`  #${issue.number} not resumed: over this run's limit of ${LIMIT} (PR #${pull.number}; --limit raises it)`);
-  const ready = selectCandidates(placement);
-  const room = Math.max(0, LIMIT - resumable.length);
-  const candidates = ready.slice(0, room);
-  // An issue left out by the limit is Ready, not held: say so, or it reads as silently skipped.
-  for (const issue of ready.slice(room)) log(`  #${issue.number} not selected: over this run's limit of ${LIMIT} (--limit raises it)`);
-  if (resumable.length > 0) {
-    step(`Resuming ${resumable.length} pull request(s) with no driver`);
-    log(resumable.map((r) => `#${r.issue.number} (PR #${r.pull.number})`).join(', '));
-    await pool(
-      resumable,
-      CONFIG.concurrency,
-      resumePull,
-      ({ issue }) => `#${issue.number}`,
-    );
+  // One queue, resumes first, every item counted against `concurrency`. Nothing queued can still
+  // mean work this run makes: children the knife carves during the startup work (unsized, so the
+  // refill appraises them first), or a dependent a resumed merge frees. The pool asks the refill
+  // before it calls the run idle.
+  if (first.length > 0) {
+    step(`Working ${first.length} issue(s), ${Math.min(CONCURRENCY, first.length)} at a time; more join as lanes settle`);
+    log(first.map(describeWorkItem).join(', '));
   }
-  // Recorded before any lane runs, so the refill neither repeats this batch nor leaves it out of `--limit`.
-  ADMISSION.start([...resumable.map(({ issue }) => issue.number), ...candidates.map((issue) => issue.number)]);
-  // Nothing Ready yet can still mean work this run made: children the knife carved during the sizing
-  // above (unsized, so the placement after it left them in the Inbox), or a dependent a resumed merge
-  // freed. Ask the refill once before calling the run idle.
-  const first = candidates.length > 0 ? candidates : await ADMISSION.admit();
-  if (first.length === 0) {
-    if (resumable.length === 0) log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
-    await finish();
-    return;
-  }
-
-  step(`Working ${first.length} issue(s), ${Math.min(CONFIG.concurrency, first.length)} at a time; more join as lanes settle`);
-  log(first.map((i) => `#${i.number}`).join(', '));
+  let worked = 0;
   await refillingPool(
     first,
-    CONFIG.concurrency,
-    async (issue) => {
-      await waitForGo(`#${issue.number}`);
-      // The pipeline places the card at every seam from Coding on; the two ways it can decline to
-      // start are placed here, since no lane of its own ever saw the issue.
-      const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
-      if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
-      if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
+    CONCURRENCY,
+    async (item) => {
+      worked++;
+      await workOn(item);
     },
-    ADMISSION.admit,
-    (issue) => `#${issue.number}`,
+    async () => [...RERUNS.splice(0), ...(await ADMISSION.admit()).map((issue): WorkItem => ({ kind: 'ready', issue }))],
+    (item) => `#${item.issue.number}`,
+    { until: startup },
   );
+  await startup;
+  if (worked === 0) log('nothing in Ready; the backlog by lane above says where the window is (widen CONFIG.ageDays, raise --max-points, or clear a hold)');
 
   await finish();
+}
+
+/**
+ * One item of the work pool: a pull request a dead run stranded in a lane here, the loop's own pull
+ * request with no driver, or a Ready card. Each holds one of `concurrency`'s slots while it runs.
+ */
+type WorkItem =
+  | { kind: 'stranded'; issue: Issue; entry: Stranded; rerun?: true }
+  | { kind: 'driverless'; issue: Issue; pull: { number: number; branch: string } }
+  | { kind: 'ready'; issue: Issue };
+
+/**
+ * Resumes a host fault ended unjudged, handed to the refill to run again. Each keeps the slot it
+ * already took under `--limit`; a second fault on the same work is charged, not rerun.
+ */
+const RERUNS: WorkItem[] = [];
+
+function describeWorkItem(item: WorkItem): string {
+  if (item.kind === 'stranded') return `#${item.issue.number} (resume PR #${item.entry.result.pr})`;
+  if (item.kind === 'driverless') return `#${item.issue.number} (resume PR #${item.pull.number})`;
+  return `#${item.issue.number}`;
+}
+
+async function workOn(item: WorkItem): Promise<void> {
+  if (item.kind === 'stranded') return resumeStranded(item);
+  if (item.kind === 'driverless') return resumePull(item);
+  const { issue } = item;
+  await waitForGo(`#${issue.number}`, 'dispatch');
+  // The pipeline places the card at every seam from Coding on; the two ways it can decline to
+  // start are placed here, since no lane of its own ever saw the issue.
+  const result = await fixIssue(ctx, issue, { maxPoints: MAX_POINTS, ceiling: MAX_POINTS, confirmer: SEATS.confirmer });
+  if (result.outcome === 'busy') place(issue.number, issue.title, 'W3', result.reason.slice(0, 120));
+  if (result.outcome === 'left-alone') log(`#${issue.number}  card left where the facts put it: ${result.reason}`);
+  // A host fault paused the line and judged nothing, so the refill may take the issue up again:
+  // it waits for go like any lane, and so reruns once the host is fixed. A person's stop is
+  // not handed back in this run, or the work they stopped would start again at once; nor is a
+  // transport failure, which the next run retries.
+  if (result.outcome === 'unjudged' && isHostFaultKind(result.fault)) ADMISSION.readmit(issue.number);
+}
+
+/**
+ * A pull request a dead run stranded in a lane here. Run again after a host fault, it waits for go
+ * first; its lane, kept when it holds the proof, resumes as it is, and one that was cleared resumes
+ * as a pull request with no driver.
+ */
+async function resumeStranded(item: Extract<WorkItem, { kind: 'stranded' }>): Promise<void> {
+  if (item.rerun) await waitForGo(`#${item.issue.number}`, 'dispatch');
+  const result = await resumeOneStranded(ctx, item.entry, MAX_POINTS);
+  if (result?.outcome !== 'unjudged' || !isHostFaultKind(result.fault)) return;
+  const { pr, branch } = item.entry.result;
+  if (existsSync(item.entry.cwd)) RERUNS.push({ ...item, rerun: true });
+  else if (pr && branch) RERUNS.push({ kind: 'driverless', issue: item.issue, pull: { number: pr, branch } });
+  else log(`#${item.issue.number}  not run again this run: its lane is gone and its pull request names no branch`);
 }
 
 /** `--floor <mode>`: the floor alone, under the instance lock, so it never races a running loop. */

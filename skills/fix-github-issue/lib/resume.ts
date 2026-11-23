@@ -6,17 +6,17 @@
  * with no owner and, sometimes, a finished pull request with a verdict file nobody read.
  */
 
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
-import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
+import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
-import { dirtyPaths, inFlight } from './lane.ts';
-import { type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
-import { pool } from './pool.ts';
+import { dirtyPaths, inFlight, judgeLane, judgeLocal, rescueRef } from './lane.ts';
+import { type FixOutcome, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
@@ -32,31 +32,18 @@ export type Stranded = { issue: Issue; cwd: string; result: WorkerResult };
  * starts, under the instance lock.
  */
 export function reconcile(ctx: Context, claimed: Set<number>): void {
-  const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
-  const holders = new Map<number, string | null>();
   let repaired = 0;
 
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (!dir.startsWith(`${managed}/`)) continue;
-
-    // Agents make scratch siblings next to their own worktree (`issue-1234-evidence`) to capture a
-    // before state or write to the evidence branch. A pattern anchored on the number alone could
-    // not see them, so a crashed lane left them behind permanently: nothing else walks this root.
-    // They belong to the parent issue, so the claimed and dirty rules below judge them by the
-    // parent where it still exists, and a sibling's removal takes only the sibling: removing by
-    // issue number would also take the parent worktree this same pass may have chosen to keep.
-    const parts = /issue-(\d+)(-[^/]+)?$/.exec(dir);
-    const issue = parts?.[1];
-    if (!issue) continue;
-    const parent = resolve(managed, `issue-${issue}`);
-    const isSibling = Boolean(parts?.[2]);
-    const judged = isSibling && existsSync(parent) ? parent : dir;
+  for (const lane of managedLanes(ctx)) {
+    const { issue, dir } = lane;
+    // A scratch sibling belongs to its parent issue, so the claimed and dirty rules below judge it
+    // by the parent where that still exists, and a sibling's removal takes only the sibling: removing
+    // by issue number would also take the parent worktree this same pass may have chosen to keep.
+    const judged = lane.sibling && existsSync(lane.parent) ? lane.parent : dir;
 
     // A pull request means the work reached GitHub and is not ours to throw away; selection already
     // treats the issue as claimed, so leave both alone and let a human or a later round finish it.
-    if (claimed.has(Number(issue))) {
+    if (claimed.has(issue)) {
       ctx.log(`reconcile: #${issue} has an open pull request; leaving its worktree in place`);
       continue;
     }
@@ -64,26 +51,30 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     // `fix.ts` holds no instance lock, so a loop can start while a hand-run fix's worker is still in
     // this lane, before its pull request exists. A live claim by another run means the lane is not
     // abandoned; a claim that cannot be read is treated the same, since removing is the irreversible act.
-    const holder = claimHolder(ctx, Number(issue), holders);
+    const holder = lane.holder();
     if (holder) {
       ctx.log(`reconcile: #${issue} is claimed by ${holder}; leaving its worktree in place`);
       continue;
     }
 
-    const dirty = (() => {
-      try {
-        return dirtyPaths(ctx, judged).length > 0;
-      } catch {
-        return false;
+    // A status that cannot be read is not a clean lane: removing is the irreversible act.
+    const local = judgeLocal(ctx, issue, judged);
+    if (local.kind !== 'clean') {
+      if (rescueClosedLane(ctx, issue, dir)) {
+        repaired++;
+        continue;
       }
-    })();
-    if (dirty) {
-      ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection`);
-      parkForInspection(ctx, Number(issue), `An earlier run left uncommitted work in its lane (${judged}) and no pull request. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
+      // The loop's own hold kept this lane with the seat's work in it; the pickup continues on it.
+      if (local.kind === 'held') {
+        ctx.log(`reconcile: #${issue} has uncommitted work kept by the loop's hold for a person; leaving it for the pickup`);
+        continue;
+      }
+      ctx.log(`reconcile: #${issue} has uncommitted work and no pull request; leaving it for inspection (${local.reason})`);
+      parkForInspection(ctx, issue, `An earlier run left uncommitted work in its lane (${judged}) and no pull request: ${local.reason}. A person inspects or removes it; the loop will not hand this issue to a fresh worker until the lane is gone.`);
       continue;
     }
 
-    if (isSibling) {
+    if (lane.sibling) {
       ctx.log(`reconcile: removing abandoned scratch worktree ${dir}`);
       try {
         sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
@@ -93,12 +84,111 @@ export function reconcile(ctx: Context, claimed: Set<number>): void {
     } else {
       // Committed work is kept or pushed first; reconcile is a clean-up, not a place work is lost.
       ctx.log(`reconcile: retiring the abandoned worktree for #${issue}`);
-      retireLane(ctx, Number(issue), (m) => ctx.log(`reconcile: ${m}`));
+      retireLane(ctx, issue, (m) => ctx.log(`reconcile: ${m}`));
     }
     repaired++;
   }
 
   if (repaired > 0) ctx.log(`reconcile: cleared ${repaired} abandoned worktree(s) from an earlier run`);
+}
+
+/**
+ * A closed issue's lane that holds uncommitted work and no pull request. Nothing hands a closed
+ * issue to a worker again and parking writes nothing on a closed issue, so a lane kept for
+ * inspection would be kept, and logged, on every start. Its uncommitted paths, untracked files
+ * included, are committed onto its HEAD through a scratch index (the lane's own index and files are
+ * untouched) and kept under `refs/loop/rescued/`, as `resetLane` keeps unpushed commits; then the
+ * worktree is removed, and the one line saying where the work went is logged by the run that
+ * removed it. Returns false, and the lane is kept as before, when the issue cannot be read as
+ * closed, when an open pull request is on the lane's branch or the open pull requests cannot be
+ * read, or when the work cannot be saved: removing is the irreversible act.
+ */
+export function rescueClosedLane(ctx: Context, issue: number, dir: string): boolean {
+  const io = trackerIo(ctx);
+  try {
+    if (io.view(issue)?.state !== 'CLOSED') return false;
+    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir);
+    if (branch !== 'HEAD' && io.openPullBranches().includes(branch)) {
+      ctx.log(`reconcile: #${issue} is closed, but pull request branch ${branch} is still open; leaving its lane in place`);
+      return false;
+    }
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return false;
+  }
+
+  let saved: string | null = null;
+  let scratch: string | null = null;
+  try {
+    if (dirtyPaths(ctx, dir).length > 0) {
+      const index = join((scratch = mkdtempSync(join(tmpdir(), 'rescue-index-'))), 'index');
+      const git = (...args: string[]) => sh(ctx, ['env', `GIT_INDEX_FILE=${index}`, 'git', '-c', 'user.name=fix-github-issue', '-c', 'user.email=fix-github-issue@localhost', ...args], dir);
+      git('read-tree', 'HEAD');
+      git('add', '-A');
+      const tree = git('write-tree');
+      const commit = git('commit-tree', tree, '-p', 'HEAD', '-m', `rescued: uncommitted work in the lane for closed issue #${issue}`);
+      saved = rescueRef(ctx, issue, commit, dir);
+    }
+  } catch (error) {
+    ctx.log(`reconcile: #${issue} is closed, but the uncommitted work in its lane could not be saved (${(error as Error).message.split('\n')[0]})`);
+    return false;
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
+
+  try {
+    sh(ctx, ['git', 'worktree', 'remove', '--force', dir]);
+  } catch {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  ctx.log(saved
+    ? `reconcile: #${issue} is closed; saved the uncommitted work in ${dir} as ${saved} and removed the lane`
+    : `reconcile: #${issue} is closed; removed the scratch worktree ${dir}, which held no uncommitted work of its own`);
+  return true;
+}
+
+/** One worktree under the managed root that belongs to an issue: its own lane, or a scratch sibling beside it. */
+export type ManagedLane = {
+  issue: number;
+  dir: string;
+  /** The issue's own lane directory, `issue-<n>`; a sibling's parent, and the lane itself otherwise. */
+  parent: string;
+  /** A scratch worktree an agent made beside its lane (`issue-1234-evidence`), not the lane itself. */
+  sibling: boolean;
+  /** Who else holds a live claim on the issue, read once per walk and failing closed (see claimHolder). */
+  holder: () => string | null;
+};
+
+/**
+ * The managed lanes git knows about: every registered worktree under the managed root named for an
+ * issue, with the claim rule that decides whether another run holds it.
+ *
+ * Agents make scratch siblings next to their own worktree (`issue-1234-evidence`) to capture a
+ * before state or write to the evidence branch. A pattern anchored on the number alone could not
+ * see them, so a crashed lane left them behind permanently; they are listed here with their parent.
+ * The claim is read lazily, so a walk that rules a lane out first never asks the tracker about it,
+ * and once per issue, so a lane and its siblings share one read.
+ */
+export function managedLanes(ctx: Context): ManagedLane[] {
+  const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
+  const holders = new Map<number, string | null>();
+  const lanes: ManagedLane[] = [];
+  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const dir = resolve(line.slice('worktree '.length).trim());
+    if (!dir.startsWith(`${managed}/`)) continue;
+    const parts = /issue-(\d+)(-[^/]+)?$/.exec(dir);
+    if (!parts?.[1]) continue;
+    const issue = Number(parts[1]);
+    lanes.push({
+      issue,
+      dir,
+      parent: resolve(managed, `issue-${issue}`),
+      sibling: Boolean(parts[2]),
+      holder: () => claimHolder(ctx, issue, holders),
+    });
+  }
+  return lanes;
 }
 
 /** Who else holds a live claim on an issue, if anyone; read once per issue, and fail closed. */
@@ -116,36 +206,7 @@ export function claimHolder(ctx: Context, issue: number, cache: Map<number, stri
   return cache.get(issue) ?? null;
 }
 
-export type LaneJudgement =
-  | { kind: 'no-lane' | 'clean-at-head' }
-  | { kind: 'dirty' | 'off-head'; reason: string }
-  | { kind: 'unreadable'; reason: string };
-
-/** Judge local work before asking the tracker, without publishing or changing the lane. */
-export function judgeLane(ctx: Context, issue: number, readHead: () => string): LaneJudgement {
-  const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
-  if (!existsSync(dir)) return { kind: 'no-lane' };
-  let head: string;
-  let reading = 'git status --porcelain';
-  try {
-    const dirty = dirtyPaths(ctx, dir);
-    if (dirty.length > 0) return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
-    reading = 'git rev-parse HEAD';
-    head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
-  } catch (error) {
-    if (error instanceof RunStopping || isStopping()) throw error;
-    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: ${reading} failed (${(error as Error).message})` };
-  }
-  let remoteHead: string;
-  try {
-    remoteHead = readHead();
-  } catch (error) {
-    if (error instanceof RunStopping || isStopping()) throw error;
-    return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
-  }
-  if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
-  return { kind: 'clean-at-head' };
-}
+export { judgeLane, type LaneJudgement } from './lane.ts';
 
 /**
  * Pull requests a dead run left behind, paired with the worktree and verdict to resume them from.
@@ -157,18 +218,14 @@ export function judgeLane(ctx: Context, issue: number, readHead: () => string): 
  * window (after the PR, before the verdict) leaves nothing safe to resume from.
  */
 export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): Stranded[] {
-  const managed = resolve(ctx.repoRoot, ctx.project.worktreeRoot);
   const found: Stranded[] = [];
 
-  for (const line of sh(ctx, ['git', 'worktree', 'list', '--porcelain']).split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const dir = resolve(line.slice('worktree '.length).trim());
-    if (!dir.startsWith(`${managed}/`)) continue;
-    const num = /issue-(\d+)$/.exec(dir)?.[1];
-    if (!num) continue;
-    if (inFlight.has(Number(num))) continue;
+  for (const lane of managedLanes(ctx)) {
+    const { issue: num, dir } = lane;
+    if (lane.sibling) continue; // reconcile owns scratch siblings
+    if (inFlight.has(num)) continue;
 
-    const issue = all.find((candidate) => candidate.number === Number(num));
+    const issue = all.find((candidate) => candidate.number === num);
     if (!issue) continue; // closed or outside the window; reconcile owns the cleanup question
 
     // The safety labels that gate selection gate resumption too: a parked, skipped, DLQed, or
@@ -176,6 +233,20 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
     if (isHeldBy(issue.labels, skipLabels)) continue;
     if (reviewCount(issue.labels) >= ctx.knobs.maxReviewRounds) continue;
 
+    // Another run's live claim means its lane is in use: a redrive claims before it lifts its hold,
+    // so an issue read without a hold may still be one a person's redrive is about to work.
+    const holder = lane.holder();
+    if (holder) {
+      ctx.log(`#${num}  stranded lane is claimed by ${holder}; leaving it in place`);
+      continue;
+    }
+
+    // A lane the loop's own hold kept is not stranded: its pickup (a redrive, or the burndown once
+    // the hold is lifted) continues on it. Asked only of a dirty lane, the one a hold keeps.
+    if (judgeLocal(ctx, num, dir).kind === 'held') {
+      ctx.log(`#${num}  stranded worktree is kept by the loop's hold for a person; leaving it for the pickup`);
+      continue;
+    }
     const verdict = strandedVerdict(dir);
     if (!verdict || verdict.verdict !== 'fixed' || !verdict.pr) {
       ctx.log(`#${num}  stranded worktree has no usable verdict; leaving it for a human`);
@@ -183,17 +254,27 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       continue;
     }
     // The verdict is trusted only as far as it can be corroborated: it must name this issue, and
-    // the worktree must sit at the pull request's remote head, or the resume would review a tree
-    // that is not what would merge.
+    // the worktree must be clean and sit at the pull request's remote head, or the resume would
+    // review a tree that is not what would merge.
     if (Number(verdict.issue) !== issue.number) {
       ctx.log(`#${num}  stranded verdict names issue ${verdict.issue}; leaving it for a human`);
       continue;
     }
-    const view: { state: string; headRefOid: string } = JSON.parse(
-      sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
-    );
-    if (view.state !== 'OPEN') continue;
-    if (view.headRefOid !== sh(ctx, ['git', 'rev-parse', 'HEAD'], dir)) {
+    let state = '';
+    const judgement = judgeLane(ctx, num, () => {
+      const view: { state: string; headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']));
+      state = view.state;
+      return view.headRefOid;
+    });
+    // A pull request that cannot be read stops the start, as any failed read of it always has.
+    if (judgement.kind === 'unreadable') throw new Error(`#${num}: ${judgement.reason}`);
+    if (judgement.kind === 'dirty') {
+      ctx.log(`#${num}  stranded worktree holds uncommitted work; leaving it for a human`);
+      parkForInspection(ctx, issue.number, `An earlier run died with this issue's pull request #${verdict.pr} proved, and its lane holds uncommitted work beside the proof. ${judgement.reason}. A person inspects the lane before it is resumed.`);
+      continue;
+    }
+    if (judgement.kind === 'no-lane' || state !== 'OPEN') continue;
+    if (judgement.kind === 'off-head') {
       ctx.log(`#${num}  stranded worktree head is not the pull request head; leaving it for a human`);
       continue;
     }
@@ -215,12 +296,6 @@ function strandedVerdict(dir: string): WorkerResult | null {
 }
 
 /**
- * Lands what a dead run left finished, before anything new is selected.
- *
- * A stranded pull request is finished work, and landing it first also moves the base before fresh
- * lanes cut their branches from it.
- */
-/**
  * What a dead run left behind is a machine's failure, so it is a work dead letter (the machine's
  * "run died with undeclared work"), written once: an issue already held is not commented on again.
  */
@@ -235,63 +310,36 @@ export function parkForInspection(ctx: Context, issue: number, reason: string): 
   }
 }
 
-export async function resumeStranded(
+/**
+ * Lands one pull request a dead run left finished: the live gate, a fresh claim, then review and
+ * landing from the lane's verdict. The caller runs these in its work pool beside new lanes, so a
+ * resume waiting on checks holds one slot, not the run; a lane cut while it waits catches up with
+ * the base it moves at its own seams. Returns how the resume settled, or null when it did not start.
+ */
+export async function resumeOneStranded(
   ctx: Context,
-  stranded: Stranded[],
-  concurrency: number,
+  entry: Stranded,
   maxPoints: number,
   ceiling: number = maxPoints,
-): Promise<void> {
-  if (stranded.length === 0) return;
-  ctx.step(`Resuming ${stranded.length} stranded pull request(s) from an earlier run`);
-  ctx.log(stranded.map((s) => `#${s.issue.number} (PR #${s.result.pr})`).join(', '));
-  await pool(
-    stranded.map((s) => s.issue),
-    concurrency,
-    async (issue) => {
-      const entry = stranded.find((s) => s.issue.number === issue.number);
-      if (!entry) return;
-      const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
-      // A fresh claim, never the dead run's, and the live gate first: the issue may have been
-      // held, paused, carved, or claimed elsewhere since the run died.
-      const io = trackerIo(ctx);
-      const gate = liveGate(ctx, io, issue.number, ceiling);
-      if (!gate.ok) {
-        say(`not resuming: ${gate.why}`);
-        if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
-        return;
-      }
-      const handle = await claim(ctx, io, issue.number, 'working');
-      if (handle === 'busy') {
-        say('not resuming: another run holds it');
-        return;
-      }
-      const stopRenewing = keepClaimed(handle, () => {
-    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
-    const killed = killAgentsOn(ctx.project.repo, issue.number);
-    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
-  });
-      inFlight.set(issue.number, { dir: entry.cwd, busy: false });
-      // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
-      // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.
-      let keepLane = false;
-      try {
-        await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
-      } catch (error) {
-        keepLane = recordThrow(ctx, issue, error as Error, say, entry.result.pr).keepLane;
-      } finally {
-        stopRenewing();
-        try {
-          handle.release();
-        } catch (error) {
-          say(`could not release the claim: ${(error as Error).message}`);
-        }
-        inFlight.delete(issue.number);
-        // The same rule as any other exit: a revision that committed and died before its push has
-        // its only copy in this lane, and a resume must not be where that goes.
-        if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
-      }
+): Promise<FixOutcome | null> {
+  const { issue } = entry;
+  const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  // A fresh claim, never the dead run's, and the live gate first: the issue may have been
+  // held, paused, carved, or claimed elsewhere since the run died. The same settlement as a first
+  // attempt follows (`withLane`): a throw is recorded in the queue of the lane it happened in, and
+  // the lane is retired whatever the outcome, unless nothing could be recorded. A revision that
+  // committed and died before its push has its only copy in this lane, and retiring keeps it.
+  let started = false;
+  const outcome = await withLane(ctx, issue, say, {
+    ceiling,
+    pr: entry.result.pr,
+    open: () => {
+      started = true;
+      return entry.cwd;
     },
-    (issue) => `#${issue.number}`,
-  );
+  }, async (cwd) => await reviewAndLand(ctx, issue, cwd, entry.result, maxPoints, say, ceiling));
+  if (started) return outcome;
+  say(`not resuming: ${outcome.reason}`);
+  if (outcome.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${outcome.reason}. A person decides.`);
+  return null;
 }

@@ -45,6 +45,11 @@ export type Admission<I extends PlacedIssue> = {
   start: (issues: Iterable<number>) => void;
   /** The refill: newly eligible issues, within the budgets, each admitted at most once per run. */
   admit: () => Promise<I[]>;
+  /**
+   * Hands an issue back to the refill, its slot under `--limit` returned: a lane a host fault ended
+   * was not judged, so the run may take it up again once the line is resumed.
+   */
+  readmit: (issue: number) => void;
 };
 
 /** Rounds of sizing one refill makes: freed cards, then children their carving created, and so on. */
@@ -76,6 +81,9 @@ export function createAdmission<I extends PlacedIssue>(deps: AdmissionDeps<I>): 
     appraised,
     start: (issues) => {
       for (const n of issues) dispatched.add(n);
+    },
+    readmit: (issue) => {
+      dispatched.delete(issue);
     },
     admit: async () => {
       if (deps.stopping()) return [];

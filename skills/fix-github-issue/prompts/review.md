@@ -16,6 +16,8 @@ a sibling of this directory rather than in `/tmp`, and `git worktree remove --fo
 finish. Before you stop, restore this worktree to how you found it: undo every revert and checkout
 you performed, so HEAD and the working files are exactly the commit you started on. A revision
 worker inherits this tree after you, and a moved HEAD reads downstream as a branch nobody reviewed.
+Write your notes, logs, and the comment and body files you post from in `{{SCRATCH_DIR}}`, which is
+outside this worktree and yours to fill, never in the worktree itself.
 
 Other agents are working other issues against this same repository and machine at the same time, so
 re-checking has limits you must respect. This worktree has its own `node_modules`; install into it
@@ -87,8 +89,10 @@ upstream churn that is not a defect in the change.
 
 Then verify the change itself, independently of its proof:
 
-- Run `{{CHECK_COMMAND}}` and `{{INSTALL_COMMAND}}`. Do not take a claim of green on trust; a claim
-  of green is exactly the kind of claim this gate exists to check.
+- Run `{{INSTALL_COMMAND}}`, then `{{CHECK_COMMAND}}` exactly as given. Do not take a claim of green
+  on trust; a claim of green is exactly the kind of claim this gate exists to check. That run is a
+  `{{GATE_ENVIRONMENT}}` run: `ci-shaped` carries the CI job's environment, `lane` is this
+  checkout's own and may differ from CI's. Name it that way wherever you cite its result.
 - The diff is the smallest change that resolves the issue. Opportunistic edits, drive-by renames,
   and reformatting of untouched lines are out-of-scope work, which is grounds for `block`;
   `gather-more` asks for evidence, never for scope.

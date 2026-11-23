@@ -18,6 +18,7 @@ export type MergeEvent = {
   issue: number;
   title: string;
   pr: number;
+  /** The merge commit the merge made on the base (`mergeCommit.oid`), never the pull request's head; empty when it is not known. */
   sha: string;
   mergedAt: string;
   paths: string[];
@@ -38,6 +39,9 @@ export type MergePermission = { ok: true } | { ok: false; reason: string };
 
 /** What a merge gate is told about the issue about to land. */
 export type MergingIssue = { number: number; labels: Array<{ name: string }> };
+
+/** The change at the merge boundary: the lane's worktree, whose HEAD would land, and the base ref it lands on. */
+export type BoundaryChange = { cwd: string; base: string };
 
 /** What `closeIssue` tells a driver after every close it makes, whichever path made it. */
 export type CloseEvent = {
@@ -97,6 +101,12 @@ export type Context = {
    * other gate still applies; only the autoMerge park is waived, and the waiver is recorded on the PR.
    */
   landPastBoundary?: number;
+  /**
+   * Asked at the merge boundary with the issue about to land and its change: a reason to park the
+   * approved change for a person whatever `autoMerge` says, or null to leave the decision to
+   * `autoMerge`. A person's `--land` still waives the park. Absent means `autoMerge` alone decides.
+   */
+  holdAtBoundary?: (issue: MergingIssue, change: BoundaryChange) => string | null;
   /** Told once, after every confirmed merge. */
   afterMerge?: (event: MergeEvent) => void;
   /** Awaited by `closeIssue` after every close it makes, dry runs excepted. A throw is logged, never propagated. */
@@ -105,6 +115,12 @@ export type Context = {
   onLane?: (event: LaneEvent) => void;
   /** The decision panel an agent-raised `needs-decision` is weighed by before it holds; absent, the hold is applied directly. */
   panel?: PanelSetup;
+  /**
+   * Told when a seat failed on the host (a full disk, exhausted memory), with the reason. A driver
+   * with a line pauses it here, and reruns the work once the line is resumed; the seat's settlement
+   * (`settleOutsideStop`) has already counted nothing. A throw is logged, never propagated.
+   */
+  onHostFault?: (reason: string) => void;
   /** When set, every mutation goes here instead of to gh: a fake tracker under test. */
   io?: { write: (op: { description: string; argv: string[] }) => void; view?: (n: number) => unknown; search?: (q: string) => unknown };
 };
@@ -125,7 +141,7 @@ function readBotLogin(): string {
 export function createContext(options: {
   project: ProjectConfig;
   /** The newest knobs default, so a driver that predates them still compiles and runs. */
-  knobs: Partial<Pick<PipelineKnobs, 'pointScale' | 'maxWorkerAttempts' | 'checks' | 'requiredChecks' | 'idleCheckSuiteApps' | 'agentTimeoutMinutes'>> & Omit<PipelineKnobs, 'seats' | 'pointScale' | 'maxWorkerAttempts' | 'checks' | 'requiredChecks' | 'idleCheckSuiteApps' | 'agentTimeoutMinutes'>;
+  knobs: Partial<Pick<PipelineKnobs, 'pointScale' | 'maxWorkerAttempts' | 'checks' | 'requiredChecks' | 'idleCheckSuiteApps' | 'stuckCheckMinutes' | 'agentTimeoutMinutes'>> & Omit<PipelineKnobs, 'seats' | 'pointScale' | 'maxWorkerAttempts' | 'checks' | 'requiredChecks' | 'idleCheckSuiteApps' | 'stuckCheckMinutes' | 'agentTimeoutMinutes'>;
   seats: { worker: Seat; reviewer: Seat; confirmer?: Seat };
   repoRoot: string;
   invokeRoot: string;
@@ -136,10 +152,12 @@ export function createContext(options: {
   step?: (message: string) => void;
   mayMerge?: (issue: MergingIssue) => Promise<MergePermission>;
   landPastBoundary?: number;
+  holdAtBoundary?: (issue: MergingIssue, change: BoundaryChange) => string | null;
   afterMerge?: (event: MergeEvent) => void;
   onClosed?: (event: CloseEvent) => Promise<void>;
   onLane?: (event: LaneEvent) => void;
   panel?: PanelSetup;
+  onHostFault?: (reason: string) => void;
   /** A test supplies its own; production reads it from gh. */
   botLogin?: string;
   io?: Context['io'];
@@ -166,10 +184,12 @@ export function createContext(options: {
     step: options.step ?? defaultStep,
     mayMerge: options.mayMerge,
     landPastBoundary: options.landPastBoundary,
+    holdAtBoundary: options.holdAtBoundary,
     afterMerge: options.afterMerge,
     onClosed: options.onClosed,
     onLane: options.onLane,
     panel: options.panel,
+    onHostFault: options.onHostFault,
     io: options.io,
   };
 }

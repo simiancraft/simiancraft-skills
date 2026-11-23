@@ -7,7 +7,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 
 /** Everything true of a repository rather than of the pipeline. Lives in the repository, never here. */
 export type ProjectConfig = {
@@ -25,6 +25,13 @@ export type ProjectConfig = {
   checkCommand: string;
   /** Frozen-lockfile install. A fresh worktree has no `node_modules`. */
   installCommand: string;
+  /**
+   * Untracked files the driver copies from the main checkout into each lane whenever it makes or
+   * resets one (shared test credentials, say), so every seat has them without running a command.
+   * Paths relative to the repository root; each must be one git ignores. A missing source is
+   * logged and skipped. Optional.
+   */
+  laneFiles?: string[];
   /** Files that state the conventions a prescribed remedy has to be read against. */
   conventionDocs: string[];
   /** Where the point scale is written down, quoted to the appraiser. */
@@ -46,11 +53,11 @@ export type ProjectConfig = {
   alwaysInvalidates: string[];
   /**
    * Files the repository's own release machinery rewrites on every merge to the base (deploy
-   * constants, generated changelogs). Their movement alone never invalidates an approval: the
-   * queued branch still catches up, but does not pay a re-review for noise every landing produces.
+   * constants, generated changelogs). Their movement alone never invalidates an approval and never
+   * forces a catch-up, unless the work imports one or the base requires an up-to-date branch.
    * Optional; same pattern rules as alwaysInvalidates. package.json needs no entry here: a base
    * change that only bumps its "version" field is recognized as release noise automatically,
-   * while any other package.json change still invalidates.
+   * while any other package.json change still counts as movement.
    */
   releaseArtifacts?: string[];
   /**
@@ -62,6 +69,14 @@ export type ProjectConfig = {
   smokeCommand?: string;
   /** The command CI decides with, when it differs from checkCommand; the prover always runs it. */
   ciCommand?: string;
+  /**
+   * The CI job's environment shape: variables the job has and a lane may not (a linked resource, a
+   * stage name). When set, every gate the seats run (`checkCommand`, and `ciCommand` for the
+   * prover) runs inside a subshell that exports them, and the gate is named `ci-shaped` instead of
+   * `lane`. Values are written into prompts and logs, so a secret is given as a stub with the same
+   * shape, never its real value. Optional.
+   */
+  ciEnvironment?: Record<string, string>;
   /**
    * After every confirmed merge, fast-forward the main checkout (the one the driver was invoked
    * from, or that its worktree belongs to) to the remote base branch, so a person watching a dev
@@ -94,6 +109,48 @@ export function agentCapFault(cap: unknown): string | null {
 export function ciCommandFault(command: unknown): string | null {
   if (command === undefined || (typeof command === 'string' && command.trim() !== '')) return null;
   return 'project.ciCommand must be a non-empty string when present';
+}
+
+/** An absent CI environment keeps the lane's; a supplied one is a map of shell-safe names to strings. */
+export function ciEnvironmentFault(environment: unknown): string | null {
+  if (environment === undefined) return null;
+  const valid =
+    typeof environment === 'object' &&
+    environment !== null &&
+    !Array.isArray(environment) &&
+    Object.entries(environment).every(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof value === 'string');
+  return valid ? null : 'project.ciEnvironment must be a map of environment variable names to string values when present';
+}
+
+/** Which environment a seat's gate runs in: the lane's own, or the CI job's shape layered over it. */
+export type GateEnvironment = 'lane' | 'ci-shaped';
+
+export function gateEnvironment(project: ProjectConfig): GateEnvironment {
+  return project.ciEnvironment && Object.keys(project.ciEnvironment).length > 0 ? 'ci-shaped' : 'lane';
+}
+
+/**
+ * A gate command as a seat runs it. With a CI environment configured, the command runs in a
+ * subshell that exports those variables first, so a compound command sees them in every part and
+ * the seat's own shell is left as it was.
+ */
+export function gateCommand(project: ProjectConfig, command: string): string {
+  if (gateEnvironment(project) === 'lane') return command;
+  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+  const exports = Object.entries(project.ciEnvironment ?? {}).map(([name, value]) => `${name}=${quote(value)}`);
+  return `(export ${exports.join(' ')}; ${command})`;
+}
+
+/** What is wrong with `laneFiles`, or null: absent, or relative paths that stay inside the repository. */
+export function laneFilesFault(files: unknown): string | null {
+  if (files === undefined) return null;
+  const inside = (path: unknown) => {
+    if (typeof path !== 'string' || path.trim() === '' || isAbsolute(path)) return false;
+    const normal = normalize(path);
+    return normal !== '.' && normal !== '..' && !normal.startsWith('../');
+  };
+  if (Array.isArray(files) && files.every(inside)) return null;
+  return 'project.laneFiles must be an array of paths relative to the repository root, none leaving it';
 }
 
 /** The knobs the fix pipeline itself enforces. A driver may carry more; the pipeline reads these. */
@@ -129,6 +186,13 @@ export type PipelineKnobs = {
    * is the adopter's statement that the app runs nothing here; a later first run is not detected.
    */
   idleCheckSuiteApps?: string[];
+  /**
+   * How long a check may sit queued, never started by its provider, before the checks wait calls it
+   * stuck and ends the landing as an outside stop naming the check and its provider, instead of
+   * waiting out `checksTimeoutMinutes` into a dead letter. Unset is 30 minutes. A check that has
+   * started is never stuck, however long it runs.
+   */
+  stuckCheckMinutes?: number;
   /** How long `project.smokeCommand` may run before the landing goes to `loop/dlq: landing`. */
   smokeTimeoutMinutes: number;
   /** The adopter's point scale, ascending. Every size the appraiser or the knife writes is on it. */
@@ -352,6 +416,10 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   if (idleCheckSuiteApps !== undefined && !(Array.isArray(idleCheckSuiteApps) && idleCheckSuiteApps.every((slug) => typeof slug === 'string' && slug.length > 0))) {
     faults.push('idleCheckSuiteApps must be an array of GitHub App slugs');
   }
+  const stuckCheckMinutes = (merged as Knobs).stuckCheckMinutes;
+  if (stuckCheckMinutes !== undefined && !(typeof stuckCheckMinutes === 'number' && Number.isFinite(stuckCheckMinutes) && stuckCheckMinutes > 0)) {
+    faults.push('stuckCheckMinutes must be a positive number of minutes');
+  }
   const checks = (merged as Knobs).checks;
   if (checks !== undefined && !['required', 'none'].includes(checks as string)) {
     faults.push(`checks must be 'required' or 'none'`);
@@ -364,6 +432,10 @@ export async function loadProjectConfig<K extends Knobs>(options: {
   }
   const ciFault = ciCommandFault(project.ciCommand);
   if (ciFault) faults.push(ciFault);
+  const environmentFault = ciEnvironmentFault(project.ciEnvironment);
+  if (environmentFault) faults.push(environmentFault);
+  const laneFault = laneFilesFault(project.laneFiles);
+  if (laneFault) faults.push(laneFault);
   if (project.followBase !== undefined && typeof project.followBase !== 'boolean') {
     faults.push('project.followBase must be a boolean when present');
   }

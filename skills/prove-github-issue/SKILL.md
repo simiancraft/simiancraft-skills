@@ -25,7 +25,8 @@ remote holds, each covering one thing the change claims.
 |---|---|---|
 | `proved` | a ready pull request, `pr`, whose head is `sha`, the lane's head | the card goes to review |
 | `unprovable` | the change does not do what the issue asks, or what it claims cannot be shown; `brief` says what | the driver announces it (`<!-- loop-step unproved ... -->`), spends an attempt, and a coder fixes it on the same branch |
-| `needs-decision`, `needs-human` | proof needs a ruling, or access an agent lacks | the issue is held with the question stated |
+| `needs-decision` | proof needs a ruling | the issue is held with the question stated |
+| `needs-human` | proof needs access an agent lacks | the work is held where it stands: the pull request stays open, the issue and the pull request carry `needs-human`, and the issue says what is missing; lifting the issue's label proves the same pull request again |
 | `failed` | anything else | the attempt is counted; the coded commit stands |
 
 ## What a prover is told, and what it is not
@@ -39,15 +40,30 @@ when the head differs from the coder's gated commit, or that commit is unknown; 
 head the coder's gate stands and is not rerun. Before an owed run it runs `installCommand`; on a
 changed or unknown gated head it runs `checkCommand` first, even with `ciCommand` configured.
 It records only the deciding command in `gateRun`, with the exact command, full SHA, and numeric
-exit code. A failing run is `unprovable`. Focused evidence comes in addition to that run, never
+exit code. With `project.ciEnvironment` configured, every gate command it is handed runs in a
+subshell exporting those variables, so the run has the CI job's environment shape rather than the
+lane's; the driver stamps `gateRun.environment` as `ci-shaped` only when the recorded command is the
+one carrying that environment, and `lane` otherwise, and the prover names the same word beside
+the run's receipt. A failing run is `unprovable`. Focused evidence comes in addition to that run, never
 instead of it. Like the coder, it never chases the base itself.
+
+Receipts, logs, and drafts go in the seat's scratch directory, `<runDir>/scratch/issue-<n>/prover`,
+which the prompt names as `{{SCRATCH_DIR}}` and which sits outside the lane (`seatScratch` in
+`fix-github-issue/lib/lane.ts`; the coder and reviewer get their own). Every dirty-tree judgement
+also looks through an untracked `.proof/` or `.proof-<name>/` in the lane, so receipts a prompt
+without that directory staged there do not read as uncommitted work.
 
 ## How the driver checks the answer
 
 `lib/prove.ts` exports `runProve(ctx, issue, cwd, coded, brief)`. It runs the seat and returns its
 answer, or `failed` when the answer cannot be believed: a crash, a kill at the cap, an unknown
 verdict, a `proved` that names no pull request or is pinned to a head other than the lane's, or an
-`unprovable` that tells the coder nothing to fix. The control file is `loop-proof.json`.
+`unprovable` that tells the coder nothing to fix. A prover whose run ends on an environment fault (a
+full disk, exhausted memory, or a person's `kill`) is not `failed`: `runProve` throws an
+`EnvironmentFault`, and the pipeline counts no attempt and reruns the work later. The control file
+is `loop-proof.json`. The driver deletes the coder's `loop-code.json` before the prover starts;
+when `loop-proof.json` is missing and `loop-code.json` exists after the turn, the failure says the
+prover answered in the coder's file. That answer is not read.
 
 ## Hard dependencies
 

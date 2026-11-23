@@ -22,10 +22,11 @@ import { join, resolve } from 'node:path';
 import { enrichBlockers } from '../../fix-github-issue/lib/blockers.ts';
 import { isTrunk, leaseLost, trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree, type Tree } from '../../carve-github-issue/lib/tree.ts';
-import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { APPRAISAL_FILE, CONFIRMATION_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import { assertDistinctEngines, type Seat } from '../../fix-github-issue/lib/engines.ts';
+import { environmentFaultOf, type Fault, rememberFaultMarkers, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { appraisalCount, clearAppraisals, closeIssue, ensureLabel, recordAppraisal, sendToDlq, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { clearSizeLabels, weighHold } from '../../fix-github-issue/lib/panel.ts';
@@ -70,6 +71,10 @@ export type AppraisalOutcome = {
   callback?: SizeCallbackResult;
   /** True when the failure cap was reached and the issue went to the appraisal dead-letter queue. */
   deadLetter?: boolean;
+  /** True when a seat ended on an environment fault: nothing was counted, and the next run appraises it again. */
+  unjudged?: boolean;
+  /** True when the same rerunning outside stop came back run after run, and the issue now waits on a person (`needs-human`). */
+  held?: boolean;
   /** How a decision panel settled a `needs-decision`, when one sat: `proceed` sends the issue back to be appraised. */
   panel?: 'proceed' | 'hold';
 };
@@ -300,6 +305,9 @@ export async function confirmClose(
   const run = await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt);
   if (run.exitCode !== 0) {
     rmSync(cwd, { recursive: true, force: true });
+    // A confirmer that ended on an environment fault gave no answer either, but it is not a failed
+    // turn: it throws for its caller to settle as one, counting nothing.
+    refuseEnvironmentFault(run, 'confirmer', issue.number);
     return null;
   }
   const checked = validateConfirmation(readResult<unknown>(cwd, CONFIRMATION_FILE), issue.number);
@@ -338,6 +346,9 @@ function handOff(ctx: Context, issue: number, verdict: 'needs-decision' | 'needs
  * again on every run with nothing accumulating against it.
  */
 export function recordAppraisalThrow(ctx: Context, issue: Issue, cap: number | undefined, error: Error, say: (m: string) => void): AppraisalOutcome {
+  // An environment fault is not a failed appraisal: it is settled as one only when charged.
+  const fault = environmentFaultOf(error);
+  if (fault) return settleAppraisalFault(ctx, issue, cap ?? APPRAISE_DEFAULTS.maxAppraiseAttempts, fault, null, say);
   return countFailedAppraisal(ctx, issue, cap ?? APPRAISE_DEFAULTS.maxAppraiseAttempts, `the appraisal threw: ${error.message.split('\n')[0]}`, null, say);
 }
 
@@ -349,6 +360,18 @@ export function recordAppraisalThrow(ctx: Context, issue: Issue, cap: number | u
 export function refusedAsTrunk(tree: Tree, release: boolean | undefined): boolean {
   if (!isTrunk(tree)) return false;
   return !(release && tree.issue.labels.some((l) => l.name === 'loop/released'));
+}
+
+/**
+ * A seat of the appraisal ended on an environment fault (a full disk, no memory, a person's stop).
+ * The issue was not judged: nothing is counted and the next run appraises it again, unless the same
+ * host fault came back on that rerun, which `settleOutsideStop` charges as an ordinary failure.
+ */
+function settleAppraisalFault(ctx: Context, issue: Issue, cap: number, fault: Fault, logPath: string | null, say: (m: string) => void): AppraisalOutcome {
+  const settled = settleOutsideStop(ctx, issue, { fault }, 'appraisal', say);
+  if (settled.charged) return countFailedAppraisal(ctx, issue, cap, settled.reason, logPath, say);
+  if (settled.held) return { verdict: 'needs-human', reason: settled.reason, held: true };
+  return { verdict: 'failed', reason: settled.reason, retry: true, unjudged: true };
 }
 
 /** One more failed appraisal; at the cap the issue goes to the appraisal dead-letter queue with the log tail. */
@@ -370,6 +393,20 @@ function countFailedAppraisal(ctx: Context, issue: Issue, cap: number, reason: s
   // issue needs deciding, the appraiser needs another seat, a changed thread, or a cooling period.
   sendToDlq(ctx, issue.number, 'appraisal', `The appraiser or its confirmer failed ${attempts} times on this issue and stops trying. Last failure: ${reason}. Log tail: ${tail}`);
   return { verdict: 'failed', reason: `appraisal dead letter after ${attempts} failures: ${reason}`, retry: false, deadLetter: true };
+}
+
+/**
+ * Fetches the base branch into the main checkout's remote-tracking ref, which the appraise prompt
+ * tells the appraiser and the confirmer to judge against. A merge that landed since the caller's
+ * last fetch (a trunk's last child, just before its release appraisal) is otherwise invisible to
+ * them. A failed fetch is logged, not thrown: the appraisal still runs, on the ref as it stands.
+ */
+export function refreshBase(ctx: Context, say: (message: string) => void): void {
+  try {
+    sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch]);
+  } catch (error) {
+    say(`fetch of the base failed; appraising against the base ref as last fetched: ${(error as Error).message.split('\n').join(' ')}`);
+  }
 }
 
 /**
@@ -409,8 +446,12 @@ export async function appraiseIssue(
     say('a trunk is not appraised; it is worked by closing its children');
     return { verdict: 'failed', reason: 'a trunk is not appraised', retry: false };
   }
+  // Every caller gets a freshly fetched base, so the prompt's promise holds however it was reached.
+  // The fetch comes first: the stamp records the base the appraiser will read, not the one before it.
+  refreshBase(ctx, say);
   const base = readBase(ctx, say);
 
+  rememberFaultMarkers(ctx, issue.number, before.issue.labels);
   const cwd = join(ctx.runDir, `appraise-${issue.number}-${process.pid}`);
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
@@ -421,6 +462,10 @@ export async function appraiseIssue(
     AGE_DAYS: options.ageDays === null ? 'any' : String(options.ageDays),
   });
   const run = await runAgent(ctx, 'appraiser', issue.number, cwd, options.seats.appraiser, prompt);
+  if (run.fault) {
+    rmSync(cwd, { recursive: true, force: true });
+    return settleAppraisalFault(ctx, issue, cap, run.fault, run.logPath, say);
+  }
   if (run.exitCode !== 0) {
     say(`appraiser exited ${run.exitCode}; its verdict is not trusted`);
     rmSync(cwd, { recursive: true, force: true });
@@ -501,7 +546,15 @@ export async function appraiseIssue(
       } catch (error) {
         say(`board: ${(error as Error).message}`);
       }
-      const confirmation = await confirmClose(ctx, issue, result, options.seats.confirmer, say);
+      let confirmation: Confirmation | null;
+      try {
+        confirmation = await confirmClose(ctx, issue, result, options.seats.confirmer, say);
+      } catch (error) {
+        const fault = environmentFaultOf(error);
+        if (!fault) throw error;
+        const settled = settleAppraisalFault(ctx, issue, cap, fault, null, say);
+        return { ...outcome, ...settled, close: 'unconfirmed' };
+      }
       if (!confirmation) {
         say('no usable confirmation; the close is not made and the issue stays unsized');
         // Counted like any failed appraisal, or a confirmer that always fails would retry forever.

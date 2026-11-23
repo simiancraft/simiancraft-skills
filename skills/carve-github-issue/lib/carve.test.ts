@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
-import { buildLedger, carryIds, type Ledger, pauseSet, parseRecord, type Record, renderRecord } from './record.ts';
+import { buildLedger, carryIds, type Ledger, pauseSet, parseRecord, type Record, renderRecord, withdrawalCite } from './record.ts';
 import {
   type Comment,
   claimsOf,
@@ -118,6 +118,29 @@ describe('buildLedger', () => {
   test('a withdrawal stands while its comment does, and reopens when the comment is gone', () => {
     expect(buildLedger(rec.ledger, crit, rec, treeWith([{}, {}], [cite]))[2].status).toBe('withdrawn');
     expect(buildLedger(rec.ledger, crit, rec, treeWith([{}, {}], []))[2].status).toBe('open');
+  });
+  test('a withdrawal citing the comment by database id or link stands, and is carried as its node id', () => {
+    for (const form of ['5', 'https://github.com/o/r/issues/10#issuecomment-5']) {
+      const ledger: Ledger = [rec.ledger[0], rec.ledger[1], { ...rec.ledger[2], cite: form }];
+      expect(buildLedger(ledger, crit, rec, treeWith([{}, {}], [cite]))[2]).toMatchObject({ status: 'withdrawn', cite: 'IC_5' });
+    }
+  });
+  test('a withdrawal by a body rewrite stands while the body hashes to its cite, and reopens when the body changes', () => {
+    const tree = treeWith([{}, {}]);
+    const ledger: Ledger = [rec.ledger[0], rec.ledger[1], { ...rec.ledger[2], cite: `body:${tree.issue.bodyHash}` }];
+    expect(buildLedger(ledger, crit, rec, tree)[2]).toMatchObject({ status: 'withdrawn', cite: `body:${tree.issue.bodyHash}` });
+    const rewritten = { ...tree, issue: { ...tree.issue, bodyHash: 'ffffffffffffffff' } };
+    expect(buildLedger(ledger, crit, rec, rewritten)[2]).toMatchObject({ status: 'open', cite: undefined });
+  });
+  test('withdrawalCite: comment forms, body hashes, and what does not stand', () => {
+    const trunk = { bodyHash: '0123456789abcdef', comments: [cite] };
+    expect(withdrawalCite('IC_5', trunk)).toBe('IC_5');
+    expect(withdrawalCite('IC_5#deadbeef', trunk)).toBe('IC_5');
+    expect(withdrawalCite('#issuecomment-5', trunk)).toBe('IC_5');
+    expect(withdrawalCite('body:0123456789ABCDEF', trunk)).toBe('body:0123456789abcdef');
+    expect(withdrawalCite('body:0000000000000000', trunk)).toBeNull();
+    expect(withdrawalCite('IC_6', trunk)).toBeNull();
+    expect(withdrawalCite(undefined, trunk)).toBeNull();
   });
   test('a criterion with no prior row is open and unowned', () => {
     expect(buildLedger(null, crit, null, treeWith([{}, {}]))[0]).toEqual({ id: 'A1', text: 'posts', owner: null, status: 'open' });

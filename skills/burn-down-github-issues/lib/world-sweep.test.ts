@@ -135,9 +135,11 @@ pred('verdictOutOfBandOverCeiling', ['result', 'points'], m => m.result === 'out
 eq('standingVerdictMerge', 'verdict', 'merge'); eq('verdictMerge', 'verdict', 'merge');
 eq('standingVerdictRejection', 'verdict', 'reject'); eq('standingVerdictGatherMore', 'verdict', 'gather'); eq('noVerdictYet', 'verdict', 'none');
 pred('behindBase', ['movement'], m => m.behind());
+pred('upToDateWithBase', ['movement'], m => !m.behind());
+eq('approvedAtHead', 'verdict', 'merge');
 pred('movementOutsideClosure', ['movement'], m => !m.incoming().some(f => [...m.files, ...m.imports, 'bun.lock'].includes(f)));
 pred('netChangeIntact', ['contribution'], m => m.contribution === m.reviewedContribution);
-eq('checksGreen', 'check', 'green'); pred('smokeConfigured', ['smokeCommand'], m => m.smokeCommand.length > 0);
+eq('checksGreen', 'check', 'green'); pred('noCheckFailed', ['check'], m => m.check !== 'red'); pred('smokeConfigured', ['smokeCommand'], m => m.smokeCommand.length > 0);
 eq('smokePassed', 'smokeExit', 0); eq('walkPassed', 'walkExit', 0); eq('nothingRemains', 'remainder', 0);
 const facts = (m: Model) => (guard: string) => {
   if (!predicates[guard]) throw new Error(`unmodelled guard: ${guard}`);
@@ -293,7 +295,7 @@ describe('intervention and recovery at every lane', () => {
     expect(dropped).toEqual([]);
     // Moves the drivers make, each of which was once absent from the chart.
     const absent: string[] = [];
-    for (const [from, to] of [['E2', 'F2'], ['E1', 'D3'], ['E1', 'D2'], ['D3', 'D2'], ['F3', 'Q5'], ['A2', 'T2'], ['D1', 'A3'], ['A3', 'T2'], ['C6', 'H2'], ['C6', 'Q2'], ['C7', 'A2'], ['A2', 'B1'], ['F3', 'F2'], ['F4', 'F2']]) {
+    for (const [from, to] of [['E2', 'F2'], ['E1', 'D3'], ['E1', 'D2'], ['D3', 'D2'], ['F3', 'Q5'], ['A2', 'T2'], ['D1', 'A3'], ['A3', 'T2'], ['C6', 'H2'], ['C6', 'Q2'], ['C7', 'A2'], ['A2', 'B1'], ['F3', 'F2'], ['F4', 'F2'], ['D2', 'H2'], ['F5', 'H3']]) {
       if (!successors(laneState(from), { ownEventsOnly: true }).has(laneState(to))) absent.push(`${from}->${to}`);
     }
     expect(absent).toEqual([]);

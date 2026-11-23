@@ -14,21 +14,25 @@ import { join, resolve } from 'node:path';
 import { confirmClose, validateConfirmation } from '../../appraise-github-issues/lib/appraise.ts';
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { type ProveBrief, runProve } from '../../prove-github-issue/lib/prove.ts';
-import { claim, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
-import { children, killAgent, killAgentsOn, readResult, renderPrompt, runAgent, SETSID } from './agent.ts';
+import { claim, type ClaimHandle, keepClaimed, LeaseLostError, leaseLost, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import type { TrackerIo } from '../../carve-github-issue/lib/tree.ts';
+import { children, killAgent, killAgentsOn, parseJsonFile, readResult, refuseEnvironmentFault, renderPrompt, runAgent, SETSID } from './agent.ts';
 import type { Blocker } from './blockers.ts';
 import type { Context } from './context.ts';
-import { CONFIRMATION_FILE } from './control-files.ts';
+import { CONFIRMATION_FILE, PROOF_FILE } from './control-files.ts';
 import { assertDistinctEngines, type Seat } from './engines.ts';
 import { followBase } from './follow-base.ts';
+import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
-import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
+import { dirtyPaths, heldLane, inFlight, judgeLane, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
+import { finishDespiteStop, isFinishing, isStopping, mutate, rateLimitedIn, rateLimitResetAt, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
-import { behindBase, behindBeyondNoise, fetchBase, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
+import { recordMerge } from './record-merge.ts';
+import { type CheckObservation, type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
+import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
-import { loopNote } from './note.ts';
+import { heldComment, loopHoldStands, proofHeldComment, standingApproval, standingStop, stopComment } from './stop-record.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -45,8 +49,14 @@ export type FixOutcome = {
    * card is no longer this run's to place.
    */
   /** `stopped` is a lane the operator's stop unwound: nothing about it was settled, and the next run takes it up. */
-  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost';
+  /**
+   * `unjudged` is a lane that ended on an environment fault (a full disk, no memory, a person's
+   * stop): the work was not judged, nothing was counted, the lane was cleared, and the work is rerun
+   * later; on a host fault the driver was asked to pause the line. `fault` names which.
+   */
+  outcome: 'merged' | 'parked' | 'handed-off' | 'closed' | 'dlq' | 'failed' | 'left-alone' | 'busy' | 'not-run' | 'stopped' | 'lease-lost' | 'unjudged';
   reason: string;
+  fault?: EnvironmentFaultKind;
 };
 
 /** The largest `size: N` on an issue, or null when it carries none. */
@@ -82,6 +92,13 @@ export type WorkerResult = {
   branch?: string;
   /** What the change touches, which decides whether autoMerge: 'code-only' will merge it. */
   touches?: Array<'code' | 'data' | 'migration' | 'stored-string' | 'ci'>;
+  /**
+   * The seat whose escape this is. A coder's escape has nothing proved behind it; a prover's comes
+   * after the code was pushed and announced, so its hold keeps the pull request open.
+   */
+  seat?: 'coder' | 'prover';
+  /** For needs-human: `base` when the seat reproduced the failure on the untouched base, which is not the change's. */
+  outside?: 'base';
 };
 
 export type ReviewResult = {
@@ -213,7 +230,7 @@ async function runWorker(
       if (c.verdict === 'not-run') return { issue: issue.number, verdict: 'not-run', reason: c.reason };
       if (c.verdict !== 'coded') {
         // The escapes are the same words either seat may say, with the pull request a revision holds.
-        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches };
+        return { issue: issue.number, verdict: c.verdict, reason: c.reason, points: c.points, closeComment: c.closeComment, answer: c.answer, pr: feedback?.pr, branch: c.branch, touches: c.touches, seat: 'coder', outside: c.outside };
       }
       coded = { branch: c.branch ?? '', gated: c.gated ?? '', touches: c.touches ?? [] };
       // The push is the fact; the announcement is what the next run, on any machine, reads.
@@ -245,7 +262,7 @@ async function runWorker(
       const touches = [...new Set([...coded.touches, ...(p.touches ?? [])])];
       return { issue: issue.number, verdict: 'fixed', reason: p.reason, pr: p.pr, branch: coded.branch, touches: touches.length > 0 ? touches : undefined };
     }
-    if (p.verdict !== 'unprovable') return { issue: issue.number, verdict: p.verdict, reason: p.reason, pr: p.pr ?? feedback?.pr, branch: coded.branch };
+    if (p.verdict !== 'unprovable') return { issue: issue.number, verdict: p.verdict, reason: p.reason, pr: p.pr ?? feedback?.pr, branch: coded.branch, seat: 'prover' };
 
     // Proof that cannot be produced is a fault in the code: back a step, spending an attempt. The
     // last attempt is the caller's to count, so a refusal at the cap is never counted twice.
@@ -337,6 +354,19 @@ function remoteBranchHead(ctx: Context, cwd: string, branch: string): string | n
 }
 
 /**
+ * Whether a lane owes a catch-up to `baseSha`: it lacks base commits beyond release noise
+ * (`behindBeyondNoise`), or lacks any while the base requires an up-to-date branch, since GitHub
+ * then refuses the merge until the lane holds every base commit. Release noise alone the merge
+ * brings in, with no new head to restart CI. `strict` is that rule when the caller already read it;
+ * otherwise it is read here, for the pull request `pr`, and only once the movement is known to be noise.
+ */
+function catchUpOwed(ctx: Context, cwd: string, baseSha: string, strict?: boolean, pr?: number): boolean {
+  if (behindBeyondNoise(ctx, cwd, baseSha).length > 0) return true;
+  if (behindBase(ctx, cwd, baseSha).length === 0) return false;
+  return strict ?? requiresUpToDate(ctx, pr);
+}
+
+/**
  * The catch-up at the seam between two Work seats: the base merged in and pushed when the lane is
  * behind, with no card move, since the card is between lanes the driver already owns. A conflict is
  * never resolved here.
@@ -347,6 +377,10 @@ async function seamCatchUp(ctx: Context, issue: Issue, cwd: string, say: (messag
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return 'current';
+  if (!catchUpOwed(ctx, cwd, baseSha)) {
+    say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up ${why}`);
+    return 'current';
+  }
   say(`the base moved (${behind.slice(0, 3).join(', ')}${behind.length > 3 ? `, and ${behind.length - 3} more` : ''}); catching up ${why}`);
   await yieldToStop(`catch up ${why}`);
   if (updateFromBase(ctx, cwd, baseSha)) return 'caught-up';
@@ -365,7 +399,7 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
   rmSync(cwd, { recursive: true, force: true });
   mkdirSync(cwd, { recursive: true });
   const prompt = renderPrompt(ctx, 'confirm-answer.md', { ISSUE: String(issue.number), TITLE: issue.title, WORKER_REASON: result.reason, ANSWER: result.answer ?? '' });
-  const run = await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt);
+  const run = refuseEnvironmentFault(await runAgent(ctx, 'confirmer', issue.number, cwd, confirmer, prompt), 'confirmer', issue.number);
   holdLease(ctx, issue.number, 'settle the confirmer');
   if (run.exitCode !== 0) return null;
   const checked = validateConfirmation(readResult<unknown>(cwd, CONFIRMATION_FILE), issue.number);
@@ -377,11 +411,11 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
   return checked.result;
 }
 
-/** Hands a leaf to a person with both opinions on the thread. */
+/** Hands a leaf to a person with both opinions on the thread, recorded as the hold's stop. */
 function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, confirmation: { reason: string }, say: (m: string) => void): FixOutcome {
   holdLease(ctx, issue.number, 'hand the issue to a person');
   const body = `The worker judged this \`${result.verdict}\` (${result.reason}); the second engine disagreed: ${confirmation.reason}. A person decides.`;
-  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(body)]);
+  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', heldComment('needs-human', body)]);
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
   say('the second engine disputed the close; handed to a person');
   move(ctx, issue, 'H2', `close disputed: ${confirmation.reason}`.slice(0, 120));
@@ -400,8 +434,11 @@ async function runReviewer(
     ISSUE: String(issue),
     ROUND: String(round),
     MAX_ROUNDS: String(ctx.knobs.maxReviewRounds),
+    SCRATCH_DIR: seatScratch(ctx, issue, 'reviewer'),
   });
-  const { exitCode } = await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt);
+  // A reviewer stopped from outside, or one that failed on the host, throws here: a full disk is
+  // not a review that failed, and the work it was to review was not judged.
+  const { exitCode } = refuseEnvironmentFault(await runAgent(ctx, 'reviewer', issue, cwd, ctx.seats.reviewer, prompt), 'reviewer', issue);
   holdLease(ctx, issue, 'settle the reviewer');
   // A verdict from a process that failed is not a verdict; treating it as one is how a crashed
   // reviewer's parting words could approve a merge.
@@ -491,28 +528,31 @@ async function pullRequestMatchesReview(
   cwd: string,
   reviewedSha: string,
 ): Promise<string | null> {
-  type View = { headRefOid: string; baseRefName: string; headRefName: string; state: string };
-  const read = (): View => JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'headRefOid,baseRefName,headRefName,state']));
+  const watch = landingWatch(pr, { read: (argv) => sh(ctx, argv), now: () => Date.now() });
   const localHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-  let view = read();
+  let view = watch.observe();
   // A catch-up has just pushed this head, and the pull request's head can trail the push by a few
   // seconds. When the worktree already holds the expected commit, wait for GitHub to agree before
   // calling it a mismatch; a wrong head stays wrong after the wait.
   // Awaited, not slept through: other lanes' output, timeouts, and lease renewals run meanwhile.
-  for (let tries = 0; view.headRefOid !== reviewedSha && localHead === reviewedSha && tries < 6; tries++) {
+  for (let tries = 0; view.head !== reviewedSha && localHead === reviewedSha && tries < 6; tries++) {
     await Bun.sleep(5_000);
-    view = read();
+    view = watch.observe();
   }
 
   if (view.state !== 'OPEN') return `pull request is ${view.state}`;
-  if (view.baseRefName !== ctx.project.baseBranch) return `targets ${view.baseRefName}, not ${ctx.project.baseBranch}`;
-  if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(view.headRefName)) {
-    return `branch ${view.headRefName} does not name issue ${issue}`;
+  if (view.base !== ctx.project.baseBranch) return `targets ${view.base}, not ${ctx.project.baseBranch}`;
+  if (!new RegExp(`(?:^|[^0-9])${issue}(?:[^0-9]|$)`).test(view.branch)) {
+    return `branch ${view.branch} does not name issue ${issue}`;
   }
-  if (view.headRefOid !== reviewedSha) return `head ${view.headRefOid.slice(0, 9)} is not the reviewed commit`;
-  if (view.headRefOid !== localHead) return 'remote head and worktree head disagree';
-  if (dirtyPaths(ctx, cwd).length > 0) return 'worktree has uncommitted changes';
-  return null;
+  if (view.head !== reviewedSha) return `head ${view.head.slice(0, 9)} is not the reviewed commit`;
+  // The lane itself, judged as every pickup judges it: clean, and at the head that would land. A
+  // hold's kept work is uncommitted work here too; nothing lands that is not in the pull request.
+  const lane = judgeLane(ctx, issue, () => view.head);
+  if (lane.kind === 'clean-at-head') return null;
+  if (lane.kind === 'off-head') return 'remote head and worktree head disagree';
+  if (lane.kind === 'no-lane') return 'the lane is gone';
+  return 'worktree has uncommitted changes';
 }
 
 /** Whether a pull request is still a draft, which is the worker saying the work is unfinished. */
@@ -574,25 +614,45 @@ export function reviewedChecks(all: Array<{ name: string; verdict: string | null
 /**
  * Whether the base requires a branch to be up to date before it merges, by classic protection or by
  * a ruleset. When it does, a landing catches up on every base movement, release noise included, or
- * GitHub refuses it. Only a base known to require neither skips that: a denied or failed read is not
- * knowledge, so it answers true and the landing catches up as before.
+ * GitHub refuses it. Only a base known to require neither skips that. A denied or failed read is not
+ * knowledge: what GitHub says of the pull request `pr` decides then (`upToDateByPullRequest`), and
+ * with no pull request it answers true and the landing catches up as before.
  */
-function requiresUpToDate(ctx: Context): boolean {
-  let classic: boolean;
+function requiresUpToDate(ctx: Context, pr?: number): boolean {
+  let classic: boolean | null;
   try {
     classic = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/branches/${ctx.project.baseBranch}/protection/required_status_checks`, '--jq', '.strict'], ctx.repoRoot, 1) === 'true';
   } catch (error) {
-    // Only GitHub's explicit answer that the branch has no such protection lets the ruleset check decide.
-    if (!/Branch not protected|Required status checks not enabled/i.test((error as Error).message)) return true;
-    classic = false;
+    // Only GitHub's explicit answer that the branch has no such protection is a no; a denied read is unknown.
+    classic = /Branch not protected|Required status checks not enabled/i.test((error as Error).message) ? false : null;
   }
   if (classic) return true;
+  let rules: boolean | null;
   try {
     // The rules in force on the branch, rulesets included; readable with ordinary repository access.
-    return (
-      sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/rules/branches/${ctx.project.baseBranch}`, '--jq', '[.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy] | any'], ctx.repoRoot, 1) ===
-      'true'
-    );
+    rules = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/rules/branches/${ctx.project.baseBranch}`, '--jq', '[.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy] | any'], ctx.repoRoot, 1) === 'true';
+  } catch {
+    rules = null;
+  }
+  if (rules) return true;
+  if (classic === false && rules === false) return false;
+  return pr === undefined ? true : upToDateByPullRequest(ctx, pr);
+}
+
+/**
+ * The pull request's own word on the rule, for a token that cannot read the protection. GitHub
+ * reports `BEHIND` only when the base requires an up-to-date branch and the head lacks base commits,
+ * so `BEHIND` is a yes; a mergeable state (`CLEAN`, `UNSTABLE`, `HAS_HOOKS`) on a head that is behind
+ * the base is a no. Anything else (a head not behind, a state that can mask `BEHIND` such as
+ * `BLOCKED`, one not computed yet, a failed read) says nothing, and answers true.
+ */
+function upToDateByPullRequest(ctx: Context, pr: number): boolean {
+  try {
+    const view = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeStateStatus,headRefOid'])) as { mergeStateStatus?: string; headRefOid?: string };
+    if (view.mergeStateStatus === 'BEHIND') return true;
+    if (!['CLEAN', 'UNSTABLE', 'HAS_HOOKS'].includes(view.mergeStateStatus ?? '') || !view.headRefOid) return true;
+    const behindBy = Number(sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/compare/${ctx.project.baseBranch}...${view.headRefOid}`, '--jq', '.behind_by']));
+    return !(Number.isFinite(behindBy) && behindBy > 0);
   } catch {
     return true;
   }
@@ -607,6 +667,22 @@ export function requiredStatusChecks(ctx: Context, read: (argv: string[]) => str
   }
 }
 
+/**
+ * What the checks wait came to: null when the landing head is green, a refusal's reason, or the
+ * pull request's end when someone merged or closed it while the wait watched (`head` is the head it
+ * was merged or closed at).
+ */
+export type ChecksWait = string | null | { ended: 'MERGED' | 'CLOSED'; head: string };
+
+/** How long a check may sit queued, never started by its provider, before the checks wait calls it stuck (`stuckCheckMinutes`). */
+export const DEFAULT_STUCK_CHECK_MINUTES = 30;
+
+/** How long the checks wait keeps retrying a tracker it cannot reach before it settles as an outside stop. */
+export const TRANSPORT_WINDOW_MS = 5 * 60_000;
+
+/** How long the checks wait pauses on a rate limit whose reset GitHub does not name. */
+export const RATE_LIMIT_PAUSE_MS = 60_000;
+
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
@@ -614,27 +690,9 @@ export async function awaitGreenChecks(
   expect?: { sha: string; names?: string[]; passedAtReview?: string[]; required?: string[] },
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
-): Promise<string | null> {
-  type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
-  // A check that ran and was satisfied. SKIPPED and CANCELLED are neither this nor a failure: no
-  // verdict was reached, and a name whose every node is one of those has not been checked at all.
-  const PASSED = new Set(['SUCCESS', 'NEUTRAL']);
-  const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
-  // GitHub renders an unfinished CheckRun with conclusion "" (empty string, not null), so a
-  // nullish coalesce would read "" as a verdict and fail-close a merely-running check.
-  const classify = (c: CheckNode): 'passed' | 'skipped' | 'cancelled' | 'pending' | 'failed' => {
-    const verdict = c.conclusion || c.state || c.status || null;
-    if (verdict === null || RUNNING.has(verdict)) return 'pending';
-    if (PASSED.has(verdict)) return 'passed';
-    if (verdict === 'SKIPPED') return 'skipped';
-    // A cancelled run was superseded or stopped, often by the repository's own concurrency rule when
-    // a draft is marked ready; it says nothing about the change, so it is waited out, not refused.
-    if (verdict === 'CANCELLED') return 'cancelled';
-    return 'failed';
-  };
-  const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
-
+): Promise<ChecksWait> {
   const deadline = io.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
+  const stuckAfterMs = (ctx.knobs.stuckCheckMinutes ?? DEFAULT_STUCK_CHECK_MINUTES) * 60_000;
   const wait = async (why: string, ms: number): Promise<string | null> => {
     const left = deadline - io.now();
     if (left <= 0) return `${why}, after ${ctx.knobs.checksTimeoutMinutes} minutes`;
@@ -678,44 +736,113 @@ export async function awaitGreenChecks(
     return `nothing names the checks this landing must pass: the config lists no requiredChecks and ${ctx.project.baseBranch} requires no status checks (a repository that runs no checks says so with checks: 'none')`;
   }
   const expected = [...new Set([...authoritative, ...(expect?.names ?? [])])];
+  // A read the tracker could not answer says nothing about the checks: it is retried with backoff,
+  // inside the checks deadline and a window of its own. One that outlasts both is an outside stop
+  // (`transport`), settled with nothing counted, never a landing dead letter.
+  let offlineSince: number | null = null;
+  let retries = 0;
+  const watch = landingWatch(pr, io);
+  const observe = async (): Promise<LandingObservation | null> => {
+    try {
+      const seen = watch.observe();
+      offlineSince = null;
+      retries = 0;
+      return seen;
+    } catch (error) {
+      const text = (error as Error).message ?? '';
+      if (!transportFailureIn(text)) throw error;
+      const now = io.now();
+      if (rateLimitedIn(text)) {
+        // Throttled, not offline: the read waits for the limit's reset (a minute when GitHub names
+        // none, as under a secondary limit), inside the checks deadline, and the transport window
+        // does not run meanwhile.
+        if (deadline - now <= 0) throw new EnvironmentFault({ kind: 'transport' }, 'landing', `the checks of PR #${pr} could not be read before the checks deadline: the tracker is rate limiting this token`);
+        const reset = rateLimitResetAt(io.read);
+        const pause = Math.max(reset === null ? RATE_LIMIT_PAUSE_MS : reset - now + 1_000, 1_000);
+        say(`the tracker is rate limiting this token; reading the checks again in ${Math.round(Math.min(pause, deadline - now) / 1000)}s, at the limit's reset`);
+        await stoppableSleep(Math.min(pause, deadline - now), io.sleep);
+        return null;
+      }
+      offlineSince ??= now;
+      const why = text.trim().split('\n').at(-1) ?? text;
+      if (now - offlineSince >= TRANSPORT_WINDOW_MS || deadline - now <= 0) {
+        throw new EnvironmentFault({ kind: 'transport' }, 'landing', `the checks of PR #${pr} could not be read for ${Math.round((now - offlineSince) / 1000)}s: ${why}`);
+      }
+      const backoff = Math.min(5_000 * 2 ** retries, 60_000);
+      retries += 1;
+      say(`the tracker could not be reached (${why}); reading the checks again in ${backoff / 1000}s`);
+      await stoppableSleep(Math.min(backoff, deadline - now), io.sleep);
+      return null;
+    }
+  };
   for (;;) {
-    const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
-    const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
-    const rollup: CheckNode[] = view.statusCheckRollup ?? [];
-    if (expect && view.headRefOid !== expect.sha) {
+    const seen = await observe();
+    if (seen === null) continue;
+    // A pull request merged or closed by anyone has nothing left to wait for: the wait ends with what happened.
+    if (seen.state !== 'OPEN') return { ended: seen.state, head: seen.head };
+    const rollup = seen.checks;
+    if (expect && seen.head !== expect.sha) {
       const gaveUp = await wait('the pull request does not show the landing head yet', 15_000);
       if (gaveUp) return gaveUp;
       continue;
     }
     if (rollup.length === 0 && (ctx.knobs.checks === 'none' || !expect)) return null;
 
-    const failed = rollup.filter((c) => classify(c) === 'failed');
+    // A head can carry several nodes under one name: a run the repository cancelled, the skipped
+    // jobs of a run made while the pull request was a draft, a rerun, and the run that counts. Judged
+    // by name, then, and by the newest run under it, as required checks are: ordered by completion,
+    // else start, else first sighting, a newer failure overrides an older pass, a newer pass an older
+    // failure, and a newer run still going keeps the name pending. Skipped and cancelled nodes reach
+    // no verdict and are passed over here. Runs that cannot be ordered are read fail-closed: a
+    // failure before a running one, a running one before a pass.
+    const byName = new Map<string, CheckObservation[]>();
+    for (const c of rollup) byName.set(c.name, [...(byName.get(c.name) ?? []), c]);
+    const RANK: Partial<Record<CheckStatus, number>> = { failed: 3, pending: 2, passed: 1 };
+    const newest = (nodes: CheckObservation[]): CheckObservation | null =>
+      nodes.filter((c) => RANK[c.status]).reduce<CheckObservation | null>((best, c) => (!best || c.at > best.at || (c.at === best.at && (RANK[c.status] ?? 0) > (RANK[best.status] ?? 0)) ? c : best), null);
+    const standing = new Map([...byName].map(([name, nodes]) => [name, newest(nodes)?.status ?? null] as const));
+    const failed = [...byName.values()].filter((nodes) => standing.get(nodes[0].name) === 'failed');
     if (failed.length > 0) {
-      return `checks failed: ${failed.map((c) => `${nameOf(c)} (${c.conclusion || c.state || c.status})`).join(', ')}`;
+      return `checks failed: ${failed.map((nodes) => `${nodes[0].name} (${newest(nodes)?.verdict})`).join(', ')}`;
     }
 
-    const pending = rollup.filter((c) => classify(c) === 'pending');
+    const pending = [...byName.values()].filter((nodes) => standing.get(nodes[0].name) === 'pending');
     if (pending.length > 0) {
-      const gaveUp = await wait(`checks still unfinished: ${pending.map(nameOf).join(', ')}`, 30_000);
+      // A check its provider never started, queued past the threshold, is stuck, not slow: waiting
+      // out the checks timeout on it ends in a dead letter for a change nobody faulted. It ends the
+      // wait as an outside stop that names the check and its provider.
+      const now = io.now();
+      const stuck = pending
+        // The runs newer than the name's newest verdict: an older queued run a newer one superseded holds nothing.
+        .map((nodes) => {
+          const verdicts = nodes.filter((c) => c.status === 'passed' || c.status === 'failed').map((c) => c.at);
+          const since = verdicts.length > 0 ? Math.max(...verdicts) : -Infinity;
+          return nodes.filter((c) => c.status === 'pending' && c.at >= since);
+        })
+        .filter((running) => running.every((c) => c.queued) && now - Math.min(...running.map((c) => c.firstSeen)) >= stuckAfterMs)
+        .map((running) => ({ check: running[0].name, provider: running[0].provider, minutes: Math.round((now - Math.min(...running.map((c) => c.firstSeen))) / 60_000) }));
+      if (stuck.length > 0) {
+        const named = stuck.map((s) => `${s.check} (${s.provider}, queued ${s.minutes} minutes and never started)`).join(', ');
+        say(`stuck check(s) on PR #${pr}: ${named}`);
+        throw new EnvironmentFault({ kind: 'stuck-check', check: stuck[0].check, provider: stuck[0].provider }, 'landing', `a check on PR #${pr} is stuck in its provider's queue: ${named}`);
+      }
+      const gaveUp = await wait(`checks still unfinished: ${pending.map((nodes) => nodes[0].name).join(', ')}`, 30_000);
       if (gaveUp) return gaveUp;
       continue;
     }
 
-    // A head can carry several nodes under one name: a run the repository cancelled, the skipped
-    // jobs of a run made while the pull request was a draft, and the run that counts. Judged by
-    // name, then: a name passes on a node that passed. A name somebody expects is not satisfied by
-    // being skipped, or a landing could merge with no check having run; a cancelled node with no
-    // passing sibling has no verdict either. Which names must have run: the written list, the
-    // config's and the base branch's, and every check that had passed on the head the reviewer read.
-    // Not every name that head carried: a repository can have jobs skipped on every pull request by
-    // design (a release, a deploy on push), those were skipped at review too, and waiting for them
-    // to pass would hold every landing to the timeout. A check that passed at review and is only
-    // skipped now is the other case: it stopped running, and the approval counted on it.
+    // What is left under a name with no pass is skipped or cancelled. A name somebody expects is
+    // not satisfied by being skipped, or a landing could merge with no check having run; a cancelled
+    // node with no passing sibling has no verdict either. Which names must have run: the written
+    // list, the config's and the base branch's, and every check that had passed on the head the
+    // reviewer read. Not every name that head carried: a repository can have jobs skipped on every
+    // pull request by design (a release, a deploy on push), those were skipped at review too, and
+    // waiting for them to pass would hold every landing to the timeout. A check that passed at
+    // review and is only skipped now is the other case: it stopped running, and the approval counted on it.
     const mustRun = new Set([...authoritative, ...(expect?.passedAtReview ?? [])]);
-    const byName = new Map<string, Array<ReturnType<typeof classify>>>();
-    for (const c of rollup) byName.set(nameOf(c), [...(byName.get(nameOf(c)) ?? []), classify(c)]);
     const unjudged = [...byName.entries()]
-      .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || mustRun.has(name)))
+      .map(([name, nodes]) => [name, nodes.map((c) => c.status)] as const)
+      .filter(([name, kinds]) => standing.get(name) === null && (kinds.includes('cancelled') || mustRun.has(name)))
       .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
     if (unjudged.length > 0) {
       const gaveUp = await wait(`no check has reached a verdict under: ${unjudged.join(', ')}`, 30_000);
@@ -726,7 +853,7 @@ export async function awaitGreenChecks(
     // Everything visible has passed. It is the whole list only when every expected check is in it
     // and nothing GitHub has opened on this head is still running or still to register.
     if (!expect) return null;
-    const present = new Set(rollup.map(nameOf));
+    const present = new Set(rollup.map((c) => c.name));
     const missing = expected.filter((name) => !present.has(name));
     if (missing.length > 0) {
       const gaveUp = await wait(`expected check(s) have not registered on the landing head: ${missing.join(', ')}`, 15_000);
@@ -750,9 +877,9 @@ export async function awaitGreenChecks(
  * The base commit a merge landed on, when it is not the one this lane last fetched; null when the
  * merge landed on the base the lane held, or when it cannot be told (which is logged, not guessed).
  */
-function landedOnUnseenBase(ctx: Context, pr: number, seen: string, say: (message: string) => void): string | null {
+function landedOnUnseenBase(ctx: Context, mergeCommit: string, seen: string, say: (message: string) => void): string | null {
+  if (!mergeCommit) return null;
   try {
-    const mergeCommit = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
     const landedOn = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${mergeCommit}`, '--jq', '.parents[0].sha']);
     if (!landedOn || landedOn === seen) return null;
     say(`merged onto ${landedOn.slice(0, 10)}, but this lane last saw ${ctx.project.baseBranch} at ${seen.slice(0, 10)}: something else landed in between, and the combination is unverified`);
@@ -803,12 +930,13 @@ export function serializePullMaster<T>(ctx: Context, issue: Issue, say: (message
 
 /**
  * Upstream is more correct until this work is merged. No seat begins on a lane that lacks the
- * current base: not a revision, not a review, not a merge. A lane that is behind at all merges the
- * base in (never a rebase) and pushes; what that costs is decided separately, by whether the
- * movement reached the paths the proof or the approval covers.
+ * current base: not a revision, not a review, not a merge. A lane that is behind merges the base in
+ * (never a rebase) and pushes; what that costs is decided separately, by whether the movement
+ * reached the paths the proof or the approval covers. The one exception is a base that moved only
+ * by release noise (`catchUpOwed`), which the merge brings in without a catch-up.
  *
  * `since` is the commit the standing proof or verdict was pinned to. Returns null when the lane
- * already holds the base; `conflict` when the merge could not apply, which the pipeline never
+ * already holds the base, or lacks only release noise; `conflict` when the merge could not apply, which the pipeline never
  * resolves itself; otherwise the head before and after, and the overlap: the incoming files
  * inside the import closure of this work, or a global invalidator. An empty overlap means the
  * world did not move beneath the proof; a non-empty one means it did.
@@ -828,7 +956,7 @@ function netChangeId(cwd: string, baseSha: string, head: string): string {
 /** Pull requests whose boundary waiver is already on the thread: a reproof re-enters the landing, and the note says it once. */
 const waiverNoted = new Set<number>();
 
-export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean } = {}): Promise<CaughtUp | 'conflict' | null> {
+export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: string, say: (message: string) => void, why: string, options: { skipNoise?: boolean; pr?: number } = {}): Promise<CaughtUp | 'conflict' | null> {
   // A catch-up merges the base in and pushes the lane's branch; every wait in a landing can
   // outlast the lease, so every catch-up asks for it first.
   await yieldToStop(`catch up ${why}`);
@@ -839,7 +967,7 @@ export async function catchUp(ctx: Context, issue: Issue, cwd: string, since: st
   const baseSha = fetchBase(ctx, cwd);
   const behind = behindBase(ctx, cwd, baseSha);
   if (behind.length === 0) return null;
-  if (options.skipNoise && behindBeyondNoise(ctx, cwd, baseSha).length === 0) {
+  if (!catchUpOwed(ctx, cwd, baseSha, options.skipNoise === undefined ? undefined : !options.skipNoise, options.pr)) {
     say(`the base moved only by release noise (${behind.slice(0, 3).join(', ')}); the merge brings it in, so no catch-up`);
     return null;
   }
@@ -864,11 +992,11 @@ export type Reviewed = { review: ReviewResult; reviewedSha: string };
 /** A review that produced no trusted verdict says which dead-letter queue owns the reason. */
 export type DeadLetter = { dlq: DlqPhase; reason: string };
 /**
- * `park` hands the landing to a person (the merge boundary, or the issue changed under the review);
+ * `park` hands the landing to a person (the merge boundary, marked `boundary`, or the issue changed under the review);
  * `dlq` is a landing the machine could not complete (a conflict, red checks, a failed smoke, a
  * refused line, an unreported merge), which the landing queue's triage may retry.
  */
-export type Landing = 'merged' | 'revise' | 'stale' | { reproof: CaughtUp } | { park: string } | { dlq: string };
+export type Landing = 'merged' | 'revise' | 'stale' | { reproof: CaughtUp } | { park: string; boundary?: true } | { dlq: string };
 
 /** How long the smoke command may run before the landing is a dead letter as unbootable. */
 
@@ -887,6 +1015,8 @@ async function review(
   cwd: string,
   say: (message: string) => void,
   round: number,
+  /** The worker's classification, recorded with an approval beside the reviewer's. */
+  touches?: WorkerResult['touches'],
 ): Promise<Reviewed | DeadLetter> {
   // A draft is the worker's own statement that the work is not finished. Reviewing one wastes the
   // review and, worse, can approve a branch the worker still intends to push to.
@@ -914,7 +1044,14 @@ async function review(
   // A verdict that is not merge is explained by what blocks it, not by how good the evidence was.
   const why = verdict.decision !== 'merge' && verdict.blocking.length > 0 ? verdict.blocking.join(' | ') : verdict.adequacy;
   say(`review: ${verdict.decision}; ${why}`);
-  if (verdict.decision === 'merge') move(ctx, issue, 'F1', `approved at ${reviewedSha.slice(0, 10)}`);
+  if (verdict.decision === 'merge') {
+    // The approval is a fact a later run reads from the thread (what stopped the work since is
+    // newer than it), so it is recorded there, pinned to the head the reviewer read.
+    // Both seats' classification rides on the record, so a landing of this same head can rest on it.
+    const classified = validTouches(touches) && validTouches(verdict.touches) ? [...new Set([...(touches ?? []), ...(verdict.touches ?? [])])].join(',') : undefined;
+    mutate(ctx, `record the approval of PR #${pr} on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('approved', { sha: reviewedSha, pr, touches: classified }, `**Approved** at \`${reviewedSha.slice(0, 12)}\` on pull request #${pr}; landing next.`)]);
+    move(ctx, issue, 'F1', `approved at ${reviewedSha.slice(0, 10)}`);
+  }
   return { review: verdict, reviewedSha };
 }
 
@@ -958,9 +1095,9 @@ async function land(
     // Back to draft before anything is pushed: the catch-up below and the revision pushes that
     // follow must not each spend a CI run on a pull request still marked ready.
     mutate(ctx, `return PR #${pr} to draft for revision`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-    // A revision never begins on a stale lane: whatever the base changed, the author revises
-    // against current code rather than against the base as it stood when this branch started.
-    if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision') === 'conflict') {
+    // A revision never begins on a stale lane: whatever the base changed beyond release noise, the
+    // author revises against current code rather than against the base as it stood when this branch started.
+    if (await catchUp(ctx, issue, cwd, reviewedSha, say, 'before the revision', { pr }) === 'conflict') {
       // A dead letter must not sit in draft: the person reading it would find a branch the CI
       // guard is configured to skip, and nothing else would ever flip it back.
       mutate(ctx, `mark PR #${pr} ready again before the dead letter`, ['gh', 'pr', 'ready', String(pr)]);
@@ -980,10 +1117,15 @@ async function land(
   // The boundary is a fact about the change itself, so it is asked once, before anything waits.
   const effective = effectiveTouches(ctx, touches, verdict.touches, cwd);
   const touched = effective?.join(', ') ?? 'unstated';
-  if (!mergeAllowed(ctx, effective) && boundaryWaived(ctx.landPastBoundary, issue.number, effective)) {
+  // A driver can keep an issue's merge for a person whatever autoMerge says; its reason rides on the
+  // boundary's own, so the park still reads as the boundary's and `--land` still waives it.
+  const held = ctx.holdAtBoundary?.(issue, { cwd, base: `${ctx.project.remote}/${ctx.project.baseBranch}` }) ?? null;
+  const heldNote = held ? `; ${held}` : '';
+  const allowed = held === null && mergeAllowed(ctx, effective);
+  if (!allowed && boundaryWaived(ctx.landPastBoundary, issue.number, effective)) {
     // A person cleared this landing past the boundary; every gate below still holds, and a missing
     // classification is not waived (boundaryWaived fails closed on it).
-    say(`the merge boundary would park this (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}); a person cleared it with --land`);
+    say(`the merge boundary would park this (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}${heldNote}); a person cleared it with --land`);
     if (!waiverNoted.has(pr)) {
       waiverNoted.add(pr);
       mutate(ctx, `note the boundary waiver on PR #${pr}`, [
@@ -992,11 +1134,11 @@ async function land(
         'comment',
         String(pr),
         '--body',
-        `Cleared by a person to land past the merge boundary (\`fix.ts --land\`): autoMerge is ${ctx.knobs.autoMerge} and this change touches ${touched}. It merges only if the freshness, check, smoke, and line gates all pass.`,
+        `Cleared by a person to land past the merge boundary (\`fix.ts --land\`): autoMerge is ${ctx.knobs.autoMerge} and this change touches ${touched}${heldNote}. It merges only if the freshness, check, smoke, and line gates all pass.`,
       ]);
     }
-  } else if (!mergeAllowed(ctx, effective)) {
-    mutate(ctx, `park PR #${pr} (autoMerge: ${ctx.knobs.autoMerge}, touches ${effective?.join(', ') ?? 'unstated'})`, [
+  } else if (!allowed) {
+    mutate(ctx, `park PR #${pr} (autoMerge: ${ctx.knobs.autoMerge}, touches ${touched}${heldNote})`, [
       'gh',
       'pr',
       'edit',
@@ -1004,7 +1146,7 @@ async function land(
       '--add-label',
       'loop/parked',
     ]);
-    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}` };
+    return { park: `autoMerge is ${ctx.knobs.autoMerge} and the change touches ${effective?.join(', ') ?? 'categories nobody stated'}${heldNote}`, boundary: true };
   }
 
   // The approval is pinned to the commit the reviewer read. Anything pushed to the lane since then
@@ -1022,10 +1164,18 @@ async function land(
   const reviewedChecks = ctx.dryRun || ctx.knobs.checks === 'none' ? { names: [], passed: [] } : checksOn(ctx, reviewedSha);
   const requiredByBase = ctx.dryRun || ctx.knobs.checks === 'none' ? [] : requiredStatusChecks(ctx);
   // Release noise on the base is merged in by the merge itself, unless protection insists on an up-to-date branch.
-  const skipNoise = !ctx.dryRun && !requiresUpToDate(ctx);
+  const skipNoise = !ctx.dryRun && !requiresUpToDate(ctx, pr);
   /** The base commit this lane held at its last look upstream. */
   let baseSeen = '';
-  for (let pass = 0; ; pass++) {
+  /** The base commit of the last look upstream; its commits were judged then. */
+  let lastLook: string | undefined;
+  /** Moves counted against the refresh cap, moves made only of release noise, and every commit that moved the base. */
+  let refreshes = 0;
+  let noiseMoves = 0;
+  const movers: BaseCommit[] = [];
+  /** Set when someone else merged the pull request while this landing watched its checks. */
+  let mergedElsewhere = false;
+  for (;;) {
     const caught = await catchUp(ctx, issue, cwd, landingSha, say, 'before the merge', { skipNoise });
     if (caught === 'conflict') {
       say(`conflicts with ${ctx.project.baseBranch}; a human has to resolve it`);
@@ -1064,20 +1214,47 @@ async function land(
       // The commit fetched is the commit compared and the commit remembered. The remote-tracking
       // ref is shared with every other lane, so reading it again could name a commit never checked.
       const checked = fetchBase(ctx, cwd);
-      if ((skipNoise ? behindBeyondNoise(ctx, cwd, checked) : behindBase(ctx, cwd, checked)).length === 0) {
+      if (!catchUpOwed(ctx, cwd, checked, !skipNoise)) {
         baseSeen = checked;
+        lastLook = checked;
         return 'fresh';
       }
-      if (pass >= MAX_BASE_REFRESHES) {
-        return { dlq: `the base moved ${pass + 1} times while this landing waited on its gates; it needs a quiet base or a person` };
+      // What the move changed decides what it costs, never who made it. Release machinery follows
+      // every merge, so a move made only of release noise (reached here only when protection wants an
+      // up-to-date branch) still catches up but is not counted against the refresh cap; it has a
+      // larger bound of its own, so a stream of them cannot loop forever.
+      const moved = commitsBehind(ctx, cwd, checked, lastLook);
+      lastLook = checked;
+      movers.unshift(...moved);
+      const byNoise = behindBeyondNoise(ctx, cwd, checked).length === 0;
+      if (byNoise) noiseMoves += 1;
+      else refreshes += 1;
+      const total = refreshes + noiseMoves;
+      const named = movers.length > 0 ? `; the commits that moved it: ${describeCommits(movers)}` : '';
+      if (refreshes > MAX_BASE_REFRESHES) {
+        return { dlq: `the base moved ${total} times while this landing waited on its gates (${refreshes} beyond release noise)${named}; it needs a quiet base or a person` };
       }
-      say(`the base moved ${after}; catching up again before anything else`);
+      if (noiseMoves > MAX_NOISE_REFRESHES) {
+        return { dlq: `the base moved ${total} times while this landing waited on its gates (${noiseMoves} only by release noise, past that bound of ${MAX_NOISE_REFRESHES})${named}; it needs a quiet base or a person` };
+      }
+      say(`the base moved ${after}${byNoise ? ' only by release noise, not counted against the refresh cap' : ''}; catching up again before anything else`);
       return 'again';
     };
 
     move(ctx, issue, 'F3', `PR #${pr} at ${landingSha.slice(0, 10)}`);
     const notGreen = await awaitGreenChecks(ctx, pr, say, ctx.dryRun ? undefined : { sha: landingSha, names: reviewedChecks.names, passedAtReview: reviewedChecks.passed, required: requiredByBase });
     holdLease(ctx, issue.number, 'act on the checks of the landing head');
+    if (notGreen !== null && typeof notGreen === 'object') {
+      if (notGreen.ended === 'CLOSED') {
+        say(`PR #${pr} was closed while its checks were waited on; a person decides what follows`);
+        return { park: `pull request #${pr} was closed while its checks were waited on` };
+      }
+      // Merged by a person or another writer: the merge stands, and its bookkeeping is still owed.
+      say(`PR #${pr} was merged at ${notGreen.head.slice(0, 10)} while its checks were waited on; recording the merge`);
+      landingSha = notGreen.head;
+      mergedElsewhere = true;
+      break;
+    }
     if (notGreen) {
       say(`refusing to merge PR #${pr}: ${notGreen}`);
       return { dlq: notGreen };
@@ -1140,6 +1317,12 @@ async function land(
         say(`refusing to merge PR #${pr}: ${gate.why}`);
         return { park: `the issue changed under the review: ${gate.why}` };
       }
+      // A hold on the pull request is a person's word too, whatever the issue carries.
+      const held = pullHolds(ctx, pr)[0];
+      if (held) {
+        say(`refusing to merge PR #${pr}: it carries ${held}`);
+        return { park: `pull request #${pr} carries \`${held}\`; it merges once that label is off the pull request` };
+      }
     }
 
     // The last look upstream. Pinning the head does not pin the base: if anything landed while
@@ -1152,22 +1335,27 @@ async function land(
   // `--match-head-commit` makes the merge itself refuse if the head moved between this check and
   // the call, so the commit that lands is the commit that was read.
   // The reads above are synchronous, so a signal that arrived during them has not been heard yet.
-  await yieldToStop(`merge PR #${pr}`);
-  // The yield lets a failed renewal be heard too: the lease is asked for once more, last of all.
-  holdLease(ctx, issue.number, `merge PR #${pr}`);
-  mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
+  if (!mergedElsewhere) {
+    await yieldToStop(`merge PR #${pr}`);
+    // The yield lets a failed renewal be heard too: the lease is asked for once more, last of all.
+    holdLease(ctx, issue.number, `merge PR #${pr}`);
+    mutate(ctx, `merge PR #${pr}`, ['gh', 'pr', 'merge', String(pr), '--merge', '--match-head-commit', landingSha]);
+  }
 
   // Confirm it actually landed before closing anything. On a repository with a merge queue or
   // auto-merge, `gh pr merge` can enqueue rather than merge; a queued pull request would land
   // later while this driver has already parked it, so cancel whatever was scheduled first.
   // The merge report can trail the merge by a few seconds; wait for it before calling it missing.
-  const readMerged = () => sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergedAt', '--jq', '.mergedAt']);
-  let merged = readMerged();
-  for (let tries = 0; (!merged || merged === 'null') && tries < 6; tries++) {
+  // Read through the landing watch, as every read of the pull request here is: the merge's time
+  // and the commit it made come from one observation.
+  const watch = landingWatch(pr, { read: (argv) => sh(ctx, argv), now: () => Date.now() });
+  let seen = watch.observe();
+  for (let tries = 0; !seen.mergedAt && tries < 6; tries++) {
     await Bun.sleep(5_000);
-    merged = readMerged();
+    seen = watch.observe();
   }
-  if (!merged || merged === 'null') {
+  const merged = seen.mergedAt;
+  if (!merged) {
     try {
       sh(ctx, ['gh', 'pr', 'merge', String(pr), '--disable-auto']);
     } catch {
@@ -1193,43 +1381,47 @@ async function land(
     // file, but a person or another operator's loop can merge in the seconds between the last look
     // upstream and this merge, and a repository that does not require up-to-date branches lets it.
     // That cannot be prevented from here, so it is detected and said plainly.
-    const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, pr, baseSeen, say);
+    // The merge goes up as the commit the merge made, which is what a deploy on push builds, as the
+    // run start's reconcile records the merges it finds.
+    const mergeCommit = seen.mergeCommit;
+    if (!mergeCommit) say(`PR #${pr} reported its merge but no merge commit; the floor is not told of it`);
+    const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, mergeCommit, baseSeen, say);
     if (unseenBase) {
       mutate(ctx, `note on PR #${pr} that it landed across an unseen commit`, [
         'gh', 'pr', 'comment', String(pr), '--body',
         `This merged onto ${unseenBase.slice(0, 10)}, which landed on \`${ctx.project.baseBranch}\` between the last look upstream and the merge. The checks and the review covered the branch without that commit; the combination is unverified until the base's own checks pass.`,
       ]);
     }
-    move(ctx, issue, 'T1', `PR #${pr} merged ${merged}`);
-    // Tell the driver while the worktree still exists, so the event carries the paths that landed.
-    if (ctx.afterMerge) {
-      ctx.afterMerge({ issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined });
-    }
-    // The person watching the main checkout sees the fix land, when the config asks for that.
-    followBase(ctx, paths);
-
-    // Read the branch name while the worktree still exists, then drop it. This is the one removal
-    // that keeps nothing back: the change is merged, so the base holds every commit the lane had.
-    const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-    removeWorktree(ctx, issue.number);
-    try {
-      sh(ctx, ['git', 'push', ctx.project.remote, '--delete', branch]);
-    } catch {
-      say(`merged branch ${branch} was already deleted`);
-    }
-    // Read once more before the close. The merge has landed either way; a refusal here parks the
-    // issue with the merge named, so a person sees a closed pull request against an open issue.
-    if (!ctx.dryRun) {
-      // A lost lease is not a changed issue, and it is not this run's to park.
-      holdLease(ctx, issue.number, 'read the gate before an act on the issue');
-      const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
-      if (!gate.ok) {
+    await recordMerge(ctx, { issue: issue.number, title: issue.title, pr, sha: mergeCommit, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined }, {
+      place: (note) => move(ctx, issue, 'T1', note),
+      note: `PR #${pr} merged ${merged}`,
+      by: 'worker',
+      comment: `Closed by #${pr}.`,
+      reason: `merged #${pr}`,
+      beforeClose: () => {
+        // The person watching the main checkout sees the fix land, when the config asks for that.
+        followBase(ctx, paths);
+        // Read the branch name while the worktree still exists, then drop it. This is the one removal
+        // that keeps nothing back: the change is merged, so the base holds every commit the lane had.
+        const branch = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+        removeWorktree(ctx, issue.number);
+        try {
+          sh(ctx, ['git', 'push', ctx.project.remote, '--delete', branch]);
+        } catch {
+          say(`merged branch ${branch} was already deleted`);
+        }
+      },
+      // Read once more before the close. The merge has landed either way; a refusal here parks the
+      // issue with the merge named, so a person sees a closed pull request against an open issue.
+      gate: () => {
+        // A lost lease is not a changed issue, and it is not this run's to park.
+        holdLease(ctx, issue.number, 'read the gate before an act on the issue');
+        const gate = liveGate(ctx, trackerIo(ctx), issue.number, ceiling);
+        if (gate.ok) return null;
         say(`merged PR #${pr} but not closing the issue: ${gate.why}`);
-        parkIssue(ctx, issue.number, `Pull request #${pr} merged at ${merged}, but the issue was not closed because ${gate.why}. A person closes it or carries on.`);
-        return 'merged';
-      }
-    }
-    await closeIssue(ctx, issue.number, `Closed by #${pr}.`, { kind: 'merged', pr, mergeSha: reviewedSha, reason: `merged #${pr}`, by: 'worker' });
+        return gate.why;
+      },
+    });
     return 'merged';
   });
 }
@@ -1298,8 +1490,13 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
 
     case 'needs-decision':
     case 'needs-human': {
-      // Comment first, then the label that hides the issue from selection.
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(result.reason)]);
+      // A prover's ask comes after the code was pushed and announced, and a coder's on a pull request
+      // it was continuing comes with that pull request's work already reviewed: either is an outside
+      // stop that waits on a person with the pull request held open, never a reason to close it.
+      if (result.verdict === 'needs-human' && (result.seat === 'prover' || pr)) return holdForAPerson(ctx, issue, result, say, pr);
+      // Comment first, then the label that hides the issue from selection. The comment is the stop's
+      // record on the thread, so it outranks any held proof an earlier seat left.
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', heldComment(result.verdict, result.reason)]);
       // A question the worker raised is weighed by a decision panel first, when one can sit; one it
       // settles goes back to be appraised with the receipt as its ruling, and holds nobody up.
       if (result.verdict === 'needs-decision') {
@@ -1362,6 +1559,51 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     default:
       return null;
   }
+}
+
+/**
+ * A seat that needs a person, where the work is already on a pull request or pushed: an outside
+ * stop that waits on one. A prover's ask (access, credentials, a shared record it may not touch)
+ * answers after the code was pushed and announced; a coder's, on a pull request it was continuing,
+ * leaves that pull request's approval and receipts standing, and a gate it found failing on the
+ * untouched base (`outside: 'base'`) is not the change's at all. The work is held where it stands
+ * rather than thrown away: the pull request stays open (back in draft when the coder was continuing
+ * it), the issue and the pull request both carry `needs-human`, and the issue says what is missing
+ * and how the hold comes off. The lane is retired as on every other exit; a lane holding a seat's
+ * uncommitted edit is kept, and the pickup continues on it (`heldLane`). Otherwise the branch is on
+ * the remote, and the pickup checks it out afresh.
+ *
+ * Lifting the issue's label is the whole pickup. The issue goes back to where its facts put it:
+ * Drafted or Ready for review with this pull request, where the burndown resumes it (a held proof
+ * from Proving, a coder's hold with its own words as the coder's brief), or, with no pull request,
+ * Ready, where the coded announcement is proved rather than coded again. `fix.ts --redrive` does the
+ * same at once. The pickup takes the pull request's label off with the issue's, and a label still
+ * on the pull request at the merge gate refuses the merge.
+ */
+function holdForAPerson(ctx: Context, issue: Issue, result: WorkerResult, say: (message: string) => void, pr?: number): FixOutcome {
+  holdLease(ctx, issue.number, 'hold the work for a person');
+  const branch = result.branch ?? '';
+  const prover = result.seat === 'prover';
+  const cause = !prover && result.outside === 'base' ? 'base' : 'needs-person';
+  settleOutsideStop(ctx, issue, { cause, seat: prover ? 'prover' : 'coder', reason: result.reason }, prover ? 'proving' : 'coding', say, {
+    pr,
+    continuation: !prover,
+    // A held proof keeps the record its pickup reads.
+    record: prover ? proofHeldComment(ctx.runId, { branch, pr }, result.reason) : undefined,
+  });
+  say(`the ${prover ? 'prover' : 'coder'} needs a person; ${pr ? `PR #${pr} stays open, ` : ''}held with needs-human`);
+  move(ctx, issue, 'H2', `${prover ? 'proof held' : cause === 'base' ? 'base fails its gate' : 'held'}: ${result.reason}`.slice(0, 120));
+  retireLane(ctx, issue.number, say);
+  return { outcome: 'handed-off', reason: result.reason };
+}
+
+/** The hold labels a person may put on a pull request itself; one standing at the merge gate refuses the merge. */
+export const PULL_HOLD_LABELS = ['needs-human', 'needs-decision', 'loop/skip'];
+
+/** The holds a person's labels put on a pull request; throws when the labels cannot be read, since unknown is not "none". */
+function pullHolds(ctx: Context, pr: number): string[] {
+  const labels = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'labels', '--jq', '.labels[].name']).split('\n').map((l) => l.trim());
+  return labels.filter((label) => PULL_HOLD_LABELS.includes(label));
 }
 
 /**
@@ -1453,61 +1695,75 @@ export async function reviewAndLand(
   maxPoints: number,
   say: (message: string) => void,
   ceiling: number = maxPoints,
+  /** An approval standing on the head in hand, which goes straight to the landing on the first pass. */
+  standing?: Reviewed,
 ): Promise<FixOutcome> {
   let result = first;
+  let approved = standing;
   let consumed = reviewCount(issue.labels);
   let refreshes = 0;
   // Why the work stopped, carried to the park comment so the reason lives on the issue rather
   // than only in this run's log. Only a person's call parks; a machine's failure is a dead letter.
   let parkReason = 'the loop worked this issue and could not finish the call';
+  /** A boundary park is recorded as one, so `--land` can tell it from every other. */
+  let parkKind: 'park' | 'boundary' = 'park';
   // A budget already spent when the work arrives here (a resume, a redrive nobody reset) is the
   // review queue's, as it is when the last round is spent below: a machine's limit, not a person's call.
-  if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun) {
+  // A landing on a standing approval runs no review, so a spent budget does not stop it.
+  if (consumed >= ctx.knobs.maxReviewRounds && !ctx.dryRun && !standing) {
     return deadLetter(ctx, issue, 'review', `The review budget of ${consumed} rounds was already spent when this pull request came back for review.`, say, result.pr);
   }
   /** A catch-up the merge gate already made, whose movement reached this work: the next pass reproves from it. */
   let caughtAtLanding: CaughtUp | null = null;
-  while (consumed < ctx.knobs.maxReviewRounds) {
+  while (approved || consumed < ctx.knobs.maxReviewRounds) {
     if (!result.pr) return deadLetter(ctx, issue, 'work', 'The worker reported a fix but named no pull request.', say);
     const pr = result.pr;
     const touches = result.touches;
 
     if (ctx.dryRun) break;
 
-    // No review begins on a stale lane. The proof was captured at the current head; a base that
-    // moved since is merged in first, so the reviewer judges what would actually land. Movement
-    // that reached the paths the proof covers means the world moved beneath the proof: the work
-    // goes back to its author to reacquire it, which is upstream churn and spends no round.
-    const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review');
-    caughtAtLanding = null;
-    if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
-    if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
-      refreshes += 1;
-      if (refreshes > MAX_BASE_REFRESHES) {
-        return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
+    // An approval that still stands on this very head, judged by the redrive before anything moved
+    // (`approvedAtHead`), is the review: no catch-up is owed and nothing new was pushed.
+    let reviewed: Reviewed | DeadLetter;
+    if (approved) {
+      reviewed = approved;
+      approved = undefined;
+    } else {
+      // No review begins on a stale lane. The proof was captured at the current head; a base that
+      // moved since is merged in first, so the reviewer judges what would actually land. Movement
+      // that reached the paths the proof covers means the world moved beneath the proof: the work
+      // goes back to its author to reacquire it, which is upstream churn and spends no round.
+      const proofHead = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
+      const current = caughtAtLanding ?? await catchUp(ctx, issue, cwd, proofHead, say, 'before the review', { pr });
+      caughtAtLanding = null;
+      if (current === 'conflict') return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pr);
+      if (current && (current.overlap.length > 0 || !current.netChangeIntact)) {
+        refreshes += 1;
+        if (refreshes > MAX_BASE_REFRESHES) {
+          return deadLetter(ctx, issue, 'landing', `The base moved into this work ${refreshes} times, past the refresh cap; the landing needs a quiet base or a person.`, say, pr);
+        }
+        say(`base moved into what the proof covers (${current.overlap.join(', ') || 'the branch\'s own change'}); the proof is stale and goes back to be reacquired`);
+        mutate(ctx, `return PR #${pr} to draft for the reproof`, ['gh', 'pr', 'ready', String(pr), '--undo']);
+        result = await runWorker(ctx, issue, cwd, maxPoints, {
+          pr,
+          decision: 'gather-more',
+          adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
+          confidence: 'freshness',
+          blocking: [
+            `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
+          ],
+        }, true);
+        say(`verdict: ${result.verdict}; ${result.reason}`);
+        if (result.verdict === 'failed') return countFailure(ctx, issue, `while reacquiring stale proof: ${result.reason}`, say, pr);
+        const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
+        if (resettled) return resettled.outcome === 'failed' ? countFailure(ctx, issue, resettled.reason, say, pr) : resettled;
+        continue;
       }
-      say(`base moved into what the proof covers (${current.overlap.join(', ') || 'the branch\'s own change'}); the proof is stale and goes back to be reacquired`);
-      mutate(ctx, `return PR #${pr} to draft for the reproof`, ['gh', 'pr', 'ready', String(pr), '--undo']);
-      result = await runWorker(ctx, issue, cwd, maxPoints, {
-        pr,
-        decision: 'gather-more',
-        adequacy: 'The base branch moved into the paths this proof covers after it was captured, so the receipts describe a tree that no longer exists.',
-        confidence: 'freshness',
-        blocking: [
-          `The branch has been caught up with ${ctx.project.baseBranch}. These incoming files are inside the import closure of your change, or invalidate everything: ${current.overlap.join(', ') || 'the merge altered your own change'}. Re-run the checks on the current head, confirm the fix still holds, reacquire every receipt whose covered paths they reach, and update the proof. Change code only if the base's movement requires it.`,
-        ],
-      }, true);
-      say(`verdict: ${result.verdict}; ${result.reason}`);
-      if (result.verdict === 'failed') return countFailure(ctx, issue, `while reacquiring stale proof: ${result.reason}`, say, pr);
-      const resettled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pr);
-      if (resettled) return resettled.outcome === 'failed' ? countFailure(ctx, issue, resettled.reason, say, pr) : resettled;
-      continue;
-    }
 
-    // Reviewing happens here, outside the queue, so lanes review at the same time.
-    if (consumed > 0 || refreshes > 0 || current) move(ctx, issue, 'E1', `PR #${pr} back for review`);
-    const reviewed = await review(ctx, issue, pr, cwd, say, consumed + 1);
+      // Reviewing happens here, outside the queue, so lanes review at the same time.
+      if (consumed > 0 || refreshes > 0 || current) move(ctx, issue, 'E1', `PR #${pr} back for review`);
+      reviewed = await review(ctx, issue, pr, cwd, say, consumed + 1, touches);
+    }
     if ('dlq' in reviewed) return deadLetter(ctx, issue, reviewed.dlq, reviewed.reason, say, pr);
 
     // Merging happens there, one branch at a time, because the base branch is shared.
@@ -1544,6 +1800,7 @@ export async function reviewAndLand(
     // round for the same reason.
     if (typeof outcome === 'object' && verdict.decision === 'merge') {
       parkReason = outcome.park;
+      if (outcome.boundary) parkKind = 'boundary';
       break;
     }
 
@@ -1578,7 +1835,7 @@ export async function reviewAndLand(
   }
 
   holdLease(ctx, issue.number, 'park the issue');
-  parkIssue(ctx, issue.number, parkReason);
+  parkIssue(ctx, issue.number, parkReason, parkKind);
   // The pull request is parked too, so a human reading the branch sees the same state the issue
   // carries rather than an unlabelled draft nobody claimed.
   if (result.pr) {
@@ -1590,57 +1847,106 @@ export async function reviewAndLand(
 }
 
 /**
- * Fixes one issue end to end and says how it ended.
+ * The live gate and the claim a lane starts under, or the outcome that stops it before it starts.
  *
- * The lane is created here and removed here, whatever the outcome, so no exit leaks a worktree.
- * A crash never runs the cleanup, which is exactly when the resume path should get its chance.
+ * Without `lift`, the gate comes first and nothing is claimed for an issue it refuses. A person's
+ * redrive or landing passes `lift`, which removes the hold that stopped the issue. The gate refuses
+ * a held issue, so there the claim is taken first and the hold lifted under it: a run that reads
+ * the issue between those writes sees the hold or the claim, never neither, and leaves its lane
+ * alone. A refusal, or a lift that throws, releases the claim.
  */
-export async function fixIssue(
+export async function claimLane(
   ctx: Context,
-  issue: Issue,
-  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat } = {},
-): Promise<FixOutcome> {
-  // Lanes interleave, so every line an issue emits names the issue. Without this the console is a
-  // shuffled deck of verdicts with no way to tell which belongs to which.
-  const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
-  ctx.step(`#${issue.number} ${issue.title}`);
-  // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
-  // it under a ceiling the knife already said it cannot be cut to.
-  const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
-  const ceiling = options.ceiling ?? maxPoints;
-  if (options.confirmer) ctx.seats.confirmer = options.confirmer;
-  assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
-
-  // The live gate, then the claim, then the lane: nothing is created for an issue this run may not work.
-  const io = trackerIo(ctx);
-  const gate = liveGate(ctx, io, issue.number, ceiling);
+  io: TrackerIo,
+  issue: number,
+  ceiling: number,
+  say: (message: string) => void,
+  lift?: () => void,
+): Promise<ClaimHandle | FixOutcome> {
+  if (!lift) {
+    const gate = liveGate(ctx, io, issue, ceiling);
+    if (!gate.ok) {
+      say(`left alone: ${gate.why}`);
+      return { outcome: gate.outcome, reason: gate.why };
+    }
+    const handle = await claim(ctx, io, issue, 'working');
+    return handle === 'busy' ? { outcome: 'busy', reason: 'another run holds this issue' } : handle;
+  }
+  // Read before the claim: a claim that succeeds clears the record of a lease this run lost.
+  if (leaseLost(ctx, issue)) {
+    const why = 'this run lost its lease on the issue: its renewals failed until the claim ran out';
+    say(`left alone: ${why}`);
+    return { outcome: 'busy', reason: why };
+  }
+  const handle = await claim(ctx, io, issue, 'working');
+  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
+  const letGo = () => {
+    try {
+      handle.release();
+    } catch (error) {
+      say(`could not release the claim: ${(error as Error).message}`);
+    }
+  };
+  let gate: ReturnType<typeof liveGate>;
+  try {
+    lift();
+    gate = liveGate(ctx, io, issue, ceiling);
+  } catch (error) {
+    letGo();
+    throw error;
+  }
   if (!gate.ok) {
     say(`left alone: ${gate.why}`);
+    letGo();
     return { outcome: gate.outcome, reason: gate.why };
   }
-  const handle = await claim(ctx, io, issue.number, 'working');
-  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
+  return handle;
+}
+
+/**
+ * A lane's life under a claim: claimed (`claimLane`, with the person's `lift` when there is one),
+ * leased, opened, worked, and released. Every driver that works an issue in a lane goes through it.
+ *
+ * Everything after the claim is inside the try: a lane that cannot be opened must not leave a claim
+ * behind that keeps renewing itself with nobody working under it. A throw is recorded in the queue
+ * of the lane it happened in (`recordThrow`, against `pr` when the lane continues one). Whatever the
+ * outcome, the claim and the lease end here and the lane is retired, unless the throw could not be
+ * recorded on the issue: the worktree is then the only record of what happened. A crash never runs
+ * the cleanup, which is exactly when the resume path should get its chance. A claim refused returns
+ * its outcome and opens nothing.
+ *
+ * `admit` judges what is already on disk under the claim, before the lane is opened: a refusal it
+ * returns is the outcome, and the lane is kept as it was found, since what it holds is a person's
+ * to read.
+ */
+export async function withLane(
+  ctx: Context,
+  issue: Issue,
+  say: (message: string) => void,
+  lane: { ceiling: number; lift?: () => void; pr?: number; admit?: () => FixOutcome | null; open: () => string },
+  work: (cwd: string) => Promise<FixOutcome>,
+): Promise<FixOutcome> {
+  const handle = await claimLane(ctx, trackerIo(ctx), issue.number, lane.ceiling, say, lane.lift);
+  if ('outcome' in handle) return handle;
   const stopRenewing = keepClaimed(handle, () => {
     // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
     const killed = killAgentsOn(ctx.project.repo, issue.number);
     ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
   });
-
-  // Everything after the claim is inside the try: a worktree that cannot be created must not
-  // leave a claim behind that keeps renewing itself with nobody working under it.
   let keepLane = false;
   try {
-    // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
-    // learns to treat the main checkout as a valid agent working directory.
-    const cwd = ctx.dryRun
-      ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
-      : worktreeFor(ctx, issue.number);
+    const refused = lane.admit?.();
+    if (refused) {
+      keepLane = true;
+      return refused;
+    }
+    const cwd = lane.open();
     inFlight.set(issue.number, { dir: cwd, busy: false });
     // Awaited, not returned: a returned promise would run the cleanup below while the work it
     // guards is still going.
-    return await workIssue(ctx, issue, cwd, maxPoints, ceiling, say);
+    return await work(cwd);
   } catch (error) {
-    const recorded = recordThrow(ctx, issue, error as Error, say);
+    const recorded = recordThrow(ctx, issue, error as Error, say, lane.pr);
     keepLane = recorded.keepLane;
     return recorded.outcome;
   } finally {
@@ -1651,18 +1957,46 @@ export async function fixIssue(
       say(`could not release the claim: ${(error as Error).message}`);
     }
     inFlight.delete(issue.number);
-
-    // Whatever the outcome, this lane is finished with the directory, so it goes here rather than
-    // at each of the eight exits that used to leak one. Nothing in-process reads it again, and
-    // the resume path resumes only a `fixed` verdict whose pull request is open at the same head on
-    // an unlabelled issue; every outcome that reaches this line (failed, parked, DLQed, budget
-    // exhausted, terminal verdict, merged) is one it already refuses. Removing the worktree also
-    // sweeps the `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else
-    // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
-    // so reconcile still owns that case on the next start. A throw that could not be recorded on
-    // the issue keeps its lane too: the worktree is then the only record of what happened.
+    // Nothing in-process reads the directory again, and the resume path resumes only a `fixed`
+    // verdict whose pull request is open at the same head on an unlabelled issue; every outcome
+    // that reaches this line is one it already refuses. Removing the worktree also sweeps the
+    // `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else reclaims.
     if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
   }
+}
+
+/**
+ * Fixes one issue end to end and says how it ended.
+ *
+ * The lane is created here and removed here, whatever the outcome, so no exit leaks a worktree.
+ * A crash never runs the cleanup, which is exactly when the resume path should get its chance.
+ */
+export async function fixIssue(
+  ctx: Context,
+  issue: Issue,
+  /** `lift`: a person's redrive, which removes the hold under this run's claim; see `claimLane`. */
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; lift?: () => void } = {},
+): Promise<FixOutcome> {
+  // Lanes interleave, so every line an issue emits names the issue. Without this the console is a
+  // shuffled deck of verdicts with no way to tell which belongs to which.
+  const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  ctx.step(`#${issue.number} ${issue.title}`);
+  rememberFaultMarkers(ctx, issue.number, issue.labels);
+  // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
+  // it under a ceiling the knife already said it cannot be cut to.
+  const maxPoints = ceilingFor((issue.labels ?? []).map((l) => l.name), labelPoints(issue.labels ?? []), options.maxPoints ?? DEFAULT_MAX_POINTS);
+  const ceiling = options.ceiling ?? maxPoints;
+  if (options.confirmer) ctx.seats.confirmer = options.confirmer;
+  assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
+
+  // The live gate and the claim, then the lane: nothing is created for an issue this run may not work.
+  return withLane(ctx, issue, say, {
+    ceiling,
+    lift: options.lift,
+    // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
+    // learns to treat the main checkout as a valid agent working directory.
+    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number, () => heldLane(ctx, issue.number))),
+  }, async (cwd) => await workIssue(ctx, issue, cwd, maxPoints, ceiling, say));
 }
 
 /** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */
@@ -1691,7 +2025,10 @@ function openPullFor(ctx: Context, issue: number): number | undefined {
  * would be the only irreversible act here.
  */
 export function retireLane(ctx: Context, issue: number, say: (message: string) => void): void {
-  if (preserveLaneWork(ctx, issue, say)) removeWorktree(ctx, issue);
+  if (!preserveLaneWork(ctx, issue, say)) return;
+  removeWorktree(ctx, issue);
+  // The seats' scratch (`seatScratch`) goes with the lane; a kept lane keeps it beside it for its reader.
+  if (ctx.runDir) rmSync(join(ctx.runDir, 'scratch', `issue-${issue}`), { recursive: true, force: true });
 }
 
 export function preserveLaneWork(ctx: Context, issue: number, say: (message: string) => void): boolean {
@@ -1716,11 +2053,7 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
       // A branch ref would survive the worktree; a detached head does not, and the next run's
       // reconcile removes a clean lane. The commits are given a ref of their own first, in the
       // repository all worktrees share, so removing this directory can never make them unreachable.
-      // One ref per rescue, named for the commit it saves: a later attempt on the same issue must
-      // not take the name of an earlier one and leave its history unreachable.
-      const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-      const rescued = `refs/loop/rescued/issue-${issue}/${head.slice(0, 12)}`;
-      sh(ctx, ['git', 'update-ref', rescued, head], cwd);
+      const rescued = rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), cwd);
       say(`keeping the lane, and saved its detached commits as ${rescued}: no branch and no remote has them`);
       return false;
     }
@@ -1740,9 +2073,47 @@ export function preserveLaneWork(ctx: Context, issue: number, say: (message: str
   }
 }
 
+/**
+ * Clears a lane an environment fault interrupted, so the rerun starts clean. Kept dirty, it would
+ * be judged after all: a fresh worker refuses a dirty lane, and a later run's reconcile sends one
+ * with no pull request to the work dead letter. Commits no remote has get a ref of their own first,
+ * so nothing committed is lost; what is uncommitted was the interrupted run's, whose answer is not
+ * trusted. A lane that cannot be cleared is left where it is, and said so.
+ *
+ * A lane that holds a prover's proof of its head, clean and on a remote, is kept: the proof is the
+ * finished work a resume picks up from (`findStranded`), and clearing it would prove the same
+ * commit again.
+ */
+export function clearLaneForRerun(ctx: Context, issue: number, say: (message: string) => void): void {
+  if (ctx.dryRun) return;
+  const cwd = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(cwd)) return;
+  try {
+    if (holdsProof(ctx, cwd)) {
+      say('kept the lane: it holds the proof of its pushed head, which the rerun resumes from');
+      return;
+    }
+    if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
+      const rescued = rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), cwd);
+      say(`saved the lane's unpushed commits as ${rescued}`);
+    }
+    removeWorktree(ctx, issue);
+    say('cleared the lane for the rerun');
+  } catch (error) {
+    say(`could not clear the lane for the rerun (${(error as Error).message.split('\n')[0]}); it is kept`);
+  }
+}
+
+/** A proved answer in the lane, nothing uncommitted beside it, and a head some remote has. */
+function holdsProof(ctx: Context, cwd: string): boolean {
+  if (parseJsonFile<{ verdict?: string }>(join(cwd, PROOF_FILE))?.verdict !== 'proved') return false;
+  if (dirtyPaths(ctx, cwd).length > 0) return false;
+  return Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) === 0;
+}
+
 export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (message: string) => void, knownPr?: number): { outcome: FixOutcome; keepLane: boolean } {
   const lane = lastLane.get(laneKeyOf(ctx, issue.number));
-  const reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
+  let reason = `The pipeline threw${lane ? ` in ${lane}` : ''}: ${error.message.split('\n').slice(0, 6).join(' | ')}`;
   // After the merge there is nothing to retry and nothing to queue: the change landed. The run
   // start reconciles a merged pull request against an open issue, so the card stays where it is.
   if (lane?.startsWith('T')) {
@@ -1760,6 +2131,26 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
   if (error instanceof RunStopping || isStopping()) {
     say('stopped with the run; nothing is written on the issue, the lane is kept, and anything already pushed survives');
     return { outcome: { outcome: 'stopped', reason: error.message.split('\n')[0] }, keepLane: true };
+  }
+  // Nor is an environment fault: a full disk, exhausted memory, or a person's stop says nothing
+  // about the work, which was not judged. It is an outside stop, settled in one place
+  // (`settleOutsideStop`): nothing is counted or held, the stop is recorded on the issue, the next
+  // placement puts the card by its facts, the lane is cleared for the rerun here (so the cleanup
+  // below has nothing left to retire), and a host fault pauses the line. The one charged case, the
+  // same host fault again on the rerun, falls through and is settled below as the failure it then is.
+  const fault = environmentFaultOf(error);
+  if (fault) {
+    const settled = settleOutsideStop(ctx, issue, { fault }, lane ?? '', say);
+    if (!settled.charged) {
+      clearLaneForRerun(ctx, issue.number, say);
+      // The same outside stop run after run waits on a person (`OUTSIDE_REPEAT_BOUND`).
+      if (settled.held) {
+        move(ctx, issue, 'H2', settled.reason.slice(0, 120));
+        return { outcome: { outcome: 'handed-off', reason: settled.reason }, keepLane: true };
+      }
+      return { outcome: { outcome: 'unjudged', reason: settled.reason, fault: fault.kind }, keepLane: true };
+    }
+    reason = `The pipeline threw${lane ? ` in ${lane}` : ''}, and ${settled.reason}: ${error.message.split('\n')[0]}`;
   }
   say(reason);
   if (ctx.dryRun) return { outcome: { outcome: 'failed', reason }, keepLane: false };
@@ -1780,6 +2171,51 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
 }
 
 /**
+ * The approval a continuation lands on without proving or reviewing again, or null when the work
+ * owes either. All of these must hold: the newest approval on the thread since the pull request
+ * opened still stands (`standingApproval`: nothing but a boundary park or an outside stop is
+ * newer), it names both seats' classification, it was given to this pull request at the head the
+ * lane and the pull request both hold, the pull request is ready, the base needs no catch-up (by the
+ * landing's own rule for release noise), and no check on that head has failed, judged by the newest
+ * run under each name. A head that moved, an approval for another commit, or a failed check keep the
+ * usual path; checks still running are waited on by the landing.
+ */
+async function approvedAtHead(
+  ctx: Context,
+  pr: number,
+  cwd: string,
+  comments: Array<{ author?: string; body: string; createdAt?: string }>,
+  since: string,
+  say: (message: string) => void,
+): Promise<Reviewed | null> {
+  const approval = standingApproval(comments, { botLogin: ctx.botLogin, since });
+  if (!approval || (approval.pr !== undefined && approval.pr !== pr)) return null;
+  const touches = validTouches(approval.touches);
+  if (!touches) return null;
+  const sha = approval.sha;
+  if (sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd) !== sha) return null;
+  const view = landingWatch(pr, { read: (argv) => sh(ctx, argv), now: () => Date.now() }).observe();
+  if (view.head !== sha || view.draft) return null;
+  const base = fetchBase(ctx, cwd);
+  if (catchUpOwed(ctx, cwd, base, undefined, pr)) return null;
+  if (ctx.knobs.checks !== 'none') {
+    // One look, no wait: a check that has failed on this head keeps the usual path. Checks still
+    // running, or yet to register, are the landing's to wait on: its watch waits for them, and
+    // calls one its provider never started stuck, so the approval is not proved and reviewed again
+    // only because a check was slow. The prefix is the one `awaitGreenChecks` refuses red checks with.
+    const reviewedChecks = checksOn(ctx, sha);
+    const now = { ...ctx, knobs: { ...ctx.knobs, checksTimeoutMinutes: 0 } };
+    const green = await awaitGreenChecks(now, pr, () => {}, { sha, names: reviewedChecks.names, passedAtReview: reviewedChecks.passed, required: requiredStatusChecks(ctx) });
+    if (green !== null && (typeof green === 'object' || green.startsWith('checks failed:'))) return null;
+  }
+  say(`PR #${pr} was approved at ${sha.slice(0, 10)}, which it still holds, the base needs no catch-up, and no check on it has failed; landing on that approval`);
+  return {
+    review: { pr, decision: 'merge', adequacy: `Approved at ${sha.slice(0, 12)}; the approval stands on the thread.`, confidence: 'standing approval', blocking: [], touches },
+    reviewedSha: sha,
+  };
+}
+
+/**
  * Continues an existing pull request instead of opening a second one: the redrive a person makes
  * by lifting a park or a dead letter. The lane is checked out on the pull request's branch, the
  * worker runs in revision mode with the objection that stopped the work as its brief, and the
@@ -1797,9 +2233,12 @@ export async function redriveIssue(
    */
   objection: string | null,
   /** `landing`: a person's --land; with no objection, the brief says the change was approved and parked by policy. */
-  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean } = {},
+  /** `lift`: the person's removal of the hold, made under this run's claim; see `claimLane`. */
+  /** `admit`: the caller's judgement of the lane already on disk, made under the claim; see `withLane`. */
+  options: { maxPoints?: number; ceiling?: number; confirmer?: Seat; landing?: boolean; lift?: () => void; admit?: () => FixOutcome | null } = {},
 ): Promise<FixOutcome> {
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
+  rememberFaultMarkers(ctx, issue.number, issue.labels);
   ctx.step(`#${issue.number} ${issue.title} (${objection === null ? 'resuming' : 'redrive of'} PR #${pull.number})`);
   // An issue the knife judged one piece is worked at its own size: the worker is not asked to fit
   // it under a ceiling the knife already said it cannot be cut to.
@@ -1808,26 +2247,13 @@ export async function redriveIssue(
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
 
-  const io = trackerIo(ctx);
-  const gate = liveGate(ctx, io, issue.number, ceiling);
-  if (!gate.ok) {
-    say(`left alone: ${gate.why}`);
-    return { outcome: gate.outcome, reason: gate.why };
-  }
-  const handle = await claim(ctx, io, issue.number, 'working');
-  if (handle === 'busy') return { outcome: 'busy', reason: 'another run holds this issue' };
-  const stopRenewing = keepClaimed(handle, () => {
-    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
-    const killed = killAgentsOn(ctx.project.repo, issue.number);
-    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
-  });
-
-  let keepLane = false;
-  try {
-    const cwd = ctx.dryRun
-      ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
-      : worktreeAtPullRequest(ctx, issue.number, pull.branch);
-    inFlight.set(issue.number, { dir: cwd, busy: false });
+  return withLane(ctx, issue, say, {
+    ceiling,
+    lift: options.lift,
+    pr: pull.number,
+    admit: options.admit,
+    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeAtPullRequest(ctx, issue.number, pull.branch, () => heldLane(ctx, issue.number))),
+  }, async (cwd) => {
     if (ctx.dryRun) {
       say(`DRY RUN  would ${objection === null ? 'reacquire the proof of' : 'revise'} PR #${pull.number} on ${pull.branch}, then review and land`);
       return { outcome: 'not-run', reason: 'dry run: the redrive was not run' };
@@ -1835,9 +2261,32 @@ export async function redriveIssue(
     // The pull request goes back to draft first, so the catch-up and the revision's pushes spend
     // no CI run. Then the base: a redriven pull request has usually sat, and no revision begins on
     // a stale lane.
+    // The issue's hold is the one selection and the live gate read, and it is lifted, or this
+    // redrive would not have passed the gate. When the newest stop on the thread is the loop's own
+    // hold (a held proof, or an outside stop that waited on a person), the pull request's
+    // `needs-human` is that hold's mirror; it comes off with it, or the merge
+    // gate would refuse the very work the person released. A label a person put on the pull
+    // request after anything else stopped the work stays, and the merge gate honours it.
+    // Read as every reader of the stop reads it: the loop's own records since this pull request opened.
+    const opened = () => sh(ctx, ['gh', 'pr', 'view', String(pull.number), '--json', 'createdAt', '--jq', '.createdAt']);
+    const thread = () => trackerIo(ctx).view(issue.number)?.comments ?? [];
+    if (pullHolds(ctx, pull.number).includes('needs-human') && loopHoldStands(standingStop(thread(), ctx.botLogin, opened()))) {
+      mutate(ctx, `lift needs-human on PR #${pull.number}: the issue's hold was lifted`, ['gh', 'pr', 'edit', String(pull.number), '--remove-label', 'needs-human']);
+    }
+    // Nothing objected, and an approval still stands on this very head: the landing goes ahead on
+    // it, with no draft, no proof, and no review again, each of which would only re-establish what
+    // the record already says and start another CI run on an unchanged head.
+    if (objection === null) {
+      const standing = await approvedAtHead(ctx, pull.number, cwd, thread(), opened(), say);
+      if (standing) {
+        move(ctx, issue, 'F1', `approved at ${standing.reviewedSha.slice(0, 10)}; landing on the standing approval`);
+        const first: WorkerResult = { issue: issue.number, verdict: 'fixed', reason: 'approved earlier at this head', pr: pull.number, branch: pull.branch, touches: standing.review.touches };
+        return await reviewAndLand(ctx, issue, cwd, first, maxPoints, say, ceiling, standing);
+      }
+    }
     if (!isDraft(ctx, pull.number)) mutate(ctx, `return PR #${pull.number} to draft for the redrive`, ['gh', 'pr', 'ready', String(pull.number), '--undo']);
     const head = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-    if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive') === 'conflict') {
+    if (await catchUp(ctx, issue, cwd, head, say, 'before the redrive', { pr: pull.number }) === 'conflict') {
       return deadLetter(ctx, issue, 'landing', `The branch conflicts with ${ctx.project.baseBranch}.`, say, pull.number);
     }
     const feedback: ReviewResult =
@@ -1867,21 +2316,8 @@ export async function redriveIssue(
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pull.number);
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pull.number) : settled;
     if (result.pr) move(ctx, issue, 'E1', `PR #${result.pr} ready for review again`);
-    // Awaited, not returned: returning the promise ran this cleanup the moment the reviewer
-    // started, so two live redrives reviewed and merged with no claim and no lease.
+    // Awaited, like every pipeline call here: the claim and the lease must outlive the review and
+    // the landing, or two live redrives review and merge with no claim and no lease.
     return await reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
-  } catch (error) {
-    const recorded = recordThrow(ctx, issue, error as Error, say, pull.number);
-    keepLane = recorded.keepLane;
-    return recorded.outcome;
-  } finally {
-    stopRenewing();
-    try {
-      handle.release();
-    } catch (error) {
-      say(`could not release the claim: ${(error as Error).message}`);
-    }
-    inFlight.delete(issue.number);
-    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
-  }
+  });
 }

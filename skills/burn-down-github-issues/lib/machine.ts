@@ -55,14 +55,56 @@ const REDRIVE: Transition[] = [
 ];
 
 /**
+ * A seat whose run ended on an environment fault: a full disk or exhausted memory (which also send
+ * the line a PAUSE), or a stop signal the driver did not send, a person's most likely. The work was
+ * not judged, so nothing is counted, held, or dead-lettered: a host fault leaves its marker, the
+ * claim is released, the lane is cleared for the rerun, and the card rests where its facts now put
+ * it, from where the work is rerun later. The same host fault again on that rerun, with the marker
+ * on the issue, is the work's own doing, and the driver raises AGENT_FAILED for it instead.
+ */
+/**
+ * The same rerunning outside stop (a transport failure, a stuck check) on the issue's runs, three
+ * times in a row (`OUTSIDE_REPEAT_BOUND`): no longer a passing outage, so the work waits on a person
+ * instead of rerunning. Recorded as an outside stop that waits on a person, which a redrive lifts.
+ */
+const OUTSIDE_STOP_RECURRED: Transition = { target: 'ticket.human.needsHuman', actions: ['recordOutsideStop', 'labelHold', 'releaseClaim', 'clearLaneForRerun'] };
+
+const ENVIRONMENT_FAULT_IN_WORK: Transition[] = [
+  { target: 'ticket.ready.ready', guard: 'noOpenPr', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
+  // A pull request with no driver: the next run resumes it through Proving, as any driverless one.
+  { target: 'ticket.work.drafted', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
+];
+
+/**
  * A pull request of the loop's own whose driver is gone, with no hold on it: a run that died on
- * another machine, a lane that was removed. Nobody objected to the work, so it is not a revision.
- * It catches up, then goes to the closest lane that can carry it on: Proving, where its author
- * makes the proof current and hands it to review.
+ * another machine, a lane that was removed, or a held proof a person lifted. Nobody objected to the
+ * work, so it is not a revision. It catches up, then goes to the closest lane that can carry it
+ * on: Proving, where its author makes the proof current and hands it to review. A held proof's
+ * `needs-human` on the pull request is the lifted hold's mirror and comes off with the reclaim.
  */
 const RESUME: Transition[] = [
-  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['reclaim', 'markResuming'] },
-  { target: 'ticket.work.proving', actions: ['reclaim', 'prToDraft', 'runProver'] },
+  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['reclaim', 'liftPrHoldMirror', 'markResuming'] },
+  { target: 'ticket.work.proving', actions: ['reclaim', 'liftPrHoldMirror', 'prToDraft', 'runProver'] },
+];
+
+/**
+ * An approval that still stands on the head in hand: the newest approval names this head, nothing
+ * but a boundary park or an outside stop came after it, the base needs no catch-up, and no check
+ * has failed by the newest run under each name. Nothing is left to establish, so the card goes
+ * straight to Approved: no draft, no proof, no review again; checks still running are the landing's
+ * to wait on.
+ */
+const LAND_ON_STANDING_APPROVAL: Transition = { target: 'ticket.landing.approved', guard: 'approvedAtHead and noCheckFailed and upToDateWithBase', actions: ['reclaim', 'liftPrHoldMirror'] };
+
+/**
+ * A person's `fix.ts --land` on a change the merge boundary parked: the park comes off, nothing is
+ * counted, and nobody objected, so the pull request is carried on as a resume is, unless the
+ * approval still stands on its head.
+ */
+const LANDING_CLEARED: Transition[] = [
+  { ...LAND_ON_STANDING_APPROVAL, actions: ['unlabelHold', 'reclaim'] },
+  { target: 'ticket.landing.catchingUp', guard: 'behindBase', actions: ['unlabelHold', 'reclaim', 'prToDraft', 'markResuming'] },
+  { target: 'ticket.work.proving', actions: ['unlabelHold', 'reclaim', 'prToDraft', 'runProver'] },
 ];
 
 /** Transitions every ticket state inherits, tried before its own only for the events named here. */
@@ -71,7 +113,8 @@ const TICKET_WIDE: Record<string, Transition | Transition[]> = {
     { target: 'ticket.terminal.merged', guard: 'aMergedPrReferencesIt' },
     { target: 'ticket.terminal.closedWithoutCode' },
   ],
-  PR_MERGED: { target: 'ticket.terminal.merged', actions: ['closeIssueWithPointer'] },
+  // Recorded as every merge is (`recordMerge`): the card to Merged, the merge onto the floor, the issue closed.
+  PR_MERGED: { target: 'ticket.terminal.merged', actions: ['putOnFloor', 'closeIssueWithPointer'] },
   HOLD_ADDED_BY_PERSON: [
     { target: 'ticket.human.needsDecision', guard: 'holdIsNeedsDecision' },
     { target: 'ticket.human.needsHuman', guard: 'holdIsNeedsHuman' },
@@ -148,7 +191,7 @@ export const MACHINE: StateNode = {
           initial: 'inbox',
           // Every phase answers a machine failure in every one of its lanes, into its own queue:
           // a throw between two agent turns is a failure too, and no lane may drop it.
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] }, ENVIRONMENT_FAULT: { target: 'ticket.appraisal.inbox', actions: ['markFreeFault', 'recordOutsideStop'] }, OUTSIDE_STOP_RECURRED },
           states: {
             inbox: {
               lane: { key: 'A1', name: 'Inbox', description: 'On the board, unsized, not yet looked at' },
@@ -232,7 +275,7 @@ export const MACHINE: StateNode = {
 
         carving: {
           initial: 'toCarve',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] }, ENVIRONMENT_FAULT: { target: 'ticket.carving.toCarve', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim'] }, OUTSIDE_STOP_RECURRED },
           states: {
             toCarve: {
               lane: { key: 'C1', name: 'To carve', description: 'Sized over the ceiling; waiting for the knife' },
@@ -362,12 +405,19 @@ export const MACHINE: StateNode = {
               { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
               { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
+              // A coder's needs-human on a pull request it was continuing is an outside stop: the pull
+              // request is held open in draft, never closed, and lifting the hold continues the work.
+              { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman and prExists', actions: ['labelHold', 'prToDraft', 'labelPrHold', 'recordOutsideStop', 'releaseClaim'] },
               { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
               { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
               // A verdict the driver cannot read is a failed turn, settled like one.
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
               { target: 'ticket.deadLetters.work', actions: ['countAttempt', 'labelDlq', 'commentReason', 'releaseClaim'] },
             ],
+            // A seat that ended on an environment fault is not a failed turn: no attempt is counted,
+            // and the work is rerun from where its facts put it.
+            ENVIRONMENT_FAULT: ENVIRONMENT_FAULT_IN_WORK,
+            OUTSIDE_STOP_RECURRED,
             // With a pull request open there is no Ready to return to: that work waits in the queue.
             AGENT_FAILED: [
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
@@ -385,6 +435,9 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.appraisal.confirmingClose', guard: 'verdictIsClose' },
                   { target: 'ticket.panel.reviewing', guard: 'verdictNeedsDecision and panelAvailable and panelsUnderCap', actions: ['commentQuestion', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.human.needsDecision', guard: 'verdictNeedsDecision', actions: ['labelHold', 'commentQuestion', 'parkPr', 'releaseClaim'] },
+                  // A coder's needs-human on a pull request it was continuing is an outside stop: the pull
+                  // request is held open in draft, never closed, and lifting the hold continues the work.
+                  { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman and prExists', actions: ['labelHold', 'prToDraft', 'labelPrHold', 'recordOutsideStop', 'releaseClaim'] },
                   { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'commentReason', 'parkPr', 'releaseClaim'] },
                   { target: 'ticket.carving.toCarve', guard: 'verdictOutOfBandOverCeiling', actions: ['labelSize', 'parkPr', 'releaseClaim'] },
                 ],
@@ -412,6 +465,13 @@ export const MACHINE: StateNode = {
               on: {
                 // A ready pull request whose head is the proven commit: the prover's whole contract.
                 PROVED: { target: 'ticket.review.readyForReview', actions: ['prReady'] },
+                // A prover that needs a person answers after the code was pushed and announced, so
+                // the work is held where it stands: the pull request stays open with the hold on it
+                // too, and lifting the issue's label puts the card back by its facts (Drafted or
+                // Ready for review with the pull request, which resumes at Proving; Ready without
+                // one, where the announcement is proved, not coded again). Every other escape is
+                // the Work phase's, below.
+                WORKER_VERDICT: { target: 'ticket.human.needsHuman', guard: 'verdictNeedsHuman', actions: ['labelHold', 'labelPrHold', 'commentProofHeld', 'releaseClaim', 'removeWorktree'] },
                 // Proof that cannot be produced is a fault in the code, not the proof: back a step,
                 // with what could not be shown as the coder's brief. It spends an attempt.
                 PROOF_REFUSED: [
@@ -436,7 +496,11 @@ export const MACHINE: StateNode = {
 
         review: {
           initial: 'readyForReview',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] } },
+          on: {
+            AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
+            ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
+            OUTSIDE_STOP_RECURRED,
+          },
           states: {
             readyForReview: {
               lane: { key: 'E1', name: 'Ready for review', description: 'PR ready; CI running; no reviewer has started' },
@@ -447,7 +511,7 @@ export const MACHINE: StateNode = {
                   { target: 'ticket.landing.catchingUp', guard: 'behindBase' },
                   { target: 'ticket.review.evidenceUnderReview' },
                 ],
-                RESUMED: RESUME,
+                RESUMED: [LAND_ON_STANDING_APPROVAL, ...RESUME],
                 // A person lifted a hold by hand; the run start finds the card here, the objection on the thread.
                 REDRIVEN: REDRIVE,
                 // The reviewer's seat finds the pull request in draft: it was never declared complete.
@@ -461,7 +525,7 @@ export const MACHINE: StateNode = {
               entry: ['moveCard', 'runReviewer'],
               on: {
                 REVIEWED: [
-                  { target: 'ticket.landing.approved', guard: 'decisionMerge', actions: ['pinReviewedHead'] },
+                  { target: 'ticket.landing.approved', guard: 'decisionMerge', actions: ['pinReviewedHead', 'recordApproval'] },
                   // A rejection goes to the lane it is about: asking for more evidence is the
                   // prover's, objecting to the code is the coder's. Neither begins on a stale lane:
                   // the rejection stands through the catch-up, which hands the card on afterwards.
@@ -479,7 +543,14 @@ export const MACHINE: StateNode = {
 
         landing: {
           initial: 'approved',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] } },
+          on: {
+            AGENT_FAILED: { target: 'ticket.deadLetters.landing', actions: ['labelDlq', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+            // A tracker it could not reach, past the checks wait's retries, or a host fault: the
+            // landing judged nothing, so nothing is dead-lettered; the ready pull request with its
+            // approval is resumed from Ready for review.
+            ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'recordOutsideStop', 'leaveQueue', 'releaseClaim', 'clearLaneForRerun'] },
+            OUTSIDE_STOP_RECURRED: { ...OUTSIDE_STOP_RECURRED, actions: ['recordOutsideStop', 'labelHold', 'leaveQueue', 'releaseClaim', 'clearLaneForRerun'] },
+          },
           states: {
             approved: {
               lane: { key: 'F1', name: 'Approved', description: 'Merge verdict pinned to a head; waiting for the front of the queue' },
@@ -525,6 +596,10 @@ export const MACHINE: StateNode = {
               lane: { key: 'F3', name: 'Checks pending', description: 'Fresh at the front; waiting on the PR checks' },
               entry: ['moveCard', 'waitOnChecks'],
               on: {
+                // The wait reads the pull request's state on every poll. Merged by anyone, the wait
+                // ends and the merge is recorded as the loop's own would be; closed, a person decides.
+                PR_MERGED: { target: 'ticket.terminal.merged', actions: ['putOnFloor', 'followBase', 'removeWorktree', 'closeIssueWithPointer', 'leaveQueue', 'releaseClaim'] },
+                PR_CLOSED: { target: 'ticket.human.parked', actions: ['labelParked', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                 CHECKS: [
                   // Checks take time. A card that fell behind while they ran goes back to catch up
                   // from here; it never enters a later lane lacking the base.
@@ -554,6 +629,8 @@ export const MACHINE: StateNode = {
               on: {
                 MERGED: { target: 'ticket.terminal.merged', actions: ['closeIssueWithPointer', 'putOnFloor', 'followBase', 'leaveQueue', 'releaseClaim', 'removeWorktree'] },
                 ISSUE_CHANGED_UNDER_REVIEW: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
+                // A person's hold on the pull request itself (`needs-human` above all) refuses the merge as one on the issue does.
+                PR_HELD: { target: 'ticket.human.parked', actions: ['labelParked', 'parkPr', 'commentReason', 'leaveQueue', 'releaseClaim'] },
                 // The line can hold a card here while it is paused; anything that landed meanwhile is caught up first.
                 BASE_MOVED_WHILE_WAITING: [
                   { target: 'ticket.landing.catchingUp', guard: 'refreshesUnderCap', actions: ['countRefresh'] },
@@ -712,6 +789,10 @@ export const MACHINE: StateNode = {
                 // a seat cannot decide, so the hold the raising seat asked for stands. A seat failing
                 // is not the machine failing, which is why the panel answers no AGENT_FAILED.
                 PANEL_HOLD: { target: 'ticket.human.needsDecision', actions: ['commentPanelReceipt', 'unlabelDeliberating', 'labelHold'] },
+                // A seat that ended on an environment fault weighed nothing: the round is given back,
+                // no hold is written, and the work that raised the question is rerun later.
+                ENVIRONMENT_FAULT: { target: 'ticket.reconcile', actions: ['unlabelDeliberating', 'restorePanelCount', 'markFreeFault', 'recordOutsideStop', 'releaseClaim'] },
+                OUTSIDE_STOP_RECURRED: { target: 'ticket.human.needsHuman', actions: ['unlabelDeliberating', 'restorePanelCount', 'recordOutsideStop', 'labelHold', 'releaseClaim'] },
               },
             },
           },
@@ -741,6 +822,7 @@ export const MACHINE: StateNode = {
               on: {
                 HOLD_REMOVED: { target: 'ticket.reconcile', actions: ['unparkPr', 'keepPrForReuse'] },
                 REDRIVEN: REDRIVE,
+                LANDING_CLEARED,
                 LANDED_BY_HAND: { target: 'ticket.terminal.merged' },
               },
             },

@@ -39,8 +39,9 @@ create, edit, label, or comment on any issue; the driver does every tracker writ
 
 1. **The inventory.** Every acceptance criterion the parent carries, from the whole thread, one
    short line each, numbered `A1`, `A2`, ... in the order they appear. An issue that is a list of
-   unrelated asks is one criterion per ask. Where a comment retracts one, keep it with status
-   `withdrawn` citing the comment id. This inventory is the 100% rule made checkable: your pieces
+   unrelated asks is one criterion per ask. Where the thread retracts one, keep it with status
+   `withdrawn` and a `cite` naming the edit that retracted it: the comment's id or link, or
+   `body:{{BODY_HASH}}` when the issue's current body is what withdrew it. This inventory is the 100% rule made checkable: your pieces
    must cover it exactly, nothing unowned, nothing the parent did not ask for.
 
 2. **Normalization.** For every piece you are about to name, look first at the tree above, then
@@ -117,7 +118,7 @@ field and rejects whole on any miss:
 ```
 
 `ledger` rows: `owner` is the index of the piece in the chosen cut that owns the criterion (null
-when withdrawn or deferred); `status` is `open`, `withdrawn` (with `cite`, the comment id), or
+when withdrawn or deferred); `status` is `open`, `withdrawn` (with `cite`: a comment id or link, or `body:{{BODY_HASH}}`), or
 `deferred` (with `waitsOn`, the spike piece index). `cuts` and `chosen` only with `carve`;
 `affected` only with a hand-off. `width`, when the cut is over interchangeable instances, is
 `{ "instances": [...], "perInstance": "..." }` and the relation is `shards`.

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { Context } from './context.ts';
 import { awaitGreenChecks, reviewedChecks } from './pipeline.ts';
-import { beginStop, resetStop, RunStopping } from './shell.ts';
+import { environmentFaultOf } from './environment-fault.ts';
+import { beginStop, rateLimitedIn, resetStop, RunStopping, transportFailureIn } from './shell.ts';
 
 type Check = { name: string; conclusion: string };
 
@@ -199,10 +200,42 @@ describe('the build gate', () => {
     expect(await awaitGreenChecks(cancelled.ctx, 1, () => {}, EXPECT, cancelled.io)).toContain('optional-lint (cancelled)');
   });
 
-  it('still refuses at once on a check that failed, whatever else its name carries', async () => {
+  const run = (conclusion: string, completedAt: string) => ({ name: 'build', conclusion, completedAt });
+  const going = (startedAt: string) => ({ name: 'build', status: 'IN_PROGRESS', conclusion: '', startedAt });
+
+  it('still refuses at once on a check that failed when its runs cannot be ordered', async () => {
     const w = world('required', () => [node('build', 'SUCCESS'), node('build', 'FAILURE')]);
     expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
     expect(w.waited()).toBe(0);
+  });
+
+  it('judges a name by its newest run: an older failure and a newer pass is a pass', async () => {
+    const w = world('required', () => [run('FAILURE', '2026-11-21T10:00:00Z'), run('SUCCESS', '2026-11-21T10:30:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+  });
+
+  it('judges a name by its newest run: an older pass and a newer failure is a failure', async () => {
+    const w = world('required', () => [run('SUCCESS', '2026-11-21T10:00:00Z'), run('FAILURE', '2026-11-21T10:30:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
+  });
+
+  it('judges a name by its newest run: an older pass and a newer run still going is pending', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [run('SUCCESS', '2026-11-21T10:00:00Z'), going('2026-11-21T10:30:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toContain('checks still unfinished: build');
+    expect(said[0]).toContain('checks still unfinished: build');
+  });
+
+  it('refuses at once on a name whose only finished run failed and nothing under it runs', async () => {
+    const w = world('required', () => [node('build', 'FAILURE'), node('build', 'SKIPPED')]);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks failed: build (FAILURE)');
+    expect(w.waited()).toBe(0);
+  });
+
+  it('waits on a rerun of a failed name, and lands when it passes', async () => {
+    const w = world('required', (clock) => [run('FAILURE', '2026-11-21T10:00:00Z'), clock < 90_000 ? going('2026-11-21T10:05:00Z') : run('SUCCESS', '2026-11-21T10:20:00Z')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBeGreaterThanOrEqual(90_000);
   });
 
   it('lands a complete green list at once', async () => {
@@ -221,6 +254,20 @@ describe('the build gate', () => {
     const w = world('required', () => [], { timeoutMinutes: 0.501 });
     await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io);
     expect(w.waited()).toBe(30_060);
+  });
+
+  it('ends the wait on a pull request merged while it waited, and says at which head', async () => {
+    const w = world('required', () => [{ name: 'preview', conclusion: '' }]);
+    const read = w.io.read;
+    w.io.read = (argv: string[]) => (argv[1] === 'pr' && w.waited() >= 120_000 ? JSON.stringify({ state: 'MERGED', headRefOid: 'landing', statusCheckRollup: [] }) : read(argv));
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toEqual({ ended: 'MERGED', head: 'landing' });
+    expect(w.waited()).toBe(120_000);
+  });
+
+  it('ends the wait on a closed pull request', async () => {
+    const w = world('required', () => [GREEN]);
+    w.io.read = () => JSON.stringify({ state: 'CLOSED', headRefOid: 'other', statusCheckRollup: [] });
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toEqual({ ended: 'CLOSED', head: 'other' });
   });
 
   it('waits for the pull request to show the landing head', async () => {
@@ -258,5 +305,111 @@ describe('the checks a landing expects from the reviewed head', () => {
 
   it('still expects a check that ran and failed at review', () => {
     expect(reviewedChecks([{ name: 'Lint', verdict: 'failure' }]).names).toEqual(['Lint']);
+  });
+});
+
+describe('a transport failure while the checks are waited on', () => {
+  const OFFLINE = 'gh pr view 1 --json statusCheckRollup,headRefOid\nerror connecting to api.github.com';
+  it('retries the read with backoff and carries on once the tracker answers', async () => {
+    const w = world('required', () => [GREEN]);
+    const read = w.io.read;
+    let failures = 0;
+    w.io.read = (argv: string[]) => {
+      if (argv[1] === 'pr' && w.waited() < 45_000) {
+        failures += 1;
+        throw new Error(OFFLINE);
+      }
+      return read(argv);
+    };
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(failures).toBeGreaterThan(1);
+  });
+
+  it('settles a failure that outlasts the retries as an outside stop, not a dead letter', async () => {
+    const w = world('required', () => [GREEN]);
+    w.io.read = () => {
+      throw new Error(OFFLINE);
+    };
+    const thrown = await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io).then(() => null, (error: unknown) => error);
+    expect(environmentFaultOf(thrown)).toMatchObject({ kind: 'transport' });
+    // Bounded: the retries give up well inside the checks timeout.
+    expect(w.waited()).toBeLessThan(10 * 60_000);
+  });
+
+  it('is told from a check that failed: a red check is still the landing queue\'s', async () => {
+    expect(transportFailureIn('error connecting to api.github.com')).toBe(true);
+    expect(transportFailureIn('HTTP 502: Bad Gateway (https://api.github.com/graphql)')).toBe(true);
+    expect(transportFailureIn('dial tcp: lookup api.github.com: i/o timeout')).toBe(true);
+    expect(transportFailureIn('checks failed: build (FAILURE)')).toBe(false);
+    expect(transportFailureIn('HTTP 404: Not Found')).toBe(false);
+  });
+
+  it('reads the tracker\'s other ways of not answering as transport, rate limits included', () => {
+    for (const text of [
+      'Post "https://api.github.com/graphql": EOF',
+      'Get "https://api.github.com/repos/o/r": context deadline exceeded',
+      'dial tcp: lookup api.github.com: no such host',
+      'HTTP 500: Internal Server Error',
+      'GraphQL: API rate limit exceeded for user ID 1. (rateLimit)',
+      'HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+      'HTTP 429: Too Many Requests',
+    ]) expect([text, transportFailureIn(text)]).toEqual([text, true]);
+    expect(rateLimitedIn('HTTP 403: API rate limit exceeded for installation ID 9')).toBe(true);
+    expect(rateLimitedIn('HTTP 502: Bad Gateway')).toBe(false);
+    expect(transportFailureIn('HTTP 403: Resource not accessible by integration')).toBe(false);
+  });
+
+  it('waits out a rate limit until its reset, past the transport window, instead of stopping', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [GREEN], { timeoutMinutes: 60 });
+    const read = w.io.read;
+    const reset = 20 * 60; // seconds on the test's clock
+    w.io.read = (argv: string[]) => {
+      if (argv[2] === 'rate_limit') return String(reset);
+      if (argv[1] === 'pr' && w.waited() < reset * 1000) throw new Error('gh pr view 1\nGraphQL: API rate limit exceeded for user ID 1.');
+      return read(argv);
+    };
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBeGreaterThanOrEqual(reset * 1000);
+    expect(said.some((m) => m.includes('rate limit'))).toBe(true);
+  });
+});
+
+describe('a check its provider queued and never started', () => {
+  afterEach(resetStop);
+  const queued = (name: string) => ({ name, status: 'QUEUED', conclusion: '', detailsUrl: 'https://deploy.example/run/1' });
+  const running = (name: string) => ({ name, status: 'IN_PROGRESS', conclusion: '', workflowName: 'CI' });
+
+  it('is named stuck past the threshold, with its provider, and ends the wait as an outside stop rather than a timeout', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [GREEN, queued('preview')] as never, { timeoutMinutes: 120 });
+    const thrown = await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io).then(() => null, (error: unknown) => error);
+    expect(environmentFaultOf(thrown)).toMatchObject({ kind: 'stuck-check', check: 'preview', provider: 'deploy.example' });
+    expect(w.waited()).toBe(30 * 60_000);
+    expect(said.at(-1)).toContain('preview (deploy.example, queued 30 minutes and never started)');
+  });
+
+  it('takes its threshold from stuckCheckMinutes', async () => {
+    const w = world('required', () => [GREEN, queued('preview')] as never, { timeoutMinutes: 120 });
+    (w.ctx.knobs as { stuckCheckMinutes?: number }).stuckCheckMinutes = 5;
+    await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io).catch(() => null);
+    expect(w.waited()).toBe(5 * 60_000);
+  });
+
+  it('is never stuck once started, however long it runs', async () => {
+    const w = world('required', () => [GREEN, running('integration')] as never, { timeoutMinutes: 60 });
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toContain('checks still unfinished: integration, after 60 minutes');
+  });
+
+  it('counts from when the watch first saw it, not from when the wait began', async () => {
+    const w = world('required', (clock) => (clock < 20 * 60_000 ? [GREEN] : [GREEN, queued('preview')]) as never, { timeoutMinutes: 120, openSuites: (clock) => (clock < 20 * 60_000 ? [suite('ci', 1)] : []) });
+    await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io).catch(() => null);
+    expect(w.waited()).toBeGreaterThanOrEqual(50 * 60_000);
+  });
+
+  it('holds nothing under a name whose newer run passed', async () => {
+    const w = world('required', () => [{ ...GREEN, completedAt: '2026-11-21T10:00:00Z' }, queued('build')] as never);
+    expect(await awaitGreenChecks(w.ctx, 1, () => {}, EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBe(0);
   });
 });

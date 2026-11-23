@@ -39,6 +39,7 @@ export default {
     evidenceBranch: '__evidence_locker__',
     checkCommand: 'bun run verify',
     installCommand: 'bun install --frozen-lockfile',
+    laneFiles: ['.env.test.local'] /* optional; ignored files copied from the main checkout into every lane */,
     conventionDocs: ['AGENTS.md', 'CLAUDE.md'],
     sizingScale: 'where your point scale is documented',
     sharedServices: ['the local database', 'the shared staging environment'],
@@ -49,6 +50,7 @@ export default {
     alwaysInvalidates: ['package.json', 'bun.lock', '.github/workflows/' /* and more; see below */],
     releaseArtifacts: [] /* optional string[]; same pattern rules as alwaysInvalidates; see below */,
     ciCommand: 'bun run test:ci' /* optional; CI's deciding command when different from checkCommand; the prover always runs it */,
+    ciEnvironment: { STAGE: 'test' } /* optional; the CI job's environment shape for every seat's gate; see the table */,
     smokeCommand: 'bun run smoke' /* optional; boots the landing head before the merge; see "The line" below */,
     followBase: false /* optional; true fast-forwards the main checkout after every merge; see "The line" below */,
     touchPaths: {
@@ -67,7 +69,10 @@ export default {
   // requiredChecks or by branch protection must have PASSED on the landing head: one that was only
   // skipped or cancelled is waited on, so never list a job that is skipped on pull requests by
   // design; a cancelled check is waited on under any name, until a run passes or a person reruns
-  // it), agentTimeoutMinutes
+  // it), stuckCheckMinutes (how long a check may sit queued, never started by its provider, before
+  // the landing calls it stuck and stops, naming the check and its provider, instead of waiting out
+  // checksTimeoutMinutes into a dead letter; 30 by default; a check that has started is never
+  // stuck), agentTimeoutMinutes
   // (how long an agent may run before the driver kills it: a number for every seat, or a map by
   // seat; 45 by default. Hitting the cap means the turn is doing too much, and the answer is a
   // smaller turn, not a longer cap; raise this only where one run of your own gate honestly
@@ -97,6 +102,11 @@ export default {
   // A command-line flag beats the config for limit, maxPoints, appraiseLimit, and the seats.
   // floor: { every: 10, drainMinutes: 60, environment: { kind: 'web', baseUrl: '...' }, walks: [] }
   // walks the deployed base after every merge and pauses the line when it is wrong; see references/floor.md.
+  // A merge is walked only on deploy evidence: set environment.revisionCommand (prints the running SHA)
+  // or environment.deployWorkflow (the workflow that deploys the base); deployCapMinutes (default 180)
+  // bounds the wait before a merge is reported deploy-unconfirmed. With neither set, no merge can be
+  // shown deployed, so every merge reads deploy-unconfirmed after the cap (the floor says so at start).
+  // graceMinutes is still accepted and decides nothing.
 };
 ```
 
@@ -118,7 +128,9 @@ config. Do not hand-edit prose in `prompts/` to say your project's name.
 | `evidenceBranch` | long-lived, append only | `__evidence_locker__` | create one |
 | `checkCommand` | the local gate | `bun run lint && bun run test` | `bun run verify` (a script fanning out to many checks) |
 | `ciCommand` | optional non-empty string; the prover always runs it and records command, full SHA, and exit code in `gateRun`. If unset, it records `checkCommand` only when the head moved or the gated commit is unknown; otherwise no rerun. A moved or unknown head still owes `checkCommand` first. | `bun run test:ci` | omit when `checkCommand` is also CI's deciding command |
+| `ciEnvironment` | optional map of environment variable names to string values: what the CI job's environment has that a lane may not (a linked resource, a stage name). When set, the coder's and reviewer's `checkCommand` and the prover's gate commands run as `(export NAME='value' ...; command)`, and the gate is named `ci-shaped` instead of `lane` in the prover's `gateRun.environment`, its receipt, and the reviewer's citation. Values are written into prompts and logs, so give a secret as a stub of the same shape, never its real value. | `{ SST_RESOURCE_App: '{"name":"app","stage":"test"}' }` | omit when the lane and the CI job see the same environment |
 | `installCommand` | frozen-lockfile install | `bun install --frozen-lockfile` | the same |
+| `laneFiles` | optional; files the main checkout holds and git ignores (shared test credentials, a local env file) that the driver copies into each lane when it makes or resets one, so every seat has them without running a command. Relative to the repository root. A missing source is logged and skipped; a path git does not ignore is logged and not copied, since a seat could commit it. | `['.env.test.local']` | omit |
 | `conventionDocs` | what a prescribed remedy is read against | `CONTRIBUTING.md` | `AGENTS.md` |
 | `sizingScale` | where the point scale is written | a docs page | an issue template |
 | `pathAliases` | **check this**, alias to directory | `@/` to `src` | `~/` to `.` |
@@ -183,10 +195,21 @@ every landing-time change is machine-produced; a file humans also edit does not 
 `package.json` needs no entry: a base change that only bumps its `"version"` field is recognized
 as release noise automatically, while a dependency change still invalidates. Without this key,
 each landing rewrites paths that `alwaysInvalidates` matches, so every queued pull request loses
-its approval and is re-reviewed for noise the machine produced. A landing whose base moved only in these
-files does not catch up at all, so its checks are not re-run for a changelog commit. It still catches
-up when the work imports one of them, on a version-only `package.json` bump, and whenever the base's
-protection requires an up-to-date branch or cannot be read.
+its approval and is re-reviewed for noise the machine produced. A lane whose base moved only in these
+files, or by a version-only `package.json` bump, does not catch up at all, at any step, so its checks
+are not re-run for a release commit. It still catches up when the work imports one of them, and
+whenever the base's protection requires an up-to-date branch or cannot be read.
+
+### Release commits and the refresh cap
+
+A landing looks upstream after each of its gates, and every move it finds there costs a catch-up
+and a fresh CI run. Only two moves are allowed before the landing is a dead letter. A move made
+only of release noise (the files `releaseArtifacts` names, or a version-only `package.json` bump)
+needs no catch-up at all, unless the base's protection requires an up-to-date branch; then it
+still catches up but is not counted against the cap, and such moves have a larger bound of their
+own, six, so a runaway stream still stops. The files a commit changed decide this, never its
+author or a `[skip ci]` subject: a release bot's commit that touches code counts like anyone's. The
+landing dead letter names the commits that moved the base.
 
 ## The line: a switch, and the floor that flips it
 
@@ -205,7 +228,9 @@ echo go > <worktreeRoot>/runs/line-switch        # release
 With a `floor` block in the config, every merge the loop makes goes up onto
 `<worktreeRoot>/floor/`, and the loop walks the deployed base on a cadence. A walk that finds it
 wrong pauses the line with a reason beginning `floor:`; once nothing on the floor is wrong the
-floor releases its own pause, and never one a person set. At the end of a run the loop keeps
+floor releases its own pause, and never one a person set. A seat that fails on the host (a full
+disk, exhausted memory) pauses the line with a reason beginning `host:`, and only a person releases
+it. At the end of a run the loop keeps
 walking until its merges are verified there, up to `floor.drainMinutes`. The block, the walk, the
 callbacks, and the first-run order are in `references/floor.md`.
 
@@ -273,7 +298,9 @@ said so in the log.
 
 Changing config requires restarting a running loop; it does not reread the file.
 Set `checksTimeoutMinutes` to cover the slowest required workflow plus runner queue time.
-The default 45 minutes assumes healthy CI.
+The default 45 minutes assumes healthy CI. Set `stuckCheckMinutes` above the longest time a
+healthy provider leaves a check queued before starting it; the default 30 minutes assumes runners
+are usually available.
 
 ## The board
 
@@ -345,7 +372,8 @@ the allowlist.
 ## Boundaries to set deliberately
 
 `autoMerge` defaults to `code-only`: merge code, park anything touching production data, a
-migration, a stored string, or CI. `maxPoints: 2` keeps the loop to work small enough that a bad merge
+migration, a stored string, or CI. A floor incident's fix that undoes a recently merged pull request
+parks whatever `autoMerge` says, even under `always`. `maxPoints: 2` keeps the loop to work small enough that a bad merge
 is cheap. `ageDays: 30` keeps it to issues whose context is still true. Widen after a run has gone
 well, not before.
 
@@ -365,8 +393,8 @@ the label or running `fix.ts --redrive` is the redrive, counted as `loop/redrive
 - **Reviews take as long as CI does**, since the reviewer waits on the checks inside its single
   turn. That is expected, not a hang.
 - **A merge taxes the queue behind it.** If your pipeline writes follow-up commits to the base
-  after every merge (a generated-constants write, a release version bump), each lands in
-  `alwaysInvalidates` and each discards the approval of every pull request still queued, at the
+  after every merge (a generated-constants write, a changelog) that `releaseArtifacts` does not
+  name, each lands in `alwaysInvalidates` and each discards the approval of every pull request still queued, at the
   cost of a full re-review per discard. Safe, visible in the log, and worth knowing before you
   interpret it as a hang.
 - **Every valid appraisal posts a stamp comment**, a re-appraisal at an unchanged size included.

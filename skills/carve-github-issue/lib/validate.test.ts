@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { type Carving, depthOf, normalize, validateCarving, validateConfirmation } from './carve.ts';
 import { FakeTracker, fakeIssue } from './fake-tracker.ts';
-import type { Cut, Piece, Record } from './record.ts';
+import type { Cut, Ledger, Piece, Record } from './record.ts';
 import { readTree, type Tree } from './tree.ts';
 
 const BOT = 'loop-bot';
@@ -65,8 +65,8 @@ function carving(partial: Partial<Carving> = {}, c: Partial<Cut> = {}): Carving 
     ...partial,
   };
 }
-function faultsOf(c: unknown, tree: Tree, mode: 'carve' | 'revisit' = 'carve'): string[] {
-  const r = validateCarving(c, { mode, knobs: KNOBS, tree, scale: SCALE });
+function faultsOf(c: unknown, tree: Tree, mode: 'carve' | 'revisit' = 'carve', previousLedger: Ledger | null = null): string[] {
+  const r = validateCarving(c, { mode, knobs: KNOBS, tree, scale: SCALE, previousLedger });
   return r.ok ? [] : r.faults;
 }
 
@@ -139,6 +139,31 @@ describe('validateCarving', () => {
     const withRecord = { ...tree, record: { children: [{ number: 11 }] } as unknown as Record };
     expect(faultsOf(carving({ mode: 'revisit', verdict: 'amend', supersedes: [{ old: 11, replacements: [0], reason: 'r' }] }), withRecord, 'revisit')).toEqual([]);
     expect(faultsOf(carving({ mode: 'revisit', verdict: 'amend', supersedes: [{ old: 12, replacements: [0], reason: 'r' }] }), withRecord, 'revisit').join()).toMatch(/not a child of the latest record/);
+  });
+  test('a withdrawal cites a comment on the thread or the current body', () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { title: '[carve-test] big', body: 'rewritten', labels: [{ name: 'size: 8' }], comments: [{ id: 'IC_7', databaseId: 7, author: 'person', body: 'drop two', createdAt: '2026-09-01T00:00:00Z' }] })]);
+    const t = readTree(ctxFor(io), 10, io);
+    const withdrawn = (cite: string | undefined) => carving({ ledger: [{ id: 'A1', text: 'one', owner: 0, status: 'open' }, { id: 'A2', text: 'two', owner: null, status: 'withdrawn', cite }] }, { pieces: [piece({ criteria: ['A1'] }), piece({ criteria: [], order: 2 })] });
+    expect(faultsOf(withdrawn('IC_7'), t)).toEqual([]);
+    expect(faultsOf(withdrawn(`body:${t.issue.bodyHash}`), t)).toEqual([]);
+    expect(faultsOf(withdrawn(undefined), t).join()).toMatch(/without citing the edit/);
+    expect(faultsOf(withdrawn('body:0000000000000000'), t).join()).toMatch(/neither a comment on #10 nor its current body/);
+    expect(faultsOf(withdrawn('IC_8'), t).join()).toMatch(/neither a comment/);
+    const ok = validateCarving(withdrawn('#issuecomment-7'), { mode: 'carve', knobs: KNOBS, tree: t, scale: SCALE });
+    expect(ok.ok && ok.carving.ledger[1].cite).toBe('IC_7');
+  });
+  test('a revisit carries a standing withdrawal from the previous ledger instead of re-deriving it', () => {
+    const io = new FakeTracker(BOT, [fakeIssue(10, { title: '[carve-test] big', body: 'rewritten', labels: [{ name: 'size: 8' }] })]);
+    const t = readTree(ctxFor(io), 10, io);
+    const cite = `body:${t.issue.bodyHash}`;
+    const previous: Ledger = [{ id: 'A1', text: 'one', owner: 0, status: 'open' }, { id: 'A2', text: 'two', owner: null, status: 'withdrawn', cite }];
+    const still = (ledger: Ledger, criteria = [{ id: 'A1', text: 'one' }, { id: 'A2', text: 'two' }]) => carving({ mode: 'revisit', verdict: 'still-good', cuts: undefined, chosen: undefined, criteria, ledger });
+    expect(faultsOf(still(previous), t, 'revisit', previous)).toEqual([]);
+    const reopened: Ledger = [previous[0], { id: 'A2', text: 'two', owner: 1, status: 'open' }];
+    expect(faultsOf(still(reopened), t, 'revisit', previous).join()).toMatch(/A2 was withdrawn by body:.*carry it as withdrawn/);
+    expect(faultsOf(still([previous[0]], [{ id: 'A1', text: 'one' }]), t, 'revisit', previous).join()).toMatch(/A2 was withdrawn/);
+    // Without a previous ledger (a first carve) nothing is carried.
+    expect(faultsOf(still(reopened), t, 'revisit')).toEqual([]);
   });
   test('depthOf is the ancestor count', () => {
     expect(depthOf(tree)).toBe(0);

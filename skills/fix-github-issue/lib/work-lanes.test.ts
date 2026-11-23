@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CodeBrief, runCode } from '../../code-github-issue/lib/code.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
-import { decidingCommand, gateText, runProve } from '../../prove-github-issue/lib/prove.ts';
-import { agentCapMs } from './agent.ts';
+import { decidingCommand, gateRunEnvironment, gateText, runProve } from '../../prove-github-issue/lib/prove.ts';
+import { agentCapMs, renderTemplate } from './agent.ts';
 import { ENGINES } from './engines.ts';
-import { ciCommandFault, type ProjectConfig } from './config.ts';
+import { ciCommandFault, ciEnvironmentFault, gateCommand, gateEnvironment, type ProjectConfig } from './config.ts';
 import { type Context, createContext } from './context.ts';
-import { placeWork } from './pipeline.ts';
+import { clearLaneForRerun, placeWork } from './pipeline.ts';
+import { loopNote } from './note.ts';
 import { codedComment, latestStep, unprovedComment } from './work-markers.ts';
+import { heldComment, proofHeldComment, standingStop } from './stop-record.ts';
 
 /** A real remote and real lanes: whether a push happened is only a fact on disk. */
 let scratch: string;
@@ -93,6 +95,32 @@ describe('the Work markers', () => {
   it("trusts only the bot's markers: a person pasting one moves nothing", () => {
     const coded = codedComment('run-1', { branch: 'fix/x-1', sha: 'a'.repeat(40), gated: 'a'.repeat(40), touches: [] }, 'h');
     expect(latestStep([{ author: 'someone', body: coded }], BOT)).toBeNull();
+  });
+
+  it('reads a held proof as no objection, and the newest stop of the bot as the standing one', () => {
+    const held = proofHeldComment('run-1', { branch: 'fix/x-1', pr: 7 }, 'needs the shared test credentials; parked until then');
+    const park = 'Parked: the merge boundary refused it.';
+    expect(standingStop([{ author: BOT, body: park }, { author: BOT, body: held }], BOT)).toEqual({ kind: 'proof-held' });
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: park }], BOT)).toEqual({ kind: 'objection', text: park });
+    // A person's words, or one pasting the marker, are not the loop's stop.
+    expect(standingStop([{ author: BOT, body: park }, { author: 'someone', body: held }], BOT)).toEqual({ kind: 'objection', text: park });
+    expect(standingStop([{ author: BOT, body: 'Coded; proving next.' }], BOT)).toBeNull();
+    // A park note carries the loop-note marker: it is still an objection, read without the marker,
+    // and a held proof stays the standing stop until a newer note follows it.
+    const marked = loopNote(park);
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: marked }], BOT)).toEqual({ kind: 'objection', text: park });
+    expect(standingStop([{ author: BOT, body: marked }, { author: BOT, body: held }], BOT)).toEqual({ kind: 'proof-held' });
+    expect(standingStop([{ author: BOT, body: loopNote('Taken off the board by the sweep.') }], BOT)).toBeNull();
+    // Bound to the work in hand: a stop written before `since` is an earlier attempt's.
+    const at = (body: string, createdAt: string) => ({ author: BOT, body, createdAt });
+    expect(standingStop([at(park, '2026-09-01T00:00:00Z'), at(held, '2026-09-03T00:00:00Z')], BOT, '2026-09-02T00:00:00Z')).toEqual({ kind: 'proof-held' });
+    expect(standingStop([at(held, '2026-09-01T00:00:00Z')], BOT, '2026-09-02T00:00:00Z')).toBeNull();
+    // A seat's ask for a person, newer than a held proof, is the standing stop, and its words are kept.
+    const asked = heldComment('needs-human', 'the coder needs the vendor key');
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: asked }], BOT)).toEqual({ kind: 'held', text: 'the coder needs the vendor key' });
+    expect(latestStep([{ author: BOT, body: asked }], BOT)).toBeNull();
+    // A held proof is a loop marker, so it is never the work's newest Work step.
+    expect(latestStep([{ author: BOT, body: held }], BOT)).toBeNull();
   });
 
   it('refuses a field that would break the marker apart', () => {
@@ -405,7 +433,7 @@ describe("the prover's answer is believed only on the head it was given", () => 
       try {
         const result = await runProve(ctx, issue(n), dir, { branch, gated: '' }, { kind: 'handoff', text: 'h' });
         expect(result.verdict).toBe('proved');
-        expect(result.gateRun).toEqual(gateRun);
+        expect(result.gateRun).toEqual({ ...gateRun, environment: 'lane' });
         expect(prompt).toContain(gateText(ctx.project, sha, ''));
         expect(prompt).not.toMatch(/\{\{[A-Z_]+\}\}/);
         if (ciCommand) {
@@ -433,6 +461,40 @@ describe("the prover's answer is believed only on the head it was given", () => 
     const result = await runProve(context(new FakeTracker(BOT), answer), issue(33), dir, { branch: 'fix/thirtythree-33', gated: sha }, { kind: 'handoff', text: 'h' });
     expect(result.verdict).toBe('failed');
     expect(result.reason).toContain('is not there');
+  });
+
+  it("clears the coder's spent control file before the prover runs", async () => {
+    const dir = lane(36);
+    const sha = code(dir, 'fix/thirtysix-36');
+    writeFileSync(join(dir, 'loop-code.json'), JSON.stringify({ issue: 36, verdict: 'coded', reason: 'coded', sha }));
+    const answer = answerFile('proved-36', { issue: 36, verdict: 'proved', reason: 'proved', pr: 360, sha });
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(36), dir, { branch: 'fix/thirtysix-36', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('proved');
+    expect(existsSync(join(dir, 'loop-code.json'))).toBe(false);
+  });
+
+  it("names an answer the prover wrote into the coder's file in the failure", async () => {
+    const dir = lane(37);
+    const sha = code(dir, 'fix/thirtyseven-37');
+    writeFileSync(join(dir, 'loop-code.json'), JSON.stringify({ issue: 37, verdict: 'coded', reason: 'coded', sha }));
+    const answer = answerFile('unprovable-37', { issue: 37, verdict: 'unprovable', reason: 'no', brief: 'the x test is missing' });
+    writeFileSync(answer.replace(/\.json$/, '.prover.sh'), 'mv loop-proof.json loop-code.json\n');
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(37), dir, { branch: 'fix/thirtyseven-37', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain("loop-proof.json is missing, but loop-code.json was written during the prover's turn");
+    expect(JSON.parse(readFileSync(join(dir, 'loop-code.json'), 'utf8'))).toMatchObject({ verdict: 'unprovable' });
+  });
+
+  it('says nothing of the coder\'s file when the prover left no answer anywhere', async () => {
+    const dir = lane(38);
+    const sha = code(dir, 'fix/thirtyeight-38');
+    writeFileSync(join(dir, 'loop-code.json'), JSON.stringify({ issue: 38, verdict: 'coded', reason: 'coded', sha }));
+    const answer = answerFile('none-38', { issue: 38, verdict: 'proved', reason: 'proved', pr: 380, sha });
+    writeFileSync(answer.replace(/\.json$/, '.prover.sh'), 'rm loop-proof.json\n');
+    const result = await runProve(context(new FakeTracker(BOT), answer), issue(38), dir, { branch: 'fix/thirtyeight-38', gated: sha }, { kind: 'handoff', text: 'h' });
+    expect(result.verdict).toBe('failed');
+    expect(result.reason).toContain('no verdict from the prover');
+    expect(result.reason).not.toContain('loop-code.json');
   });
 
   it('refuses an unprovable that tells the coder nothing to fix', async () => {
@@ -467,5 +529,110 @@ describe('the lane prompts', () => {
     expect(prompts.code).not.toContain('gh pr create');
     expect(prompts.code).not.toContain('prove-work-on-github');
     expect(prompts.prove).toContain('You push nothing to `{{BRANCH}}`');
+  });
+});
+
+describe("the gate runs in the CI job's environment shape when one is configured", () => {
+  const CI_ENV = { SST_RESOURCE_App: '{"name":"app","stage":"test"}', STAGE: "it's test" };
+  const shaped = { ...PROJECT, checkCommand: 'bun run check', ciCommand: 'bun run ci', ciEnvironment: CI_ENV } as ProjectConfig;
+
+  it('allows an omitted environment and rejects unusable supplied values', () => {
+    expect(ciEnvironmentFault(undefined)).toBeNull();
+    expect(ciEnvironmentFault({})).toBeNull();
+    expect(ciEnvironmentFault(CI_ENV)).toBeNull();
+    for (const value of [null, 'STAGE=test', ['STAGE=test'], { STAGE: 1 }, { 'NOT-A-NAME': 'x' }, { '1STAGE': 'x' }, { 'A B': 'x' }]) {
+      expect(ciEnvironmentFault(value)).toContain('project.ciEnvironment');
+    }
+  });
+
+  it('leaves the command and the environment as the lane when nothing is configured', () => {
+    expect(gateEnvironment(PROJECT)).toBe('lane');
+    expect(gateEnvironment({ ...PROJECT, ciEnvironment: {} })).toBe('lane');
+    expect(gateCommand(PROJECT, 'bun run check')).toBe('bun run check');
+  });
+
+  it('exports every variable, quoted, to every part of a compound command and nowhere else', () => {
+    expect(gateEnvironment(shaped)).toBe('ci-shaped');
+    const command = gateCommand(shaped, 'printf "%s|" "$STAGE" && printf "%s" "$SST_RESOURCE_App"');
+    const run = Bun.spawnSync(['sh', '-c', `${command}; printf "|%s" "\${STAGE:-unset}"`], { env: { PATH: process.env.PATH ?? '' }, stdout: 'pipe' });
+    expect(run.stdout.toString()).toBe(`it's test|${CI_ENV.SST_RESOURCE_App}|unset`);
+  });
+
+  it("hands the prover the CI-shaped deciding command and prerequisite, and names the environment", () => {
+    const head = 'a'.repeat(40);
+    const text = gateText(shaped, head, 'b'.repeat(40));
+    expect(text).toContain(`deciding command \`${gateCommand(shaped, 'bun run ci')}\``);
+    expect(text).toContain(`run \`${gateCommand(shaped, 'bun run check')}\` first`);
+    expect(text).toContain('`ci-shaped`');
+    expect(text).not.toContain('`lane`');
+    expect(gateText({ ...PROJECT, checkCommand: 'bun run check' }, head, '')).toContain('name the run `lane`');
+  });
+
+  it('gives the coder and reviewer the CI-shaped check command and its environment name', () => {
+    const ctx = context(new FakeTracker(BOT), '');
+    ctx.project = shaped;
+    expect(renderTemplate(ctx, '{{CHECK_COMMAND}} / {{GATE_ENVIRONMENT}}', {})).toBe(`${gateCommand(shaped, 'bun run check')} / ci-shaped`);
+    ctx.project = PROJECT;
+    expect(renderTemplate(ctx, '{{CHECK_COMMAND}} / {{GATE_ENVIRONMENT}}', {})).toBe('true / lane');
+  });
+
+  it('names a recorded run ci-shaped only when its command carries the CI environment', () => {
+    expect(gateRunEnvironment(shaped, gateCommand(shaped, 'bun run ci'))).toBe('ci-shaped');
+    expect(gateRunEnvironment(shaped, gateCommand(shaped, 'bun run check'))).toBe('ci-shaped');
+    expect(gateRunEnvironment(shaped, 'bun run ci')).toBe('lane');
+    expect(gateRunEnvironment(shaped, undefined)).toBe('lane');
+    expect(gateRunEnvironment(PROJECT, 'true')).toBe('lane');
+  });
+
+  for (const [n, recorded, expected] of [
+    [60, true, 'ci-shaped'],
+    [61, false, 'lane'],
+  ] as const) {
+    it(`stamps the proof's gateRun ${expected} from the command the prover recorded`, async () => {
+      const dir = lane(n);
+      const branch = `fix/shaped-${n}`;
+      const sha = code(dir, branch);
+      const command = recorded ? gateCommand(shaped, 'bun run ci') : 'bun run ci';
+      const answer = answerFile(`proved-${n}`, { issue: n, verdict: 'proved', reason: 'proved', pr: n, sha, gateRun: { command, sha, exitCode: 0, environment: 'ci-shaped' } });
+      const ctx = context(new FakeTracker(BOT), answer);
+      ctx.project = shaped;
+      const result = await runProve(ctx, issue(n), dir, { branch, gated: '' }, { kind: 'handoff', text: 'h' });
+      expect(result.verdict).toBe('proved');
+      expect(result.gateRun).toEqual({ command, sha, exitCode: 0, environment: expected });
+    });
+  }
+});
+
+describe('a lane an environment fault interrupted', () => {
+  it('keeps the lane when it holds the proof of its pushed head, so the next resume needs no new proof', () => {
+    const dir = lane(161);
+    code(dir, 'fix/proved-161');
+    writeFileSync(join(dir, 'loop-proof.json'), JSON.stringify({ issue: 161, verdict: 'proved', reason: 'shown', pr: 9, branch: 'fix/proved-161' }));
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 161, () => {});
+    expect(existsSync(join(dir, 'loop-proof.json'))).toBe(true);
+  });
+
+  it('clears a lane with no proof, one with uncommitted edits, and one whose head no remote has', () => {
+    const bare = lane(162);
+    code(bare, 'fix/unproved-162');
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 162, () => {});
+    expect(existsSync(bare)).toBe(false);
+    const dirty = lane(163);
+    code(dirty, 'fix/dirty-163');
+    writeFileSync(join(dirty, 'loop-proof.json'), JSON.stringify({ issue: 163, verdict: 'proved', reason: 'shown', pr: 9 }));
+    writeFileSync(join(dirty, 'a.txt'), 'edited\n');
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 163, () => {});
+    expect(existsSync(dirty)).toBe(false);
+    const local = lane(164);
+    code(local, 'fix/local-164', false);
+    writeFileSync(join(local, 'loop-proof.json'), JSON.stringify({ issue: 164, verdict: 'proved', reason: 'shown', pr: 9 }));
+    const unpushed = git(local, 'rev-parse', 'HEAD');
+    const said: string[] = [];
+    clearLaneForRerun(context(new FakeTracker(BOT), ''), 164, (m) => said.push(m));
+    expect(existsSync(local)).toBe(false);
+    // The head no remote has is kept under a ref named for it.
+    const ref = `refs/loop/rescued/issue-164/${unpushed.slice(0, 12)}`;
+    expect(git(repo, 'rev-parse', ref)).toBe(unpushed);
+    expect(said).toContain(`saved the lane's unpushed commits as ${ref}`);
   });
 });

@@ -6,9 +6,10 @@
  */
 
 import { join } from 'node:path';
-import { agentCapMs, logTail, readResult, renderPrompt, runAgent, runAgentOnce } from '../../fix-github-issue/lib/agent.ts';
+import { agentCapMs, logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent, runAgentOnce } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE } from '../../fix-github-issue/lib/control-files.ts';
+import { seatScratch } from '../../fix-github-issue/lib/lane.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import type { Touch } from '../../fix-github-issue/lib/work-markers.ts';
 
@@ -32,6 +33,8 @@ export type CodeResult = {
   /** What the prover reads first: what changed, how to exercise it, what was not checked. */
   handoff?: string;
   touches?: Touch[];
+  /** For needs-human: `base` when the gate fails on the untouched base, before the change. */
+  outside?: 'base';
 };
 
 /**
@@ -83,11 +86,15 @@ export async function runCode(
     TITLE: issue.title,
     MAX_POINTS: String(maxPoints),
     BRIEF: briefText(brief),
+    SCRATCH_DIR: seatScratch(ctx, issue.number, 'coder'),
   });
   const role = brief.kind === 'conflict' ? 'coder-conflict' : brief.kind === 'first' ? 'coder' : 'coder-revise';
-  const { logPath, exitCode, notRun, timedOut } = brief.kind === 'conflict'
+  const run = brief.kind === 'conflict'
     ? await runAgentOnce(ctx, role, issue.number, cwd, ctx.seats.worker, prompt)
     : await runAgent(ctx, role, issue.number, cwd, ctx.seats.worker, prompt, onRetry);
+  // A coder stopped from outside, or one that failed on the host, did not fail: the work was not
+  // judged, so this throws for the pipeline to settle as an environment fault, counting nothing.
+  const { logPath, exitCode, notRun, timedOut } = refuseEnvironmentFault(run, role, issue.number);
   if (notRun) return { issue: issue.number, verdict: 'not-run', reason: 'dry run: the coder was not run' };
   if (exitCode !== 0) {
     return fail(
@@ -105,6 +112,8 @@ export async function runCode(
   if (Number(result.issue) !== issue.number || typeof result.reason !== 'string') {
     return fail(issue.number, `coder verdict names issue ${JSON.stringify(result.issue)} or has no reason; log ends: ${logTail(logPath)}`);
   }
+  // Only a needs-human can name the base as its cause; any other value, or verdict, names nothing.
+  result.outside = result.verdict === 'needs-human' && result.outside === 'base' ? 'base' : undefined;
   // A malformed classification must read as no classification, which fails closed at the merge.
   result.touches = Array.isArray(result.touches) ? result.touches.filter((t) => TOUCHES.includes(t)) : undefined;
   if (result.verdict === 'out-of-band') {

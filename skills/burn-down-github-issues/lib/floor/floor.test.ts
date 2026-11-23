@@ -5,8 +5,13 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../../../fix-github-issue/lib/config.ts';
 import { createContext } from '../../../fix-github-issue/lib/context.ts';
 import { nextWalkMinutes, resolveFloor } from './config.ts';
-import { Floor, FLOOR_PAUSE } from './floor.ts';
-import { appendEntry, appendItem, readLedger, readList } from './ledger.ts';
+import { Floor, FLOOR_PAUSE, incidentWaiting, type IncidentState, type Ownership, readOwnership } from './floor.ts';
+import { pauseForHost } from '../host-pause.ts';
+import type { handleIncident } from './incident.ts';
+import { appendEntry, appendItem, type LedgerEntry, latestByItem, readLedger, readList } from './ledger.ts';
+import { type FloorCause, floorReason, lineHolds, readSwitch } from './line.ts';
+import { type Lineage, type LineageOf, owedTo, renderLineage } from './lineage.ts';
+import { classify, type DeployRun } from './probe.ts';
 
 let scratch: string;
 let status = 200;
@@ -27,7 +32,7 @@ afterAll(() => {
 const PROJECT = { name: 'Test', repo: 'o/floor', remote: 'origin', baseBranch: 'main', evidenceBranch: 'evidence', checkCommand: 'true', installCommand: 'true', conventionDocs: [], sizingScale: 'fib', sharedServices: [], portBase: 9000, portSpan: 10, pathAliases: [], sourceExtensions: ['.ts'], alwaysInvalidates: [], touchPaths: { migration: [], ci: [] }, worktreeRoot: 'wt' } as ProjectConfig;
 
 /** A floor of its own per case, with recording callbacks in its callbacks directory. */
-function floorFor(name: string, environment: Record<string, unknown> = {}) {
+function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident; readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null; landBlocker?: (issue: number) => string | null; deployRuns?: (sha: string) => DeployRun[] } = {}) {
   const root = join(scratch, name);
   const callbacksDir = join(root, 'callbacks');
   mkdirSync(callbacksDir, { recursive: true });
@@ -48,7 +53,7 @@ function floorFor(name: string, environment: Record<string, unknown> = {}) {
     log: () => {},
     step: () => {},
   });
-  const { floor: config, faults } = resolveFloor({ environment: { kind: 'web', baseUrl: `http://localhost:${server.port}`, ...environment } });
+  const { floor: config, faults } = resolveFloor({ ...(extra.forge === undefined ? {} : { forge: extra.forge }), environment: { kind: 'web', baseUrl: `http://localhost:${server.port}`, ...environment } });
   expect(faults).toEqual([]);
   const readouts: string[] = [];
   const switchFile = join(root, 'line-switch');
@@ -58,10 +63,16 @@ function floorFor(name: string, environment: Record<string, unknown> = {}) {
     dir: join(root, 'floor'),
     switchFile,
     callbacksDir,
-    seats: { walker: { engine: 'fixture' }, callback: { engine: 'fixture' } },
+    seats: { walker: { engine: 'fixture', ...(extra.walkerAnswer ? { model: extra.walkerAnswer } : {}) }, callback: { engine: 'fixture' } },
     maxPoints: 2,
     log: () => {},
     print: (text) => readouts.push(text),
+    ...(extra.lineageOf ? { lineageOf: extra.lineageOf } : {}),
+    handleIncident: extra.repair,
+    ...(extra.readIncident ? { readIncident: extra.readIncident } : {}),
+    ...(extra.landBlocker ? { landBlocker: extra.landBlocker } : {}),
+    ...(extra.deployRuns ? { deployRuns: extra.deployRuns } : {}),
+    waitingAtMerge: () => 2,
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
   const line = () => (existsSync(switchFile) ? readFileSync(switchFile, 'utf8') : 'go\n');
@@ -74,7 +85,7 @@ describe('a walk that finds the environment down', () => {
     status = 503;
     const first = await f.floor.walkOnce({ livenessOnly: true });
     expect(first?.wrong).toBe(true);
-    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE} liveness is down`);
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
     expect(f.calls('on-walk-fail')).toBe(1);
     // Nothing here needs a person yet: the outage is a heads-up, not a question.
     expect(f.readouts[0]).toContain('liveness is down');
@@ -100,6 +111,48 @@ describe('a walk that finds the environment down', () => {
     status = 200;
     await f.floor.walkOnce({ livenessOnly: true });
     expect(f.line()).toBe('pause\nreleasing tonight\n');
+  });
+
+  it('leaves a host pause for a person to release, and pauses again after their go while still down', async () => {
+    const f = floorFor('host-then-go');
+    status = 503;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(pauseForHost(f.switchFile, 'a host fault (ENOSPC)')).toBe('paused');
+    const host = f.line();
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe(host);
+    // The person fixes the disk and writes go: that clears the host pause, not the floor's.
+    writeFileSync(f.switchFile, 'go\n');
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('go\n');
+  });
+
+  it("obeys a person's go over its own pause, and pauses again only when an item newly turns wrong", async () => {
+    const f = floorFor('person-go');
+    status = 503;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}`);
+    writeFileSync(f.switchFile, 'go\n');
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('go\n');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    status = 503;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
+    status = 200;
+  });
+
+  it('leaves a host pause in place once the floor is right again: only a person releases it', async () => {
+    const f = floorFor('host-up');
+    status = 200;
+    pauseForHost(f.switchFile, 'a host fault (ENOMEM)');
+    const host = f.line();
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe(host);
   });
 
   it('is expected inside a quiet window: recorded, nothing paused or run', async () => {
@@ -134,7 +187,7 @@ describe('an outage that began inside a quiet window', () => {
     // The quiet walk, as the ledger records one, then a walk outside any window.
     appendEntry(f.dir, { itemId: 'liveness', checkedAt: new Date().toISOString(), rung: 'liveness', verdict: 'down', reason: '/ 503', quiet: true });
     await f.floor.walkOnce({ livenessOnly: true });
-    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE} liveness is down`);
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}undiagnosed: liveness is down`);
     expect(f.calls('on-walk-fail')).toBe(1);
     status = 200;
     await f.floor.walkOnce({ livenessOnly: true });
@@ -203,5 +256,483 @@ describe('a merge the forge listed before the loop recorded it', () => {
     expect(item.ref?.issue).toBe(50);
     expect(item.source).toBe('burndown');
     expect(readList(dir)).toHaveLength(1);
+  });
+});
+
+describe('a carved child whose missing effect an open sibling owns', () => {
+  // Issue 10 changed what new installs create; its open sibling 11 migrates the rows that exist.
+  const lineage = (siblingOpen: boolean): Lineage => ({
+    issue: { number: 10, title: 'feat: new installs get the new channel', body: 'Acceptance: a fresh install gives every article the new channel.' },
+    trunk: { number: 9, title: 'Move articles to the new channel' },
+    openSiblings: siblingOpen ? [{ number: 11, title: 'feat: migrate existing articles', body: 'Acceptance: every existing article is on the new channel.' }] : [],
+  });
+
+  function carvedFloor(name: string, answers: Record<string, unknown>) {
+    const deployed = git(scratch, 'rev-parse', 'HEAD');
+    const answerDir = join(scratch, `${name}-answers`);
+    mkdirSync(answerDir, { recursive: true });
+    for (const [file, body] of Object.entries(answers)) writeFileSync(join(answerDir, file), JSON.stringify(body));
+    const tracker = { siblingOpen: true, reads: 0 };
+    const f = floorFor(name, { revisionCommand: `echo ${deployed}` }, {
+      forge: false,
+      walkerAnswer: join(answerDir, 'walk.json'),
+      lineageOf: (issue) => {
+        tracker.reads++;
+        return issue === 10 ? lineage(tracker.siblingOpen) : null;
+      },
+    });
+    f.floor.put({ issue: 10, title: 'feat: new installs get the new channel', pr: 100, sha: deployed, mergedAt: new Date().toISOString(), paths: ['src/fixtures.ts'] });
+    return { ...f, answerDir, tracker };
+  }
+  const itemVerdicts = (dir: string) => readLedger(dir).filter((e) => e.itemId === 'pull-request:100').map((e) => e.verdict);
+
+  it('records owed-by-sibling from the walker, pauses nothing, and walks again once the sibling closes', async () => {
+    status = 200;
+    const f = carvedFloor('owed-walker', {
+      'walk.json': { entries: [{ itemId: 'pull-request:100', rung: 'look', verdict: 'owed-by-sibling', sibling: 11, reason: 'Existing articles are on the old channel; #11 migrates them.' }] },
+    });
+    const first = await f.floor.walkOnce();
+    expect(first?.wrong).toBe(false);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ verdict: 'owed-by-sibling', sibling: 11 });
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+    expect(f.readouts[0]).toContain('owed by sibling #11');
+    // The drain does not wait on the sibling's work.
+    expect(f.floor.owed('run')).toHaveLength(0);
+
+    // While the sibling is open the item is not walked again.
+    await f.floor.walkOnce();
+    expect(itemVerdicts(f.dir)).toEqual(['owed-by-sibling']);
+
+    // Once it closes, the item is walked again and judged.
+    f.tracker.siblingOpen = false;
+    writeFileSync(join(f.answerDir, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:100', rung: 'look', verdict: 'present', reason: 'Every article is on the new channel.' }] }));
+    await f.floor.walkOnce();
+    expect(itemVerdicts(f.dir)).toEqual(['owed-by-sibling', 'present']);
+  });
+
+  it('waits on a sibling that merged until its own floor item is verified', async () => {
+    status = 200;
+    const f = carvedFloor('owed-landing', {
+      'walk.json': { entries: [{ itemId: 'pull-request:100', rung: 'look', verdict: 'owed-by-sibling', sibling: 11, reason: 'Owed to #11.' }] },
+    });
+    await f.floor.walkOnce();
+    f.tracker.siblingOpen = false;
+    appendItem(f.dir, { id: 'pull-request:110', addedAt: new Date().toISOString(), source: 'burndown', text: 'feat: migrate existing articles', ref: { issue: 11, pullRequest: 110, sha: '0123456789abcdef0123456789abcdef01234567' } });
+    await f.floor.walkOnce();
+    expect(itemVerdicts(f.dir)).toEqual(['owed-by-sibling']);
+  });
+
+  it('settles an absent through the diagnosis before anything pauses, files nothing, and fixes nothing', async () => {
+    status = 200;
+    const f = carvedFloor('owed-diagnosis', {
+      'walk.json': { entries: [{ itemId: 'pull-request:100', rung: 'exercise', verdict: 'absent', reason: 'Existing articles are on the old channel.' }] },
+      'walk.diagnose.json': { culprit: null, confidence: 'likely', error: '', remedy: 'owed-by-sibling', sibling: 11, summary: '#11 migrates the existing rows.' },
+    });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(false);
+    expect(walk?.incidents).toEqual([]);
+    expect(itemVerdicts(f.dir)).toEqual(['absent', 'owed-by-sibling']);
+    expect(readLedger(f.dir).at(-1)?.sibling).toBe(11);
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+  });
+});
+
+describe('owedTo and the lineage text', () => {
+  const lineage: Lineage = {
+    issue: { number: 10, title: 'child', body: 'Acceptance: the child holds.' },
+    trunk: { number: 9, title: 'trunk' },
+    openSiblings: [{ number: 11, title: 'sibling', body: 'Acceptance: the sibling holds.' }],
+  };
+
+  it('names only a sibling open under the trunk', () => {
+    expect(owedTo(lineage, 11)?.number).toBe(11);
+    expect(owedTo(lineage, 12)).toBeNull();
+    expect(owedTo(lineage, '11')).toBeNull();
+    expect(owedTo(lineage, undefined)).toBeNull();
+    expect(owedTo(null, 11)).toBeNull();
+  });
+
+  it("puts the child's own acceptance and each open sibling's in front of the walker", () => {
+    const text = renderLineage(lineage, '  ');
+    expect(text).toContain('closes issue #10 (child)');
+    expect(text).toContain('  > Acceptance: the child holds.');
+    expect(text).toContain('carved from trunk #9 (trunk)');
+    expect(text).toContain('- #11 sibling');
+    expect(text).toContain('Acceptance: the sibling holds.');
+  });
+});
+
+describe('"Needs you" is read fresh at render time', () => {
+  const at = (verdict: LedgerEntry['verdict'], itemId = 'pull-request:7'): LedgerEntry => ({ itemId, checkedAt: '2026-11-18T20:10:00Z', rung: 'exercise', verdict, reason: 'r' });
+  /** Marks an item as owned by a person, as a walk that found its incident parked would. */
+  const own = (floor: Floor, itemId: string, incident: number) => {
+    const inner = floor as unknown as { owners: Ownership };
+    inner.owners.set(itemId, { itemId, entry: at('absent', itemId), incident, owner: 'person', landable: false });
+  };
+
+  it('drops an item whose newest ledger verdict turned present', async () => {
+    const { floor, readouts, dir } = floorFor('needs-you-resolved');
+    appendItem(dir, { id: 'pull-request:7', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 7, sha: 'abc' } });
+    appendEntry(dir, at('absent'));
+    own(floor, 'pull-request:7', 41);
+    appendEntry(dir, at('present'));
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).not.toContain('parked for you');
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+  });
+
+  it('keeps an item still wrong when the tracker cannot confirm its incident closed', async () => {
+    const { floor, readouts, dir } = floorFor('needs-you-wrong');
+    appendItem(dir, { id: 'pull-request:8', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 8, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:8'));
+    own(floor, 'pull-request:8', 42);
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('PR #8 move the page is still absent and incident #42 is parked for you');
+  });
+
+  it('prints the readout again when ownership alone changed between two walks', async () => {
+    const { floor, readouts, dir } = floorFor('needs-you-second-walk');
+    status = 200;
+    appendItem(dir, { id: 'pull-request:9', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 9, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:9'));
+    own(floor, 'pull-request:9', 43);
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('incident #43 is parked for you');
+    appendEntry(dir, at('present', 'pull-request:9'));
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+  });
+
+  it("names the landing on the next walk once the incident's fix is parked approved", async () => {
+    let blocker: string | null = 'it is not parked at the merge boundary';
+    const { floor, readouts, dir } = floorFor('needs-you-landable', {}, { readIncident: () => ({ number: 44, withAPerson: true }), landBlocker: () => blocker });
+    status = 200;
+    appendItem(dir, { id: 'pull-request:10', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 10, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:10'));
+    own(floor, 'pull-request:10', 44);
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('lift its label to hand it back');
+    blocker = null;
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('fix.ts --land 44');
+  });
+
+  it('reads ownership fresh each walk, and the readout and the drain follow it together', async () => {
+    let incident: IncidentState = { number: 45, withAPerson: true };
+    const { floor, readouts, dir } = floorFor('ownership-two-walks', {}, { readIncident: () => incident ?? null, landBlocker: () => 'not parked' });
+    status = 200;
+    appendItem(dir, { id: 'pull-request:11', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 11, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:11'));
+    // An incident an earlier run left parked is a person's on the first walk that reads it.
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('incident #45 is parked for you');
+    expect(floor.owed('all').map((i) => i.id)).toEqual([]);
+    // Handed back to the pipeline: the floor owns it, nothing needs a person, and the drain waits on it.
+    incident = { number: 45, withAPerson: false };
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+    expect(floor.owed('all').map((i) => i.id)).toEqual(['pull-request:11']);
+    // Closed while the item is still wrong: nobody owns it, and nothing changed for a person.
+    incident = null;
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(floor.owed('all').map((i) => i.id)).toEqual(['pull-request:11']);
+  });
+
+  it('keeps what it knew of an item when the tracker cannot be read, and knows nothing of an item it never saw', () => {
+    const latest = latestByItem([at('absent', 'seen'), at('absent', 'new')]);
+    const previous: Ownership = new Map([['seen', { itemId: 'seen', entry: at('absent', 'seen'), incident: 6, owner: 'person' as const, landable: true, cause: 'outside-repository' as const }]]);
+    const owners = readOwnership(latest, () => undefined, previous, () => false);
+    expect(owners.get('seen')).toMatchObject({ owner: 'person', incident: 6, landable: true, cause: 'outside-repository' });
+    expect(owners.get('new')).toMatchObject({ owner: 'unknown', incident: null, landable: false });
+  });
+
+  it('follows the incident as the tracker reports it now', () => {
+    const latest = latestByItem([at('absent', 'a'), at('absent', 'b'), at('absent', 'c'), at('absent', 'd'), at('absent', 'e'), at('present', 'e')]);
+    const tracker: Record<string, IncidentState> = {
+      a: { number: 1, withAPerson: true }, // still parked
+      b: null, // closed
+      c: { number: 3, withAPerson: false }, // its label lifted: back with the pipeline
+      d: undefined, // unreadable
+      e: { number: 5, withAPerson: true }, // open, but walked right since
+    };
+    const reads: string[] = [];
+    // Each was last seen with a person, as a walk that found its incident parked would leave it.
+    const previous: Ownership = new Map(['a', 'b', 'c', 'd', 'e'].map((id) => [id, { itemId: id, entry: at('absent', id), incident: null, owner: 'person' as const, landable: false }]));
+    const owners = readOwnership(latest, (id) => {
+      reads.push(id);
+      return tracker[id];
+    }, previous, () => false);
+    const people = [...owners.values()].filter((o) => o.owner === 'person');
+    expect(people.map((k) => [k.itemId, k.incident])).toEqual([['a', 1], ['d', null]]);
+    expect([...owners.values()].map((o) => [o.itemId, o.owner])).toEqual([['a', 'person'], ['b', 'nobody'], ['c', 'floor'], ['d', 'person']]);
+    // An item the ledger already shows right costs no tracker read.
+    expect(reads).not.toContain('e');
+  });
+});
+
+describe('the readout line for an incident a person owns', () => {
+  it('names the landing when the merge boundary parked an approved fix', () => {
+    const line = incidentWaiting('home', 42, true);
+    expect(line).toContain('fix.ts --land 42');
+    expect(line).not.toContain('lift its label');
+  });
+  it('hands any other park back by its label', () => {
+    expect(incidentWaiting('home', 42, false)).toContain('lift its label to hand it back');
+    expect(incidentWaiting('home', undefined, true)).toContain('(see floor/incident)');
+  });
+});
+
+describe('the cause on the floor\'s pause', () => {
+  const deployed = () => git(scratch, 'rev-parse', 'HEAD');
+  /** An incident handler that answers with this cause, recording the line as the diagnosis found it and as it left it. */
+  const answering = (cause: FloorCause | 'throws', seen: string[], during?: (switchFile: string) => void): typeof handleIncident =>
+    async (_ctx, options) => {
+      seen.push(readFileSync(switchFileOf.current, 'utf8'));
+      if (cause === 'throws') throw new Error('the diagnosis seat is gone');
+      during?.(switchFileOf.current);
+      options.onDiagnosed?.(cause);
+      seen.push(readFileSync(switchFileOf.current, 'utf8'));
+      return { issue: 31, created: true, fix: null, diagnosis: null, cause };
+    };
+  const switchFileOf = { current: '' };
+  const wrongWalk = async (name: string, cause: FloorCause | 'throws', during?: (switchFile: string) => void) => {
+    const seen: string[] = [];
+    const f = floorFor(name, { revisionCommand: `echo ${deployed()}` }, { repair: answering(cause, seen, during) });
+    switchFileOf.current = f.switchFile;
+    status = 503;
+    await f.floor.walkOnce();
+    return { f, seen };
+  };
+
+  it('is undiagnosed the moment the walk finds something wrong, and the diagnosis converts it', async () => {
+    const { f, seen } = await wrongWalk('cause-outage', 'outside-repository');
+    expect(seen[0]).toStartWith(`pause\n${floorReason('undiagnosed', 'liveness is down')}`);
+    expect(seen[1]).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    expect(f.line()).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    status = 200;
+  });
+
+  it('lets lanes start during an outage, stacks merges, and releases them on the first walk that finds it up', async () => {
+    const { f } = await wrongWalk('cause-outage-release', 'outside-repository');
+    expect(lineHolds(readSwitch(f.switchFile), 'dispatch')).toBe(false);
+    expect(lineHolds(readSwitch(f.switchFile), 'merge')).toBe(true);
+    expect(f.readouts.at(-1)).toContain('only merges are held, other work goes on');
+    expect(f.readouts.at(-1)).toContain('2 pull request(s) waiting at the merge');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(lineHolds(readSwitch(f.switchFile), 'merge')).toBe(false);
+  });
+
+  it('starts no new lane while the floor repairs its own fault', async () => {
+    const { f } = await wrongWalk('cause-repair', 'in-repository');
+    expect(lineHolds(readSwitch(f.switchFile), 'dispatch')).toBe(true);
+    expect(f.readouts.at(-1)).toContain('merges wait and no new lane starts');
+    status = 200;
+  });
+
+  it('records a remedy in the repository as the repository\'s', async () => {
+    const { f } = await wrongWalk('cause-ours', 'in-repository');
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}in-repository: `);
+    status = 200;
+  });
+
+  it('records a diagnosis that could not answer as a cause nobody knows, never as an outage', async () => {
+    const { f } = await wrongWalk('cause-thrown', 'throws');
+    expect(f.line()).toStartWith(`pause\n${FLOOR_PAUSE}cause-unknown: `);
+    status = 200;
+  });
+
+  it('never overwrites a pause a person set while the diagnosis ran', async () => {
+    const { f } = await wrongWalk('cause-person', 'outside-repository', (file) => writeFileSync(file, 'pause\nholding for the release\n'));
+    expect(f.line()).toBe('pause\nholding for the release\n');
+    status = 200;
+    await f.floor.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('pause\nholding for the release\n');
+  });
+
+  it('keeps the cause an earlier run recorded for an outage still under way', async () => {
+    const f = floorFor('cause-restart');
+    status = 503;
+    appendEntry(f.dir, { itemId: 'liveness', checkedAt: new Date().toISOString(), rung: 'liveness', verdict: 'down', reason: '/ 503' });
+    writeFileSync(f.switchFile, `pause\n${floorReason('outside-repository', 'liveness is down')}; see the ledger on the floor\n`);
+    const restarted = new Floor({ ...(f.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o });
+    await restarted.walkOnce({ livenessOnly: true });
+    expect(f.line()).toStartWith(`pause\n${floorReason('outside-repository', 'liveness is down')}`);
+    status = 200;
+    await restarted.walkOnce({ livenessOnly: true });
+    expect(f.line()).toBe('go\n');
+  });
+});
+
+describe('deploy evidence', () => {
+  const OTHER = '0123456789abcdef0123456789abcdef01234567';
+  const head = () => git(scratch, 'rev-parse', 'HEAD');
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+  const run = (status: string, conclusion: string | null = null): DeployRun => ({ status, conclusion });
+  const byRuns = (runs: DeployRun[], mergedAt = minutesAgo(5)) =>
+    classify({ deployed: null, sha: OTHER, mergedAt, workflow: 'Deploy', runsFor: () => runs, capMinutes: 180, repoRoot: scratch });
+
+  it('counts a queued, pending, waiting, or running deploy as not deployed', () => {
+    for (const status of ['queued', 'pending', 'waiting', 'requested', 'in_progress']) {
+      expect(byRuns([run(status)])).toEqual({ state: 'not-yet-deployed', reason: `the Deploy run is ${status}` });
+    }
+  });
+
+  it('walks a merge once its deploy run completed successfully, and not when it completed any other way', () => {
+    expect(byRuns([run('completed', 'success')])).toBeNull();
+    expect(byRuns([run('in_progress'), run('completed', 'success')])).toBeNull();
+    expect(byRuns([run('completed', 'skipped')])).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy run concluded skipped' });
+    expect(byRuns([])).toEqual({ state: 'not-yet-deployed', reason: 'no Deploy run for the merge' });
+  });
+
+  it('lets a deployed revision decide alone, whatever the workflow says', () => {
+    let reads = 0;
+    const runsFor = () => {
+      reads++;
+      return [run('completed', 'success')];
+    };
+    const options = { mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor, capMinutes: 180, repoRoot: scratch };
+    expect(classify({ ...options, deployed: head(), sha: head() })).toBeNull();
+    expect(classify({ ...options, deployed: head(), sha: OTHER })?.state).toBe('not-yet-deployed');
+    expect(reads).toBe(0);
+  });
+
+  it('never walks a merge on elapsed time: past the cap with no evidence it is deploy-unconfirmed', () => {
+    expect(byRuns([run('in_progress')], minutesAgo(181))?.state).toBe('deploy-unconfirmed');
+    expect(byRuns([run('completed', 'success')], minutesAgo(181))).toBeNull();
+    const none = (mergedAt: string) => classify({ deployed: null, sha: OTHER, mergedAt, capMinutes: 180, repoRoot: scratch });
+    expect(none(minutesAgo(5))?.state).toBe('not-yet-deployed');
+    expect(none(minutesAgo(60 * 24 * 30))).toMatchObject({ state: 'deploy-unconfirmed', reason: expect.stringContaining('neither a revisionCommand nor a deployWorkflow') });
+    const unreadable = classify({ deployed: null, sha: OTHER, mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor: () => { throw new Error('HTTP 502'); }, capMinutes: 180, repoRoot: scratch });
+    expect(unreadable).toEqual({ state: 'not-yet-deployed', reason: 'the Deploy runs could not be read (HTTP 502)' });
+  });
+
+  it('walks a merge only after its running deploy completes', async () => {
+    status = 200;
+    const answers = join(scratch, 'deploy-walk-answers');
+    mkdirSync(answers, { recursive: true });
+    writeFileSync(join(answers, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:120', rung: 'exercise', verdict: 'intact', reason: 'The page works.' }] }));
+    // With no deployed revision to read, the walk's checkout is the base as last fetched.
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    let runs = [run('in_progress')];
+    const f = floorFor('deploy-running', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs });
+    f.floor.put({ issue: 12, title: 'fix: a backend thing', pr: 120, sha: OTHER, mergedAt: minutesAgo(30), paths: ['server/a.ts'] });
+    await f.floor.walkOnce();
+    await f.floor.walkOnce();
+    const verdicts = () => readLedger(f.dir).filter((e) => e.itemId === 'pull-request:120').map((e) => e.verdict);
+    expect(verdicts()).toEqual(['not-yet-deployed']);
+    expect(readLedger(f.dir).find((e) => e.itemId === 'pull-request:120')?.reason).toBe('the Deploy run is in_progress');
+    runs = [run('completed', 'success')];
+    await f.floor.walkOnce();
+    expect(verdicts()).toEqual(['not-yet-deployed', 'intact']);
+  });
+
+  it('shows a deploy it cannot confirm in the readout, files nothing, and does not hold the drain on it', async () => {
+    status = 200;
+    const f = floorFor('deploy-unconfirmed', { deployWorkflow: 'Deploy', deployCapMinutes: 60 }, { forge: false, deployRuns: () => [] });
+    f.floor.put({ issue: 13, title: 'fix: a stalled deploy', pr: 130, sha: OTHER, mergedAt: minutesAgo(90), paths: ['server/b.ts'] });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(false);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:130', verdict: 'deploy-unconfirmed' });
+    expect(f.readouts.at(-1)).toContain('PR #130 fix: a stalled deploy: deploy unconfirmed; no Deploy run for the merge; still no deploy evidence 60 minutes after the merge');
+    expect(f.line()).toBe('go\n');
+    expect(f.calls('on-walk-fail')).toBe(0);
+    expect(f.floor.owed('run')).toHaveLength(0);
+  });
+
+  it('judges a failed or cancelled deploy run a failed deploy at once, with its URL', () => {
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'startup_failure']) {
+      expect(byRuns([{ status: 'completed', conclusion, url: 'https://ci.test/runs/9' }])).toEqual({ state: 'deploy-failed', reason: `the Deploy run for the merge concluded ${conclusion}: https://ci.test/runs/9` });
+    }
+    // A rerun under way is a wait again, not a failure.
+    expect(byRuns([run('in_progress'), run('completed', 'failure')])?.state).toBe('not-yet-deployed');
+  });
+
+  it('judges a cancelled run superseded by a later run that contains the merge a wait, not a failed deploy', () => {
+    const merge = head();
+    git(scratch, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'a later merge');
+    const later = head();
+    const cancelled: DeployRun = { status: 'completed', conclusion: 'cancelled', url: 'https://ci.test/runs/3', createdAt: minutesAgo(4) };
+    const judge = (laterRuns: DeployRun[]) =>
+      classify({ deployed: null, sha: merge, mergedAt: minutesAgo(5), workflow: 'Deploy', runsFor: () => [cancelled], laterRuns: () => laterRuns, capMinutes: 180, repoRoot: scratch });
+    expect(judge([{ status: 'in_progress', conclusion: null, headSha: later, url: 'https://ci.test/runs/4', createdAt: minutesAgo(3) }])).toEqual({
+      state: 'not-yet-deployed',
+      reason: 'the Deploy run for the merge was cancelled and a later run that contains it is in_progress: https://ci.test/runs/4',
+    });
+    expect(judge([{ status: 'completed', conclusion: 'success', headSha: later, createdAt: minutesAgo(3) }])).toBeNull();
+    // A later run for a commit that does not contain the merge covers nothing: the cancelled run was the last word.
+    expect(judge([{ status: 'in_progress', conclusion: null, headSha: OTHER, createdAt: minutesAgo(3) }])?.state).toBe('deploy-failed');
+    expect(judge([])?.state).toBe('deploy-failed');
+  });
+
+  it('treats a failed deploy as wrong: pauses the line and files an incident, and a later green run walks it', async () => {
+    status = 200;
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    const answers = join(scratch, 'deploy-failed-answers');
+    mkdirSync(answers, { recursive: true });
+    writeFileSync(join(answers, 'walk.json'), JSON.stringify({ entries: [{ itemId: 'pull-request:140', rung: 'look', verdict: 'present', reason: 'The change is there.' }] }));
+    const filed: string[] = [];
+    const repair: typeof handleIncident = async (_ctx, options) => {
+      filed.push(`${options.entry.verdict}: ${options.entry.reason}`);
+      options.onDiagnosed?.('in-repository');
+      return { issue: 41, created: true, fix: null, diagnosis: null, cause: 'in-repository' };
+    };
+    let runs: DeployRun[] = [{ status: 'completed', conclusion: 'failure', url: 'https://ci.test/runs/7' }];
+    const f = floorFor('deploy-failed', { deployWorkflow: 'Deploy' }, { forge: false, walkerAnswer: join(answers, 'walk.json'), deployRuns: () => runs, repair });
+    f.floor.put({ issue: 14, title: 'fix: a broken bundle', pr: 140, sha: OTHER, mergedAt: minutesAgo(10), paths: ['src/c.ts'] });
+    const walk = await f.floor.walkOnce();
+    expect(walk?.wrong).toBe(true);
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'deploy-failed', reason: 'the Deploy run for the merge concluded failure: https://ci.test/runs/7' });
+    expect(filed).toEqual(['deploy-failed: the Deploy run for the merge concluded failure: https://ci.test/runs/7']);
+    expect(f.line()).toStartWith(`pause\n${floorReason('in-repository', 'pull-request:140 is deploy-failed')}`);
+    expect(f.calls('on-walk-fail')).toBe(1);
+    runs = [{ status: 'completed', conclusion: 'success' }, ...runs];
+    await f.floor.walkOnce();
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:140', verdict: 'present' });
+    expect(f.line()).toBe('go\n');
+  });
+
+  it('takes the owner of a repaired item from the tracker as it reads after the repair', async () => {
+    status = 200;
+    git(scratch, 'update-ref', 'refs/remotes/origin/main', head());
+    let incident: IncidentState = null;
+    const repair: typeof handleIncident = async (_ctx, options) => {
+      options.onDiagnosed?.('in-repository');
+      // The tracker after the repair: the incident is open and back with the pipeline.
+      incident = { number: 51, withAPerson: false };
+      return { issue: 51, created: true, fix: null, diagnosis: null, cause: 'in-repository' };
+    };
+    const runs: DeployRun[] = [{ status: 'completed', conclusion: 'failure', url: 'https://ci.test/runs/8' }];
+    const f = floorFor('repair-owner', { deployWorkflow: 'Deploy' }, { forge: false, deployRuns: () => runs, repair, readIncident: () => incident ?? null });
+    f.floor.put({ issue: 15, title: 'fix: another bundle', pr: 150, sha: OTHER, mergedAt: minutesAgo(10), paths: ['src/d.ts'] });
+    await f.floor.walkOnce();
+    expect(readLedger(f.dir).at(-1)).toMatchObject({ itemId: 'pull-request:150', verdict: 'deploy-failed' });
+    expect(f.floor.owed('all').map((item) => item.id)).toEqual(['pull-request:150']);
+    expect(f.readouts.at(-1)).not.toContain('incident #51 is parked for you');
+  });
+
+  it('refuses an empty workflow name, and accepts graceMinutes', () => {
+    const { faults } = resolveFloor({ environment: { kind: 'web', baseUrl: 'https://x.test', deployWorkflow: ' ', graceMinutes: 15 } });
+    expect(faults).toEqual(['floor.environment.deployWorkflow must be a workflow name or file']);
+  });
+
+  it('says once at start that graceMinutes decides nothing, and when no merge can be shown deployed', () => {
+    const f = floorFor('deploy-notes', { graceMinutes: 15 });
+    const logs: string[] = [];
+    new Floor({ ...(f.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o, log: (m) => logs.push(m) });
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toContain('graceMinutes no longer decides anything');
+    expect(logs[0]).toContain('set revisionCommand or deployWorkflow');
+    expect(logs[1]).toContain('no merge can be shown deployed: every merge will read deploy-unconfirmed after 180 minutes');
+    const quiet: string[] = [];
+    const g = floorFor('deploy-notes-quiet', { deployWorkflow: 'Deploy' });
+    new Floor({ ...(g.floor as unknown as { o: ConstructorParameters<typeof Floor>[0] }).o, log: (m) => quiet.push(m) });
+    expect(quiet).toEqual([]);
   });
 });

@@ -27,15 +27,19 @@ export type Rung = (typeof RUNGS)[number];
 /** Rungs an agent may report; the other two belong to the driver. */
 export const AGENT_RUNGS: ReadonlySet<Rung> = new Set<Rung>(['look', 'exercise', 'fallback', 'exists-in-git']);
 
-export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'unverified'] as const;
+/** `unverified` is kept only so ledgers that carry it still read; classification never assigns it. */
+export const VERDICTS = ['present', 'intact', 'not-checkable', 'absent', 'down', 'not-yet-deployed', 'deploy-unconfirmed', 'deploy-failed', 'unverified', 'owed-by-sibling'] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 /** Verdicts that retire an item. Everything else leaves it on the walk list. */
 export const TERMINAL: ReadonlySet<Verdict> = new Set<Verdict>(['present', 'intact', 'not-checkable']);
-/** Verdicts the agent may write. The pending ones are the driver's to assign. */
-export const AGENT_VERDICTS: ReadonlySet<Verdict> = new Set<Verdict>(['present', 'intact', 'not-checkable', 'absent']);
-/** Verdicts that mean the environment is wrong and an incident is owed. */
-export const REPAIR: ReadonlySet<Verdict> = new Set<Verdict>(['absent', 'down']);
+/**
+ * Verdicts the agent may write. The pending ones are the driver's to assign, but for
+ * `owed-by-sibling`, which the driver keeps only when it names an open sibling under the trunk.
+ */
+export const AGENT_VERDICTS: ReadonlySet<Verdict> = new Set<Verdict>(['present', 'intact', 'not-checkable', 'absent', 'owed-by-sibling']);
+/** Verdicts that mean the environment is wrong and an incident is owed; a failed deploy is one. */
+export const REPAIR: ReadonlySet<Verdict> = new Set<Verdict>(['absent', 'down', 'deploy-failed']);
 
 export type LedgerEntry = {
   itemId: string;
@@ -45,6 +49,8 @@ export type LedgerEntry = {
   verdict: Verdict;
   reason: string;
   evidence?: string;
+  /** For `owed-by-sibling`: the open sibling issue that owns the missing effect. */
+  sibling?: number;
   /** Recorded inside a quiet window, so nothing was paused or run for it. */
   quiet?: true;
 };

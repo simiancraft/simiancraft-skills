@@ -56,7 +56,7 @@ function laneOf(outcome: string): string | null {
   // A first carving the knife judged one piece is worked whole; `nothing-left` released the issue
   // to the appraiser as `exhausted`. Only a revisit's opinions still take `needs-human`.
   if (outcome === 'work-whole') return 'B1';
-  if (outcome === 'indivisible' || outcome === 'nothing-left' || outcome === 'small-enough') return 'H2';
+  if (outcome === 'indivisible' || outcome === 'nothing-left' || outcome === 'small-enough' || outcome === 'held') return 'H2';
   if (outcome === 'dlq') return 'Q2';
   return null;
 }

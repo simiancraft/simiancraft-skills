@@ -80,7 +80,7 @@ repository-shaped, can be set in the repository's `burn-down-github-issues.confi
 | `autoMerge` | `code-only` | Merge code; park anything touching data, a migration, a stored string, or CI |
 | `maxReviewRounds` | 3 | Review rounds an issue gets, ever, before the DLQ |
 | `limit` | 5 | Issues per run |
-| `concurrency` | 2 | Issues worked at once, one worktree each |
+| `concurrency` | 2 | Issues worked at once, one worktree each; `--concurrency <n>` overrides it for one run |
 | `appraiserConcurrency` | 3 | Appraisers at once; no worktree, so they are cheap |
 | `appraiseLimit` | 12 | Issues appraised per run |
 
@@ -159,15 +159,19 @@ never the run its state.
 
 A file switch, `<worktreeRoot>/runs/line-switch`, stops the loop at its seams; `operating.md`,
 "When the line is paused", lists them once. The pull master's seam, before every merge, is the
-fix pipeline's `mayMerge` hook, which the loop answers by waiting until the switch says go; nothing in the pipeline knows a switch exists. The seam holds rather
+fix pipeline's `mayMerge` hook, which the loop answers by waiting until the switch says go; nothing in the pipeline knows a switch exists. The pipeline's one other tie to the line is its `onHostFault` hook, which the loop answers by writing a `host:` pause when a seat fails on a full disk or exhausted memory, and by taking that issue up again once the line is resumed. The seam holds rather
 than parks, because a pause is temporary and a parked pull request needs a human.
 
 The floor runs inside the loop's process, so the switch is its whole interlock with the merge
 queue and nothing has to parse a ledger to flip it. Every merge goes up onto the floor through the
 pipeline's `afterMerge` hook; a walk of the deployed base that finds something wrong pauses the line
 before it files an incident, and releases its own pause once nothing on the floor is wrong. The
+pause names the cause the diagnosis found: a repair holds every seam, and an outage whose remedy is
+outside the repository holds only the merge, so the lanes keep working and their merges stack. The
 incident's fix is the one merge a paused line must not hold, so the floor fixes it under the
-loop's context without the `mayMerge` gate. A passing walk is the statechart's `WALKED` event: the
+loop's context without the `mayMerge` gate. A fix that undoes a recently merged pull request still
+parks at the merge boundary, whatever `autoMerge` says, through the pipeline's `holdAtBoundary`
+hook, and a person lands it; a forward repair lands. A passing walk is the statechart's `WALKED` event: the
 card moves from Merged to Verified on the floor.
 
 A run is done when its merges are verified, not when they land. They reach the floor seconds
@@ -188,7 +192,8 @@ only selection of the unsized window and the board lines.
 The scale is whatever the config's `sizingScale` names (a wiki page, a doc in the repository),
 carried on issues by the `size: N` labels. An issue sized above the band, whether by the appraiser
 or already on the tracker, is the knife's (see "Carving and revisits"); an unsized issue is sized
-by the appraiser, which runs as its own cheap population ahead of the workers.
+by the appraiser, which runs as its own cheap population beside the workers: a card is worked only
+once it is sized, and a card already Ready does not wait for the Inbox to be sized.
 
 Where the issue prescribes a remedy that contradicts a written convention (the files
 `conventionDocs` names, or what the surrounding code plainly does), the convention wins and the work continues:
@@ -237,7 +242,11 @@ itself idle: the base is fetched, the backlog placed again (which refreshes the 
 the knife carved meanwhile are in it), unsized cards in the window are appraised under
 `appraise.lock`, and the Ready cards not yet handed to a worker this run join the pool. So a
 dependent whose blocker this run merged, a child carved mid-run, and a trunk's released remainder
-are worked in the run that made them eligible. Every admission counts against `--limit` and every
+are worked in the run that made them eligible. The pool's first queue holds the resumes ahead of
+the Ready cards: pull requests a dead run stranded in a lane here, then the loop's own pull requests
+with no driver. Each holds one of `concurrency`'s slots while it waits on its checks, so a slow
+resume costs one slot rather than every Ready card's start; a lane cut meanwhile catches up with
+the base the resume's merge moves at its own seams. Every admission counts against `--limit` and every
 appraisal against `--appraise-limit`; an issue is handed to a worker at most once per run, so a lane
 that settles without closing its issue (a busy claim, a failed worker) is not retried until the next
 run. A stopping run admits nothing. Changes made outside the run (a person's close, a hold removed,
@@ -246,10 +255,19 @@ another run's claim released) are seen by the next refill only if this run is st
 A trunk's leaves are worked in the order its newest carving record gives, grouped together at the
 position the trunk's newest leaf would have had; the rest of the backlog stays newest-first.
 
-Reconciliation closes an open, sized leaf a merged pull request names with a closing keyword
-(`fixes #12` at the start of a line or a sentence; a sentence starting with "not" does not count).
-It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it re-reads
-the issue immediately before closing.
+Reconciliation records the merge of an open, sized leaf a merged pull request resolves: one that
+names it with a closing keyword (`fixes #12` at the start of a line or a sentence; a sentence
+starting with "not" does not count), or one the loop opened on a coder's branch that names it
+(`fix/...-12`) whose body references it (`Refs #12`), since the loop's own pull requests reference
+their issue with `Refs` and never a closing keyword. A branch name alone resolves nothing.
+The merge is recorded as the landing records its own (`recordMerge` in the fix skill's
+`lib/record-merge.ts`): the card to Merged, the merge onto the floor, and the issue closed with a
+pointer. It never closes a trunk, a paused issue, a claimed issue, or a blocked one, and it
+re-reads the issue immediately before closing. A held issue is closed only by the loop's own pull
+request, merged by hand while the loop held it, and only when every hold it carries is the loop's
+(`needs-human`, `needs-decision`, `loop/parked`, or a dead letter): those come off once the merge
+is recorded, and the log says so. A person's own hold (`loop/skip`, a configured skip label) keeps
+the issue as it is.
 
 ## Carving and revisits
 
@@ -270,13 +288,18 @@ that answers `exhausted` releases the trunk (`loop/released`), and the loop runs
 appraisal under its own claim: the appraiser sizes the remainder with the closed children in view,
 a small remainder becomes a leaf, an oversized one is carved again in process.
 
-At the start of every run, after stranded pull requests are resumed, the sweep reads the open
+At the start of every run, beside the first lanes, the sweep reads the open
 backlog three times: first every issue carrying a trunk, claim, or pause label (finish an
 unfinished announcement, clear a claim whose run died, remove a torn pause, redrive a trunk whose
 hold a person removed, revisit a trunk whose fingerprint moved); second every unlabelled issue that
 is oversized inside the window or has an open child at any age; third every leaf whose blocker is
 closed not planned or gone (its open parent is revisited, else it goes to a person) and every pause
-a closed trunk left behind. `--only` restricts all three passes.
+a closed trunk left behind. `--only` restricts all three passes. The issues the first lanes and
+resumes took are left out of it, since their lanes own them, and the sizing stage runs after it.
+The first lanes are selected from the placement made before the sweep: a Ready card has been
+judged, and each lane reads its issue again through the live gate before it claims, so a close or
+a hold made outside the loop is still seen. The refill is not asked until the sweep and the sizing
+stage settle; then the children they carved and sized join the pool.
 
 ## The pool
 

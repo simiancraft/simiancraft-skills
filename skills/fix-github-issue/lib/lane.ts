@@ -6,19 +6,32 @@
  * it. The main checkout is never one.
  */
 
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Context } from './context.ts';
-import { CONTROL_FILES } from './control-files.ts';
+import { CONTROL_FILES, inLaneScratch } from './control-files.ts';
+import { trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { acquirePidLock } from './pid-lock.ts';
-import { sh } from './shell.ts';
+import { isStopping, RunStopping, sh } from './shell.ts';
+import { loopHoldStands, standingStop } from './stop-record.ts';
 
-/** Porcelain status of a worktree, minus the loop's own control files. */
+/** Porcelain status of a worktree, minus the loop's own control files and a seat's untracked in-lane scratch. */
 export function dirtyPaths(ctx: Context, cwd: string): string[] {
   return sh(ctx, ['git', 'status', '--porcelain'], cwd)
     .split('\n')
     .filter(Boolean)
-    .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()));
+    .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()) && !inLaneScratch(line));
+}
+
+/**
+ * Keeps a commit under a ref of its own, `refs/loop/rescued/issue-<n>/<sha12>`, in the repository
+ * every worktree shares, and returns the ref. One ref per rescue, named for the commit it saves, so a
+ * later rescue on the same issue never takes an earlier one's name and leaves its history unreachable.
+ */
+export function rescueRef(ctx: Context, issue: number, sha: string, cwd: string): string {
+  const ref = `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`;
+  sh(ctx, ['git', 'update-ref', ref, sha], cwd);
+  return ref;
 }
 
 /**
@@ -36,8 +49,7 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
     // A lane kept from an earlier, stopped run can hold commits that run never pushed; the reset
     // below discards this attempt's work, never theirs, so they keep a ref of their own.
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], cwd)) > 0) {
-      const sha = sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd);
-      sh(ctx, ['git', 'update-ref', `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`, sha], cwd);
+      rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], cwd), cwd);
     }
     sh(ctx, ['git', 'fetch', remote, base]);
     sh(ctx, ['git', 'checkout', '--detach', `${remote}/${base}`], cwd);
@@ -45,6 +57,8 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
     // Ignored files go too, so a half-written artifact cannot be read as this attempt's, but the
     // installed dependencies stay: reinstalling them is minutes of nothing.
     sh(ctx, ['git', 'clean', '-fdx', '-e', 'node_modules'], cwd);
+    // The clean took the lane files with the rest of the ignored files.
+    copyLaneFiles(ctx, issue, cwd);
     if (branch && branch !== 'HEAD') {
       try {
         sh(ctx, ['git', 'branch', '-D', branch], cwd);
@@ -57,21 +71,73 @@ export function resetLane(ctx: Context, issue: number, cwd: string): void {
   }
 }
 
-export function worktreeFor(ctx: Context, issue: number): string {
+/**
+ * A seat's scratch directory, outside its lane: `<runDir>/scratch/issue-<n>/<role>`. Its prompt names
+ * it as `SCRATCH_DIR`, and receipts, logs, and drafts go there, never into the worktree, where an
+ * untracked file reads as uncommitted work and the review gate refuses the lane. One directory per
+ * issue and seat, kept across the lane's attempts and removed when the lane retires (`retireLane`);
+ * a lane kept for a person keeps its scratch.
+ */
+export function seatScratch(ctx: Context, issue: number, role: string): string {
+  const dir = join(ctx.runDir, 'scratch', `issue-${issue}`, role);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * `heldLane` answers whether a dirty lane is one the loop's own hold for a person kept: its
+ * uncommitted work is this issue's own, left by the seat that asked for the person, and the pickup
+ * after the hold is lifted continues on it. Asked only of a dirty lane.
+ */
+export function worktreeFor(ctx: Context, issue: number, heldLane?: () => boolean): string {
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (existsSync(dir)) {
     // Reconcile leaves a dirty no-PR worktree in place for inspection; handing it to a fresh
-    // worker would make the new fix inherit another run's uncommitted state.
+    // worker would make the new fix inherit another run's uncommitted state. A hold's lane is the
+    // exception: that state is this issue's own, kept for the pickup.
     if (dirtyPaths(ctx, dir).length > 0) {
-      throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
+      if (!heldLane?.()) throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
+      ctx.log(`#${issue}  continuing on the lane the loop's hold kept, with its uncommitted work`);
     }
+    copyLaneFiles(ctx, issue, dir);
     return dir;
   }
 
   mkdirSync(dirname(dir), { recursive: true });
   sh(ctx, ['git', 'fetch', ctx.project.remote, ctx.project.baseBranch]);
   sh(ctx, ['git', 'worktree', 'add', '--detach', dir, `${ctx.project.remote}/${ctx.project.baseBranch}`]);
+  copyLaneFiles(ctx, issue, dir);
   return dir;
+}
+
+/**
+ * Copies `project.laneFiles` from the main checkout into a lane, overwriting what the lane holds,
+ * so every seat finds them without running a command for it. A lane is a fresh worktree and never
+ * sees an untracked file such as shared test credentials otherwise.
+ *
+ * Only a path the lane's git ignores is copied: an untracked file git does not ignore would make
+ * the lane dirty and could be committed with the fix. A missing source, a path that is not
+ * ignored, or a failed copy is logged and skipped; the lane is still made.
+ */
+export function copyLaneFiles(ctx: Context, issue: number, dir: string): void {
+  for (const path of ctx.project.laneFiles ?? []) {
+    const source = resolve(ctx.repoRoot, path);
+    if (!existsSync(source)) {
+      ctx.log(`  #${issue}  lane file ${path} is not in ${ctx.repoRoot}; the lane goes without it`);
+      continue;
+    }
+    if (Bun.spawnSync(['git', 'check-ignore', '-q', path], { cwd: dir }).exitCode !== 0) {
+      ctx.log(`  #${issue}  lane file ${path} is not ignored by git in the lane; not copied, since it could be committed`);
+      continue;
+    }
+    try {
+      const target = resolve(dir, path);
+      mkdirSync(dirname(target), { recursive: true });
+      cpSync(source, target, { recursive: true, force: true });
+    } catch (error) {
+      ctx.log(`  #${issue}  could not copy lane file ${path}: ${(error as Error).message}`);
+    }
+  }
 }
 
 /*
@@ -91,10 +157,14 @@ export function worktreeFor(ctx: Context, issue: number): string {
  * the pushes that follow reach the same remote branch, and it is reset to the remote head so the
  * lane holds exactly what the pull request holds.
  */
-export function worktreeAtPullRequest(ctx: Context, issue: number, branch: string): string {
+export function worktreeAtPullRequest(ctx: Context, issue: number, branch: string, heldLane?: () => boolean): string {
   const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
   if (existsSync(dir)) {
-    if (dirtyPaths(ctx, dir).length > 0) {
+    // A dirty lane is refused, unless the loop's hold kept it on this pull request's branch: then
+    // it is this issue's own work, and the pickup continues on it as it stands (`worktreeFor`).
+    const dirty = dirtyPaths(ctx, dir).length > 0;
+    const kept = dirty && heldLane?.() === true && sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir) === branch;
+    if (dirty && !kept) {
       throw new Error(`worktree for #${issue} is dirty from an earlier run; inspect or remove ${dir}`);
     }
     // A run stopped mid-revision can leave commits here that never reached the remote; the reset
@@ -103,9 +173,7 @@ export function worktreeAtPullRequest(ctx: Context, issue: number, branch: strin
     if (Number(sh(ctx, ['git', 'rev-list', '--count', 'HEAD', '--not', '--remotes'], dir)) > 0) {
       const head = sh(ctx, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], dir);
       if (head !== branch) {
-        const sha = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
-        const rescued = `refs/loop/rescued/issue-${issue}/${sha.slice(0, 12)}`;
-        sh(ctx, ['git', 'update-ref', rescued, sha], dir);
+        const rescued = rescueRef(ctx, issue, sh(ctx, ['git', 'rev-parse', 'HEAD'], dir), dir);
         throw new Error(`worktree for #${issue} holds commits no remote has, on ${head} rather than ${branch}; saved as ${rescued}, inspect or remove ${dir}`);
       }
       try {
@@ -115,12 +183,18 @@ export function worktreeAtPullRequest(ctx: Context, issue: number, branch: strin
         throw new Error(`worktree for #${issue} holds commits no remote has and ${branch} would not take them (${(error as Error).message.split('\n')[0]}); inspect or remove ${dir}`);
       }
     }
+    if (kept) {
+      ctx.log(`#${issue}  continuing on the lane the loop's hold kept, with its uncommitted work`);
+      copyLaneFiles(ctx, issue, dir);
+      return dir;
+    }
     removeWorktree(ctx, issue);
   }
   mkdirSync(dirname(dir), { recursive: true });
   sh(ctx, ['git', 'fetch', ctx.project.remote, `${branch}:refs/remotes/${ctx.project.remote}/${branch}`]);
   sh(ctx, ['git', 'worktree', 'add', '-B', branch, dir, `${ctx.project.remote}/${branch}`]);
   sh(ctx, ['git', 'branch', `--set-upstream-to=${ctx.project.remote}/${branch}`, branch], dir);
+  copyLaneFiles(ctx, issue, dir);
   return dir;
 }
 
@@ -227,4 +301,73 @@ export function assertNotMainCheckout(ctx: Context, cwd: string, role: string): 
   if (resolve(cwd) === resolve(ctx.repoRoot)) {
     throw new Error(`refusing to run ${role} in the main checkout (${ctx.repoRoot}); it must run in a worktree`);
   }
+}
+
+/**
+ * Whether the issue's lane is one the loop's own hold for a person kept: the newest stop on its
+ * thread is that hold (a held proof, or an outside stop that waits on a person), and a hold retires
+ * its lane like any exit, which keeps a lane holding the seat's uncommitted work. That work is the
+ * issue's own, and the pickup after the hold continues on it rather than dead-lettering it. A thread
+ * that cannot be read is not that knowledge.
+ */
+export function heldLane(ctx: Context, issue: number): boolean {
+  try {
+    return loopHoldStands(standingStop(trackerIo(ctx).view(issue)?.comments ?? [], ctx.botLogin));
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return false;
+  }
+}
+
+/**
+ * `held-at-head`: a lane at the pull request's head whose uncommitted work the loop's own hold for a
+ * person kept (`heldLane`); it is the issue's own, and the pickup continues on it.
+ */
+export type LaneJudgement =
+  | { kind: 'no-lane' | 'clean-at-head' | 'held-at-head' }
+  | { kind: 'dirty' | 'off-head'; reason: string }
+  | { kind: 'unreadable'; reason: string };
+
+/**
+ * What a lane directory holds of its own, before anything is asked of the tracker's pull request:
+ * nothing uncommitted, uncommitted work the loop's hold kept (`heldLane`), or uncommitted work. A
+ * status that cannot be read is the last: the lane could not be shown clean.
+ */
+export type LocalJudgement = { kind: 'clean' } | { kind: 'held' } | { kind: 'dirty'; reason: string };
+
+export function judgeLocal(ctx: Context, issue: number, dir: string): LocalJudgement {
+  let dirty: string[];
+  try {
+    dirty = dirtyPaths(ctx, dir);
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: git status --porcelain failed (${(error as Error).message})` };
+  }
+  if (dirty.length === 0) return { kind: 'clean' };
+  if (heldLane(ctx, issue)) return { kind: 'held' };
+  return { kind: 'dirty', reason: `Lane ${dir} holds uncommitted work: ${dirty.join(', ')}` };
+}
+
+/** Judge local work before asking the tracker, without publishing or changing the lane. */
+export function judgeLane(ctx: Context, issue: number, readHead: () => string): LaneJudgement {
+  const dir = resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue}`);
+  if (!existsSync(dir)) return { kind: 'no-lane' };
+  const local = judgeLocal(ctx, issue, dir);
+  if (local.kind === 'dirty') return local;
+  let head: string;
+  try {
+    head = sh(ctx, ['git', 'rev-parse', 'HEAD'], dir);
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'dirty', reason: `Lane ${dir} could not be shown clean: git rev-parse HEAD failed (${(error as Error).message})` };
+  }
+  let remoteHead: string;
+  try {
+    remoteHead = readHead();
+  } catch (error) {
+    if (error instanceof RunStopping || isStopping()) throw error;
+    return { kind: 'unreadable', reason: `Pull request head could not be read: ${(error as Error).message}` };
+  }
+  if (head !== remoteHead) return { kind: 'off-head', reason: `Lane ${dir} HEAD ${head} differs from pull request head ${remoteHead}. A person inspects the lane before continuing.` };
+  return { kind: local.kind === 'held' ? 'held-at-head' : 'clean-at-head' };
 }

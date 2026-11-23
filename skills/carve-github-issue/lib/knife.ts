@@ -13,10 +13,11 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { logTail, readResult, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
+import { logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent } from '../../fix-github-issue/lib/agent.ts';
 import { CARVING_FILE, CONFIRMATION_FILE, LAST_MESSAGE_FILE } from '../../fix-github-issue/lib/control-files.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { assertDistinctEngines } from '../../fix-github-issue/lib/engines.ts';
+import { environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { carveCount, clearCarves, closeIssue, dlqLabel, ensureLabel, isDlqLabel, HOLD_LABELS, loopLabels, recordCarve, WORK_WHOLE } from '../../fix-github-issue/lib/labels.ts';
 import { isStopping, RunStopping, sh } from '../../fix-github-issue/lib/shell.ts';
 import { claimLock } from '../../fix-github-issue/lib/lane.ts';
@@ -796,7 +797,10 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
     TRIGGER: trigger,
     CHILDREN: describeChildren(tree),
     ANCESTORS: tree.ancestors.length ? `Ancestors: ${tree.ancestors.map((a) => `#${a.number}`).join(', ')}; read each one's newest carving record.` : 'It has no parent.',
-    PREVIOUS_LEDGER: ledger ? `The previous ledger, statuses re-derived from the tree:\n\n\`\`\`json\n${JSON.stringify(ledger, null, 2)}\n\`\`\`` : 'There is no previous carving of this issue.',
+    PREVIOUS_LEDGER: ledger
+      ? `The previous ledger, from the newest live record, statuses re-derived from the tree. A \`withdrawn\` row still stands on the edit it cites; carry it as it is.\n\n\`\`\`json\n${JSON.stringify(ledger, null, 2)}\n\`\`\``
+      : 'There is no previous carving of this issue.',
+    BODY_HASH: tree.issue.bodyHash,
     FEEDBACK: feedback ? `## The confirmer's case against your last answer\n\nAnswer it in this round, or change your cut.\n\n${feedback}` : '',
     SEAMS_PATH,
     CARVING_FILE,
@@ -804,13 +808,14 @@ async function runCarver(k: Knife, tree: Tree, mode: 'carve' | 'revisit', ledger
   const prompt = renderPrompt(k.ctx, mode === 'carve' ? 'carve.md' : 'revisit.md', vars);
   let turnPrompt = prompt;
   for (let repair = 0; ; repair++) {
-    const run = await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, turnPrompt);
+    // A carver that ended on an environment fault throws, for carveIssue to settle without a count.
+    const run = refuseEnvironmentFault(await runAgent(k.ctx, 'carver', k.trunk, cwd, k.knobs.seats.carver, turnPrompt), 'carver', k.trunk);
     // A dry run rehearses everything up to the first seat it does not run; that is not a failed turn.
     if (run.notRun) return { ok: false, why: 'dry run: the carver was not run', logPath: null, notRun: true };
     if (run.exitCode !== 0) return { ok: false, why: `carver exited ${run.exitCode}`, logPath: run.logPath };
     const raw = readResult<unknown>(cwd, CARVING_FILE);
     if (raw === null && k.ctx.dryRun) return { ok: false, why: 'dry run; no carver ran', logPath: null };
-    const checked = validateCarving(raw, { mode, knobs: k.knobs, tree, scale: k.ctx.knobs.pointScale });
+    const checked = validateCarving(raw, { mode, knobs: k.knobs, tree, scale: k.ctx.knobs.pointScale, previousLedger: ledger });
     if (!checked.ok) {
       if (repair === 1) return { ok: false, why: `carver's answer is invalid: ${checked.faults.join('; ')}`, logPath: run.logPath };
       turnPrompt = prompt + repairPrompt(cwd, CARVING_FILE, raw, checked.faults);
@@ -835,6 +840,7 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
     MAX_ROUNDS: String(k.knobs.maxCarveRounds),
     CHILDREN: describeChildren(tree),
     PREVIOUS_LEDGER: ledger ? `\`\`\`json\n${JSON.stringify(ledger)}\n\`\`\`` : 'none',
+    BODY_HASH: tree.issue.bodyHash,
     CARVING: JSON.stringify(chosen, null, 2),
     CARVER_REPLY: reply ? `The carver's reply to your last case:\n\n${reply}` : '',
     SEAMS_PATH,
@@ -842,7 +848,7 @@ async function runConfirmer(k: Knife, tree: Tree, mode: 'carve' | 'revisit', car
   });
   let turnPrompt = prompt;
   for (let repair = 0; ; repair++) {
-    const run = await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, turnPrompt);
+    const run = refuseEnvironmentFault(await runAgent(k.ctx, 'confirmer', k.trunk, cwd, k.knobs.seats.confirmer, turnPrompt), 'confirmer', k.trunk);
     if (run.notRun) return { ok: false, why: 'dry run: the confirmer was not run', logPath: null, notRun: true };
     if (run.exitCode !== 0) return { ok: false, why: `confirmer exited ${run.exitCode}`, logPath: run.logPath };
     const raw = readResult<unknown>(cwd, CONFIRMATION_FILE);
@@ -903,6 +909,7 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
     unlock();
     return { outcome: 'left-alone', reason: `#${issue.number} is ${tree.issue.state.toLowerCase()}` };
   }
+  rememberFaultMarkers(ctx, issue.number, tree.issue.labels);
   const journalPath = ctx.dryRun || ctx.io ? null : join(ctx.runDir, `carve-${issue.number}-gen${tree.generation}.json`);
   // Reading the journal and taking the claim can both throw; the local lock must not outlive them,
   // or every later visit in this process reads its own live pid and calls the issue busy.
@@ -941,14 +948,25 @@ export async function carveIssue(ctx: Context, issue: Issue, knobs: CarveKnobs, 
       // is cleared below, and the driver would place a card that is no longer this run's to place.
       return { outcome: 'lease-lost', reason: error instanceof LeaseLostError ? 'this run lost its lease on the issue' : `this run lost its lease on the issue, and then threw: ${(error as Error).message.split('\n')[0]}` };
     }
+    let held: string | null = null;
     try {
-      await countFailure(k, readTree(ctx, issue.number, io), `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
+      // An environment fault (a full disk, no memory, a person's stop) is not a failed carve: the
+      // trunk was not judged, nothing is counted, and the next visit carves it again. Only the same
+      // host fault again on that rerun is charged, as the failed turn it then is.
+      const fault = environmentFaultOf(error);
+      const fresh = readTree(ctx, issue.number, io);
+      const settled = fault ? settleOutsideStop(ctx, { number: issue.number, labels: fresh.issue.labels }, { fault }, 'the carve', say) : null;
+      if (!settled) await countFailure(k, fresh, `the knife threw: ${(error as Error).message.split('\n')[0]}`, null);
+      else if (settled.charged) await countFailure(k, fresh, settled.reason, null);
+      else if (settled.held) held = settled.reason;
     } catch (second) {
       say(`could not count the failed carve: ${(second as Error).message.split('\n')[0]}`);
     }
     // The count can await a callback, and the lease can run out under it; asked once more before
     // the cleanup clears the mark, so the driver is not told to place a card it no longer holds.
     if (leaseLost(ctx, issue.number)) return { outcome: 'lease-lost', reason: `this run lost its lease on the issue while settling a throw: ${(error as Error).message.split('\n')[0]}` };
+    // A hold is the settlement, not a throw the driver must place from the tracker.
+    if (held) return { outcome: 'held', reason: held };
     throw error;
   } finally {
     stopRenewing();
@@ -1018,7 +1036,8 @@ async function drive(k: Knife, first: Tree): Promise<CarveOutcome> {
   const guardMode: GuardMode = mode === 'revisit' ? 'revisit' : openChildren ? 'carve-with-open-children' : 'first-carving';
   shadowPreCarveGuard(k, tree, guardMode, 'dispatch');
 
-  // 5. The carver and the confirmer, for at most maxCarveRounds pairs.
+  // 5. The carver and the confirmer, for at most maxCarveRounds pairs. The ledger they start from
+  // is the newest live record's, re-derived from the tree, so a withdrawal it recorded stands.
   const previousLedger = record ? buildLedger(record.ledger, carryIds(record.ledger, record.ledger), record, tree) : null;
   const before = fingerprint(tree, k.ctx.botLogin);
   let feedback: string | null = null;

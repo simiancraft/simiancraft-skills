@@ -92,7 +92,11 @@ The counters worth watching, and what a stall in each means:
 | `weighing the question on a panel of A, B, C` | a seat raised `needs-decision` and three frontier models are each answering it; their reviews land on the issue one by one |
 | `panel: N of M decided; proceed` or `; hold` | the panel's receipt is on the issue: `proceed` sends the card back to be appraised with the decisions as its ruling, `hold` parks it with what is still open |
 | `no decision panel (<why>); held for a person` | fewer than three distinct models are reachable, or the issue spent its panels; the hold is applied as before |
-| `label #N needs-decision` or `needs-human` | handed off before any pull request; the reason is a comment on the issue, and the label keeps it out of selection until removed |
+| `label #N needs-decision` or `needs-human` | handed off; the reason is a comment on the issue, and the label keeps it out of selection until removed. A `needs-decision` closes any pull request the work had; a coder's `needs-human` on a pull request keeps it open as a draft that carries `needs-human` too, and lifting the issue's label continues it |
+| `the prover needs a person; PR #N stays open` | the code is pushed but its proof needs access an agent lacks (shared test credentials, for one): the issue and the pull request both carry `needs-human`, and the pull request stays open. Removing the issue's label is the whole pickup: the next run proves the same pull request again (or `fix.ts --issue N --redrive` does it at once), and the pull request's label comes off with it. While `needs-human` is on the pull request it never merges |
+| `stuck check(s) on PR #N: <check> (<provider>, queued M minutes and never started)` | a check its provider queued and never started sat past `stuckCheckMinutes` (30 by default); the landing stops as an outside stop instead of waiting out `checksTimeoutMinutes`, and the next run tries again. Ask the provider why the check never started, or rerun it there |
+| `PR #N was merged at <sha> while its checks were waited on; recording the merge` | someone merged the pull request by hand during the checks wait; the issue is closed with a pointer and the merge goes onto the floor, as if the loop had merged it |
+| `..., 3 times in a row; it waits on a person instead of rerunning` | the same transport failure or stuck check stopped this issue on three runs in a row; it carries `needs-human` with the reason on the thread. Remove the label once the cause has passed, or `fix.ts --issue N --redrive` |
 | `to the <phase> DLQ` | a machine gave up: the worker past its attempts, the review budget spent, or a landing that could not complete; the issue carries `loop/dlq: <phase>` |
 
 **Reviews stuck at zero while workers finish is the signature of a gate refusing everything.** A
@@ -110,27 +114,44 @@ worker failed|reviewer wrote no verdict|exceeded [0-9]+ minutes|refusing to merg
 ## When the line is paused
 
 The line is the file switch `<worktreeRoot>/runs/line-switch`; this is the one list of where the
-running loop reads it, and the other references point here. A paused line holds:
+running loop reads it, and the other references point here. A person's pause, and a floor pause of
+any cause but `outside-repository`, hold every seam below. A floor pause for an outage
+(`floor:outside-repository:`) holds only the merge: appraisal and dispatch go on, and approved pull
+requests wait in the landing line until a walk finds the floor right (`floor.md`, "The line"). A
+paused line holds:
 
 - the appraisal stage, once, before it starts (the knife a size callback starts inside that stage
   runs under the same check, not one of its own);
 - every Ready card before its dispatch, and every pull request with no driver before its resume;
 - every merge, through the fix pipeline's `mayMerge` hook, which the loop answers by waiting for
-  `go`; a stranded pull request resumed at the run's start reaches it here too. The one exception
+  `go`; a stranded pull request resumed in the work pool reaches it here too. The one exception
   is a floor incident's fix, which passes a pause the floor wrote (it is the merge that clears it)
-  and still waits on a person's.
+  and still waits on a person's. One that undoes a recently merged pull request never lands
+  unattended: it parks at the merge boundary whatever `autoMerge` says, and a person lands it with
+  `fix.ts --land`. A forward repair lands as `autoMerge` allows.
 
-The start-of-run work before those seams is not held: the repair, the stranded-lane resume up to
-its merge, and the knife's sweep (its revisits and redrives included) run on a paused line. The
+The start-of-run work before those seams is not held: the repair and the knife's sweep (its
+revisits and redrives included) run on a paused line, and a stranded-lane resume runs up to its
+merge. The
 statechart guards the knife's dispatch and revisit with `lineActive` as well
 (`state-machine.md`); the loop does not yet hold there.
 
 A paused seam logs one line, `line is paused (<reason>); holding <where> until <path> says go`,
 and then nothing until it resumes. That silence is the point, not a hang. `cat` the switch file to
 see the state and the reason. A reason beginning `floor:` was written by the floor and names what
-it found wrong; the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
-more, and the floor releases its own pause once nothing on it is wrong. A reason without that
-prefix was written by a person, and only a person clears it:
+it found wrong, after the cause it knows (`floor:undiagnosed:`, `floor:cause-unknown:`,
+`floor:in-repository:`, or `floor:outside-repository:`; `floor.md`, "The line"); the ledger on `<worktreeRoot>/floor/` and the walk's readout in the driver log say
+more, and the floor releases its own pause once nothing on it is wrong. A reason beginning `host:`
+was written when a seat failed on the host (`ENOSPC` or `ENOMEM`): an environment fault, which
+judged nothing about the work. The lane counted nothing and wrote no hold or dead letter; its claim
+was released and its worktree cleared (unpushed commits are kept under `refs/loop/rescued/`), and
+the issue carries `loop/environment-fault: <code>@<seat>`. It replaces a floor pause, so an incident's fix
+is held too, but never a person's. Free the disk or the memory, then release it by hand; the run
+takes the issue up again once the line is resumed, and the next run does if this one has ended. If
+the same issue fails on the same code again before the seat that hit it finishes cleanly, the work itself is taken to be filling the disk or the
+memory, and that failure is counted as an ordinary one. When the pause itself cannot be written,
+the run stops as on a signal instead. Any other reason was written by a
+person, and only a person clears it, as they clear a `host:` one:
 `echo go > <worktreeRoot>/runs/line-switch`.
 
 ## What is not a bug
@@ -187,7 +208,11 @@ same board pointer `card.ts` reads, so a carve nobody dispatched from the loop i
 A failed turn is not lost work. An agent killed at its cap, and one that exited badly, are counted
 and written on the issue, and each says the same thing there: what the lane holds is not trusted, and
 anything already pushed survives. A stop and a lost lease write nothing on the issue at all, by
-design; their record is the kept lane and the log. In every one of the four cases, read the issue's
+design; their record is the kept lane and the log. To stop one seat's agent without stopping the
+run, `kill` its pid (SIGTERM, not `kill -9`): an environment fault, so the turn is not counted,
+nothing is held, the lane is cleared, and the next run reruns the work. To keep it from running
+again, add a hold label (`loop/parked` or `needs-human`) as well. A `kill -9` cannot be told from
+the kernel's out-of-memory kill and counts as a failed attempt. In every one of these cases, read the issue's
 pull requests before deciding what to do with the card: a redrive continues from the pushed head,
 while carving or re-working starts again from nothing. `gh pr list --search <issue>` answers that in
 one line.
@@ -197,6 +222,19 @@ issue's own branch when it has one, and otherwise the lane is kept, with any det
 under `refs/loop/rescued/issue-<n>/<sha>`, one ref per rescue, so nothing can make them unreachable. Neither the base branch nor
 another issue's branch is ever published by that cleanup. `git for-each-ref refs/loop/rescued/` lists what
 failed attempts left, and `git log <ref>` reads one; deleting a ref throws that attempt away.
+
+A lane with uncommitted work and no pull request is kept for inspection at the next start while its
+issue is open, and the issue gets a work dead letter. Once the issue is closed, nothing would ever
+come back for it, so `reconcile` commits the lane's working tree, untracked files included, onto its
+HEAD under the same `refs/loop/rescued/issue-<n>/<sha>`, removes the lane, and logs that ref once.
+A lane whose branch still has an open pull request, or whose work cannot be saved, is kept.
+A stranded lane that holds a proof beside uncommitted work, or one a driverless resume finds dirty
+or off its pull request's head, gets the same work dead letter instead of a resume; the resume
+judges the lane only once it holds the issue's claim. The exception is a lane the loop's own hold
+for a person kept (the newest stop on the thread is that hold): its uncommitted work is the issue's
+own, and the pickup continues on it. An untracked `.proof/` or `.proof-<name>/`
+in a lane is a seat's scratch, never uncommitted work; seats are given a scratch directory under
+the run directory (`scratch/issue-<n>/<seat>`) for it, removed when the lane retires and kept with a lane kept for a person.
 
 A stopped lane keeps its worktree deliberately, for `reconcile` to judge on the next start; that is
 what lets a stranded pull request resume. A lane waiting on checks stops waiting within a second.
@@ -237,7 +275,9 @@ is how a base branch gets broken.
 For a pull request the merge boundary parked (`autoMerge` declined an approved change), use
 `bun run <fix-skill-dir>/fix.ts --issue <n> --land`: it lifts only that park, re-proves and
 re-reviews the pull request, and lands it through the pull master with every other gate in force,
-recording the waiver on the pull request. It refuses a dead letter and every other kind of park;
+recording the waiver on the pull request. When the approval still stands on the pull request's head
+(nothing pushed since, the base needs no catch-up, and the checks are green by their newest run), it
+skips the draft, the proof, and the review, and lands at once; no new CI run starts. It refuses a dead letter and every other kind of park;
 for those, consider `--redrive`, which puts the issue back through the coder, the prover, the
 reviewer, and the pull master. Do it by hand only when the
 pipeline has already spent the issue's review budget, or when the objection is one no revision will

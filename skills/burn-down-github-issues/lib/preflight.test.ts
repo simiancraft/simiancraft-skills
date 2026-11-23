@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
+import { refillingPool } from '../../fix-github-issue/lib/pool.ts';
 import { reportPreflight } from './preflight.ts';
 
 function fixture(protection: string[] | Error, requiredChecks: string[] = [], checks = 'required') {
@@ -73,7 +74,7 @@ async function dryRunMain(f: ReturnType<typeof fixture>, backlog: unknown[]) {
   const seat = (engine: string) => ({ engine });
   const deps = {
     CLOSURE_PROBE: null, teeConsole: noop, join, RUN_DIR: '.', step: noop,
-    PROJECT: { name: 'fixture' }, BASE: 'release', CONFIG: { concurrency: 1 },
+    PROJECT: { name: 'fixture' }, BASE: 'release', CONFIG: { concurrency: 1 }, CONCURRENCY: 1,
     MAX_POINTS: 2, SEATS: { appraiser: seat('a'), confirmer: seat('b'), worker: seat('a'), reviewer: seat('b'), carver: seat('a'), carveConfirmer: seat('b') },
     seatLabel: (s: { engine: string }) => s.engine, DRY_RUN: true, ctx: f.ctx,
     log: f.io.say, reportPreflight: (ctx: Context) => reportPreflight(ctx, f.io),
@@ -82,7 +83,7 @@ async function dryRunMain(f: ReturnType<typeof fixture>, backlog: unknown[]) {
     FLOOR: null, BOARD: null, ensureLabels: noop, CARVING: { sweep: noop },
     allIssues: () => backlog, placeBacklog: async (issues: unknown[]) => issues,
     SKIP_APPRAISAL: true, LIMIT: 2, selectCandidates: () => [], pulse: noop,
-    ADMISSION: { start: noop, admit: async () => [] },
+    ADMISSION: { start: noop, admit: async () => [] }, RERUNS: [], refillingPool,
   };
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(body);
   await new Function(...Object.keys(deps), `${js}\nreturn main();`)(...Object.values(deps));

@@ -127,7 +127,7 @@ export function hashText(text: string): string {
 // ---------------------------------------------------------------------------
 
 /** Every marker the collection writes; a comment carrying one, by the bot, is not a person's word. */
-export const MARKER = /<!--\s*(carve-record|carve-rollup|carve-claim|carve-unclaim|carve-handoff|appraise-handoff|carve-answer|carve-pause|carve-unpause|loop-close|loop-step|loop-note|appraise-stamp|appraise-close-disputed|carve)\b([^>]*)-->/;
+export const MARKER = /<!--\s*(carve-record|carve-rollup|carve-claim|carve-unclaim|carve-handoff|appraise-handoff|carve-answer|carve-pause|carve-unpause|loop-close|loop-step|loop-stop|loop-proof-held|loop-held|loop-note|appraise-stamp|appraise-close-disputed|carve)\b([^>]*)-->/;
 
 export function parseMarker(text: string): { name: string; fields: { [key: string]: string } } | null {
   const match = MARKER.exec(text);

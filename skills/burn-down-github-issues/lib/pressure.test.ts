@@ -6,16 +6,24 @@ import { join } from 'node:path';
 import { Card, fire, laneKey, laneState, successors } from './simulate.ts';
 import { Carving, type CarvingDeps } from './carving.ts';
 import { LANES } from './lanes.ts';
+import { issueRefs } from './refs.ts';
 import { RunStopping } from '../../fix-github-issue/lib/shell.ts';
+import { isHostFaultKind, settleOutsideStop } from '../../fix-github-issue/lib/environment-fault.ts';
 import { awaitGreenChecks } from '../../fix-github-issue/lib/pipeline.ts';
+import { landingWatch } from '../../fix-github-issue/lib/landing-watch.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
-import { CLAIM_READBACK, claim } from '../../carve-github-issue/lib/claims.ts';
+import { CLAIM_READBACK, claim, refusal } from '../../carve-github-issue/lib/claims.ts';
+import { HOLD_LABELS, isDlqLabel, isHeldBy } from '../../fix-github-issue/lib/labels.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { readTree } from '../../carve-github-issue/lib/tree.ts';
 import { CARVE_DEFAULTS } from '../../carve-github-issue/lib/carve.ts';
 import { allOpenIssues } from '../../appraise-github-issues/lib/appraise.ts';
 import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
+import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
+import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
+import { heldComment, loopHoldStands, objectionAfter, proofHeldComment, standingApproval, standingStop, stopComment, stopIn } from '../../fix-github-issue/lib/stop-record.ts';
+import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -214,9 +222,19 @@ describe('tracker and checks pressure', () => {
 
 // Actual private functions are evaluated in memory with explicit fake dependencies. No import
 // of loop.ts, subprocess, source edit, or live tracker is involved.
+/** `recordMerge` with every tracker write left out: the card move, the floor hand-off, and the lane's removal run. */
+async function fakeRecordMerge(ctx: Context, merge: { sha: string }, record: { place: (note: string) => void; note: string; beforeClose?: () => void }) {
+  record.place(record.note);
+  if (merge.sha) ctx.afterMerge?.(merge as never);
+  record.beforeClose?.();
+  return 'closed';
+}
+/** The landing watch's read of a pull request that has merged, at `mergedAt`, making `oid`. */
+const mergedView = (mergedAt: string, oid: string) => JSON.stringify({ state: 'MERGED', headRefOid: 'h', mergedAt, mergeCommit: { oid }, statusCheckRollup: [] });
 function loadFunctions(path: string, names: string[], deps: Record<string, unknown>, prefix = ''): any {
-  // Every settlement asks whether the run is stopping and whether its lease stands; here neither is in doubt.
-  deps = { preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, RunStopping: class extends Error {}, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
+  // Every settlement asks whether the run is stopping, whether an environment fault ended it, and whether its lease stands; here none is in doubt.
+  // Nor does any pull request carry a person's hold, unless a test says so.
+  deps = { landingWatch, pullHolds: () => [], preserveLaneWork: () => true, retireLane: () => {}, isStopping: () => false, environmentFaultOf: () => null, settleOutsideStop: () => ({ charged: false, reason: '' }), clearLaneForRerun: () => {}, rememberFaultMarkers: () => {}, RunStopping: class extends Error {}, recordMerge: fakeRecordMerge, approvedAtHead: async () => null, leaseLost: () => false, LeaseLostError: class extends Error {}, holdLease: () => {}, isFinishing: () => false, yieldToStop: async () => {}, finishDespiteStop: (record: () => unknown) => record(), loopNote: (body: string) => body, ...deps };
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   const parts = names.map(name => {
     const match = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -283,6 +301,34 @@ describe('private failure routing, loaded in memory', () => {
   });
 });
 
+describe('an approval is recorded on the thread', () => {
+  const approve = async (decision: string) => {
+    const writes: string[][] = [];
+    const lanes: string[] = [];
+    const api = loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['review'], {
+      isDraft: () => false, dirtyPaths: () => [], sh: () => 'a'.repeat(40), stopComment,
+      validTouches: loadFunctions('../../fix-github-issue/lib/pipeline.ts', ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] }).validTouches,
+      move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
+      runReviewer: async () => ({ decision, blocking: [], adequacy: 'the receipts show it', touches: ['migration'] }),
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+    });
+    const result = await api.review(context(new FakeTracker(bot)), { number: 1 }, 7, '/fake', noop, 1, ['code']);
+    return { result, writes, lanes };
+  };
+  it('a merge verdict writes an approved stop naming the reviewed head and the pull request', async () => {
+    const { result, writes } = await approve('merge');
+    expect(result.reviewedSha).toBe('a'.repeat(40));
+    const body = writes.find((argv) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    expect(standingStop([{ author: bot, body }], bot)).toEqual({ kind: 'approved', sha: 'a'.repeat(40) });
+    expect(stopIn(body)?.fields.pr).toBe('7');
+    // Both seats' classification, so a landing of the same head can rest on the record.
+    expect(stopIn(body)?.fields.touches).toBe('code,migration');
+  });
+  it('a rejection writes none', async () => {
+    expect((await approve('block')).writes).toEqual([]);
+  });
+});
+
 describe('incomplete observations are not permission', () => {
   for (const suites of ['unreadable', 'zero-runs', 'late-suite'] as const) {
     it(`does not outrun the integration job when suites are ${suites}`, async () => {
@@ -336,7 +382,7 @@ describe('runtime moves and settlement', () => {
   const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
   for (const initial of ['E1', 'D3']) it(`a resumed ${initial} card with a historical objection has a chart route to its revision`, async () => {
     let lane = initial; const edges: string[] = [];
-    const api = loadFunctions(pipeline, ['redriveIssue'], {
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
@@ -520,11 +566,14 @@ describe('runtime moves and settlement', () => {
     expect(recorded).toEqual([]);
     expect(result).toMatchObject({ verdict: 'failed', reason: 'the change could not be proved: still wrong' });
   });
-  it('a disputed worker close reports the human lane', () => {
+  it('a disputed worker close reports the human lane, and records the hold as a stop', () => {
     const lanes: string[] = [];
-    const api = loadFunctions(pipeline, ['parkWithBothOpinions'], { mutate: noop, move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane) });
+    const writes: string[][] = [];
+    const api = loadFunctions(pipeline, ['parkWithBothOpinions'], { mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv), move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane), heldComment });
     api.parkWithBothOpinions({}, { number: 1 }, { verdict: 'obsolete', reason: 'worker' }, { reason: 'confirmer disagrees' }, noop);
     expect(lanes).toEqual(['H2']);
+    const body = writes.find((argv) => argv[2] === 'comment')?.at(-1) ?? '';
+    expect(stopIn(body)).toMatchObject({ kind: 'held', fields: { verdict: 'needs-human' }, text: expect.stringContaining('confirmer disagrees') });
   });
   it('a revision is proved like a first attempt, by a seat that never moves its own card', () => {
     const prompts = ['../../code-github-issue/prompts/code.md', '../../prove-github-issue/prompts/prove.md'].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'));
@@ -567,13 +616,12 @@ describe('runtime moves and settlement', () => {
     const sh = (_ctx: unknown, argv: string[]) => {
       if (argv[1] === 'rev-list') { expect(argv.at(-1)).toBe(`HEAD..${checkedBase}`); return '0'; }
       if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? landedOn : 'h';
-      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
-      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
       if (argv.at(-1) === '.parents[0].sha') return landedOn;
       return '';
     };
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
-    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, behindBeyondNoise: behindBase, requiresUpToDate: () => true, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
@@ -586,18 +634,19 @@ describe('runtime moves and settlement', () => {
     const base = 'A';
     const sh = (_ctx: unknown, argv: string[]) => {
       if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? base : 'h';
-      if (argv.includes('mergedAt')) return '2026-09-20T00:00:00Z';
-      if (argv.includes('mergeCommit')) return 'merge-sha';
+      if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
       if (argv.at(-1) === '.parents[0].sha') return base;
       return '';
     };
     const landWith = (strict: boolean) => {
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         // The lane is behind by a changelog alone, on every look.
         behindBase: () => ['changelog/1.0.1.md'], behindBeyondNoise: () => [], requiresUpToDate: () => strict,
+        commitsBehind: () => [{ sha: 'c'.repeat(40), author: 'someone', subject: 'land the changelog' }], describeCommits: (c: { subject: string }[]) => c.map(x => x.subject).join(', '),
+        MAX_NOISE_REFRESHES: 6,
         fetchBase: () => base, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
         awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
         mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
@@ -607,6 +656,121 @@ describe('runtime moves and settlement', () => {
     expect(await landWith(false)).toBe('merged');
     // Strict protection keeps the old rule: never fresh while behind, so the refresh cap is reached.
     expect(await landWith(true)).toEqual({ dlq: expect.stringMatching(/the base moved \d+ times/) });
+  });
+  describe('base moves made only of release noise', () => {
+    type Mover = { sha: string; author: string; subject: string };
+    /** One look upstream: the commits that moved the base, and whether every file they changed is release noise. */
+    type Move = { commits: Mover[]; noise: boolean };
+    const feature = (n: number): Move => ({ commits: [{ sha: `h${n}`.padEnd(40, '0'), author: 'someone', subject: `merge feature ${n}` }], noise: false });
+    const release = (n: number): Move => ({ commits: [{ sha: `r${n}`.padEnd(40, '0'), author: 'release-bot', subject: `chore(release): 1.0.${n} [skip ci]` }], noise: true });
+    /** Lands with the base moving by `moves` in turn, one per look upstream, then holding still; protection wants an up-to-date branch. */
+    const landThrough = (moves: Move[] | (() => Move | undefined)) => {
+      const next = typeof moves === 'function' ? moves : () => moves.shift();
+      let current: Move | undefined;
+      const sh = (_ctx: unknown, argv: string[]) => {
+        if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
+        if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
+        if (argv.at(-1) === '.parents[0].sha') return 'A';
+        return '';
+      };
+      const ctx = context(new FakeTracker(bot));
+      const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
+        DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_NOISE_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+        sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
+        fetchBase: () => { current = next(); return 'A'; },
+        behindBase: () => (current ? ['some/file'] : []), behindBeyondNoise: () => (current && !current.noise ? ['some/file'] : []), requiresUpToDate: () => true,
+        commitsBehind: () => current?.commits ?? [],
+        describeCommits: (commits: Mover[]) => commits.map(commit => `${commit.sha.slice(0, 10)} "${commit.subject}" (${commit.author})`).join(', '),
+        checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+        awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+        mutate: noop, followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+      });
+      return api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    };
+
+    it('are caught up on without spending the refresh cap', async () => {
+      // Two merges, each followed by two release commits: six moves, two counted.
+      expect(await landThrough([feature(1), release(1), release(2), feature(2), release(3), release(4)])).toBe('merged');
+    });
+
+    it('count by what changed, never by who made the commit', async () => {
+      // A release bot's commit that changed code, and a skip-CI subject on it, are movement like any other.
+      const botCode = (n: number): Move => ({ commits: [{ sha: `b${n}`.padEnd(40, '0'), author: 'release-bot', subject: `write back ${n} [skip ci]` }], noise: false });
+      const result = await landThrough([botCode(1), release(1), botCode(2), botCode(3)]);
+      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 4 times while this landing waited on its gates (3 beyond release noise)') });
+    });
+
+    it('name every commit that moved the base in the dead letter', async () => {
+      const result = (await landThrough([feature(1), release(1), feature(2), feature(3)])) as { dlq: string };
+      for (const move of [feature(1), release(1), feature(2), feature(3)]) expect(result.dlq).toContain(move.commits[0].subject);
+      expect(result.dlq).toContain('(someone)');
+    });
+
+    it('cannot loop forever: an endless stream of them reaches a bound of its own', async () => {
+      let n = 0;
+      const result = await landThrough(() => release(++n));
+      expect(result).toEqual({ dlq: expect.stringContaining('the base moved 7 times while this landing waited on its gates (7 only by release noise, past that bound of 6)') });
+      expect(n).toBe(7);
+    });
+  });
+});
+
+describe('a floor incident at the merge boundary', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const incident = { number: 9, title: 'floor: item absent', labels: [{ name: INCIDENT_LABEL }] };
+  const landWith = (holdAtBoundary: Context['holdAtBoundary'], landPastBoundary?: number) => {
+    const parks: string[][] = [];
+    const ctx = context(new FakeTracker(bot));
+    ctx.knobs.autoMerge = 'code-only';
+    ctx.holdAtBoundary = holdAtBoundary;
+    ctx.landPastBoundary = landPastBoundary;
+    const sh = (_ctx: unknown, argv: string[]) => {
+      if (argv[1] === 'rev-parse') return argv.at(-1) === 'origin/main' ? 'A' : 'h';
+      if (argv[5]?.includes('mergedAt')) return mergedView('2026-09-20T00:00:00Z', 'merge-sha');
+      if (argv.at(-1) === '.parents[0].sha') return 'A';
+      return '';
+    };
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase', 'mergeAllowed'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], boundaryWaived, waiverNoted: new Set(),
+      sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+      mutate: (_ctx: unknown, _what: string, argv: string[]) => { if (argv.includes('loop/parked')) parks.push(argv); },
+      followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+    });
+    return api.land(ctx, incident, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop).then((outcome: unknown) => ({ outcome, parks }));
+  };
+  it('without a hold, autoMerge alone decides', async () => {
+    expect((await landWith(undefined)).outcome).toBe('merged');
+  });
+  const reverting: Context['holdAtBoundary'] = (issue) => incidentHold(issue, () => 'undoes #12 (abc1234567): puts back lines it removed from src/a.ts');
+  const forward: Context['holdAtBoundary'] = (issue) => incidentHold(issue, () => null);
+  it('lands an incident fix that repairs forward without a person', async () => {
+    const { outcome, parks } = await landWith(forward);
+    expect(outcome).toBe('merged');
+    expect(parks).toHaveLength(0);
+  });
+  it('parks an incident fix that undoes a recent merge, with a reason --land accepts', async () => {
+    const { outcome, parks } = await landWith(reverting);
+    expect(outcome).toEqual({ park: expect.stringMatching(/^autoMerge is code-only and the change touches code; a floor\/incident fix that undoes #12/), boundary: true });
+    expect(parks).toHaveLength(1);
+    const body = (outcome as { park: string }).park;
+    expect(landBlocker(['loop/parked'], [{ body, createdAt: '2026-09-20T00:00:00Z' }], '2026-09-20T00:00:01Z')).toBeNull();
+  });
+  it('a person who clears it with --land lands it', async () => {
+    expect((await landWith(reverting, incident.number)).outcome).toBe('merged');
+  });
+  it('holds only incidents, asks about a revert only for one, and the loop asks it at every merge', () => {
+    let asked = 0;
+    const ask = () => {
+      asked += 1;
+      return 'reverts #12 (abc1234567)';
+    };
+    expect(incidentHold({ number: 1, labels: [{ name: 'bug' }] }, ask)).toBeNull();
+    expect(asked).toBe(0);
+    expect(incidentHold(incident, ask)).toContain('live environment');
+    expect(readFileSync(new URL('../loop.ts', import.meta.url), 'utf8')).toContain('holdAtBoundary: (issue, change) => incidentHold(issue, () => revertOf(change.cwd, change.base, recentMerges(ctx, issue.number, FLOOR_DIR))),');
   });
 });
 
@@ -660,7 +824,7 @@ describe('safety pressure', () => {
       runWorker: async () => ({ verdict: 'needs-human', reason: 'access unavailable' }),
       sh: () => JSON.stringify([{ number: 88, headRefName: 'person/release-1', author: { login: 'someone-else' }, body: 'Refs #999' }]),
       mutate: (_ctx: unknown, _why: unknown, argv: string[]) => { if (argv[1] === 'pr' && argv[2] === 'close') closed.push(Number(argv[3])); },
-      move: noop, removeWorktree: noop,
+      move: noop, removeWorktree: noop, heldComment,
     });
     await api.workIssue(context(new FakeTracker(bot)), { number: 1, title: 'unrelated issue', labels: [] }, '/fake', 2, 2, noop);
     expect(closed).toEqual([]);
@@ -779,14 +943,14 @@ describe('pauses left by a closed trunk', () => {
   });
 });
 
-describe('resume dispatch judges the lane before continuing', () => {
+describe('resume dispatch judges the lane under the claim before continuing', () => {
   const entry = { issue: { number: 92, title: 'resume', labels: [] }, pull: { number: 100, branch: 'fix/resume-92' } };
   function dispatch(kind: string, overrides: Record<string, unknown> = {}) {
     const calls: string[] = [];
+    let holder: string | null = null;
     const api = loadFunctions('../loop.ts', ['resumePull'], {
-      ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' },
+      ctx: {}, MAX_POINTS: 2, SEATS: { confirmer: 'confirmer' }, isHostFaultKind,
       waitForGo: async () => { calls.push('wait'); },
-      claimHolder: () => { calls.push('claim'); return null; },
       judgeLane: (_ctx: unknown, issue: number, readHead: () => string) => {
         calls.push('judge'); expect(issue).toBe(92); expect(readHead()).toBe('remote-head');
         return { kind, reason: 'lane reason' };
@@ -798,21 +962,26 @@ describe('resume dispatch judges the lane before continuing', () => {
       parkForInspection: (_ctx: unknown, issue: number, reason: string) => {
         expect(issue).toBe(92); expect(reason).toBe('lane reason'); calls.push('park');
       },
-      log: () => calls.push('log'), place: (...args: unknown[]) => { calls.push('place'); expect(args).toEqual([92, 'resume', 'W3', 'held']); },
+      log: () => calls.push('log'), place: (...args: unknown[]) => { calls.push('place'); expect(args).toEqual([92, 'resume', 'W3', 'claim by elsewhere stands']); },
       lastObjection: (issue: number, pull: number) => { expect([issue, pull]).toEqual([92, 100]); calls.push('objection'); return 'revise'; },
-      redriveIssue: async (_ctx: unknown, issue: unknown, pull: unknown, objection: string) => {
-        expect([issue, pull, objection]).toEqual([entry.issue, entry.pull, 'revise']); calls.push('redrive'); return { outcome: 'merged' };
+      // The redrive as withLane runs it: the claim, then the caller's judgement under it, then the work.
+      redriveIssue: async (_ctx: unknown, issue: unknown, pull: unknown, objection: string, options: { admit?: () => { outcome: string } | null }) => {
+        expect([issue, pull, objection]).toEqual([entry.issue, entry.pull, 'revise']);
+        calls.push('claim');
+        if (holder) return { outcome: 'busy', reason: holder };
+        const refused = options.admit?.();
+        if (refused) return refused;
+        calls.push('redrive'); return { outcome: 'merged' };
       },
       ...overrides,
     });
-    return { run: () => api.resumePull(entry), calls };
+    return { run: () => api.resumePull(entry), calls, hold: (by: string) => { holder = by; } };
   }
   for (const kind of ['dirty', 'off-head', 'unreadable']) {
     for (const fails of [false, true]) it(`${kind} never continues, including a failed dead-letter write (${fails})`, async () => {
       const d = dispatch(kind, fails ? { parkForInspection: () => { throw new Error('write failed'); } } : {});
       await d.run();
-      expect(d.calls.slice(0, 3)).toEqual(['wait', 'claim', 'judge']);
-      expect(d.calls).not.toContain('objection');
+      expect(d.calls.slice(0, 4)).toEqual(['wait', 'objection', 'claim', 'judge']);
       expect(d.calls).not.toContain('redrive');
       if (kind === 'unreadable') { expect(d.calls).not.toContain('park'); expect(d.calls).toContain('log'); }
       else if (!fails) expect(d.calls).toContain('park');
@@ -821,16 +990,47 @@ describe('resume dispatch judges the lane before continuing', () => {
   for (const kind of ['no-lane', 'clean-at-head']) it(`${kind} continues with the objection`, async () => {
     const d = dispatch(kind);
     await d.run();
-    expect(d.calls).toEqual(['wait', 'claim', 'judge', 'objection', 'redrive']);
+    expect(d.calls).toEqual(['wait', 'objection', 'claim', 'judge', 'redrive']);
   });
-  it('does not judge or park a held lane', async () => {
-    const d = dispatch('dirty', { claimHolder: () => 'held' });
+  it('queues a resume a host fault left unjudged to run again, as a host fault readmits Ready work', async () => {
+    const reruns: unknown[] = [];
+    const d = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'ENOSPC', fault: 'ENOSPC' }) });
     await d.run();
-    expect(d.calls).toEqual(['wait', 'place']);
+    expect(reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
+    const stopped = dispatch('clean-at-head', { RERUNS: reruns, redriveIssue: async () => ({ outcome: 'unjudged', reason: 'stop', fault: 'stopped' }) });
+    await stopped.run();
+    expect(reruns).toHaveLength(1);
   });
-  for (const read of ['claimHolder', 'judgeLane']) it(`propagates a stop from ${read}`, async () => {
+  it('runs a stranded resume again after a host fault: from its kept lane after go, or as a driverless resume once the lane is gone', async () => {
+    const stranded = { kind: 'stranded', issue: entry.issue, entry: { issue: entry.issue, cwd: '/kept', result: { issue: 92, verdict: 'fixed', reason: 'r', pr: 100, branch: 'fix/resume-92' } } };
+    const run = async (lane: boolean, fault: string, item: Record<string, unknown> = stranded) => {
+      const reruns: unknown[] = [];
+      const calls: string[] = [];
+      const api = loadFunctions('../loop.ts', ['resumeStranded'], {
+        ctx: {}, MAX_POINTS: 2, RERUNS: reruns, log: noop, existsSync: () => lane, isHostFaultKind,
+        waitForGo: async () => { calls.push('wait'); },
+        resumeOneStranded: async () => { calls.push('resume'); return { outcome: 'unjudged', reason: 'r', fault }; },
+      });
+      await api.resumeStranded(item);
+      return { reruns, calls };
+    };
+    expect((await run(true, 'ENOSPC')).reruns).toEqual([{ ...stranded, rerun: true }]);
+    expect((await run(false, 'ENOMEM')).reruns).toEqual([{ kind: 'driverless', issue: entry.issue, pull: entry.pull }]);
+    expect((await run(true, 'stopped')).reruns).toEqual([]);
+    // A transport failure is the next run's, not a loop in this one while the tracker is down.
+    expect((await run(true, 'transport')).reruns).toEqual([]);
+    expect((await run(true, 'ENOSPC')).calls).toEqual(['resume']);
+    expect((await run(true, 'ENOSPC', { ...stranded, rerun: true })).calls).toEqual(['wait', 'resume']);
+  });
+  it("does not judge or park a lane another run's claim holds; the card waits in W3", async () => {
+    const d = dispatch('dirty');
+    d.hold('claim by elsewhere stands');
+    await d.run();
+    expect(d.calls).toEqual(['wait', 'objection', 'claim', 'place']);
+  });
+  it('does not swallow a stop from judgeLane; the redrive settles it under its claim', async () => {
     const stop = new Error('stopping');
-    const d = dispatch('dirty', { [read]: () => { throw stop; } });
+    const d = dispatch('dirty', { judgeLane: () => { throw stop; } });
     await expect(d.run()).rejects.toThrow(stop);
     expect(d.calls).not.toContain('park');
     expect(d.calls).not.toContain('redrive');
@@ -844,9 +1044,10 @@ it('claim and head read errors during a stop propagate even without RunStopping'
     dirtyPaths: () => [], sh: () => 'head', trackerIo: () => ({}),
     readTree: () => { throw stop; }, liveClaim: noop,
   };
-  const api = loadFunctions('../../fix-github-issue/lib/resume.ts', ['claimHolder', 'judgeLane'], deps);
+  const api = loadFunctions('../../fix-github-issue/lib/resume.ts', ['claimHolder'], deps);
+  const lane = loadFunctions('../../fix-github-issue/lib/lane.ts', ['judgeLane', 'judgeLocal'], { ...deps, heldLane: () => false });
   expect(() => api.claimHolder({}, 92, new Map())).toThrow(stop);
-  expect(() => api.judgeLane({ project: {} }, 92, () => { throw stop; })).toThrow(stop);
+  expect(() => lane.judgeLane({ project: {} }, 92, () => { throw stop; })).toThrow(stop);
 });
 
 
@@ -858,7 +1059,7 @@ describe('catch-up stop boundaries', () => {
       const acts: string[] = [];
       const api = loadFunctions(pipeline, [name], {
         yieldToStop: async () => { if (++gates === stopAt) throw new RunStopping('stop'); },
-        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'],
+        fetchBase: () => { acts.push('fetch'); return 'base'; }, behindBase: () => ['file.ts'], catchUpOwed: () => true,
         staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch',
         move: () => acts.push('F2'), updateFromBase: () => { acts.push('merge'); return false; },
       });
@@ -874,7 +1075,7 @@ describe('catch-up stop boundaries', () => {
       let gates = 0;
       const api = loadFunctions(pipeline, [name], {
         yieldToStop: async () => { if (++gates > 2) throw new RunStopping('after push'); },
-        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [],
+        fetchBase: () => 'base', behindBase: () => behind ? ['file.ts'] : [], catchUpOwed: () => true,
         staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop, updateFromBase: () => true,
       });
       const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
@@ -887,7 +1088,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     let gates = 0;
     const api = loadFunctions(pipeline, ['reviewAndLand', 'catchUp'], {
-      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'],
+      reviewCount: () => 0, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], catchUpOwed: () => true,
       staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
       yieldToStop: async () => { if (++gates === 3 && stopped) throw new RunStopping('stop'); },
       deadLetter: () => acts.push('deadLetter'), mutate: () => acts.push('ready'),
@@ -902,7 +1103,7 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     let gates = 0;
     const api = loadFunctions(pipeline, ['land', 'catchUp'], {
-      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'],
+      DEFAULT_MAX_POINTS: 2, sh: () => 'head', fetchBase: () => 'base', behindBase: () => ['file.ts'], catchUpOwed: () => true,
       staleAgainstBase: () => [], netChangeId: () => 'patch', move: noop, updateFromBase: () => false,
       yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
       mutate: (_ctx: unknown, _why: string, argv: string[]) => acts.push(argv.includes('--undo') ? 'draft' : 'ready'),
@@ -915,11 +1116,492 @@ describe('catch-up stop boundaries', () => {
     const acts: string[] = [];
     const api = loadFunctions(pipeline, ['runWorker', 'seamCatchUp'], {
       placeWork: () => ({ kind: 'prove', coded: { branch: 'fix/x', sha: 'head', gated: 'head' }, sha: 'head', handoff: 'h' }),
-      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false,
+      fetchBase: () => 'base', behindBase: () => ['file.ts'], updateFromBase: () => false, catchUpOwed: () => true,
       yieldToStop: async () => { if (++gates === 3) throw new RunStopping('stop'); },
       recordAttempt: () => acts.push('attempt'), runProve: () => acts.push('prove'), move: noop,
     });
     await expect(api.runWorker(context(new FakeTracker(bot)), { number: 1, title: 't', labels: [] }, '/fake', 2)).rejects.toBeInstanceOf(RunStopping);
     expect(acts).toEqual([]);
+  });
+});
+
+describe('release noise at every catch-up', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  // A release commit: a configured changelog and a version-only package.json bump. `beyond` is what `behindBeyondNoise` leaves.
+  const load = (name: string, beyond: string[], upToDateRequired: boolean, merges: string[]) =>
+    loadFunctions(pipeline, [name, 'catchUpOwed'], {
+      fetchBase: () => 'base', behindBase: () => ['CHANGELOG.md', 'package.json'], behindBeyondNoise: () => beyond,
+      requiresUpToDate: () => upToDateRequired, staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop,
+      updateFromBase: () => { merges.push('merge'); return true; },
+    });
+  const run = (api: any, name: string, options?: { skipNoise?: boolean }) => {
+    const args = [context(new FakeTracker(bot)), { number: 1 }, '/fake'];
+    return name === 'catchUp' ? api.catchUp(...args, 'head', noop, 'before the redrive', options) : api.seamCatchUp(...args, noop, 'before proving');
+  };
+
+  for (const name of ['catchUp', 'seamCatchUp']) {
+    it(`${name} pushes no head for a base moved only by release noise`, async () => {
+      const merges: string[] = [];
+      expect(await run(load(name, [], false, merges), name)).toEqual(name === 'catchUp' ? null : 'current');
+      expect(merges).toEqual([]);
+    });
+    it(`${name} catches up on release noise when the base requires an up-to-date branch`, async () => {
+      const merges: string[] = [];
+      await run(load(name, [], true, merges), name);
+      expect(merges).toEqual(['merge']);
+    });
+    it(`${name} catches up when the release commit also changed a dependency`, async () => {
+      const merges: string[] = [];
+      await run(load(name, ['package.json'], false, merges), name);
+      expect(merges).toEqual(['merge']);
+    });
+  }
+  it('a landing that already read the protection does not read it again', async () => {
+    const merges: string[] = [];
+    let reads = 0;
+    const api = loadFunctions(pipeline, ['catchUp', 'catchUpOwed'], {
+      fetchBase: () => 'base', behindBase: () => ['CHANGELOG.md'], behindBeyondNoise: () => [],
+      requiresUpToDate: () => { reads += 1; return true; }, staleAgainstBase: () => [], sh: () => 'head', netChangeId: () => 'patch', move: noop,
+      updateFromBase: () => { merges.push('merge'); return true; },
+    });
+    expect(await run(api, 'catchUp', { skipNoise: true })).toBeNull();
+    await run(api, 'catchUp', { skipNoise: false });
+    expect(merges).toEqual(['merge']);
+    expect(reads).toBe(0);
+  });
+});
+
+describe('whether the base requires an up-to-date branch, when its protection cannot be read', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const ask = (pull: { status: string; behindBy: string } | null, pr: number | undefined = 7) => {
+    const reads: string[] = [];
+    const api = loadFunctions(pipeline, ['requiresUpToDate', 'upToDateByPullRequest'], {
+      sh: (_ctx: unknown, argv: string[]) => {
+        reads.push(argv.slice(0, 3).join(' '));
+        if (argv.some((a) => a.includes('/protection/'))) throw new Error('HTTP 403: Resource not accessible by integration');
+        if (argv.some((a) => a.includes('/rules/branches/'))) throw new Error('HTTP 403: Resource not accessible by integration');
+        if (argv[1] === 'pr') return JSON.stringify({ mergeStateStatus: pull?.status, headRefOid: 'h' });
+        if (argv.some((a) => a.includes('/compare/'))) return pull?.behindBy ?? '0';
+        throw new Error(`unexpected ${argv.join(' ')}`);
+      },
+    });
+    return { strict: api.requiresUpToDate(context(new FakeTracker(bot)), pr), reads };
+  };
+  it('reads BEHIND on the pull request as GitHub requiring it', () => {
+    expect(ask({ status: 'BEHIND', behindBy: '2' }).strict).toBe(true);
+  });
+  it('reads a mergeable pull request whose head is behind the base as not requiring it', () => {
+    expect(ask({ status: 'CLEAN', behindBy: '2' }).strict).toBe(false);
+  });
+  it('fails closed when the pull request says nothing: not behind, blocked, or not computed yet', () => {
+    expect(ask({ status: 'CLEAN', behindBy: '0' }).strict).toBe(true);
+    expect(ask({ status: 'BLOCKED', behindBy: '2' }).strict).toBe(true);
+    expect(ask({ status: 'UNKNOWN', behindBy: '2' }).strict).toBe(true);
+    expect(ask(null, undefined).strict).toBe(true);
+  });
+});
+
+describe('a prover that needs a person', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
+  const settle = (seat: 'coder' | 'prover', pr: number | undefined, extra: Record<string, unknown> = {}) => {
+    const writes: string[][] = [];
+    const lanes: string[] = [];
+    const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdForAPerson'], {
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+      move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
+      proofHeldComment, heldComment, loopNote, liveGate: () => ({ ok: true }), settleOutsideStop,
+    });
+    // The settlement writes through the context's tracker, into the same list.
+    const ctx = { ...context(new FakeTracker(bot)), io: { write: (op: { argv: string[] }) => writes.push(op.argv) }, dryRun: false, runId: 'run-1' };
+    const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat, ...extra };
+    return api.settleTerminalVerdict(ctx, { number: 1, title: 't', labels: [] }, result, 2, noop, pr).then((outcome: unknown) => ({ outcome, writes, lanes }));
+  };
+
+  it('leaves the pull request open, labels it and the issue needs-human, and says on the issue how the hold comes off', async () => {
+    const { outcome, writes, lanes } = await settle('prover', 7);
+    expect(outcome).toEqual({ outcome: 'handed-off', reason: 'the signed-in probe needs the shared test credentials' });
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'close')).toEqual([]);
+    expect(writes).toContainEqual(['gh', 'issue', 'edit', '1', '--add-label', 'needs-human']);
+    expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--add-label', 'needs-human']);
+    const hold = writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    expect(standingStop([{ author: bot, body: hold }], bot)).toEqual({ kind: 'proof-held' });
+    expect(hold).toContain('pull request #7 stays open');
+    expect(hold).toContain('the shared test credentials');
+    // The pointer on the pull request is the loop's word, marked as such.
+    const pointer = writes.find((argv: string[]) => argv[1] === 'pr' && argv[2] === 'comment' && argv[3] === '7')?.at(-1) ?? '';
+    expect(pointer.startsWith(LOOP_NOTE)).toBe(true);
+    expect(pointer).toContain('#1');
+    expect(lanes).toEqual(['H2']);
+    expect(legal('D2', 'H2')).toBe(true);
+  });
+
+  it('with no pull request opened, holds the issue alone and names the coded branch', async () => {
+    const { writes, lanes } = await settle('prover', undefined);
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr')).toEqual([]);
+    expect(writes).toContainEqual(['gh', 'issue', 'edit', '1', '--add-label', 'needs-human']);
+    expect(writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1)).toContain('the coded commit stays on `fix/probe-1`');
+    expect(lanes).toEqual(['H2']);
+  });
+
+  it("holds a coder's needs-human on a pull request it was continuing open, as a draft, instead of closing it", async () => {
+    const { outcome, writes, lanes } = await settle('coder', 7);
+    expect(outcome).toEqual({ outcome: 'handed-off', reason: 'the signed-in probe needs the shared test credentials' });
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'close')).toEqual([]);
+    expect(writes).toContainEqual(['gh', 'pr', 'ready', '7', '--undo']);
+    expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--add-label', 'needs-human']);
+    expect(writes).toContainEqual(['gh', 'issue', 'edit', '1', '--add-label', 'needs-human']);
+    const record = writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    const stop = standingStop([{ author: bot, body: record }], bot);
+    expect(stop).toMatchObject({ kind: 'outside', cause: 'needs-person', seat: 'coder' });
+    // Lifting the hold continues the work: the hold is the loop's, and the coder gets its words back.
+    expect(loopHoldStands(stop)).toBe(true);
+    expect(objectionAfter(stop)).toContain('the shared test credentials');
+    expect(lanes).toEqual(['H2']);
+  });
+
+  it('names a gate that fails on the untouched base as the cause', async () => {
+    const { writes } = await settle('coder', 7, { outside: 'base' });
+    const record = writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    expect(stopIn(record)?.fields.cause).toBe('base');
+    expect(record).toContain('untouched base');
+  });
+
+  it("closes nothing and holds the issue alone for a coder's needs-human with no pull request", async () => {
+    const { writes, lanes } = await settle('coder', undefined);
+    expect(writes.filter((argv: string[]) => argv[1] === 'pr')).toEqual([]);
+    expect(standingStop([{ author: bot, body: writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1) ?? '' }], bot)?.kind).toBe('held');
+    expect(lanes).toEqual(['H2']);
+  });
+
+  it("reads a coder's needs-human after a held proof as the standing stop, so a redrive lifts no needs-human", async () => {
+    const held = (await settle('prover', 7)).writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1) ?? '';
+    const asked = (await settle('coder', undefined)).writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    const stop = standingStop([{ author: bot, body: held }, { author: bot, body: asked }], bot);
+    expect(stop?.kind).toBe('held');
+    expect(loopHoldStands(stop)).toBe(false);
+    expect(standingStop([{ author: bot, body: asked }, { author: bot, body: held }], bot)?.kind).toBe('proof-held');
+  });
+
+  it('is proved again on the same pull request once a person lifts the hold: the burndown reads no objection', () => {
+    const thread = [
+      { author: bot, body: 'Moved to the work dead-letter queue.\n\nan older stop' },
+      { author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs the shared test credentials; parked until then') },
+    ];
+    let reads = 0;
+    const api = loadFunctions('../loop.ts', ['lastObjection'], {
+      ctx: { botLogin: bot }, standingStop, objectionAfter,
+      sh: () => (++reads === 1 ? '2026-09-20T00:00:00Z' : JSON.stringify(thread)),
+    });
+    expect(api.lastObjection(1, 7)).toBeNull();
+    reads = 0;
+    thread.push({ author: bot, body: 'Parked: the merge boundary refused it.' });
+    expect(api.lastObjection(1, 7)).toBe('Parked: the merge boundary refused it.');
+  });
+
+  it('a lifted hold puts the card back with its pull request, and the resume reaches Proving', () => {
+    const lane = placeByFacts({ state: 'OPEN', labels: ['size: 1'], pulls: [{ number: 7, isDraft: true, merged: false }], ceiling: 2 });
+    expect(lane.lane).toBe('D3');
+    const card = new Card('held', laneState('D2'));
+    card.send('WORKER_VERDICT', (g: string) => g === 'verdictNeedsHuman');
+    expect(card.lane).toBe('H2');
+    expect(card.actions).toContain('labelPrHold');
+    card.send('HOLD_REMOVED', (g: string) => g === 'draftPr');
+    expect(card.lane).toBe('D3');
+    card.send('RESUMED', () => false);
+    expect(card.lane).toBe('D2');
+    expect(card.actions.slice(-4)).toEqual(['liftPrHoldMirror', 'prToDraft', 'runProver', 'moveCard']);
+  });
+
+  const redrive = (thread: Array<{ author: string; body: string; createdAt?: string }>, opened = 'h') => {
+    const writes: string[][] = [];
+    const reproofs: boolean[] = [];
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue'], {
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
+      trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, loopHoldStands, pullHolds: () => ['needs-human'],
+      claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
+      inFlight: new Map(), isDraft: () => true, sh: (_ctx: unknown, argv: string[]) => (argv.includes('createdAt') ? opened : 'h'), catchUp: () => null,
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+      runWorker: async (_c: unknown, _i: unknown, _cwd: unknown, _max: unknown, _feedback: unknown, reproof: boolean) => {
+        reproofs.push(reproof);
+        return { verdict: 'failed', reason: 'stop after recording the seat' };
+      }, countFailure: () => ({ outcome: 'dlq' }), removeWorktree: noop,
+    });
+    return api.redriveIssue(context(new FakeTracker(bot)), { number: 1, title: 'issue' }, { number: 7, branch: 'fix/probe-1' }, null).then(() => ({ writes, reproofs }));
+  };
+
+  it("takes the pull request's needs-human off with the issue's when the held proof is the standing stop, and proves", async () => {
+    const { writes, reproofs } = await redrive([{ author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs credentials') }]);
+    expect(writes).toContainEqual(['gh', 'pr', 'edit', '7', '--remove-label', 'needs-human']);
+    expect(reproofs).toEqual([true]);
+  });
+
+  it('reads the stop since the pull request opened: a held proof from an earlier attempt lifts nothing', async () => {
+    const { writes } = await redrive([{ author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1' }, 'needs credentials'), createdAt: '2026-09-01T00:00:00Z' }], '2026-09-02T00:00:00Z');
+    expect(writes.filter((argv: string[]) => argv.includes('--remove-label'))).toEqual([]);
+  });
+
+  it("leaves a person's needs-human on the pull request when something else stopped the work last", async () => {
+    const { writes } = await redrive([
+      { author: bot, body: proofHeldComment('run-1', { branch: 'fix/probe-1', pr: 7 }, 'needs credentials') },
+      { author: bot, body: 'Parked: pull request #7 carries `needs-human`.' },
+    ]);
+    expect(writes.filter((argv: string[]) => argv.includes('--remove-label'))).toEqual([]);
+  });
+
+  it('refuses the merge while needs-human is on the pull request, whatever the issue carries', async () => {
+    const writes: string[][] = [];
+    const ctx = context(new FakeTracker(bot));
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
+      catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
+      pullHolds: () => ['needs-human'],
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv), followBase: noop, removeWorktree: noop, closeIssue: async () => {},
+    });
+    const outcome = await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    expect(outcome).toEqual({ park: expect.stringContaining('pull request #7 carries `needs-human`') });
+    expect(writes.filter((argv: string[]) => argv[2] === 'merge')).toEqual([]);
+    expect(successors(laneState('F5'), { ownEventsOnly: true }).has(laneState('H3'))).toBe(true);
+  });
+});
+
+describe('a pull request merged while its landing watched', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  it('ends the wait, merges nothing itself, and records the merge once: the card, the floor, and the close', async () => {
+    const writes: string[][] = [];
+    const lanes: string[] = [];
+    const floor: Array<[number, string]> = [];
+    const closes: number[] = [];
+    const ctx = context(new FakeTracker(bot));
+    ctx.afterMerge = (event) => floor.push([event.pr, event.sha]);
+    const { recordMerge } = loadFunctions('../../fix-github-issue/lib/record-merge.ts', ['recordMerge'], {
+      closeIssue: async (_ctx: unknown, issue: number) => { closes.push(issue); }, parkIssue: noop,
+    });
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv[5]?.includes('mergedAt') ? mergedView('2026-11-21T11:11:04Z', 'm'.repeat(40)) : ''),
+      catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      // A person merged it by hand while a third-party check sat queued.
+      awaitGreenChecks: async () => ({ ended: 'MERGED', head: 'h' }),
+      move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane), liveGate: () => ({ ok: true }), trackerIo: noop,
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv), followBase: noop, removeWorktree: noop, recordMerge,
+    });
+    const outcome = await api.land(ctx, { number: 1, title: 'a fix' }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop);
+    expect(outcome).toBe('merged');
+    expect(writes.filter((argv) => argv[1] === 'pr' && argv[2] === 'merge')).toEqual([]);
+    expect(lanes.at(-1)).toBe('T1');
+    // The floor watches the merge commit a deploy on push builds, not the pull request's head.
+    expect(floor).toEqual([[7, 'm'.repeat(40)]]);
+    expect(closes).toEqual([1]);
+    // The next run start finds the issue closed and records nothing twice.
+    const again = await recordMerge(ctx, { issue: 1, title: 'a fix', pr: 7, sha: 'h', mergedAt: '', paths: [] }, { place: noop, note: '', by: 'reconcile', comment: '', reason: '', isOpen: () => false });
+    expect(again).toBe('already-closed');
+    expect(closes).toEqual([1]);
+  });
+
+  it('parks a pull request closed while its checks were waited on', async () => {
+    const ctx = context(new FakeTracker(bot));
+    const api = loadFunctions(pipeline, ['land', 'catchUpOwed', 'landedOnUnseenBase'], {
+      DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
+      catchUp: () => null, pullRequestMatchesReview: async () => null,
+      behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
+      fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => ({ ended: 'CLOSED', head: 'h' }), move: noop, liveGate: () => ({ ok: true }), trackerIo: noop, mutate: noop,
+    });
+    expect(await api.land(ctx, { number: 1 }, 7, ['code'], { review: { decision: 'merge' }, reviewedSha: 'h' }, '/fake', noop)).toEqual({ park: 'pull request #7 was closed while its checks were waited on' });
+  });
+
+  it('is found at the next run start when it references its issue with Refs, as the loop\'s own pull requests do', async () => {
+    const recorded: Array<{ issue: number; pr: number; by: string }> = [];
+    const issue = { number: 42, title: 'a leaf', labels: [{ name: 'size: 1' }], blockedBy: { nodes: [] } };
+    const merged = (over: Record<string, unknown>) => ({ number: 70, title: 'fix: a leaf', body: 'Refs #42', headRefName: 'fix/a-leaf-42', mergedAt: '2026-11-21T11:00:00Z', mergeCommit: { oid: 'm'.repeat(40) }, files: [{ path: 'src/a.ts' }], author: { login: bot }, ...over });
+    const run = async (pulls: unknown[]) => {
+      recorded.length = 0;
+      const api = loadFunctions('../loop.ts', ['reconcileMergedPullRequests', 'resolvedBy', 'loopPullIssue', 'notALeafLabel'], {
+        ctx: { botLogin: bot }, mergedPullRequests: () => pulls, log: noop, trackerIo: noop, issueRefs,
+        isHeldBy: () => false, HOLD_LABELS: [], CONFIG: { skipLabels: [] }, looksLikeTrunk: () => false, pointsFromLabels: () => 1,
+        DRY_RUN: false, threadOf: () => ({}), refusal: () => null, NOT_A_LEAF: [], MAX_POINTS: 2, place: noop,
+        recordMerge: async (_ctx: unknown, merge: { issue: number; pr: number }, record: { by: string }) => { recorded.push({ issue: merge.issue, pr: merge.pr, by: record.by }); return 'closed'; },
+      });
+      await api.reconcileMergedPullRequests([issue]);
+      return recorded.slice();
+    };
+    expect(await run([merged({})])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
+    // Somebody else's pull request that only refers to the issue did not resolve it.
+    expect(await run([merged({ author: { login: 'someone' } })])).toEqual([]);
+    // A closing keyword still counts, whoever opened it.
+    expect(await run([merged({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' })])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
+    // The loop's own pull request resolves its issue only on a coder's branch (`fix/<words>-<n>`) whose body references the issue.
+    expect(await run([merged({ headRefName: 'release/2026-11-42' })])).toEqual([]);
+    expect(await run([merged({ body: 'A tidy-up.' })])).toEqual([]);
+    expect(await run([merged({ body: 'Refs #420' })])).toEqual([]);
+  });
+
+  it('records a hand merge of the loop\'s pull request for an issue the loop held, and lifts the loop\'s holds', async () => {
+    const recorded: number[] = [];
+    const lifted: string[] = [];
+    const logs: string[] = [];
+    const leaf = (labels: string[]) => ({ number: 42, title: 'a leaf', labels: [{ name: 'size: 1' }, ...labels.map((name) => ({ name }))], blockedBy: { nodes: [] } });
+    const pull = (over: Record<string, unknown> = {}) => ({ number: 70, title: 'fix: a leaf', body: 'Refs #42', headRefName: 'fix/a-leaf-42', mergedAt: '2026-11-21T11:00:00Z', mergeCommit: { oid: 'm'.repeat(40) }, files: [], author: { login: bot }, ...over });
+    const run = async (labels: string[], pr = pull()) => {
+      recorded.length = 0;
+      lifted.length = 0;
+      const issue = leaf(labels);
+      const api = loadFunctions('../loop.ts', ['reconcileMergedPullRequests', 'resolvedBy', 'loopPullIssue', 'notALeafLabel', 'loopHolds'], {
+        ctx: { botLogin: bot }, mergedPullRequests: () => [pr], log: (m: string) => logs.push(m), trackerIo: noop, issueRefs,
+        isHeldBy, isDlqLabel, HOLD_LABELS, CONFIG: { skipLabels: ['needs-decision', 'needs-human', 'loop/skip', 'loop/parked'] }, looksLikeTrunk: () => false, pointsFromLabels: () => 1,
+        DRY_RUN: false, threadOf: () => ({ issue: { ...issue, state: 'OPEN' }, ancestors: [], children: [], record: null, blockers: [], recordBlockers: [] }), refusal, NOT_A_LEAF: ['loop/paused'], MAX_POINTS: 2, place: noop,
+        mutate: (_ctx: unknown, _d: unknown, argv: string[]) => lifted.push(argv.at(-1) as string),
+        recordMerge: async (_ctx: unknown, merge: { issue: number }) => { recorded.push(merge.issue); return 'closed'; },
+      });
+      await api.reconcileMergedPullRequests([issue]);
+      return { recorded: recorded.slice(), lifted: lifted.slice() };
+    };
+    expect(await run(['needs-human', 'loop/dlq: landing'])).toEqual({ recorded: [42], lifted: ['needs-human', 'loop/dlq: landing'] });
+    expect(logs.at(-1)).toContain('lifted needs-human, loop/dlq: landing');
+    // A person's own hold stands, and a merge the loop did not open does not lift the loop's.
+    expect(await run(['loop/skip'])).toEqual({ recorded: [], lifted: [] });
+    expect(await run(['needs-human', 'loop/skip'])).toEqual({ recorded: [], lifted: [] });
+    expect(await run(['needs-human'], pull({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' }))).toEqual({ recorded: [], lifted: [] });
+  });
+});
+
+describe('a landing on an approval that still stands at the head', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const approved = (sha: string, touches = 'code') => ({ author: bot, body: stopComment('approved', { sha, pr: 7, touches }, `**Approved** at \`${sha}\` on pull request #7; landing next.`), createdAt: '2026-11-21T02:02:00Z' });
+  const boundary = { author: bot, body: stopComment('boundary', {}, 'autoMerge is code-only and the change touches migration'), createdAt: '2026-11-21T02:03:00Z' };
+  /** A redrive with no objection (`--land`, or a continuation) of PR #7, whose lane and remote head are `head`. */
+  const land = async (thread: Array<{ author: string; body: string; createdAt?: string }>, over: { head?: string; behind?: string[]; checks?: string | null; draft?: boolean } = {}) => {
+    const writes: string[][] = [];
+    const seats: string[] = [];
+    let standing: { reviewedSha: string; review: { touches?: string[] } } | undefined;
+    const head = over.head ?? 'H';
+    const sh = (_ctx: unknown, argv: string[]) => {
+      if (argv.includes('createdAt')) return '2026-11-21T00:23:00Z';
+      if (argv[5]?.includes('isDraft')) return JSON.stringify({ state: 'OPEN', headRefOid: head, isDraft: over.draft ?? false, statusCheckRollup: [] });
+      return head;
+    };
+    const { validTouches } = loadFunctions(pipeline, ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] });
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue', 'approvedAtHead', 'catchUpOwed'], {
+      DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
+      trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, standingApproval, loopHoldStands, validTouches,
+      claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
+      inFlight: new Map(), isDraft: () => over.draft ?? false, sh, catchUp: () => null, move: noop,
+      fetchBase: () => 'B', requiresUpToDate: () => false, behindBase: () => over.behind ?? [], behindBeyondNoise: () => over.behind ?? [],
+      checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
+      awaitGreenChecks: async () => (over.checks === undefined ? null : over.checks),
+      mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
+      runWorker: async () => { seats.push('prover'); return { verdict: 'failed', reason: 'stop after recording the seat' }; },
+      countFailure: () => ({ outcome: 'dlq' }), removeWorktree: noop,
+      reviewAndLand: async (_c: unknown, _i: unknown, _cwd: unknown, _first: unknown, _max: unknown, _say: unknown, _ceiling: unknown, given?: typeof standing) => { standing = given; return { outcome: 'merged', reason: 'merged' }; },
+    });
+    const ctx = context(new FakeTracker(bot));
+    await api.redriveIssue(ctx, { number: 1, title: 'a migration', labels: [] }, { number: 7, branch: 'fix/migration-1' }, null, { landing: true });
+    return { writes, seats, standing, undrafted: writes.some((argv) => argv.join(' ') === 'gh pr ready 7 --undo') };
+  };
+
+  it('goes straight to the landing: no draft, no proof, no review', async () => {
+    const { undrafted, seats, standing } = await land([approved('H'), boundary]);
+    expect(undrafted).toBe(false);
+    expect(seats).toEqual([]);
+    expect(standing).toMatchObject({ reviewedSha: 'H', review: { decision: 'merge', touches: ['code'] } });
+  });
+
+  it('stands through an outside stop that reruns the work, as a transport failure in the landing', async () => {
+    const outside = { author: bot, body: stopComment('outside', { cause: 'transport', seat: 'landing' }, 'stopped'), createdAt: '2026-11-21T03:29:00Z' };
+    expect((await land([approved('H'), outside])).standing?.reviewedSha).toBe('H');
+  });
+
+  it('stands through the hold a stuck check earns on its third run in a row: it waits on a person, and judged nothing', async () => {
+    const held = { author: bot, body: stopComment('outside', { cause: 'needs-person', seat: 'landing', after: 'stuck-check', times: 3 }, 'held'), createdAt: '2026-11-21T03:29:00Z' };
+    const { standing, seats } = await land([approved('H'), held]);
+    expect(standing?.reviewedSha).toBe('H');
+    expect(seats).toEqual([]);
+  });
+
+  it('lands on it while the checks are still running: the landing waits on them, nothing is proved again', async () => {
+    const { standing, seats, undrafted } = await land([approved('H'), boundary], { checks: 'checks still unfinished: ci, after 0 minutes' });
+    expect(standing?.reviewedSha).toBe('H');
+    expect(seats).toEqual([]);
+    expect(undrafted).toBe(false);
+  });
+
+  for (const [what, thread, over] of [
+    ['the head moved since the approval', [approved('H')], { head: 'H2' }],
+    ['the approval is for another commit', [approved('G')], {}],
+    ['the base moved beyond release noise', [approved('H')], { behind: ['src/a.ts'] }],
+    ['a check on the head has failed', [approved('H')], { checks: 'checks failed: ci (FAILURE)' }],
+    ['the pull request is a draft', [approved('H')], { draft: true }],
+    ['the approval named no classification', [approved('H', '')], {}],
+    ['a dead letter came after the approval', [approved('H'), { author: bot, body: stopComment('dead-letter', { phase: 'landing' }, 'checks failed'), createdAt: '2026-11-21T03:00:00Z' }], {}],
+  ] as const) {
+    it(`keeps the usual path when ${what}`, async () => {
+      const { undrafted, seats, standing } = await land(thread as never, over as never);
+      expect(standing).toBeUndefined();
+      // Back to draft for the proof, unless it already was one.
+      expect(undrafted).toBe(!(over as { draft?: boolean }).draft);
+      expect(seats).toEqual(['prover']);
+    });
+  }
+});
+
+describe('a landing on a standing approval with the review budget spent', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const run = (standing?: unknown) => {
+    const ctx = context(new FakeTracker(bot)); ctx.knobs.maxReviewRounds = 3;
+    const calls: string[] = [];
+    const api = loadFunctions(pipeline, ['reviewAndLand'], {
+      reviewCount: () => 3, sh: () => 'h', catchUp: () => null, move: noop, mutate: noop, MAX_BASE_REFRESHES: 3,
+      review: async () => { calls.push('review'); return { review: { decision: 'merge', blocking: [] }, reviewedSha: 'h' }; },
+      serializePullMaster: (_ctx: unknown, _issue: unknown, _say: unknown, action: () => unknown) => action(),
+      land: async () => { calls.push('land'); return 'merged'; },
+      deadLetter: (_ctx: unknown, _issue: unknown, phase: string) => { calls.push(`dlq:${phase}`); return { outcome: 'dlq' }; },
+    });
+    return api.reviewAndLand(ctx, { number: 1, labels: [] }, '/fake', { pr: 7, touches: ['code'] }, 2, noop, 2, standing).then((result: { outcome: string }) => ({ result, calls }));
+  };
+  it('lands: it runs no review, so the spent budget does not stop it', async () => {
+    const { result, calls } = await run({ review: { pr: 7, decision: 'merge', blocking: [], touches: ['code'] }, reviewedSha: 'h' });
+    expect(result.outcome).toBe('merged');
+    expect(calls).toEqual(['land']);
+  });
+  it('still dead-letters a path that would review', async () => {
+    expect((await run()).calls).toEqual(['dlq:review']);
+  });
+});
+
+describe('withLane judges what is on disk under its claim', () => {
+  const pipeline = '../../fix-github-issue/lib/pipeline.ts';
+  const run = (admit: () => unknown) => {
+    const calls: string[] = [];
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane'], {
+      trackerIo: noop, liveGate: () => ({ ok: true }), inFlight: new Map(),
+      claim: async () => { calls.push('claim'); return { release: () => calls.push('release') }; },
+      keepClaimed: () => () => calls.push('lease ends'),
+      retireLane: () => calls.push('retire'),
+      recordThrow: (_c: unknown, _i: unknown, error: Error) => { calls.push(`record ${error.message}`); return { outcome: { outcome: 'stopped', reason: error.message }, keepLane: true }; },
+    });
+    const lane = { ceiling: 2, pr: 7, admit: () => { calls.push('admit'); return admit(); }, open: () => { calls.push('open'); return '/lane'; } };
+    return api.withLane(context(new FakeTracker(bot)), { number: 1 }, noop, lane, async () => { calls.push('work'); return { outcome: 'merged', reason: 'm' }; }).then((outcome: unknown) => ({ outcome, calls }));
+  };
+  it('a refusal is the outcome: nothing opened or worked, the claim released, and the lane kept', async () => {
+    const { outcome, calls } = await run(() => ({ outcome: 'left-alone', reason: 'dirty' }));
+    expect(outcome).toEqual({ outcome: 'left-alone', reason: 'dirty' });
+    expect(calls).toEqual(['claim', 'admit', 'lease ends', 'release']);
+  });
+  it('an admitted lane is opened, worked, and retired', async () => {
+    const { calls } = await run(() => null);
+    expect(calls).toEqual(['claim', 'admit', 'open', 'work', 'lease ends', 'release', 'retire']);
+  });
+  it('a throw from the judgement is settled as this lane\'s, under the claim', async () => {
+    const { outcome, calls } = await run(() => { throw new Error('stop'); });
+    expect(outcome).toEqual({ outcome: 'stopped', reason: 'stop' });
+    expect(calls).toEqual(['claim', 'admit', 'record stop', 'lease ends', 'release']);
   });
 });

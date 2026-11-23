@@ -77,6 +77,7 @@ bun run <this-skill-dir>/lanes.ts                      # write the 37 lanes and 
 bun run <this-skill-dir>/loop.ts --dry-run             # place every card, print the backlog by lane and what would run; no GitHub or working-tree write
 bun run <this-skill-dir>/loop.ts --limit 3             # work three Ready cards
 bun run <this-skill-dir>/loop.ts --max-points 5        # raise the size ceiling for this run only
+bun run <this-skill-dir>/loop.ts --concurrency 1       # fewer lanes at once for this run only, when something else shares the machine
 bun run <this-skill-dir>/loop.ts --only 12,34          # restrict to these roots and their descendants, whatever their age
 bun run <this-skill-dir>/loop.ts --no-appraise         # skip the inbox; --appraise-limit N caps it instead
 bun run <this-skill-dir>/loop.ts --closure <file>      # print the import closure; verifies pathAliases
@@ -109,8 +110,9 @@ the rest); a flag beats the config for the run it is given on.
 ## What a run does
 
 1. **Repairs and reconciles.** Half-written label transitions, merges a dead run never recorded,
-   stranded pull requests with a trusted verdict, torn claims and pauses, and trunks whose tree
-   moved outside the loop are all settled before anything new is selected.
+   torn claims and pauses, and trunks whose tree moved outside the loop are all settled before
+   anything new is selected. Stranded pull requests with a trusted verdict are found here and
+   resumed in step 4's pool.
 2. **Places every card.** Each open issue in the window, and each card already on the board, is
    put where its facts say: closed is Done, a hold label is its human lane, a `loop/dlq: <phase>`
    label is that phase's dead-letter lane, an open pull request is Drafted or Ready for review, a
@@ -121,13 +123,17 @@ the rest); a flag beats the config for the run it is given on.
    (a confirmed close with a receipt), or a human lane. The size callback hands an oversized issue
    to the sibling `carve-github-issue` skill, which cuts it into children along its highest
    natural seam and holds the parent as an Epic while they move.
-4. **Works Ready.** Up to `concurrency` cards at once, each in its own worktree, each moving
+4. **Works Ready.** From the placement in step 2, while the sweep in step 1 and the appraisal in
+   step 3 run beside it. Up to `concurrency` cards at once (`--concurrency <n>` for one run), each
+   in its own worktree, each moving
    through Coding and Proving (two seats, `code-github-issue` then `prove-github-issue`, with the
    driver moving the card from the push and the pull request each leaves), Ready for review, Evidence
    under review, and the landing lanes to Merged; or back to Sent back on a rejection; or into a
    dead-letter or human lane when a machine gives up or a person is needed. As each lane settles,
    the backlog is placed again and anything the run itself made eligible (a dependent its merge
    freed, a child the knife carved, a released remainder) joins the run, appraised first if unsized.
+   The pull requests a dead run stranded and the loop's own pull requests with no driver are first
+   in the same queue; a resume holds one slot while it waits on its checks, never the whole run.
 5. **Walks the floor and finishes.** With `floor` configured, every merge went up onto the floor
    as it landed, and the loop has been walking the deployed base on its cadence, pausing the line
    when a walk found it wrong. The run walks on until its merges are verified there (or the drain

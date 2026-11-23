@@ -39,11 +39,12 @@ commands rather than trusting a claim of green, and returns a verdict.
 | `parked` | a pull request exists and a person owns the next call: the merge boundary refused it, or the issue changed under the review; the issue carries the reason |
 | `dlq` | a machine gave up: the issue carries `loop/dlq: <phase>` (work, review, or landing from this pipeline) and the reason that put it there |
 | `failed` | the worker or its confirmer failed with attempts remaining: the attempt is counted on the issue (`loop/attempts: N`) and the card goes back to Ready |
-| `left-alone` | the live gate refused the issue before a claim (a hold, a closed issue, a size over the ceiling); nothing was written |
+| `left-alone` | the live gate refused the issue (a hold, a closed issue, a size over the ceiling); nothing was written, except under `--redrive` or `--land`, whose lift and released claim stand |
 | `busy` | another run's claim on the issue stands; nothing was written, and the driver places the card for it |
 | `not-run` | a dry run reached a seat it does not run; nothing was tried, so nothing failed |
 | `stopped` | the operator's stop unwound the lane; nothing was settled, and the lane is kept for the next run |
 | `lease-lost` | this run's lease on the issue ran out unrenewed; its agents were stopped and nothing more was written |
+| `unjudged` | the lane ended on an environment fault (`fault` names it: `ENOSPC`, `ENOMEM`, or `stopped`); nothing was counted or held, the claim is released, the lane cleared, and the work is rerun later; on a host fault the driver's `onHostFault` hook was told, which the burndown answers by pausing the line. The same host fault again on the rerun is charged instead; see "Environment faults" |
 
 ## The verdict-file contract
 
@@ -59,7 +60,10 @@ on, a hand-off for the prover, and what the change touches. `coded` is believed 
 commit is the lane's head and the remote's head of the branch; the driver then announces it on
 the issue as a `<!-- loop-step coded ... -->` comment carrying the hand-off. The prover
 (`prove-github-issue`, `loop-proof.json`) writes `proved` with the ready pull request and the head
-it proved, `unprovable` with what the coder must fix, a hand-off verdict, or `failed`. Together they
+it proved, `unprovable` with what the coder must fix, a hand-off verdict, or `failed`. The coder's
+file is spent once its verdict is read, so the driver deletes it, with any old proof, before the
+prover starts; a `loop-code.json` found after the prover's turn is the prover's misplaced answer,
+and the failure says so. Together they
 are one `WorkerResult` (`fixed` with the pull request, or the escape either seat took), which is all
 the review and landing read. A verdict outside either set reads as no verdict at all.
 
@@ -89,6 +93,11 @@ redrive with a fresh budget, and each redrive is counted on the issue as `loop/r
 issue nobody can get right from cycling between worker and reviewer forever, one restart at a
 time.
 
+`fix.ts --redrive` and `--land` take the issue's claim before they lift its hold, then run the live
+gate. A run that starts between those writes finds the hold or the claim, never neither, so its
+startup walk leaves the lane alone instead of judging it stranded. A gate that still refuses the
+issue, or a lift that fails, releases the claim.
+
 A round is spent whenever a rejection sends the work back or parks it, and recorded before the
 revision starts, so a run killed mid-revision refunds nothing. Four things deliberately cost no
 round: a reviewer that crashes or exits nonzero without a trusted verdict, which is not evidence
@@ -98,8 +107,8 @@ smoke, a conflict, a refused line), which is not an objection a revision could a
 merge, which ends the accounting because the issue is closing.
 
 Parked and dead-lettered are different states. Parked means a person owns the next call, and
-only two things park: the merge boundary refusing an approved change, and the issue changing under
-the review (a hold, a pause, a claim). A dead letter means a machine gave up, and which queue says
+only three things park: the merge boundary refusing an approved change, the issue changing under
+the review (a hold, a pause, a claim), and a person's hold on the pull request itself. A dead letter means a machine gave up, and which queue says
 which machine: `loop/dlq: work` for a worker that failed past its attempts, failed on a revision,
 named no pull request, or left a draft or a dirty tree; `loop/dlq: review` for a spent budget or
 a reviewer with no trusted verdict; `loop/dlq: landing` for a conflict, red or unfinished checks,
@@ -107,6 +116,29 @@ a failed smoke, the refresh cap, a refused line, or an unreported merge. The bur
 and carve queues are its own. Each queue is meant to be triaged differently
 (`burn-down-github-issues/references/state-machine.md`, "Dead letters"); today every one waits
 for a person, and the pull request carries the same label so the branch says what the issue says.
+
+A hand-off is not a park either, and which seat made it decides what happens to a pull request.
+A coder's `needs-decision`, a prover's `needs-decision`, and a coder's `needs-human` with no pull
+request close any pull request the work had: nothing behind them is proved. A coder's `needs-human`
+on a pull request it was continuing is an outside stop that waits on a person: the pull request goes
+back to draft and stays open with its approval and receipts, the issue and the pull request carry
+`needs-human`, and the issue gets an `outside` stop record (cause `base` when the coder answered
+`"outside": "base"` because the gate fails on the untouched base, else `needs-person`). Lifting the
+hold continues the work, with the record's words as the coder's brief. A lane the hold kept because
+it held the seat's uncommitted work is that work's place: the run start's reconcile and the stranded
+lane sweep leave it alone, and the pickup continues on it (`heldLane`) instead of refusing it as dirty. A prover's `needs-human` comes after the code
+was pushed and announced, so the work is held where it stands (`WorkerResult.seat` says which seat
+answered): the pull request stays open, the issue and the pull request both carry `needs-human`,
+the issue gets a `proof-held` stop record with the reason and how the hold comes
+off, and the lane is retired (the branch is on the remote). Removing the issue's label is the whole
+pickup. With a pull request, the facts put the card in Drafted or Ready for review, the burndown
+resumes it with no objection (the held proof is none), and the prover makes the proof current on
+the same pull request; with none, Ready, where the `coded` announcement is proved, not coded again.
+`fix.ts --issue N` continues the pull request of a held proof once the hold is off, and
+`fix.ts --issue N --redrive` lifts that hold itself. The pickup takes `needs-human` off the pull
+request with the issue's, but only while the held proof is the newest stop on the thread; the merge
+gate refuses a pull request that carries `needs-human`, `needs-decision`, or `loop/skip`, and parks
+the issue saying so.
 
 A reviewer rejection, whether `gather-more` or `block`, sends the work back for a revision rather
 than parking it. Both name something a worker can act on, so giving up on the first one throws away
@@ -132,6 +164,12 @@ than trusting a classifier. A missing classification from either agent fails clo
 runtime-effect categories the reviewer's report is the only independent check on the worker's, and a
 merge without it would rest on one self-report.
 
+A driver can hold an issue at the boundary whatever `autoMerge` says, through the context's
+`holdAtBoundary` hook: given the issue about to land and its change (the lane's worktree and the
+base ref it lands on), it returns a reason or null. A held change parks like any other boundary
+park, its reason appended to the boundary's, so `fix.ts --land` still waives it. The burndown holds
+a floor incident's fix this way when the fix undoes a recently merged pull request.
+
 Two boundaries are not knobs, deliberately. The worker never edits production data, and it never
 makes a product decision: an issue whose body asks a person to decide, settle, or rule on something
 comes back as `needs-decision` with the question stated, however small the diff would have been.
@@ -142,8 +180,18 @@ A person can land an approved change the boundary parked with `fix.ts --issue <n
 refuses anything else before it changes a label: no open pull request, a dead letter, or a newest
 park that is not the boundary's (`--redrive` is the command for those). Then it lifts only the park,
 on the issue and the pull request, leaving the review and attempt budgets alone, and continues the
-pull request with no objection, so it is re-proved and re-reviewed rather than recoded. The pull
-master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
+pull request with no objection, so it is re-proved and re-reviewed rather than recoded, unless its
+approval still stands on the head in hand. A continuation with no objection (`--land`, or the
+burndown resuming a pull request whose landing an outside stop interrupted) goes straight to the
+landing, with no draft, no proof, and no review again, when all of these hold: the newest `approved`
+record since the pull request opened has nothing newer than it but a boundary park or an outside
+stop, which judges nothing about the change whether it reruns the work or waits on a person
+(`standingApproval` in `lib/stop-record.ts`); it names both seats'
+classification (`touches`, recorded with the approval) and this pull request; the lane and the pull
+request both hold the head it names; the pull request is ready; the base needs no catch-up, by the
+landing's rule for release noise; and no check on that head has failed, by the newest run under
+each name. A head that moved, an approval for another commit, or a failed check keep the path above;
+checks still running or yet to register are the landing's to wait on, with its stuck-check rule. The pull master then lands it with every other gate in force: freshness, checks, the smoke command, the line,
 and the pinned merge. Only the boundary is waived, only for that issue, and only when both agents
 classified the change: a missing classification still fails closed. The pull request carries a
 comment that a person cleared it, posted before the remaining gates run.
@@ -175,9 +223,12 @@ registered list too. A landing waits until every expected check is present and g
 head, every other check shown is green, and no check suite GitHub has opened on the head is
 incomplete; suite data that cannot be read is waited on, never assumed. Checks are judged by name, since
 a head can carry several nodes under one name (a run the repository's concurrency rule cancelled, the
-skipped jobs of a run made while the pull request was a draft, and the run that counts): a name passes
-on a node that succeeded, fails on a node that failed, and has no verdict yet when all it carries is
-skipped or cancelled. A check that need not have run may rest on skipped; one that must may not, or a landing
+skipped jobs of a run made while the pull request was a draft, a rerun, and the run that counts), and
+by the newest run under each, as GitHub's required checks are: ordered by completion, else start,
+else when the watch first saw it, a newer failure overrides an older pass, a newer pass an older
+failure, and a newer run still going keeps the name pending. Runs that cannot be ordered are read
+fail-closed (a failure before a running run, a running run before a pass). Skipped and cancelled nodes
+reach no verdict and are passed over, and a name that carries only those has no verdict yet. A check that need not have run may rest on skipped; one that must may not, or a landing
 could merge with no check having run, which branch protection alone does not prevent. Which checks
 must have run is the written list (`requiredChecks` and the base branch's required status checks) and
 every check that had passed on the head the reviewer read, since the approval counted on those. It is
@@ -197,6 +248,25 @@ that the app runs nothing here, not a detection: a listed app that registers its
 landing has passed is not seen, exactly as no observation could have seen it. With no written list the
 landing is a dead letter that says so. Only `checks: 'none'` says the repository runs no checks on
 a pull request, and every wait ends at `checksTimeoutMinutes`.
+
+The wait is a landing watch (`lib/landing-watch.ts`): each poll is one observation of the pull
+request, its state, its head, its branches, whether it is a draft, its merge time and merge commit,
+and each check on that head with its status and the moment the watch first saw it, kept across polls.
+Every read of the pull request a landing makes goes through it: the merge gate's match against the
+review, a standing approval's head, and the confirmation of the merge. A pull request observed merged ends the wait, whoever merged it, and
+the merge is recorded exactly as the loop's own is (`recordMerge` in `lib/record-merge.ts`: the card
+to Merged, the merge onto the floor, the base followed, the lane removed, and the issue closed with a
+pointer); the loop merges nothing itself. One observed closed ends the wait as a park: a person
+closed it, and a person decides what follows. The run start's reconcile records a merge no landing
+watched the same way.
+
+A check whose provider queued it and never started it is stuck, not slow: a deploy-preview
+integration can leave its check `queued` for hours after its own job finished. Once every node under
+a name with no pass has sat queued for `stuckCheckMinutes` (30 by default) since the watch first saw
+it, the wait ends as an outside stop with cause `stuck-check`, naming the check, its provider (the
+workflow, or the host its details link to), and the minutes it sat, instead of waiting out
+`checksTimeoutMinutes` into a landing dead letter. A check that has started is never stuck, however
+long it runs, and a commit status (which cannot tell queued from running) never is either.
 
 ## Staying current, and when proof goes stale
 
@@ -244,7 +314,11 @@ Some paths are outside any import graph and invalidate everything in flight: wha
 generated output, build configs, and the workflows. Those short-circuit to stale. The mirror of
 that list is `releaseArtifacts`: files the repository's own release machinery rewrites on every
 landing, whose movement alone never invalidates an approval, plus a version-only manifest bump,
-which is recognized as release noise without an entry.
+which is recognized as release noise without an entry. A version bump that also changes anything
+else in the manifest (a dependency, a script) is movement. Which commit made the change, and who
+authored it, does not enter into it: the files decide. Every catch-up applies the same rule: at
+the seam before proving, before a review, before a revision, before a redrive or `--land`, and
+before the merge.
 
 Freshness gates an **approval**, not a rejection. A rejection names a gap in the work, and the base
 moving does not fill it, so a rejected change catches up and goes straight to its revision rather
@@ -254,7 +328,7 @@ reaching the same verdict twice.
 | Incoming change | Before a review | Before the merge |
 |---|---|---|
 | none | the review starts | the merge proceeds |
-| only files `releaseArtifacts` names, none of them in the work's import closure, and protection is known not to require an up-to-date branch | the base is merged in; the proof stands | no catch-up and no new CI run: the merge itself brings them in, on the head that was checked. A version-only manifest bump, or protection that cannot be read, catches up as usual |
+| only release noise (files `releaseArtifacts` names, or a version-only manifest bump), none of it in the work's import closure, and protection is known not to require an up-to-date branch | no catch-up; the proof stands and the review starts on the head as it is | no catch-up and no new CI run: the merge itself brings them in, on the head that was checked. Protection that requires an up-to-date branch catches up as usual; protection the token cannot read is judged by the pull request instead (`mergeStateStatus` `BEHIND` requires it, a mergeable state on a head behind the base does not), and anything less certain catches up |
 | nothing the closure reaches, and the branch's own change is byte-identical across the merge (compared by patch id) | the base is merged in; the proof stands; the review starts on the caught-up head | the base is merged in; the approval stands; the pull master waits on the caught-up head's checks and lands that head |
 | inside the closure, or a global invalidator, or the merge altered the branch's own change | the base is merged in; the proof is stale; the card goes back to Proving, not to a revision: the author reruns the checks and reacquires what the movement reached on the same pull request, spending no review round | the base is merged in; the approval no longer describes what would land; the head is **re-reviewed**, spending no round |
 | any, on a **rejection** | | the base is merged in and the author revises; the verdict still stands |
@@ -264,6 +338,14 @@ reaching the same verdict twice.
 Reproofs and re-reviews caused by the base are bounded together by the refresh cap; past it the
 landing is a dead letter, because a base that keeps landing into these files needs a quiet moment
 or a person.
+
+A landing also looks upstream after each gate (checks, smoke, the line), and a base that moved
+while a gate ran sends it back to catch up. A move made only of release noise needs no catch-up
+unless protection requires an up-to-date branch; then it catches up but is not counted against the
+refresh cap (`MAX_BASE_REFRESHES`, 2), and has a bound of its own (`MAX_NOISE_REFRESHES`, 6), so a
+stream of release commits still ends in a dead letter rather than a loop. Any other move counts,
+whoever authored it. The dead letter names the commits that moved the base: short sha, subject,
+and author.
 
 Only the merge is serialized. A catch-up and its re-review run outside the lock, because holding it
 across a review would stall every other lane behind one stale branch; the lock is then re-entered
@@ -291,13 +373,15 @@ The pull master runs inside the driver's process rather than as its own, so merg
 while a run is alive. A run that dies after opening pull requests does not strand them outright: the
 next start resumes each stranded pull request from the prover's verdict file its lane still holds
 (or, in a lane an older run left, the single worker's),
-before selecting anything new. Result-file clearing is role-specific precisely so that starting a
+in the same work pool as new lanes and ahead of them in its queue, so a resume waiting on its
+checks holds one slot rather than the run. Result-file clearing is role-specific precisely so that starting a
 reviewer does not destroy the verdict this resume depends on.
 
 The verdict is trusted only as far as it can be corroborated: it must name the issue whose lane it
 sits in, the pull request must still be open, and the lane must sit at that pull request's remote
 head, or the resume would review a tree that is not what would merge. The safety labels that gate
-selection gate resumption too.
+selection gate resumption too. So does another run's live claim: a lane whose issue another run holds,
+or whose claim cannot be read, is neither judged nor resumed.
 
 Two windows remain unrecoverable, because no trusted verdict exists on disk during them: after the
 pull request opens and before the verdict file is written, and during a revision between clearing
@@ -319,6 +403,11 @@ let a driver shape the merge without the pipeline learning why:
   (`loop/dlq: landing`) without spending a review round. Absent means always allowed.
 - **`ctx.afterMerge`** is told once after every confirmed merge, with the issue, the pull request,
   the merged SHA, the time, and the paths that landed, while the lane still exists.
+- **`project.laneFiles`** lists files the main checkout holds and git ignores (shared test
+  credentials, say) that the driver copies into a lane whenever it makes one, reuses one, or
+  resets one for a retry. A lane is a fresh worktree and sees no untracked file otherwise, and
+  `installCommand` is only text in the prompts, which not every seat runs. A missing source, or a
+  path git does not ignore in the lane, is logged and skipped; the lane is still made.
 - **`project.followBase`** fast-forwards the main checkout to the remote base after every confirmed
   merge, so a dev server running there shows each fix as it lands. Only a fast-forward, and only
   when that checkout has the base branch checked out with a clean tracked tree (untracked files
@@ -328,6 +417,21 @@ let a driver shape the merge without the pipeline learning why:
 
 Every park carries its reason to the issue as a comment and to the pull request as `loop/parked`,
 whichever gate produced it.
+
+### The stop record
+
+Every stop the loop makes is recorded on the issue in one format (`lib/stop-record.ts`): a
+`<!-- loop-stop kind=<kind> ... -->` marker line, then the words a person and the next seat read.
+The kinds are `park`, `boundary` (the merge boundary's park, which `--land` may waive),
+`dead-letter` (with its `phase`), `proof-held` (with the run, branch, and pull request), `held` (a
+seat's `needs-human` or `needs-decision`, with its `verdict`), `outside` (with its `cause` and `seat`),
+and `approved` (with the reviewed `sha`, the pull request, and both seats' `touches`, comma-separated). One reader,
+`readStop`, answers what stopped the work last: the newest record the loop's login wrote, since the
+open pull request was opened. A park or a dead letter is the objection a redrive hands the coder;
+a held proof is proved again; a boundary park or an approval is neither. Threads written before the
+record are read by their older markers (`loop-proof-held`, `loop-held`) and by a loop note's words:
+a dead-letter queue, a park, and the boundary's `autoMerge is ... and the change touches` reason.
+`--land` classifies the comment that was in force when the park label went on the same way.
 
 ## Known gaps
 
@@ -359,5 +463,79 @@ operator's stop is `stopped`: nothing is settled from it, but its files and its 
 the next run start may resume a `fixed` verdict whose pull request is open at the same head. An agent
 killed because the run lost its lease is settled as `lease-lost`, and nothing is written. The
 asymmetry between the first two is deliberate: a stop interrupts a worker that may have finished,
-while a cap kills one that, by definition, had not.
+while a cap kills one that, by definition, had not. A seat that ends on an environment fault, a
+person's signal among them, was not judged, and settles as `unjudged`; see below.
+
+### Outside stops
+
+An outside stop is a stop the change did not cause, settled in one place, `settleOutsideStop`
+(`lib/environment-fault.ts`), by its cause:
+
+| Cause | Where it comes from | What follows |
+|---|---|---|
+| `host` | a run ended on `ENOSPC` or `ENOMEM` | the line pauses; the work reruns (a repeat is charged; see below) |
+| `signal` | a stop signal the driver did not send | the work reruns on a later run |
+| `transport` | the tracker could not be reached (`TRANSPORT` in `lib/shell.ts`: a failed, closed, or timed-out connection, a host that did not resolve, an HTTP 5xx) or is rate limiting this token (`RATE_LIMIT`: the primary or secondary limit, a 429) | the work reruns on a later run; the checks wait first retries its read with backoff for up to five minutes, and waits out a rate limit until its reset (read from `gh api rate_limit`, a minute when none is named) within the checks deadline |
+| `stuck-check` | a check its provider queued and never started, past `stuckCheckMinutes` (30 by default) while the landing waited on it | the work reruns on a later run; the stop names the check, its provider, and how long it sat queued |
+| `base` | a coder's `needs-human` with `"outside": "base"` on a pull request | the work waits on a person with its pull request held open in draft |
+| `needs-person` | a prover's `needs-human`, or a coder's on a pull request | the work waits on a person with its pull request held open |
+
+A rerunning cause is bounded: the third `transport` or `stuck-check` stop in a row on one issue
+(`OUTSIDE_REPEAT_BOUND`; counted from the newest stop records on its thread, so the count survives a
+restart, and broken by any other stop, an approval included) waits on a person instead of rerunning,
+recorded as `cause=needs-person` with `after=<cause>` and `times=<n>`. Text that only looks like a
+network failure, or a check its provider never starts, would otherwise rerun the work on every run.
+A thread that cannot be read while the tracker is down counts nothing, and the work reruns as before.
+
+Whatever the cause, nothing is counted, no pull request is closed, and the stop is recorded on the
+issue as a `loop-stop kind=outside` record naming the cause and the seat (a held proof keeps its own
+`proof-held` record). A hold that waits on a person labels the issue and the pull request
+`needs-human`; a redrive, or the next run once a person lifts the label, takes it off both and
+continues the work. Through an outside stop the pickup reads the stop behind it, so a rerun answers
+the same objection it was answering.
+
+### Environment faults
+
+An environment fault is a run that ended for a reason outside the work: the host ran out of disk or
+memory, or a person stopped the agent. Such a run says nothing about the work's concept, code, or
+proof, so the work was not judged; that is a different fact from judged and failed, and the pipeline
+never settles it as a failure. `runAgentOnce` marks a run's `fault` when it exits non-zero with
+`ENOSPC` or `ENOMEM` (or their text, `No space left on device`, `Cannot allocate memory`) in the tail
+of its log, or when it ends by SIGTERM, SIGINT, SIGHUP, or SIGQUIT, or the exit code an engine that
+traps one reports (128 plus the signal's number; `claude -p` exits 143 on SIGTERM), that the driver
+never sent: `killAgent` records every process the driver signals. A run with a fault is not retried
+and its answer files are deleted like a killed run's.
+
+Every seat that runs an agent refuses such a run with `refuseEnvironmentFault`, which throws an
+`EnvironmentFault`: the coder, the prover, the reviewer, the answer's confirmer, the appraiser and
+its close confirmer, the carver and its confirmer, and the decision panel's seats. A thrown error
+with either errno code, from the driver's own writes or a command it ran, is the same fault. Each
+driver settles it through `settleOutsideStop`, the one place the rule lives:
+
+- Nothing is counted, dead-lettered, or held, and the stop is recorded on the issue. The fix pipeline settles the lane as `unjudged`,
+  releases the claim, and clears the lane so the rerun starts clean (commits no remote has are kept
+  under `refs/loop/rescued/`); kept dirty, a later run would have sent it to the work dead letter.
+  The appraisal returns `unjudged` with `retry`, the knife counts no carve, and the panel gives its
+  round back and writes no hold.
+- A host fault calls the driver's `onHostFault` hook, which the burndown answers by pausing the line
+  and, once it is resumed, taking the issue up again in the same run. A person's stop does not
+  pause the line, and the burndown leaves the rerun to the next run, so the work they stopped does
+  not start again at once. To keep it from running again, add a hold label.
+- The exception: a host fault the work itself causes. The first host fault on an issue is free and
+  leaves the marker label `loop/environment-fault: <code>@<seat>` (the seat that hit it; the
+  driver's own fault names none), so a restart does not forget it. The
+  same code again with the marker on the issue is charged as the ordinary failure it then is (an
+  attempt, a review dead letter, a counted appraisal or carve), with a reason that says the work
+  reproduced the fault on its rerun, and the marker comes off. The marker also comes off when the
+  seat that hit it next finishes without a fault (`runAgentOnce` clears it): that seat's work got
+  past the faulted point, so a much later fault of the same code is a new occasion and free again.
+  Another seat's clean run leaves it: a clean coder run says nothing about the prover's disk. A
+  marker that names no seat is cleared by any seat's clean run. A
+  different code is free again too. A person's stop is never charged and leaves no marker, only its record.
+
+Two endings cannot be told apart from a person's and are left as failures: SIGKILL, which the
+kernel's out-of-memory killer also sends, and an engine that exits 0 when interrupted (`claude -p`
+does on SIGINT). The floor's walker and diagnosis turns, and a size or carve callback, count nothing
+when they fail, so they are not refused: a failed walk is walked again, and a callback's failure is
+logged with no verdict.
 

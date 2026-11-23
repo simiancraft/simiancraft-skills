@@ -39,7 +39,8 @@ burndown (parallel)
 a state of the ticket so that a pause moves no card: in the machine, appraiser dispatch, worker
 dispatch, and the knife's dispatch and revisit are guarded by `lineActive`, and a card waiting on a
 paused line stays in its lane while the board's banner says why. `lib/machine.test.ts` asserts that
-`lineActive` guards exactly those events and no others. Where the running loop actually holds,
+`lineActive` guards exactly those events and no others. A floor pause for an outage outside the
+repository holds only the merge, so for these events the line reads as active. Where the running loop actually holds,
 which includes the merge and does not yet include the knife's sweep, is listed once in
 `operating.md`, "When the line is paused".
 
@@ -50,7 +51,7 @@ Every ticket state inherits these; a leaf does not repeat them.
 | Event | Target | Meaning |
 |---|---|---|
 | `ISSUE_CLOSED` | `terminal.merged` when a merged PR references it, else `terminal.closedWithoutCode` | GitHub is the fact; a closed issue is done whatever the lane said |
-| `PR_MERGED` | `terminal.merged`, closing the issue with a pointer | the pull master died between the merge and the close |
+| `PR_MERGED` | `terminal.merged`, recorded as every merge is (`recordMerge`: the merge onto the floor, the issue closed with a pointer) | the pull master died between the merge and the close, or a person merged it while no landing watched |
 | `HOLD_ADDED_BY_PERSON` | the human lane the label names | a person owns it now |
 | `SKIPPED` | `offBoard` (final) | `loop/skip`; a person's never |
 | `FOREIGN_CLAIM` | `waits.claimedElsewhere` | another run holds a live lease |
@@ -127,10 +128,10 @@ so any run can finish a spawn another run started.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| D4 Sent back | PR to draft, run a code revision with the reviewer's objection as the brief | `CODED` to D2 (announce the pushed commit, run the prover); `WORKER_VERDICT` as D1 (with the PR parked on a hold); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
+| D4 Sent back | PR to draft, run a code revision with the reviewer's objection as the brief | `CODED` to D2 (announce the pushed commit, run the prover); `WORKER_VERDICT` as D1 (with the PR parked on a hold), except needs-human, which holds the PR open (to H2: back to draft, label the issue and the PR `needs-human`, record an outside stop; lifting the hold continues the work); `AGENT_FAILED` to Q3 (a failed revision is a work dead letter at once; the attempt counts) |
 | D1 Coding | run the coder | `CODED` to D2: the coder pushed, and the driver announces the pushed commit on the issue (`loop-step coded`) and runs the prover; `WORKER_VERDICT`: already-fixed, obsolete, answered to A3 (a close is confirmed by the second engine whoever proposes it); needs-decision P1 when a panel can sit, else H1; needs-human H2; out-of-band over ceiling C1; `AGENT_FAILED`: under cap to B1 (count, release, remove worktree), else Q3 |
-| D2 Proving | move card; the transition that enters it runs the prover | `PROVED` to E1 (a ready pull request whose head is the proven commit); `PROOF_REFUSED`: under the attempt cap to D1 (count an attempt; the driver announces `loop-step unproved` with what could not be shown, which is the coder's brief), else Q3; `AGENT_FAILED` to Q3 |
-| D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving) |
+| D2 Proving | move card; the transition that enters it runs the prover | `PROVED` to E1 (a ready pull request whose head is the proven commit); `PROOF_REFUSED`: under the attempt cap to D1 (count an attempt; the driver announces `loop-step unproved` with what could not be shown, which is the coder's brief), else Q3; `WORKER_VERDICT` needs-human to H2 with the pull request left open (label the issue and the pull request `needs-human`, record a `proof-held` stop with the reason, release, remove the worktree; the branch is on the remote); any other escape as D1; `AGENT_FAILED` to Q3 |
+| D3 Drafted | move card | `PR_READY` to E1; `RUN_DIED` to Q3 (finished work never declared); `RESUMED` as E1 (the draft is carried on from Proving; a lifted held proof's `needs-human` mirror comes off the pull request with the reclaim) |
 
 D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
@@ -138,8 +139,8 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 
 | Lane | Entry | Leaves on |
 |---|---|---|
-| E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
-| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card on), else gather-more to D2 (spend a round; the prover reacquires proof with the reviewer's words as the brief) and block to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
+| E1 Ready for review | move card | `REVIEWER_DISPATCHED`: behind the base at all to F2 (no review begins on a stale lane); else E2. `RESUMED` (the loop's own pull request, no hold, no driver): the approval standing on the head, the base current, and no check failed by its newest run, to F1 (no draft, proof, or review again; checks still running are waited on in F3); behind the base to F2 and from there to D2; else D2. Nobody objected, so it is never D4 |
+| E2 Evidence under review | run reviewer | `REVIEWED`: merge to F1 (pin the reviewed head, and record an `approved` stop naming it on the issue); gather-more or block under the round cap to F2 when the lane fell behind during the review (spend a round; the rejection stands through the catch-up, which hands the card on), else gather-more to D2 (spend a round; the prover reacquires proof with the reviewer's words as the brief) and block to D4 (spend a round); past the cap Q4 (spend, clear rounds). `AGENT_FAILED` to Q4; `PR_TO_DRAFT` to D3 |
 
 ### Landing (the pull master; serial)
 
@@ -147,9 +148,9 @@ D4 sits left of D1 on the board so a rejection is a visible leftward move.
 |---|---|---|
 | F1 Approved | enqueue, ask the merge boundary | `BOUNDARY_REFUSED` to H3 (the boundary is a fact about the change, asked once, before anything waits); `HEAD_MOVED` to E1 (the lane moved past the reviewed commit); `FRONT_OF_QUEUE`: behind the base at all to F2 (nothing lands that lacks the current base); else F3 |
 | F2 Catching up | leave queue, merge base into branch | `CAUGHT_UP`, where the closure decides the cost and never the catch-up: a standing approval with the movement outside the closure and the branch's change intact to F3 (pin the caught-up head); a standing approval otherwise, refreshes under cap, to E1 (count refresh); a standing request for more evidence to D2 (run the prover); a standing rejection to D4; no verdict yet with the movement outside the closure to E1; no verdict yet otherwise, refreshes under cap, to D2 with a reproof brief (count refresh; the prover reacquires the proof on the existing pull request and `PROVED` returns the card to E1); else Q5. `CONFLICT` to Q5 |
-| F3 Checks pending | wait on checks | `CHECKS`: green but behind the base to F2 under the refresh cap, to Q5 past it; green and smoke configured to F4; green to F5; else Q5 |
-| F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap, to Q5 past it; passed to F5; else Q5 (tail as the reason) |
-| F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
+| F3 Checks pending | wait on checks, reading the pull request's state on every poll | `PR_MERGED` to T1 (someone merged it while the wait watched: put on the floor, follow base, remove the worktree, close with pointer; the loop merges nothing itself); `PR_CLOSED` to H3 (a person decides); `CHECKS`: green but behind the base to F2 under the refresh cap (a move made only of release noise is not counted against it, and has a larger bound of its own), to Q5 past it, naming the commits that moved the base; green and smoke configured to F4; green to F5; else Q5 |
+| F4 Smoke | run smoke | `SMOKE`: passed but behind the base to F2 under the refresh cap (counted as in F3), to Q5 past it; passed to F5; else Q5 (tail as the reason) |
+| F5 Merging | ask `mayMerge`, check the boundary, merge with the pinned head, confirm | `MERGED` to T1 (close with pointer, put on the floor, follow base); `BOUNDARY_REFUSED` to H3 (a policy handoff, not a failure); `PR_HELD` to H3 (the pull request carries `needs-human`, `needs-decision`, or `loop/skip`); `MERGE_UNREPORTED`, `LINE_GAVE_UP` to Q5 |
 
 Every phase that runs a machine answers `AGENT_FAILED` in every one of its lanes, into its own
 queue, because a throw between two turns is a failure too: appraisal to Q1, carving to Q2, review
@@ -159,6 +160,36 @@ anticipated (a verdict the driver cannot read, a valid appraisal with no size) t
 as a failure: every list that answers a machine's report ends in a branch with no guard. A triage
 agent that fails leaves the card resting in its queue with the failure recorded; no machine
 failure anywhere becomes a person's hold.
+
+A seat whose run ends on an environment fault raises `ENVIRONMENT_FAULT` instead, from any lane
+of appraisal, carving, work, review, landing, or the panel. An environment fault is a failure of the
+place the work ran, not of the work: the host ran out of disk (`ENOSPC`) or memory (`ENOMEM`), a stop
+signal the driver did not send, a person's most likely, ended the agent, or the tracker could not be
+reached (a transport failure the checks wait's retries outlasted, or any step's command failing in
+transport), or a check the landing waited on sat queued, never started by its provider, past
+`stuckCheckMinutes` (`stuck-check`). The work was not judged,
+which is a different fact from judged and failed, so nothing is counted, dead-lettered, or held,
+and the stop is recorded on the issue (`loop-stop kind=outside`, with its cause and seat):
+appraisal returns to A1, carving to C1, work to B1 with no pull request open and to D3 with one (the
+next run resumes a driverless pull request through Proving), review and landing to E1, and the panel gives its
+round back and re-derives the card from its facts. The claim is released and the lane cleared for
+the rerun (commits no remote has are kept under `refs/loop/rescued/`). A host fault also sends the
+line `PAUSE`, and the burndown takes the issue up again in the same run once the line is resumed; a
+person's stop, a transport failure, and a stuck check are rerun by the next run, not this one, so the
+work a person stopped does not start again at once and a tracker or a provider that is down is not
+retried in a loop. The same rerunning stop (a transport failure or a stuck check) on an issue's
+third run in a row raises `OUTSIDE_STOP_RECURRED` instead, from the same phases: the work waits on
+a person in H2, recorded as an outside stop that waits on a person (`cause=needs-person`, with the
+cause it repeated), which a redrive or the label's removal lifts.
+
+The one exception is a host fault the work itself causes, such as tests that fill the disk. The
+first host fault on an issue leaves the marker `loop/environment-fault: <code>@<seat>`; the same code again
+on its rerun, with the marker still on the issue, is the work's doing, and the driver raises
+`AGENT_FAILED` for it, with a reason that says the work reproduced the fault, and takes the marker
+off. The seat that hit the fault takes the marker off too when it next finishes without one, so
+only a repeat before that seat gets past the faulted point is charged. A person's stop is never charged. The driver's own kills (the cap, a stop, a lost lease) and a
+crash's signals stay `AGENT_FAILED` or the stop they are; see
+`fix-github-issue/references/pipeline.md`.
 
 Only F5 holds the merge lock; F2, F3, and F4 run outside it so one stale branch does not stall
 the queue, and F5 re-checks freshness on re-entry.
@@ -215,8 +246,8 @@ failing is a seat short, not the machine failing, so the panel answers no `AGENT
 | Lane | Leaves on |
 |---|---|
 | H1 Needs decision | `HOLD_REMOVED`: a trunk to C6 (new epoch, forced revisit); a leaf to A1 (size label off; the answer may change the size) |
-| H2 Needs human | `HOLD_REMOVED` to reconcile (the capped counter cleared first) |
-| H3 Parked | `HOLD_REMOVED` to B1 (PR unparked and kept for reuse; the redrive continues the branch, never opens a second PR); `LANDED_BY_HAND` to T1 |
+| H2 Needs human | `HOLD_REMOVED` to reconcile (the capped counter cleared first); a held proof with an open pull request reconciles to D3 or E1 and is resumed at Proving, one without a pull request to B1, where its `coded` announcement is proved rather than coded again |
+| H3 Parked | `HOLD_REMOVED` to B1 (PR unparked and kept for reuse; the redrive continues the branch, never opens a second PR); `LANDING_CLEARED` (a person's `fix.ts --land`): the approval standing on the head, the base current, and no check failed by its newest run, to F1 (no draft, proof, or review again; checks still running are waited on in F3); else behind the base to F2 and from there to D2, or D2; `LANDED_BY_HAND` to T1 |
 
 ### Terminal
 
@@ -238,7 +269,8 @@ The escapes either seat may take (a close, a hand-off, out of band) are `WORKER_
 Work phase. A person's `fix.ts --issue N` is `PERSON_DISPATCHED`
 from the Inbox straight to Coding, skipping the sizing pass but not the worker's own appraisal.
 
-Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`). Its
+Merging parks only when the issue changed under the review (`ISSUE_CHANGED_UNDER_REVIEW`) or the
+pull request carries a person's hold (`PR_HELD`). Its
 last act before the merge is one more look upstream: `BASE_MOVED_WHILE_WAITING` returns the card
 to F2 under the refresh cap, and to Q5 past it, since a paused line can hold a card here long
 enough for something else to land. Checks and smoke take time too, so upstream is looked at as

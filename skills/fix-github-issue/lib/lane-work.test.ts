@@ -1,14 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ProjectConfig } from './config.ts';
+import { laneFilesFault, type ProjectConfig } from './config.ts';
 import type { Context } from './context.ts';
 import { claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
-import { reconcile } from './resume.ts';
-import { resetLane, worktreeAtPullRequest } from './lane.ts';
+import { judgeLane, reconcile } from './resume.ts';
+import { stopComment } from './stop-record.ts';
+import { dirtyPaths, resetLane, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -170,6 +171,22 @@ describe('what a finished lane leaves behind', () => {
     retireLane(ctxFor(lines), 80, say(lines));
     expect(existsSync(dir)).toBe(false);
   });
+
+  it('removes the seats\' scratch with the lane, and keeps it with a kept lane', () => {
+    const runDir = join(scratch, 'run');
+    const ctx = { ...ctxFor([]), runDir } as Context;
+    const seats = (issue: number) => join(runDir, 'scratch', `issue-${issue}`);
+    for (const issue of [182, 183]) {
+      mkdirSync(join(seats(issue), 'prover'), { recursive: true });
+      writeFileSync(join(seats(issue), 'prover', 'gate.log'), 'receipts\n');
+    }
+    lane(182, false);
+    retireLane(ctx, 182, () => {});
+    expect(existsSync(seats(182))).toBe(false);
+    writeFileSync(join(lane(183, false), 'half-done.txt'), 'edits nobody committed\n');
+    retireLane(ctx, 183, () => {});
+    expect(existsSync(join(seats(183), 'prover', 'gate.log'))).toBe(true);
+  });
 });
 
 describe('reconcile at a loop start', () => {
@@ -193,6 +210,67 @@ describe('reconcile at a loop start', () => {
     const dir = lane(82, false);
     reconcile(ctxWith(io, `${hostname()}-${process.pid}-3`), new Set());
     expect(existsSync(dir)).toBe(false);
+  });
+
+  it("saves a closed issue's uncommitted work under a ref and removes its lane, saying once where it went", () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(86, { state: 'CLOSED', stateReason: 'COMPLETED' })]);
+    const dir = lane(86, true);
+    const head = git(dir, 'rev-parse', 'HEAD');
+    writeFileSync(join(dir, 'a.txt'), 'edited\n');
+    writeFileSync(join(dir, 'new.txt'), 'never added\n');
+    git(dir, 'rm', '-q', '--cached', 'work-86.txt');
+    const lines: string[] = [];
+    const ctx = { ...ctxWith(io, `${hostname()}-${process.pid}-4`), log: (m: string) => lines.push(m) } as Context;
+    reconcile(ctx, new Set());
+    expect(existsSync(dir)).toBe(false);
+    const [ref] = git(repo, 'for-each-ref', '--format=%(refname)', 'refs/loop/rescued/issue-86/').split('\n');
+    expect(ref).toMatch(/^refs\/loop\/rescued\/issue-86\/[0-9a-f]{12}$/);
+    // The saved commit sits on the lane's HEAD and holds the working tree as it was, untracked files too.
+    expect(git(repo, 'rev-parse', `${ref}^`)).toBe(head);
+    expect(git(repo, 'show', `${ref}:a.txt`)).toBe('edited');
+    expect(git(repo, 'show', `${ref}:new.txt`)).toBe('never added');
+    expect(git(repo, 'show', `${ref}:work-86.txt`)).toBe('a finished change');
+    expect(lines.filter((l) => l.includes(ref))).toHaveLength(1);
+    expect(lines.some((l) => /leaving it for inspection/.test(l))).toBe(false);
+    // Nothing is written on a closed issue, and the next start has nothing to say about it.
+    expect(io.writes).toEqual([]);
+    const again: string[] = [];
+    reconcile({ ...ctx, log: (m: string) => again.push(m) } as Context, new Set());
+    expect(again.filter((l) => l.includes('#86'))).toEqual([]);
+  });
+
+  it("keeps a closed issue's dirty lane while an open pull request is on its branch", () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(87, { state: 'CLOSED', stateReason: 'NOT_PLANNED' })]);
+    io.openPulls = ['fix/work-87'];
+    const dir = lane(87, true);
+    writeFileSync(join(dir, 'half-done.txt'), 'edits nobody committed\n');
+    reconcile(ctxWith(io, `${hostname()}-${process.pid}-5`), new Set());
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(git(repo, 'for-each-ref', 'refs/loop/rescued/issue-87/')).toBe('');
+  });
+
+  it("keeps an open issue's dirty lane for inspection, as before", () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(88)]);
+    const dir = lane(88, false);
+    writeFileSync(join(dir, 'half-done.txt'), 'edits nobody committed\n');
+    const lines: string[] = [];
+    reconcile({ ...ctxWith(io, `${hostname()}-${process.pid}-6`), dryRun: true, log: (m: string) => lines.push(m) } as Context, new Set());
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(git(repo, 'for-each-ref', 'refs/loop/rescued/issue-88/')).toBe('');
+    expect(lines.some((l) => /#88 has uncommitted work and no pull request; leaving it for inspection/.test(l))).toBe(true);
+  });
+});
+
+describe('reconcile and a lane whose status cannot be read', () => {
+  it('keeps it for inspection: a failed read is not a clean lane', () => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(194)]);
+    const dir = lane(194, false);
+    writeFileSync(join(dir, '.git'), 'gitdir: /nonexistent/worktree\n');
+    const lines: string[] = [];
+    reconcile({ project: { ...PROJECT, repo: 'o/r' }, repoRoot: repo, dryRun: true, dryRunLog: [], botLogin: 'loop-bot', runId: `${hostname()}-${process.pid}-7`, io, log: (m: string) => lines.push(m) } as unknown as Context, new Set());
+    expect(existsSync(dir)).toBe(true);
+    expect(lines.some((l) => /#194 .*leaving it for inspection.*could not be shown clean/.test(l))).toBe(true);
+    expect(lines.some((l) => /retiring the abandoned worktree for #194/.test(l))).toBe(false);
   });
 });
 
@@ -223,6 +301,57 @@ describe('resuming a pull request in its lane', () => {
   });
 });
 
+describe('a lane a hold kept with its uncommitted work', () => {
+  const ctxWith = (io: FakeTracker, lines: string[] = []) =>
+    ({ project: { ...PROJECT, repo: 'o/r' }, repoRoot: repo, dryRun: false, dryRunLog: [], botLogin: 'loop-bot', runId: `${hostname()}-${process.pid}-9`, io, log: (m: string) => lines.push(m) }) as unknown as Context;
+  /** An issue whose newest stop is the loop's hold for a person, as a coder's needs-human writes it. */
+  const heldIssue = (n: number) => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(n, { labels: [{ name: 'needs-human' }] })]);
+    io.comment(n, 'loop-bot', stopComment('outside', { cause: 'needs-person', seat: 'coder' }, 'needs a credential'));
+    return io;
+  };
+  const dirtyLane = (n: number, branch?: string) => {
+    const dir = lane(n, Boolean(branch), branch);
+    if (branch) {
+      git(dir, 'push', '-q', 'origin', `HEAD:refs/heads/${branch}`);
+      git(dir, 'branch', '-q', `--set-upstream-to=origin/${branch}`);
+    }
+    writeFileSync(join(dir, 'half-done.txt'), 'the coder\'s own edits\n');
+    return dir;
+  };
+
+  it('is kept at a loop start, not sent to a dead letter', () => {
+    const lines: string[] = [];
+    const dir = dirtyLane(190);
+    reconcile({ ...ctxWith(heldIssue(190), lines), dryRun: true } as Context, new Set());
+    expect(existsSync(join(dir, 'half-done.txt'))).toBe(true);
+    expect(lines.some((l) => /#190 .*leaving it for inspection/.test(l))).toBe(false);
+    expect(lines.some((l) => /#190 .*kept by the loop's hold/.test(l))).toBe(true);
+  });
+
+  it('is the lane a fresh pickup continues on; any other dirty lane is still refused', () => {
+    const dir = dirtyLane(191);
+    expect(worktreeFor(ctxWith(heldIssue(191)), 191, () => true)).toBe(dir);
+    expect(readFileSync(join(dir, 'half-done.txt'), 'utf8')).toContain('own edits');
+    expect(() => worktreeFor(ctxWith(heldIssue(191)), 191, () => false)).toThrow(/dirty/);
+  });
+
+  it("is the lane a pull request's pickup continues on, on that pull request's branch", () => {
+    const dir = dirtyLane(192, 'fix/held-192');
+    const head = git(dir, 'rev-parse', 'HEAD');
+    expect(worktreeAtPullRequest(ctxWith(heldIssue(192)), 192, 'fix/held-192', () => true)).toBe(dir);
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(head);
+    expect(readFileSync(join(dir, 'half-done.txt'), 'utf8')).toContain('own edits');
+  });
+
+  it('is judged held, not dirty, when it sits at the pull request head', () => {
+    const dir = dirtyLane(193, 'fix/held-193');
+    const head = git(dir, 'rev-parse', 'HEAD');
+    expect(judgeLane(ctxWith(heldIssue(193)), 193, () => head).kind).toBe('held-at-head');
+    expect(judgeLane(ctxWith(new FakeTracker('loop-bot', [fakeIssue(193)])), 193, () => head).kind).toBe('dirty');
+  });
+});
+
 describe('resetting a lane for a retry', () => {
   it('gives commits no remote has a ref of their own before deleting the branch that held them', () => {
     const dir = lane(85, true, 'fix/inherited-85');
@@ -230,5 +359,80 @@ describe('resetting a lane for a retry', () => {
     resetLane(ctxFor([]), 85, dir);
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
     expect(git(repo, 'rev-parse', `refs/loop/rescued/issue-85/${sha.slice(0, 12)}`)).toBe(sha);
+  });
+});
+
+describe('lane files: untracked files the main checkout holds and every lane needs', () => {
+  const laneCtx = (lines: string[]) =>
+    ({ project: { ...PROJECT, laneFiles: ['.env.test.local', 'config/secret.json', 'absent.env', 'loose.txt'] }, repoRoot: repo, dryRun: false, log: (m: string) => lines.push(m) }) as unknown as Context;
+  beforeAll(() => {
+    // Ignored in every worktree, as a committed .gitignore entry would be, without moving the base.
+    appendFileSync(join(repo, '.git', 'info', 'exclude'), '.env.test.local\nconfig/secret.json\n');
+    writeFileSync(join(repo, '.env.test.local'), 'TEST_USER=shared\n');
+    mkdirSync(join(repo, 'config'), { recursive: true });
+    writeFileSync(join(repo, 'config', 'secret.json'), '{"k":1}\n');
+    writeFileSync(join(repo, 'loose.txt'), 'untracked and not ignored\n');
+  });
+  afterAll(() => {
+    for (const file of ['.env.test.local', 'config', 'loose.txt']) rmSync(join(repo, file), { recursive: true, force: true });
+  });
+
+  it('copies each ignored lane file into a new lane, and warns past a missing or unignored one', () => {
+    const lines: string[] = [];
+    rmSync(join(repo, 'wt', 'issue-90'), { recursive: true, force: true });
+    const dir = worktreeFor(laneCtx(lines), 90);
+    expect(readFileSync(join(dir, '.env.test.local'), 'utf8')).toBe('TEST_USER=shared\n');
+    expect(readFileSync(join(dir, 'config', 'secret.json'), 'utf8')).toBe('{"k":1}\n');
+    expect(existsSync(join(dir, 'absent.env'))).toBe(false);
+    expect(existsSync(join(dir, 'loose.txt'))).toBe(false);
+    expect(lines.some((l) => l.includes('absent.env') && l.includes('goes without it'))).toBe(true);
+    expect(lines.some((l) => l.includes('loose.txt') && l.includes('not ignored'))).toBe(true);
+    // Copied files are ignored, so the lane stays clean and is reusable.
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+    rmSync(join(dir, '.env.test.local'));
+    worktreeFor(laneCtx([]), 90);
+    expect(existsSync(join(dir, '.env.test.local'))).toBe(true);
+  });
+
+  it('puts the lane files back after a reset cleans the ignored files away', () => {
+    const dir = lane(91, true);
+    resetLane(laneCtx([]), 91, dir);
+    expect(readFileSync(join(dir, '.env.test.local'), 'utf8')).toBe('TEST_USER=shared\n');
+  });
+
+  it('copies the lane files into a lane made on a pull request\'s branch', () => {
+    const dir = lane(92, true, 'fix/lane-files-92');
+    git(dir, 'push', '-q', 'origin', 'HEAD:refs/heads/fix/lane-files-92');
+    git(repo, 'worktree', 'remove', '--force', dir);
+    const out = worktreeAtPullRequest(laneCtx([]), 92, 'fix/lane-files-92');
+    expect(existsSync(join(out, '.env.test.local'))).toBe(true);
+  });
+
+  it('accepts only relative paths that stay inside the repository', () => {
+    expect(laneFilesFault(undefined)).toBeNull();
+    expect(laneFilesFault(['.env.test.local', 'config/secret.json'])).toBeNull();
+    for (const value of [null, '.env', [''], ['/etc/passwd'], ['../outside'], ['a/../../b'], ['.'], [3]]) {
+      expect(laneFilesFault(value)).toContain('project.laneFiles');
+    }
+  });
+});
+
+describe('a prover that staged its receipts inside the lane', () => {
+  it('leaves a lane clean when only proof scratch is untracked in it', () => {
+    const dir = lane(95, true);
+    for (const scratchDir of ['.proof', '.proof-95']) {
+      mkdirSync(join(dir, scratchDir), { recursive: true });
+      writeFileSync(join(dir, scratchDir, 'gate.log'), 'receipts already on the evidence branch\n');
+    }
+    expect(dirtyPaths(ctxFor([]), dir)).toEqual([]);
+  });
+
+  it('still calls a real code edit beside the scratch dirty', () => {
+    const dir = lane(96, true);
+    mkdirSync(join(dir, '.proof'), { recursive: true });
+    writeFileSync(join(dir, '.proof', 'gate.log'), 'receipts\n');
+    writeFileSync(join(dir, 'work-96.txt'), 'an edit nobody committed\n');
+    writeFileSync(join(dir, '.proofreader.ts'), 'a new source file whose name only starts like the scratch\n');
+    expect(dirtyPaths(ctxFor([]), dir).map((line) => line.trim().split(/\s+/).pop()).sort()).toEqual(['.proofreader.ts', 'work-96.txt']);
   });
 });

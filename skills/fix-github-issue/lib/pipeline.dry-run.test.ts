@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
@@ -7,6 +7,7 @@ import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
 import type { Seat } from './engines.ts';
 import { fixIssue } from './pipeline.ts';
+import { runProve } from '../../prove-github-issue/lib/prove.ts';
 
 const BOT = 'loop-bot';
 const HERE = import.meta.dir;
@@ -88,5 +89,35 @@ describe('a dry run and the worker seat', () => {
     expect(run.rehearsed.some((d) => /loop\/attempts: 1/.test(d))).toBe(true);
     expect(run.lanes).toEqual(['D1', 'B1']);
     expect(run.writes).toEqual([]);
+  });
+});
+
+describe('each seat is given a scratch directory outside its lane', () => {
+  const promptOf = (role: string) => {
+    const dir = join(scratch, 'runs');
+    const log = readdirSync(dir).filter((name) => name.startsWith(`7-${role}-`)).sort().at(-1);
+    if (!log) throw new Error(`no ${role} prompt was written`);
+    return readFileSync(join(dir, log), 'utf8');
+  };
+  it('names it to the coder and the prover, under the run directory and not in the worktree', async () => {
+    await dryRun({ engine: 'claude', model: 'any' });
+    const coder = join(scratch, 'runs', 'scratch', 'issue-7', 'coder');
+    expect(promptOf('coder')).toContain(`Your scratch goes in \`${coder}\``);
+    expect(existsSync(coder)).toBe(true);
+
+    const ctx = createContext({
+      project: PROJECT, knobs: { autoMerge: 'never', maxReviewRounds: 3, checksTimeoutMinutes: 1, smokeTimeoutMinutes: 1 },
+      seats: { worker: { engine: 'claude', model: 'any' }, reviewer: { engine: 'fixture2' } },
+      repoRoot: scratch, invokeRoot: scratch, promptsDirs: [join(HERE, '..', 'prompts')], dryRun: true,
+      runDir: join(scratch, 'runs'), botLogin: BOT, io: new FakeTracker(BOT, [fakeIssue(7)]), log: () => {}, step: () => {},
+    });
+    await runProve(ctx, issue7, join(scratch, 'wt', 'issue-7'), { branch: 'fix/t-7', gated: 'abc' }, { kind: 'handoff', text: 'h' });
+    const prover = join(scratch, 'runs', 'scratch', 'issue-7', 'prover');
+    expect(promptOf('prover')).toContain(`Your receipts and scratch go in \`${prover}\``);
+    expect(prover.startsWith(join(scratch, 'wt', 'issue-7'))).toBe(false);
+  });
+  it('names it to the reviewer', () => {
+    expect(readFileSync(join(HERE, '..', 'prompts', 'review.md'), 'utf8')).toContain('{{SCRATCH_DIR}}');
+    expect(readFileSync(join(HERE, 'pipeline.ts'), 'utf8')).toContain("SCRATCH_DIR: seatScratch(ctx, issue, 'reviewer'),");
   });
 });
