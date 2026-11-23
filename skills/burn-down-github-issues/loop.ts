@@ -692,13 +692,18 @@ type Merged = {
 
 /**
  * The issues a merged pull request resolves: those a closing keyword names, and, for a pull request
- * the loop opened, the issue its branch names (`<prefix>-<issue>`). The loop's own pull requests
- * reference their issue with `Refs`, never a closing keyword, so the keyword alone misses them.
+ * the loop opened, the issue its branch names the way a coder is told to (`fix/<words>-<issue>`)
+ * when its body also references that issue (`Refs #<issue>`). The loop's own pull requests
+ * reference their issue with `Refs`, never a closing keyword, so the keyword alone misses them; a
+ * branch name alone is not a resolution.
  */
 function resolvedBy(pr: Merged, botLogin: string): number[] {
   const refs = issueRefs([pr], 'closing');
-  const branch = /-(\d{1,6})$/.exec(pr.headRefName);
-  if (pr.author?.login === botLogin && branch) refs.push(Number(branch[1]));
+  const branch = /^fix\/.+-(\d{1,6})$/.exec(pr.headRefName);
+  if (pr.author?.login === botLogin && branch) {
+    const issue = Number(branch[1]);
+    if (issueRefs([{ title: '', body: pr.body, headRefName: '' }], 'owning').includes(issue)) refs.push(issue);
+  }
   return [...new Set(refs)];
 }
 

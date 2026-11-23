@@ -1426,6 +1426,10 @@ describe('a pull request merged while its landing watched', () => {
     expect(await run([merged({ author: { login: 'someone' } })])).toEqual([]);
     // A closing keyword still counts, whoever opened it.
     expect(await run([merged({ author: { login: 'someone' }, body: 'Fixes #42', headRefName: 'patch' })])).toEqual([{ issue: 42, pr: 70, by: 'reconcile' }]);
+    // The loop's own pull request resolves its issue only on a coder's branch (`fix/<words>-<n>`) whose body references the issue.
+    expect(await run([merged({ headRefName: 'release/2026-11-42' })])).toEqual([]);
+    expect(await run([merged({ body: 'A tidy-up.' })])).toEqual([]);
+    expect(await run([merged({ body: 'Refs #420' })])).toEqual([]);
   });
 });
 
