@@ -88,6 +88,10 @@ export type FloorOptions = {
   waitingAtMerge?: () => number;
   /** How a wrong item's incident is diagnosed, filed, and worked; `handleIncident`, unless a test supplies its own. */
   handleIncident?: typeof handleIncident;
+  /** The open incident for an item as the tracker reports it; `openIncidentFor`, unless a test supplies its own. */
+  readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null;
+  /** Why a person cannot land an incident's parked fix, or null when they can; `readLandBlocker`, unless a test supplies its own. */
+  landBlocker?: (issue: number) => string | null;
 };
 
 /** An open incident as the tracker reports it now; undefined when the tracker could not be read. */
@@ -378,6 +382,7 @@ export class Floor {
     const at = new Date().toISOString();
     const entries: LedgerEntry[] = [];
     const before = latestByItem(readLedger(this.o.dir));
+    const owners = this.ownership();
     const items = new Map(readList(this.o.dir).map((item) => [item.id, item]));
     const quiet = inQuietWindow(this.env.quietWindows);
     const notes: string[] = [];
@@ -523,7 +528,10 @@ export class Floor {
     if (!this.rehearsal) this.refreshOwnership();
     const stillPending = pending([...items.values()], readLedger(this.o.dir)).length;
     const readout = this.readout(entries, items, incidents, health, notes, stillPending);
-    const news = entries.some((e) => e.itemId !== LIVENESS_ITEM) || before.get(LIVENESS_ITEM)?.verdict !== live.verdict || notes.length > 0;
+    // What a person must act on changed (an incident closed, handed back, or became landable): news,
+    // even on a walk that recorded nothing new.
+    const news =
+      entries.some((e) => e.itemId !== LIVENESS_ITEM) || before.get(LIVENESS_ITEM)?.verdict !== live.verdict || notes.length > 0 || this.ownership() !== owners;
     const walked: WalkResult = { at, entries, wrong: this.lastWrong, pending: stillPending, incidents, readout };
     if (news) {
       if (this.o.print) this.o.print(readout);
@@ -651,9 +659,18 @@ export class Floor {
     }
   }
 
+  private readIncident(itemId: string): { number: number; withAPerson: boolean } | null {
+    return this.o.readIncident ? this.o.readIncident(itemId) : openIncidentFor(this.o.ctx, itemId);
+  }
+
+  /** Who owns what, as the readout shows it: each item a person owns, its incident, and whether it is landable. */
+  private ownership(): string {
+    return JSON.stringify([...this.withAPerson].sort().map((id) => [id, this.incidentOf.get(id) ?? null, this.landable.has(id)]));
+  }
+
   private incidentOpen(itemId: string): boolean {
     try {
-      const open = openIncidentFor(this.o.ctx, itemId);
+      const open = this.readIncident(itemId);
       if (open?.withAPerson) this.withAPerson.add(itemId);
       if (open) this.incidentOf.set(itemId, open.number);
       if (open?.withAPerson) this.noteLandable(itemId, open.number);
@@ -665,14 +682,14 @@ export class Floor {
 
   /**
    * Re-reads who owns each item a person was last seen owning, from the ledger and the tracker as
-   * they stand now, so the readout and the drain never act on an incident state cached when it was
-   * filed.
+   * they stand now, and whether each one's fix is landable, so the readout and the drain never act
+   * on an incident state cached when it was filed.
    */
   private refreshOwnership(): void {
     const latest = latestByItem(readLedger(this.o.dir));
     const read = (itemId: string): IncidentState => {
       try {
-        return openIncidentFor(this.o.ctx, itemId);
+        return this.readIncident(itemId);
       } catch {
         return undefined;
       }
@@ -685,7 +702,11 @@ export class Floor {
       this.incidentOf.delete(itemId);
       this.landable.delete(itemId);
     }
-    for (const { itemId, incident } of kept) if (incident !== null) this.incidentOf.set(itemId, incident);
+    for (const { itemId, incident } of kept) {
+      if (incident === null) continue;
+      this.incidentOf.set(itemId, incident);
+      this.noteLandable(itemId, incident);
+    }
   }
 
   /** Where an item's issue sits in a carved trunk, read once per walk; null without an issue or a readable one. */
@@ -718,7 +739,7 @@ export class Floor {
     this.landable.delete(itemId);
     if (!issue || this.o.ctx.dryRun) return;
     try {
-      if (readLandBlocker(this.o.ctx, issue) === null) this.landable.add(itemId);
+      if ((this.o.landBlocker ? this.o.landBlocker(issue) : readLandBlocker(this.o.ctx, issue)) === null) this.landable.add(itemId);
     } catch (error) {
       if (error instanceof RunStopping || isStopping()) throw error;
     }

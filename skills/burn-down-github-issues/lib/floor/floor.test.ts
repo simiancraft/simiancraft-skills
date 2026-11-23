@@ -31,7 +31,7 @@ afterAll(() => {
 const PROJECT = { name: 'Test', repo: 'o/floor', remote: 'origin', baseBranch: 'main', evidenceBranch: 'evidence', checkCommand: 'true', installCommand: 'true', conventionDocs: [], sizingScale: 'fib', sharedServices: [], portBase: 9000, portSpan: 10, pathAliases: [], sourceExtensions: ['.ts'], alwaysInvalidates: [], touchPaths: { migration: [], ci: [] }, worktreeRoot: 'wt' } as ProjectConfig;
 
 /** A floor of its own per case, with recording callbacks in its callbacks directory. */
-function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident } = {}) {
+function floorFor(name: string, environment: Record<string, unknown> = {}, extra: { forge?: boolean; walkerAnswer?: string; lineageOf?: LineageOf; repair?: typeof handleIncident; readIncident?: (itemId: string) => { number: number; withAPerson: boolean } | null; landBlocker?: (issue: number) => string | null } = {}) {
   const root = join(scratch, name);
   const callbacksDir = join(root, 'callbacks');
   mkdirSync(callbacksDir, { recursive: true });
@@ -68,6 +68,8 @@ function floorFor(name: string, environment: Record<string, unknown> = {}, extra
     print: (text) => readouts.push(text),
     ...(extra.lineageOf ? { lineageOf: extra.lineageOf } : {}),
     handleIncident: extra.repair,
+    ...(extra.readIncident ? { readIncident: extra.readIncident } : {}),
+    ...(extra.landBlocker ? { landBlocker: extra.landBlocker } : {}),
     waitingAtMerge: () => 2,
   });
   const calls = (slot: string) => (existsSync(join(root, `${slot}.log`)) ? readFileSync(join(root, `${slot}.log`), 'utf8').trim().split('\n').length : 0);
@@ -370,6 +372,35 @@ describe('"Needs you" is read fresh at render time', () => {
     own(floor, 'pull-request:8', 42);
     await floor.walkOnce({ livenessOnly: true });
     expect(readouts.at(-1)).toContain('PR #8 move the page is still absent and incident #42 is parked for you');
+  });
+
+  it('prints the readout again when ownership alone changed between two walks', async () => {
+    const { floor, readouts, dir } = floorFor('needs-you-second-walk');
+    status = 200;
+    appendItem(dir, { id: 'pull-request:9', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 9, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:9'));
+    own(floor, 'pull-request:9', 43);
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('incident #43 is parked for you');
+    appendEntry(dir, at('present', 'pull-request:9'));
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('Nothing needs you');
+  });
+
+  it("names the landing on the next walk once the incident's fix is parked approved", async () => {
+    let blocker: string | null = 'it is not parked at the merge boundary';
+    const { floor, readouts, dir } = floorFor('needs-you-landable', {}, { readIncident: () => ({ number: 44, withAPerson: true }), landBlocker: () => blocker });
+    status = 200;
+    appendItem(dir, { id: 'pull-request:10', addedAt: 'a', source: 'burndown', text: 'move the page', ref: { pullRequest: 10, sha: 'abc' } });
+    appendEntry(dir, at('absent', 'pull-request:10'));
+    own(floor, 'pull-request:10', 44);
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts.at(-1)).toContain('lift its label to hand it back');
+    blocker = null;
+    await floor.walkOnce({ livenessOnly: true });
+    expect(readouts).toHaveLength(2);
+    expect(readouts.at(-1)).toContain('fix.ts --land 44');
   });
 
   it('follows the incident as the tracker reports it now', () => {
