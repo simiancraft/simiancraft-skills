@@ -1044,6 +1044,28 @@ describe('a valid appraisal', () => {
   });
 });
 
+describe('a valid appraisal after its fetch', () => {
+  test('stamps the base the fetch brought in, which is the one the appraiser reads', async () => {
+    const remote = mkdtempSync(join(tmpdir(), 'stamp-remote-'));
+    const repo = mkdtempSync(join(tmpdir(), 'stamp-local-'));
+    const git = (cwd: string, ...args: string[]) => Bun.spawnSync(['git', '-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]).stdout.toString().trim();
+    git(remote, 'init', '-q', '-b', 'main');
+    git(remote, 'commit', '-q', '--allow-empty', '-m', 'old');
+    git(repo, 'clone', '-q', remote, '.');
+    git(remote, 'commit', '-q', '--allow-empty', '-m', 'landed since the last fetch');
+    const fetched = git(remote, 'rev-parse', 'HEAD');
+    const io = new FakeTracker(BOT, [fakeIssue(38, { title: 'add a palette', body: 'Criteria: A1' })]);
+    const ctx = ctxFor(io);
+    ctx.repoRoot = repo;
+    const issue = { number: 38, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels: [] };
+    const answer = fixture('valid', { issue: 38, verdict: 'valid', points: 2, reason: 'one new palette', touches: ['src/palettes/'] });
+    await appraiseIssue(ctx, issue as never, { ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] } as never);
+    expect(latestStamp(io.view(38)!.comments, BOT)?.base).toBe(fetched);
+    rmSync(remote, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  });
+});
+
 describe('a valid appraisal, read against the thread it judged', () => {
   const options = (answer: string) => ({ ageDays: null, seats: { appraiser: { engine: 'fixture', model: answer }, confirmer: { engine: 'fixture2' } }, confirmCloses: true, skipLabels: [] });
   const issueOf = (n: number, labels: Array<{ name: string }> = []) => ({ number: n, title: 'add a palette', createdAt: '2026-09-01T00:00:00Z', labels });

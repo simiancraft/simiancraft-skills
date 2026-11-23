@@ -86,7 +86,9 @@ repository has (`references/adopting.md`). Every run is teed to `<worktreeRoot>/
 - **Read-only.** The appraiser and the confirmer edit no file, create no branch, install nothing,
   and run no suite. Their working directory is an empty scratch directory, not a checkout.
 - **The base ref is the evidence.** "Already in the base" is judged against the fetched base
-  branch, never the main checkout's working state.
+  branch, never the main checkout's working state. `appraiseIssue` fetches the base itself before
+  each appraiser runs, whoever called it; a failed fetch is logged and the appraisal goes on
+  against the ref as last fetched.
 - **A decision beats a small diff.** An issue that turns on a product or domain ruling nobody has
   made is `needs-decision`, however small the change.
 - **The written convention beats the issue's prescription.** When an issue prescribes a remedy the
