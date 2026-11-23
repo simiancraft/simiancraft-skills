@@ -474,6 +474,13 @@ An outside stop is a stop the change did not cause, settled in one place, `settl
 | `base` | a coder's `needs-human` with `"outside": "base"` on a pull request | the work waits on a person with its pull request held open in draft |
 | `needs-person` | a prover's `needs-human`, or a coder's on a pull request | the work waits on a person with its pull request held open |
 
+A rerunning cause is bounded: the third `transport` or `stuck-check` stop in a row on one issue
+(`OUTSIDE_REPEAT_BOUND`; counted from the newest stop records on its thread, so the count survives a
+restart, and broken by any other stop, an approval included) waits on a person instead of rerunning,
+recorded as `cause=needs-person` with `after=<cause>` and `times=<n>`. Text that only looks like a
+network failure, or a check its provider never starts, would otherwise rerun the work on every run.
+A thread that cannot be read while the tracker is down counts nothing, and the work reruns as before.
+
 Whatever the cause, nothing is counted, no pull request is closed, and the stop is recorded on the
 issue as a `loop-stop kind=outside` record naming the cause and the seat (a held proof keeps its own
 `proof-held` record). A hold that waits on a person labels the issue and the pull request

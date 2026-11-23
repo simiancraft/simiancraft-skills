@@ -177,7 +177,10 @@ the rerun (commits no remote has are kept under `refs/loop/rescued/`). A host fa
 line `PAUSE`, and the burndown takes the issue up again in the same run once the line is resumed; a
 person's stop, a transport failure, and a stuck check are rerun by the next run, not this one, so the
 work a person stopped does not start again at once and a tracker or a provider that is down is not
-retried in a loop.
+retried in a loop. The same rerunning stop (a transport failure or a stuck check) on an issue's
+third run in a row raises `OUTSIDE_STOP_RECURRED` instead, from the same phases: the work waits on
+a person in H2, recorded as an outside stop that waits on a person (`cause=needs-person`, with the
+cause it repeated), which a redrive or the label's removal lifts.
 
 The one exception is a host fault the work itself causes, such as tests that fill the disk. The
 first host fault on an issue leaves the marker `loop/environment-fault: <code>@<seat>`; the same code again

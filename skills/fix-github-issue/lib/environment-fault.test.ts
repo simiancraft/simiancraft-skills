@@ -10,10 +10,10 @@ import { refuseEnvironmentFault, runAgent } from './agent.ts';
 import type { ProjectConfig } from './config.ts';
 import { createContext } from './context.ts';
 import { REVIEW_FILE } from './control-files.ts';
-import { EnvironmentFault, environmentFaultOf, faultMarker, hostFaultIn, rememberFaultMarkers } from './environment-fault.ts';
+import { EnvironmentFault, environmentFaultOf, faultMarker, hostFaultIn, OUTSIDE_REPEAT_BOUND, rememberFaultMarkers } from './environment-fault.ts';
 import { weighHold } from './panel.ts';
 import { move, recordThrow } from './pipeline.ts';
-import { stopIn } from './stop-record.ts';
+import { loopHoldStands, standingStop, stopComment, stopIn } from './stop-record.ts';
 
 const HERE = import.meta.dir;
 let scratch: string;
@@ -249,6 +249,45 @@ describe('a landing whose tracker read fails in transport', () => {
     expect(io.writes).toHaveLength(1);
     expect(stopIn(io.writes[0].argv.at(-1) ?? '')?.fields).toMatchObject({ cause: 'transport' });
     expect(paused).toHaveLength(0);
+  });
+});
+
+describe('the same rerunning outside stop on run after run', () => {
+  const OFFLINE = 'gh pr view 4 --json statusCheckRollup,headRefOid\nerror connecting to api.github.com';
+  const earlier = (cause: string) => stopComment('outside', { cause, seat: 'landing' }, `**Stopped outside the change:** an earlier run (${cause}).`);
+  const land = (thread: string[], error: Error) => {
+    const io = new FakeTracker('loop-bot', [fakeIssue(32, { labels: [{ name: 'size: 1' }] })]);
+    for (const body of thread) io.comment(32, 'loop-bot', body);
+    const ctx = context([], io);
+    const issue = { number: 32, title: 'an approved change', labels: [{ name: 'size: 1' }], createdAt: '2026-01-01T00:00:00Z' };
+    move(ctx, issue, 'F3', 'checks pending');
+    const recorded = recordThrow(ctx, issue, error, () => {}, 4);
+    return { io, recorded, newest: stopIn(io.view(32)?.comments.at(-1)?.body ?? '') };
+  };
+
+  it('reruns the first and the second time', () => {
+    const { recorded, io } = land([earlier('transport')], new Error(OFFLINE));
+    expect(recorded.outcome).toMatchObject({ outcome: 'unjudged', fault: 'transport' });
+    expect(labelsOf(io, 32)).toEqual(['size: 1']);
+  });
+
+  it(`waits on a person the third time in a row (OUTSIDE_REPEAT_BOUND is ${OUTSIDE_REPEAT_BOUND}), recorded so a redrive lifts it`, () => {
+    const { recorded, io, newest } = land([earlier('transport'), earlier('transport')], new Error(OFFLINE));
+    expect(recorded.outcome.outcome).toBe('handed-off');
+    expect(labelsOf(io, 32)).toContain('needs-human');
+    expect(newest).toMatchObject({ kind: 'outside', fields: { cause: 'needs-person', after: 'transport', times: '3' } });
+    expect(loopHoldStands(standingStop(io.view(32)?.comments ?? [], 'loop-bot'))).toBe(true);
+  });
+
+  it('counts only a run of the same cause: an approval between them starts the count again', () => {
+    const approved = stopComment('approved', { sha: 'a'.repeat(40), pr: 4 }, 'Approved.');
+    expect(land([earlier('transport'), approved, earlier('transport')], new Error(OFFLINE)).recorded.outcome.outcome).toBe('unjudged');
+    expect(land([earlier('stuck-check'), earlier('transport')], new Error(OFFLINE)).recorded.outcome.outcome).toBe('unjudged');
+  });
+
+  it("bounds a check stuck in its provider's queue the same way", () => {
+    const stuck = new EnvironmentFault({ kind: 'stuck-check', check: 'preview', provider: 'deploy.example' }, 'landing', 'stuck');
+    expect(land([earlier('stuck-check'), earlier('stuck-check')], stuck).recorded.outcome.outcome).toBe('handed-off');
   });
 });
 

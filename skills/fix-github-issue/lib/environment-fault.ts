@@ -16,8 +16,8 @@ import { readFileSync } from 'node:fs';
 import type { Context } from './context.ts';
 import { ensureLabel } from './labels.ts';
 import { loopNote } from './note.ts';
-import { mutate, transportFailureIn } from './shell.ts';
-import { stopComment } from './stop-record.ts';
+import { mutate, sh, transportFailureIn } from './shell.ts';
+import { stopComment, stopIn } from './stop-record.ts';
 
 /** The host conditions, by errno code: the machine's, never the work's, the first time. */
 export const HOST_FAULT_KINDS = ['ENOSPC', 'ENOMEM'] as const;
@@ -206,7 +206,46 @@ export type OutsideStop = { fault: Fault } | { cause: 'base' | 'needs-person'; s
  * or waits on a person by its cause. `charged`: the same host fault came back on the rerun, so the
  * work reproduced it, and the caller settles it as an ordinary failure with `reason`.
  */
-export type FaultSettlement = { charged: false; reason: string } | { charged: true; reason: string };
+export type FaultSettlement = { charged: false; reason: string; held?: true } | { charged: true; reason: string };
+
+/**
+ * How many outside stops of one rerunning cause in a row (`transport`, `stuck-check`) an issue may
+ * take before the next one waits on a person instead of rerunning. Text that only looks like a
+ * network failure, or a check a provider never starts, would otherwise rerun the work on every run.
+ */
+export const OUTSIDE_REPEAT_BOUND = 3;
+
+/** The rerunning causes whose repeats are bounded; a host fault has its marker, and a person's stop is never bounded. */
+const BOUNDED: readonly OutsideCause[] = ['transport', 'stuck-check'];
+
+/**
+ * How many of the newest stops on the issue's thread are the loop's outside stops of this cause, in
+ * a row: the record the earlier runs left is what makes the count survive a restart. Any other stop
+ * (an approval, a park, a hold) ends the run of them. A thread that cannot be read counts none, so
+ * a tracker that is down reruns as before.
+ */
+function repeatsOf(ctx: Context, issue: number, cause: OutsideCause): number {
+  let comments: Array<{ author: string; body: string }>;
+  try {
+    if (ctx.io?.view) {
+      comments = ((ctx.io.view(issue) as { comments?: Array<{ author: string; body: string }> } | null)?.comments ?? []);
+    } else {
+      const raw = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(issue), '--json', 'comments'], ctx.repoRoot, 1)) as { comments: Array<{ author: { login: string } | null; body: string }> };
+      comments = raw.comments.map((c) => ({ author: c.author?.login ?? 'ghost', body: c.body }));
+    }
+  } catch {
+    return 0;
+  }
+  let repeats = 0;
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (comments[i].author !== ctx.botLogin) continue;
+    const stop = stopIn(comments[i].body);
+    if (!stop) continue;
+    if (stop.kind !== 'outside' || stop.fields.cause !== cause) break;
+    repeats += 1;
+  }
+  return repeats;
+}
 
 /** Where a held pull request stands while it waits, and the record the hold leaves instead of the default one. */
 export type HoldOptions = { pr?: number; continuation?: boolean; record?: string };
@@ -273,6 +312,26 @@ function settleFault(ctx: Context, issue: { number: number; labels: Array<{ name
   const record = (rerun: string) =>
     report(ctx, say, `record the outside stop on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('outside', { cause: causeOf(fault), seat: fault.role ? seatOf(fault.role) : undefined }, `**Stopped outside the change:** ${what}. The work was not judged and nothing was counted; ${rerun}.`)]);
   if (!isHostFault(fault)) {
+    const cause = causeOf(fault);
+    const times = BOUNDED.includes(cause) ? repeatsOf(ctx, issue.number, cause) + 1 : 0;
+    if (times >= OUTSIDE_REPEAT_BOUND) {
+      // The same outside stop on run after run is no longer evidence of a passing outage: a person
+      // looks before the work runs again. Recorded as a wait on a person, so a redrive lifts it.
+      const seat = fault.role ? seatOf(fault.role) : undefined;
+      const reason = `${what}, ${times} times in a row; it waits on a person instead of rerunning`;
+      try {
+        mutate(ctx, `record the hold on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', stopComment('outside', { cause: 'needs-person', seat, after: cause, times }, [
+          `**Held for a person:** ${what}, the same outside stop ${times} times in a row. Nothing was counted, and the work does not rerun on its own again.`,
+          '',
+          `If the cause has passed, remove the \`needs-human\` label from this issue: the next burndown run continues the work, or run the fix command with \`--redrive\` to do it at once.`,
+        ].join('\n'))]);
+        mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
+        say(reason);
+        return { charged: false, reason, held: true };
+      } catch (error) {
+        say(`could not hold #${issue.number} for a person (${(error as Error).message.split('\n')[0]}); it reruns instead`);
+      }
+    }
     say(`${what}; the work was not judged: nothing is counted, and it is rerun on a later pass`);
     record('it is rerun on a later pass');
     return { charged: false, reason: `${what}; not judged` };

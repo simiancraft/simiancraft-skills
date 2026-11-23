@@ -62,6 +62,13 @@ const REDRIVE: Transition[] = [
  * it, from where the work is rerun later. The same host fault again on that rerun, with the marker
  * on the issue, is the work's own doing, and the driver raises AGENT_FAILED for it instead.
  */
+/**
+ * The same rerunning outside stop (a transport failure, a stuck check) on the issue's runs, three
+ * times in a row (`OUTSIDE_REPEAT_BOUND`): no longer a passing outage, so the work waits on a person
+ * instead of rerunning. Recorded as an outside stop that waits on a person, which a redrive lifts.
+ */
+const OUTSIDE_STOP_RECURRED: Transition = { target: 'ticket.human.needsHuman', actions: ['recordOutsideStop', 'labelHold', 'releaseClaim', 'clearLaneForRerun'] };
+
 const ENVIRONMENT_FAULT_IN_WORK: Transition[] = [
   { target: 'ticket.ready.ready', guard: 'noOpenPr', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
   // A pull request with no driver: the next run resumes it through Proving, as any driverless one.
@@ -183,7 +190,7 @@ export const MACHINE: StateNode = {
           initial: 'inbox',
           // Every phase answers a machine failure in every one of its lanes, into its own queue:
           // a throw between two agent turns is a failure too, and no lane may drop it.
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] }, ENVIRONMENT_FAULT: { target: 'ticket.appraisal.inbox', actions: ['markFreeFault', 'recordOutsideStop'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.appraisal', actions: ['labelDlq', 'commentReason'] }, ENVIRONMENT_FAULT: { target: 'ticket.appraisal.inbox', actions: ['markFreeFault', 'recordOutsideStop'] }, OUTSIDE_STOP_RECURRED },
           states: {
             inbox: {
               lane: { key: 'A1', name: 'Inbox', description: 'On the board, unsized, not yet looked at' },
@@ -267,7 +274,7 @@ export const MACHINE: StateNode = {
 
         carving: {
           initial: 'toCarve',
-          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] }, ENVIRONMENT_FAULT: { target: 'ticket.carving.toCarve', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim'] } },
+          on: { AGENT_FAILED: { target: 'ticket.deadLetters.carve', actions: ['labelDlq', 'commentReason', 'releaseClaim'] }, ENVIRONMENT_FAULT: { target: 'ticket.carving.toCarve', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim'] }, OUTSIDE_STOP_RECURRED },
           states: {
             toCarve: {
               lane: { key: 'C1', name: 'To carve', description: 'Sized over the ceiling; waiting for the knife' },
@@ -409,6 +416,7 @@ export const MACHINE: StateNode = {
             // A seat that ended on an environment fault is not a failed turn: no attempt is counted,
             // and the work is rerun from where its facts put it.
             ENVIRONMENT_FAULT: ENVIRONMENT_FAULT_IN_WORK,
+            OUTSIDE_STOP_RECURRED,
             // With a pull request open there is no Ready to return to: that work waits in the queue.
             AGENT_FAILED: [
               { target: 'ticket.ready.ready', guard: 'attemptsUnderCap and noOpenPr', actions: ['countAttempt', 'releaseClaim', 'removeWorktree'] },
@@ -490,6 +498,7 @@ export const MACHINE: StateNode = {
           on: {
             AGENT_FAILED: { target: 'ticket.deadLetters.review', actions: ['labelDlq', 'commentReason', 'releaseClaim'] },
             ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'recordOutsideStop', 'releaseClaim', 'clearLaneForRerun'] },
+            OUTSIDE_STOP_RECURRED,
           },
           states: {
             readyForReview: {
@@ -539,6 +548,7 @@ export const MACHINE: StateNode = {
             // landing judged nothing, so nothing is dead-lettered; the ready pull request with its
             // approval is resumed from Ready for review.
             ENVIRONMENT_FAULT: { target: 'ticket.review.readyForReview', actions: ['markFreeFault', 'recordOutsideStop', 'leaveQueue', 'releaseClaim', 'clearLaneForRerun'] },
+            OUTSIDE_STOP_RECURRED: { ...OUTSIDE_STOP_RECURRED, actions: ['recordOutsideStop', 'labelHold', 'leaveQueue', 'releaseClaim', 'clearLaneForRerun'] },
           },
           states: {
             approved: {
@@ -781,6 +791,7 @@ export const MACHINE: StateNode = {
                 // A seat that ended on an environment fault weighed nothing: the round is given back,
                 // no hold is written, and the work that raised the question is rerun later.
                 ENVIRONMENT_FAULT: { target: 'ticket.reconcile', actions: ['unlabelDeliberating', 'restorePanelCount', 'markFreeFault', 'recordOutsideStop', 'releaseClaim'] },
+                OUTSIDE_STOP_RECURRED: { target: 'ticket.human.needsHuman', actions: ['unlabelDeliberating', 'restorePanelCount', 'recordOutsideStop', 'labelHold', 'releaseClaim'] },
               },
             },
           },

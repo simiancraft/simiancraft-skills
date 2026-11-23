@@ -2069,6 +2069,11 @@ export function recordThrow(ctx: Context, issue: Issue, error: Error, say: (mess
     const settled = settleOutsideStop(ctx, issue, { fault }, lane ?? '', say);
     if (!settled.charged) {
       clearLaneForRerun(ctx, issue.number, say);
+      // The same outside stop run after run waits on a person (`OUTSIDE_REPEAT_BOUND`).
+      if (settled.held) {
+        move(ctx, issue, 'H2', settled.reason.slice(0, 120));
+        return { outcome: { outcome: 'handed-off', reason: settled.reason }, keepLane: true };
+      }
       return { outcome: { outcome: 'unjudged', reason: settled.reason, fault: fault.kind }, keepLane: true };
     }
     reason = `The pipeline threw${lane ? ` in ${lane}` : ''}, and ${settled.reason}: ${error.message.split('\n')[0]}`;
