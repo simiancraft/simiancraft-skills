@@ -562,11 +562,14 @@ describe('runtime moves and settlement', () => {
     expect(recorded).toEqual([]);
     expect(result).toMatchObject({ verdict: 'failed', reason: 'the change could not be proved: still wrong' });
   });
-  it('a disputed worker close reports the human lane', () => {
+  it('a disputed worker close reports the human lane, and records the hold as a stop', () => {
     const lanes: string[] = [];
-    const api = loadFunctions(pipeline, ['parkWithBothOpinions'], { mutate: noop, move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane) });
+    const writes: string[][] = [];
+    const api = loadFunctions(pipeline, ['parkWithBothOpinions'], { mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv), move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane), heldComment });
     api.parkWithBothOpinions({}, { number: 1 }, { verdict: 'obsolete', reason: 'worker' }, { reason: 'confirmer disagrees' }, noop);
     expect(lanes).toEqual(['H2']);
+    const body = writes.find((argv) => argv[2] === 'comment')?.at(-1) ?? '';
+    expect(stopIn(body)).toMatchObject({ kind: 'held', fields: { verdict: 'needs-human' }, text: expect.stringContaining('confirmer disagrees') });
   });
   it('a revision is proved like a first attempt, by a seat that never moves its own card', () => {
     const prompts = ['../../code-github-issue/prompts/code.md', '../../prove-github-issue/prompts/prove.md'].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'));

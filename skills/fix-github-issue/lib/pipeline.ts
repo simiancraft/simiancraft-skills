@@ -33,7 +33,6 @@ import { type CheckObservation, type CheckStatus, type LandingObservation, landi
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
 import { heldComment, loopHoldStands, proofHeldComment, standingApproval, standingStop, stopComment } from './stop-record.ts';
-import { loopNote } from './note.ts';
 
 /**
  * How the pipeline finished with an issue, and why.
@@ -411,11 +410,11 @@ async function confirmWorkerClose(ctx: Context, issue: Issue, result: WorkerResu
   return checked.result;
 }
 
-/** Hands a leaf to a person with both opinions on the thread. */
+/** Hands a leaf to a person with both opinions on the thread, recorded as the hold's stop. */
 function parkWithBothOpinions(ctx: Context, issue: Issue, result: WorkerResult, confirmation: { reason: string }, say: (m: string) => void): FixOutcome {
   holdLease(ctx, issue.number, 'hand the issue to a person');
   const body = `The worker judged this \`${result.verdict}\` (${result.reason}); the second engine disagreed: ${confirmation.reason}. A person decides.`;
-  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(body)]);
+  mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', heldComment('needs-human', body)]);
   mutate(ctx, `label #${issue.number} needs-human`, ['gh', 'issue', 'edit', String(issue.number), '--add-label', 'needs-human']);
   say('the second engine disputed the close; handed to a person');
   move(ctx, issue, 'H2', `close disputed: ${confirmation.reason}`.slice(0, 120));
