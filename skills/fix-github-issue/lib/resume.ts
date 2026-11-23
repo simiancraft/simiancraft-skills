@@ -277,17 +277,27 @@ export function findStranded(ctx: Context, all: Issue[], skipLabels: string[]): 
       continue;
     }
     // The verdict is trusted only as far as it can be corroborated: it must name this issue, and
-    // the worktree must sit at the pull request's remote head, or the resume would review a tree
-    // that is not what would merge.
+    // the worktree must be clean and sit at the pull request's remote head, or the resume would
+    // review a tree that is not what would merge.
     if (Number(verdict.issue) !== issue.number) {
       ctx.log(`#${num}  stranded verdict names issue ${verdict.issue}; leaving it for a human`);
       continue;
     }
-    const view: { state: string; headRefOid: string } = JSON.parse(
-      sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']),
-    );
-    if (view.state !== 'OPEN') continue;
-    if (view.headRefOid !== sh(ctx, ['git', 'rev-parse', 'HEAD'], dir)) {
+    let state = '';
+    const judgement = judgeLane(ctx, num, () => {
+      const view: { state: string; headRefOid: string } = JSON.parse(sh(ctx, ['gh', 'pr', 'view', String(verdict.pr), '--json', 'state,headRefOid']));
+      state = view.state;
+      return view.headRefOid;
+    });
+    // A pull request that cannot be read stops the start, as any failed read of it always has.
+    if (judgement.kind === 'unreadable') throw new Error(`#${num}: ${judgement.reason}`);
+    if (judgement.kind === 'dirty') {
+      ctx.log(`#${num}  stranded worktree holds uncommitted work; leaving it for a human`);
+      parkForInspection(ctx, issue.number, `An earlier run died with this issue's pull request #${verdict.pr} proved, and its lane holds uncommitted work beside the proof. ${judgement.reason}. A person inspects the lane before it is resumed.`);
+      continue;
+    }
+    if (judgement.kind === 'no-lane' || state !== 'OPEN') continue;
+    if (judgement.kind === 'off-head') {
       ctx.log(`#${num}  stranded worktree head is not the pull request head; leaving it for a human`);
       continue;
     }

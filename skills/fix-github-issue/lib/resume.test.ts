@@ -198,3 +198,40 @@ describe('resumeOneStranded before it starts', () => {
     expect(io.view(72)?.labels.map((l) => l.name)).toEqual([]);
   });
 });
+
+describe('findStranded judges a lane before resuming it', () => {
+  const trackers = new Map<number, FakeTracker>();
+  const stranded = (n: number) => {
+    const dir = lane(n);
+    writeFileSync(join(dir, 'loop-proof.json'), JSON.stringify({ issue: n, verdict: 'proved', reason: 'shown', pr: 9, branch: `fix/resume-${n}` }));
+    return dir;
+  };
+  const find = (n: number) => {
+    const io = new FakeTracker('bot', [fakeIssue(n)]);
+    trackers.set(n, io);
+    const lines: string[] = [];
+    const context = { ...ctx(), io, runId: 'starting-run', botLogin: 'bot', dryRun: false, knobs: { maxReviewRounds: 3 }, log: (m: string) => lines.push(m) } as unknown as Context;
+    const original = Bun.spawnSync;
+    const spy = spyOn(Bun, 'spawnSync').mockImplementation(((args: string[], opts: unknown) => {
+      if (args[0] === 'gh' && args[1] === 'pr') return { exitCode: 0, stdout: Buffer.from(JSON.stringify({ state: 'OPEN', headRefOid: head })), stderr: Buffer.from('') };
+      if (args[0] === 'gh') return { exitCode: 0, stdout: Buffer.from('OPEN'), stderr: Buffer.from('') };
+      return original(args, opts as any);
+    }) as typeof Bun.spawnSync);
+    try {
+      return { found: findStranded(context, [{ number: n, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [] }], []), lines };
+    } finally { spy.mockRestore(); }
+  };
+  it('resumes a clean lane at the pull request head', () => {
+    stranded(81);
+    expect(find(81).found.map((s) => s.issue.number)).toEqual([81]);
+  });
+  it('leaves a lane holding uncommitted work for a person: a resume would review a tree that is not what would merge', () => {
+    const dir = stranded(82);
+    writeFileSync(join(dir, 'unfinished.txt'), 'work');
+    const { found, lines } = find(82);
+    expect(found).toEqual([]);
+    expect(lines.some((l) => l.startsWith('#82  stranded worktree holds uncommitted work'))).toBe(true);
+    expect(trackers.get(82)?.view(82)?.labels.map((l) => l.name)).toContain('loop/dlq: work');
+    expect(trackers.get(82)?.view(82)?.comments.at(-1)?.body).toContain('unfinished.txt');
+  });
+});
