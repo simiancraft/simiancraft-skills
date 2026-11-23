@@ -11,7 +11,7 @@ import { ciCommandFault, ciEnvironmentFault, gateCommand, gateEnvironment, type 
 import { type Context, createContext } from './context.ts';
 import { placeWork } from './pipeline.ts';
 import { loopNote } from './note.ts';
-import { codedComment, latestStep, proofHeldComment, standingStop, unprovedComment } from './work-markers.ts';
+import { codedComment, heldComment, latestStep, proofHeldComment, standingStop, unprovedComment } from './work-markers.ts';
 
 /** A real remote and real lanes: whether a push happened is only a fact on disk. */
 let scratch: string;
@@ -110,6 +110,14 @@ describe('the Work markers', () => {
     expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: marked }], BOT)).toEqual({ kind: 'objection', text: park });
     expect(standingStop([{ author: BOT, body: marked }, { author: BOT, body: held }], BOT)).toEqual({ kind: 'proof-held' });
     expect(standingStop([{ author: BOT, body: loopNote('Taken off the board by the sweep.') }], BOT)).toBeNull();
+    // Bound to the work in hand: a stop written before `since` is an earlier attempt's.
+    const at = (body: string, createdAt: string) => ({ author: BOT, body, createdAt });
+    expect(standingStop([at(park, '2026-09-01T00:00:00Z'), at(held, '2026-09-03T00:00:00Z')], BOT, '2026-09-02T00:00:00Z')).toEqual({ kind: 'proof-held' });
+    expect(standingStop([at(held, '2026-09-01T00:00:00Z')], BOT, '2026-09-02T00:00:00Z')).toBeNull();
+    // A seat's ask for a person, newer than a held proof, is the standing stop, and its words are kept.
+    const asked = heldComment('needs-human', 'the coder needs the vendor key');
+    expect(standingStop([{ author: BOT, body: held }, { author: BOT, body: asked }], BOT)).toEqual({ kind: 'held', text: 'the coder needs the vendor key' });
+    expect(latestStep([{ author: BOT, body: asked }], BOT)).toBeNull();
     // A held proof is a loop marker, so it is never the work's newest Work step.
     expect(latestStep([{ author: BOT, body: held }], BOT)).toBeNull();
   });

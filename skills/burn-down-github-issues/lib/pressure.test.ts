@@ -18,7 +18,7 @@ import type { Issue } from '../../fix-github-issue/lib/pipeline.ts';
 import { placeByFacts } from './board-writer.ts';
 import { INCIDENT_LABEL, incidentHold } from './floor/incident.ts';
 import { boundaryWaived, landBlocker } from '../../fix-github-issue/lib/land.ts';
-import { proofHeldComment, standingStop } from '../../fix-github-issue/lib/work-markers.ts';
+import { heldComment, proofHeldComment, standingStop } from '../../fix-github-issue/lib/work-markers.ts';
 import { LOOP_NOTE, loopNote } from '../../fix-github-issue/lib/note.ts';
 
 const scratch = mkdtempSync(join(tmpdir(), 'pressure-'));
@@ -779,7 +779,7 @@ describe('safety pressure', () => {
       runWorker: async () => ({ verdict: 'needs-human', reason: 'access unavailable' }),
       sh: () => JSON.stringify([{ number: 88, headRefName: 'person/release-1', author: { login: 'someone-else' }, body: 'Refs #999' }]),
       mutate: (_ctx: unknown, _why: unknown, argv: string[]) => { if (argv[1] === 'pr' && argv[2] === 'close') closed.push(Number(argv[3])); },
-      move: noop, removeWorktree: noop,
+      move: noop, removeWorktree: noop, heldComment,
     });
     await api.workIssue(context(new FakeTracker(bot)), { number: 1, title: 'unrelated issue', labels: [] }, '/fake', 2, 2, noop);
     expect(closed).toEqual([]);
@@ -1052,7 +1052,7 @@ describe('a prover that needs a person', () => {
     const api = loadFunctions(pipeline, ['settleTerminalVerdict', 'holdProof'], {
       mutate: (_ctx: unknown, _d: unknown, argv: string[]) => writes.push(argv),
       move: (_ctx: unknown, _issue: unknown, lane: string) => lanes.push(lane),
-      proofHeldComment, loopNote, liveGate: () => ({ ok: true }),
+      proofHeldComment, heldComment, loopNote, liveGate: () => ({ ok: true }),
     });
     const ctx = { ...context(new FakeTracker(bot)), dryRun: false, runId: 'run-1' };
     const result = { issue: 1, verdict: 'needs-human', reason: 'the signed-in probe needs the shared test credentials', branch: 'fix/probe-1', pr, seat };
@@ -1090,6 +1090,14 @@ describe('a prover that needs a person', () => {
     expect(writes).toContainEqual(['gh', 'pr', 'close', '7', '--comment', 'Superseded; see the issue.']);
     expect(writes.filter((argv: string[]) => argv[1] === 'pr' && argv[2] === 'edit')).toEqual([]);
     expect(lanes).toEqual(['H2']);
+  });
+
+  it("reads a coder's needs-human after a held proof as the standing stop, so a redrive lifts no needs-human", async () => {
+    const held = (await settle('prover', 7)).writes.find((argv: string[]) => argv[2] === 'comment')?.at(-1) ?? '';
+    const asked = (await settle('coder', 7)).writes.find((argv: string[]) => argv[1] === 'issue' && argv[2] === 'comment')?.at(-1) ?? '';
+    const stop = standingStop([{ author: bot, body: held }, { author: bot, body: asked }], bot);
+    expect(stop?.kind).toBe('held');
+    expect(standingStop([{ author: bot, body: asked }, { author: bot, body: held }], bot)?.kind).toBe('proof-held');
   });
 
   it('is proved again on the same pull request once a person lifts the hold: the burndown reads no objection', () => {

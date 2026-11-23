@@ -191,23 +191,32 @@ const issue: Issue & { state: 'OPEN' | 'CLOSED' } = JSON.parse(
 enrichBlockers(ctx, [issue]);
 
 /** The pull requests that reference this issue, newest first; the head branch is what a redrive checks out. */
-const PULLS: Array<{ number: number; isDraft: boolean; merged: boolean; headRefName: string; state: string }> = (() => {
-  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'all', '--limit', '200', '--json', 'number,isDraft,mergedAt,headRefName,body,title,state']);
-  const all = JSON.parse(raw) as Array<{ number: number; isDraft: boolean; mergedAt: string | null; headRefName: string; body: string; title: string; state: string }>;
+const PULLS: Array<{ number: number; isDraft: boolean; merged: boolean; headRefName: string; state: string; createdAt: string }> = (() => {
+  const raw = sh(ctx, ['gh', 'pr', 'list', '--state', 'all', '--limit', '200', '--json', 'number,isDraft,mergedAt,headRefName,body,title,state,createdAt']);
+  const all = JSON.parse(raw) as Array<{ number: number; isDraft: boolean; mergedAt: string | null; headRefName: string; body: string; title: string; state: string; createdAt: string }>;
   // A pull request is this issue's when the loop's branch convention names it or its body
   // references it with a keyword; a passing mention in another change's body is not a claim.
   const refers = new RegExp(`\\b(fixes|closes|resolves|refs?)\\s+#${ISSUE_NUMBER}(?![0-9])`, 'i');
   return all
     .filter((pr) => pr.headRefName.endsWith(`-${ISSUE_NUMBER}`) || refers.test(pr.body ?? ''))
-    .map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: pr.mergedAt !== null, headRefName: pr.headRefName, state: pr.state }));
+    .map((pr) => ({ number: pr.number, isDraft: pr.isDraft, merged: pr.mergedAt !== null, headRefName: pr.headRefName, state: pr.state, createdAt: pr.createdAt }));
 })();
 
 /**
  * What stopped the work last, from the thread: a park or a dead letter is an objection a redrive
  * hands a coder; a held proof is a prover's request for a person, and its pull request is proved
- * again once the hold is lifted, whether or not `--redrive` was given.
+ * again once the hold is lifted, whether or not `--redrive` was given; a seat's ask for a person is
+ * neither. Read as the burndown reads it: the newest of the loop's own comments, and only those
+ * written after the open pull request in hand was opened, since the thread also holds the stops of
+ * earlier attempts that pull request never met.
  */
-const STANDING = standingStop(JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | { author: .author.login, body }]'])) as Array<{ author: string; body: string }>);
+const STANDING = (() => {
+  const named = Number(opt('resume-pr'));
+  const open = PULLS.filter((pr) => pr.state === 'OPEN' && !pr.merged);
+  const inHand = open.find((pr) => pr.number === named) ?? open[0];
+  const comments = JSON.parse(sh(ctx, ['gh', 'issue', 'view', String(ISSUE_NUMBER), '--json', 'comments', '--jq', '[.comments[] | { author: .author.login, body, createdAt }]'])) as Array<{ author: string; body: string; createdAt: string }>;
+  return standingStop(comments, ctx.botLogin, inHand?.createdAt);
+})();
 const PROOF_HELD = STANDING?.kind === 'proof-held';
 
 // An open pull request to continue: named, or the newest open one that references the issue.

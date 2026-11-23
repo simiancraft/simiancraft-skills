@@ -29,7 +29,7 @@ import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktr
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_AUTOMATION_REFRESHES, MAX_BASE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
-import { codedComment, latestStep, proofHeldComment, standingStop, type Touch, unprovedComment } from './work-markers.ts';
+import { codedComment, heldComment, latestStep, proofHeldComment, standingStop, type Touch, unprovedComment } from './work-markers.ts';
 import { loopNote } from './note.ts';
 
 /**
@@ -1346,8 +1346,9 @@ async function settleTerminalVerdict(ctx: Context, issue: Issue, result: WorkerR
     case 'needs-decision':
     case 'needs-human': {
       if (result.verdict === 'needs-human' && result.seat === 'prover') return holdProof(ctx, issue, result, say, pr);
-      // Comment first, then the label that hides the issue from selection.
-      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', loopNote(result.reason)]);
+      // Comment first, then the label that hides the issue from selection. The comment is the stop's
+      // record on the thread, so it outranks any held proof an earlier seat left.
+      mutate(ctx, `comment on #${issue.number}`, ['gh', 'issue', 'comment', String(issue.number), '--body', heldComment(result.verdict, result.reason)]);
       // A question the worker raised is weighed by a decision panel first, when one can sit; one it
       // settles goes back to be appraised with the receipt as its ruling, and holds nobody up.
       if (result.verdict === 'needs-decision') {

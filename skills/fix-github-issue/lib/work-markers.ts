@@ -91,19 +91,37 @@ export function proofHeldComment(runId: string, held: { branch: string; pr?: num
   ].join('\n');
 }
 
-/** What stopped the work last, read from the loop's comments: an objection a revision answers, or a held proof, which is not one. */
-export type StandingStop = { kind: 'objection'; text: string } | { kind: 'proof-held' } | null;
+/**
+ * A seat that asked for a person or a decision, other than a prover holding its proof: the work stops
+ * there, and the pull request (when there was one) is closed. The marker makes the ask a stop a
+ * reader of the thread can see, so a held proof written before it is no longer the standing one.
+ */
+export const HELD = 'loop-held';
+
+export function heldComment(verdict: 'needs-human' | 'needs-decision', reason: string): string {
+  return [`<!-- ${HELD} verdict=${verdict} -->`, reason.trim()].join('\n');
+}
+
+/**
+ * What stopped the work last, read from the loop's comments: an objection a revision answers, a held
+ * proof, which is not one, or a seat's ask for a person or a decision, which a person answers.
+ */
+export type StandingStop = { kind: 'objection'; text: string } | { kind: 'proof-held' } | { kind: 'held'; text: string } | null;
 
 /**
  * The newest stop on a thread, oldest comment first. A park or a dead letter is an objection, and
  * a redrive hands it to a coder; a held proof is the prover's request for a person, and the pickup
- * after it proves the pull request again. When `botLogin` is given, only its comments count.
+ * after it proves the pull request again; a seat's ask is a person's to answer. When `botLogin` is
+ * given, only its comments count; when `since` is given, only comments written after it.
  */
-export function standingStop(comments: Array<{ author?: string; body: string }>, botLogin?: string): StandingStop {
+export function standingStop(comments: Array<{ author?: string; body: string; createdAt?: string }>, botLogin?: string, since?: string): StandingStop {
   for (let i = comments.length - 1; i >= 0; i--) {
-    const { author, body } = comments[i];
+    const { author, body, createdAt } = comments[i];
     if (botLogin !== undefined && author !== botLogin) continue;
-    if (parseMarker(body)?.name === PROOF_HELD) return { kind: 'proof-held' };
+    if (since !== undefined && createdAt !== undefined && createdAt <= since) continue;
+    const marker = parseMarker(body)?.name;
+    if (marker === PROOF_HELD) return { kind: 'proof-held' };
+    if (marker === HELD) return { kind: 'held', text: body.trim().split('\n').slice(1).join('\n').trim() };
     // A park or dead-letter note opens with the loop-note marker; its words are what the next coder answers.
     const text = noteText(body);
     if (/dead-letter queue|parked|Parked/.test(text)) return { kind: 'objection', text };
