@@ -378,7 +378,7 @@ describe('runtime moves and settlement', () => {
   const legal = (a: string, b: string) => a === b || successors(laneState(a), { ownEventsOnly: true }).has(laneState(b));
   for (const initial of ['E1', 'D3']) it(`a resumed ${initial} card with a historical objection has a chart route to its revision`, async () => {
     let lane = initial; const edges: string[] = [];
-    const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue'], {
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, trackerIo: noop, liveGate: () => ({ ok: true }),
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
       inFlight: new Map(), isDraft: () => true, sh: () => 'h', catchUp: () => null,
@@ -1299,7 +1299,7 @@ describe('a prover that needs a person', () => {
   const redrive = (thread: Array<{ author: string; body: string; createdAt?: string }>, opened = 'h') => {
     const writes: string[][] = [];
     const reproofs: boolean[] = [];
-    const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue'], {
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
       trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, loopHoldStands, pullHolds: () => ['needs-human'],
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',
@@ -1439,7 +1439,7 @@ describe('a landing on an approval that still stands at the head', () => {
       return head;
     };
     const { validTouches } = loadFunctions(pipeline, ['validTouches'], { TOUCH_KINDS: ['code', 'data', 'migration', 'stored-string', 'ci'] });
-    const api = loadFunctions(pipeline, ['claimLane', 'redriveIssue', 'approvedAtHead'], {
+    const api = loadFunctions(pipeline, ['claimLane', 'withLane', 'redriveIssue', 'approvedAtHead'], {
       DEFAULT_MAX_POINTS: 2, ceilingFor: (_l: unknown, _p: unknown, c: number) => c, labelPoints: () => null, assertDistinctEngines: noop, liveGate: () => ({ ok: true }),
       trackerIo: () => ({ view: () => ({ comments: thread }) }), standingStop, standingApproval, loopHoldStands, validTouches,
       claim: async () => ({ release: noop }), keepClaimed: () => noop, worktreeAtPullRequest: () => '/fake',

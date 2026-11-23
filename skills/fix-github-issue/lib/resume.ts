@@ -9,14 +9,14 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { claim, keepClaimed, liveGate, trackerIo } from '../../carve-github-issue/lib/claims.ts';
+import { trackerIo } from '../../carve-github-issue/lib/claims.ts';
 import { liveClaim, readTree } from '../../carve-github-issue/lib/tree.ts';
-import { killAgentsOn, parseJsonFile, VERDICT_FILE } from './agent.ts';
+import { parseJsonFile, VERDICT_FILE } from './agent.ts';
 import { PROOF_FILE } from './control-files.ts';
 import type { Context } from './context.ts';
 import { isHeldBy, reviewCount, sendToDlq } from './labels.ts';
 import { dirtyPaths, inFlight, rescueRef } from './lane.ts';
-import { type FixOutcome, type Issue, recordThrow, retireLane, reviewAndLand, type WorkerResult } from './pipeline.ts';
+import { type FixOutcome, type Issue, retireLane, reviewAndLand, withLane, type WorkerResult } from './pipeline.ts';
 import { isStopping, RunStopping, sh } from './shell.ts';
 
 /** A pull request a dead run left behind, with the worktree and verdict to resume it from. */
@@ -338,46 +338,21 @@ export async function resumeOneStranded(
   const { issue } = entry;
   const say = (message: string) => ctx.log(`#${issue.number}  ${message}`);
   // A fresh claim, never the dead run's, and the live gate first: the issue may have been
-  // held, paused, carved, or claimed elsewhere since the run died.
-  const io = trackerIo(ctx);
-  const gate = liveGate(ctx, io, issue.number, ceiling);
-  if (!gate.ok) {
-    say(`not resuming: ${gate.why}`);
-    if (gate.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${gate.why}. A person decides.`);
-    return null;
-  }
-  const handle = await claim(ctx, io, issue.number, 'working');
-  if (handle === 'busy') {
-    say('not resuming: another run holds it');
-    return null;
-  }
-  const stopRenewing = keepClaimed(handle, () => {
-    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
-    const killed = killAgentsOn(ctx.project.repo, issue.number);
-    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
-  });
-  inFlight.set(issue.number, { dir: entry.cwd, busy: false });
-  // The same settlement as a first attempt: a throw is recorded in the queue of the lane it
-  // happened in, and the lane is removed whatever the outcome, unless nothing could be recorded.
-  let keepLane = false;
-  let outcome: FixOutcome;
-  try {
-    outcome = await reviewAndLand(ctx, issue, entry.cwd, entry.result, maxPoints, say, ceiling);
-  } catch (error) {
-    const thrown = recordThrow(ctx, issue, error as Error, say, entry.result.pr);
-    keepLane = thrown.keepLane;
-    outcome = thrown.outcome;
-  } finally {
-    stopRenewing();
-    try {
-      handle.release();
-    } catch (error) {
-      say(`could not release the claim: ${(error as Error).message}`);
-    }
-    inFlight.delete(issue.number);
-    // The same rule as any other exit: a revision that committed and died before its push has
-    // its only copy in this lane, and a resume must not be where that goes.
-    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
-  }
-  return outcome;
+  // held, paused, carved, or claimed elsewhere since the run died. The same settlement as a first
+  // attempt follows (`withLane`): a throw is recorded in the queue of the lane it happened in, and
+  // the lane is retired whatever the outcome, unless nothing could be recorded. A revision that
+  // committed and died before its push has its only copy in this lane, and retiring keeps it.
+  let started = false;
+  const outcome = await withLane(ctx, issue, say, {
+    ceiling,
+    pr: entry.result.pr,
+    open: () => {
+      started = true;
+      return entry.cwd;
+    },
+  }, async (cwd) => await reviewAndLand(ctx, issue, cwd, entry.result, maxPoints, say, ceiling));
+  if (started) return outcome;
+  say(`not resuming: ${outcome.reason}`);
+  if (outcome.outcome === 'left-alone') parkForInspection(ctx, issue.number, `A dead run's pull request #${entry.result.pr} was not resumed because ${outcome.reason}. A person decides.`);
+  return null;
 }

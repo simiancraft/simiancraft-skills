@@ -1861,6 +1861,59 @@ export async function claimLane(
 }
 
 /**
+ * A lane's life under a claim: claimed (`claimLane`, with the person's `lift` when there is one),
+ * leased, opened, worked, and released. Every driver that works an issue in a lane goes through it.
+ *
+ * Everything after the claim is inside the try: a lane that cannot be opened must not leave a claim
+ * behind that keeps renewing itself with nobody working under it. A throw is recorded in the queue
+ * of the lane it happened in (`recordThrow`, against `pr` when the lane continues one). Whatever the
+ * outcome, the claim and the lease end here and the lane is retired, unless the throw could not be
+ * recorded on the issue: the worktree is then the only record of what happened. A crash never runs
+ * the cleanup, which is exactly when the resume path should get its chance. A claim refused returns
+ * its outcome and opens nothing.
+ */
+export async function withLane(
+  ctx: Context,
+  issue: Issue,
+  say: (message: string) => void,
+  lane: { ceiling: number; lift?: () => void; pr?: number; open: () => string },
+  work: (cwd: string) => Promise<FixOutcome>,
+): Promise<FixOutcome> {
+  const handle = await claimLane(ctx, trackerIo(ctx), issue.number, lane.ceiling, say, lane.lift);
+  if ('outcome' in handle) return handle;
+  const stopRenewing = keepClaimed(handle, () => {
+    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
+    const killed = killAgentsOn(ctx.project.repo, issue.number);
+    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
+  });
+  let keepLane = false;
+  try {
+    const cwd = lane.open();
+    inFlight.set(issue.number, { dir: cwd, busy: false });
+    // Awaited, not returned: a returned promise would run the cleanup below while the work it
+    // guards is still going.
+    return await work(cwd);
+  } catch (error) {
+    const recorded = recordThrow(ctx, issue, error as Error, say, lane.pr);
+    keepLane = recorded.keepLane;
+    return recorded.outcome;
+  } finally {
+    stopRenewing();
+    try {
+      handle.release();
+    } catch (error) {
+      say(`could not release the claim: ${(error as Error).message}`);
+    }
+    inFlight.delete(issue.number);
+    // Nothing in-process reads the directory again, and the resume path resumes only a `fixed`
+    // verdict whose pull request is open at the same head on an unlabelled issue; every outcome
+    // that reaches this line is one it already refuses. Removing the worktree also sweeps the
+    // `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else reclaims.
+    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
+  }
+}
+
+/**
  * Fixes one issue end to end and says how it ended.
  *
  * The lane is created here and removed here, whatever the outcome, so no exit leaks a worktree.
@@ -1885,52 +1938,13 @@ export async function fixIssue(
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
 
   // The live gate and the claim, then the lane: nothing is created for an issue this run may not work.
-  const io = trackerIo(ctx);
-  const handle = await claimLane(ctx, io, issue.number, ceiling, say, options.lift);
-  if ('outcome' in handle) return handle;
-  const stopRenewing = keepClaimed(handle, () => {
-    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
-    const killed = killAgentsOn(ctx.project.repo, issue.number);
-    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
-  });
-
-  // Everything after the claim is inside the try: a worktree that cannot be created must not
-  // leave a claim behind that keeps renewing itself with nobody working under it.
-  let keepLane = false;
-  try {
+  return withLane(ctx, issue, say, {
+    ceiling,
+    lift: options.lift,
     // Even in a dry run the path is the worktree's, never the main checkout, so nothing downstream
     // learns to treat the main checkout as a valid agent working directory.
-    const cwd = ctx.dryRun
-      ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
-      : worktreeFor(ctx, issue.number);
-    inFlight.set(issue.number, { dir: cwd, busy: false });
-    // Awaited, not returned: a returned promise would run the cleanup below while the work it
-    // guards is still going.
-    return await workIssue(ctx, issue, cwd, maxPoints, ceiling, say);
-  } catch (error) {
-    const recorded = recordThrow(ctx, issue, error as Error, say);
-    keepLane = recorded.keepLane;
-    return recorded.outcome;
-  } finally {
-    stopRenewing();
-    try {
-      handle.release();
-    } catch (error) {
-      say(`could not release the claim: ${(error as Error).message}`);
-    }
-    inFlight.delete(issue.number);
-
-    // Whatever the outcome, this lane is finished with the directory, so it goes here rather than
-    // at each of the eight exits that used to leak one. Nothing in-process reads it again, and
-    // the resume path resumes only a `fixed` verdict whose pull request is open at the same head on
-    // an unlabelled issue; every outcome that reaches this line (failed, parked, DLQed, budget
-    // exhausted, terminal verdict, merged) is one it already refuses. Removing the worktree also
-    // sweeps the `issue-N-<scratch>` siblings agents make for evidence capture, which nothing else
-    // reclaims. A crash never runs this block, which is exactly when resume should get its chance,
-    // so reconcile still owns that case on the next start. A throw that could not be recorded on
-    // the issue keeps its lane too: the worktree is then the only record of what happened.
-    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
-  }
+    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeFor(ctx, issue.number)),
+  }, async (cwd) => await workIssue(ctx, issue, cwd, maxPoints, ceiling, say));
 }
 
 /** The open pull request whose branch names this issue, when there is one. Throws when the list cannot be read: "unknown" is not "none". */
@@ -2174,21 +2188,12 @@ export async function redriveIssue(
   if (options.confirmer) ctx.seats.confirmer = options.confirmer;
   assertDistinctEngines(ctx.seats.worker, ctx.seats.confirmer ?? ctx.seats.reviewer, 'worker and confirmer');
 
-  const io = trackerIo(ctx);
-  const handle = await claimLane(ctx, io, issue.number, ceiling, say, options.lift);
-  if ('outcome' in handle) return handle;
-  const stopRenewing = keepClaimed(handle, () => {
-    // The lease ran out unrenewed: another run may hold the issue now, so this one's agent stops.
-    const killed = killAgentsOn(ctx.project.repo, issue.number);
-    ctx.log(`#${issue.number}  lost its lease (renewals failed until the claim ran out); stopped ${killed} agent(s)`);
-  });
-
-  let keepLane = false;
-  try {
-    const cwd = ctx.dryRun
-      ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`)
-      : worktreeAtPullRequest(ctx, issue.number, pull.branch);
-    inFlight.set(issue.number, { dir: cwd, busy: false });
+  return withLane(ctx, issue, say, {
+    ceiling,
+    lift: options.lift,
+    pr: pull.number,
+    open: () => (ctx.dryRun ? resolve(ctx.repoRoot, ctx.project.worktreeRoot, `issue-${issue.number}`) : worktreeAtPullRequest(ctx, issue.number, pull.branch)),
+  }, async (cwd) => {
     if (ctx.dryRun) {
       say(`DRY RUN  would ${objection === null ? 'reacquire the proof of' : 'revise'} PR #${pull.number} on ${pull.branch}, then review and land`);
       return { outcome: 'not-run', reason: 'dry run: the redrive was not run' };
@@ -2251,21 +2256,8 @@ export async function redriveIssue(
     const settled = await settleTerminalVerdict(ctx, issue, result, ceiling, say, pull.number);
     if (settled) return settled.outcome === 'failed' ? countFailure(ctx, issue, settled.reason, say, pull.number) : settled;
     if (result.pr) move(ctx, issue, 'E1', `PR #${result.pr} ready for review again`);
-    // Awaited, not returned: returning the promise ran this cleanup the moment the reviewer
-    // started, so two live redrives reviewed and merged with no claim and no lease.
+    // Awaited, like every pipeline call here: the claim and the lease must outlive the review and
+    // the landing, or two live redrives review and merge with no claim and no lease.
     return await reviewAndLand(ctx, issue, cwd, result, maxPoints, say, ceiling);
-  } catch (error) {
-    const recorded = recordThrow(ctx, issue, error as Error, say, pull.number);
-    keepLane = recorded.keepLane;
-    return recorded.outcome;
-  } finally {
-    stopRenewing();
-    try {
-      handle.release();
-    } catch (error) {
-      say(`could not release the claim: ${(error as Error).message}`);
-    }
-    inFlight.delete(issue.number);
-    if (!ctx.dryRun && !keepLane) retireLane(ctx, issue.number, say);
-  }
+  });
 }

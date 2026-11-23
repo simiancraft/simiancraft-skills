@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from './context.ts';
-import { claimHolder, findStranded, judgeLane, managedLanes, parkForInspection } from './resume.ts';
+import { claimHolder, findStranded, judgeLane, managedLanes, parkForInspection, resumeOneStranded } from './resume.ts';
 import { RunStopping } from './shell.ts';
 import { claimMarker } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
@@ -165,4 +165,36 @@ it('findStranded leaves a lane alone while another run claims its issue, as a re
     // The unclaimed lane beside it is still judged.
     expect(io.view(42)?.labels.map((l) => l.name)).toContain('loop/dlq: work');
   } finally { spy.mockRestore(); }
+});
+
+describe('resumeOneStranded before it starts', () => {
+  const entry = (n: number) => ({ issue: { number: n, title: 't', createdAt: '2026-09-01T00:00:00Z', labels: [] }, cwd: join(repo, 'wt', `issue-${n}`), result: { issue: n, verdict: 'fixed' as const, reason: 'r', pr: 9, branch: `fix/resume-${n}` } });
+  const run = async (io: FakeTracker, n: number) => {
+    const lines: string[] = [];
+    const context = { ...ctx(), io, runId: 'this-run', botLogin: 'bot', dryRun: false, knobs: { maxReviewRounds: 3 }, log: (m: string) => lines.push(m) } as unknown as Context;
+    const original = Bun.spawnSync;
+    const spy = spyOn(Bun, 'spawnSync').mockImplementation(((args: string[], opts: unknown) => {
+      if (args[0] === 'gh') return { exitCode: 0, stdout: Buffer.from(io.view(n)?.labels.some((l) => l.name.startsWith('loop/dlq')) ? 'OPEN loop/dlq' : 'OPEN'), stderr: Buffer.from('') };
+      return original(args, opts as any);
+    }) as typeof Bun.spawnSync);
+    try {
+      return { outcome: await resumeOneStranded(context, entry(n), 2), lines };
+    } finally { spy.mockRestore(); }
+  };
+  it('a gate that refuses the issue starts nothing, claims nothing, and leaves a work dead letter for a person', async () => {
+    const io = new FakeTracker('bot', [fakeIssue(71, { labels: [{ name: 'needs-human' }] })]);
+    const { outcome, lines } = await run(io, 71);
+    expect(outcome).toBeNull();
+    expect(lines.some((l) => l.startsWith('#71  not resuming: '))).toBe(true);
+    expect(io.view(71)?.labels.map((l) => l.name)).toContain('loop/dlq: work');
+    expect(io.view(71)?.comments.some((c) => c.body.includes('carve-claim'))).toBe(false);
+  });
+  it("another run's live claim starts nothing and parks nothing", async () => {
+    const io = new FakeTracker('bot', [fakeIssue(72)]);
+    io.comment(72, 'bot', claimMarker('working', 'elsewhere', '2026-11-01T00:00:00Z', '2999-01-01T00:00:00Z', 'tok'));
+    const { outcome, lines } = await run(io, 72);
+    expect(outcome).toBeNull();
+    expect(lines.some((l) => l.startsWith('#72  not resuming: '))).toBe(true);
+    expect(io.view(72)?.labels.map((l) => l.name)).toEqual([]);
+  });
 });
