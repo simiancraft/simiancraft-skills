@@ -8,7 +8,7 @@ import { claim } from '../../carve-github-issue/lib/claims.ts';
 import { FakeTracker, fakeIssue } from '../../carve-github-issue/lib/fake-tracker.ts';
 import { preserveLaneWork, retireLane } from './pipeline.ts';
 import { reconcile } from './resume.ts';
-import { resetLane, worktreeAtPullRequest, worktreeFor } from './lane.ts';
+import { dirtyPaths, resetLane, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 
 /** A real remote, a real lane: what a failed attempt leaves behind is only interesting on disk. */
 let scratch: string;
@@ -333,5 +333,25 @@ describe('lane files: untracked files the main checkout holds and every lane nee
     for (const value of [null, '.env', [''], ['/etc/passwd'], ['../outside'], ['a/../../b'], ['.'], [3]]) {
       expect(laneFilesFault(value)).toContain('project.laneFiles');
     }
+  });
+});
+
+describe('a prover that staged its receipts inside the lane', () => {
+  it('leaves a lane clean when only proof scratch is untracked in it', () => {
+    const dir = lane(95, true);
+    for (const scratchDir of ['.proof', '.proof-95']) {
+      mkdirSync(join(dir, scratchDir), { recursive: true });
+      writeFileSync(join(dir, scratchDir, 'gate.log'), 'receipts already on the evidence branch\n');
+    }
+    expect(dirtyPaths(ctxFor([]), dir)).toEqual([]);
+  });
+
+  it('still calls a real code edit beside the scratch dirty', () => {
+    const dir = lane(96, true);
+    mkdirSync(join(dir, '.proof'), { recursive: true });
+    writeFileSync(join(dir, '.proof', 'gate.log'), 'receipts\n');
+    writeFileSync(join(dir, 'work-96.txt'), 'an edit nobody committed\n');
+    writeFileSync(join(dir, '.proofreader.ts'), 'a new source file whose name only starts like the scratch\n');
+    expect(dirtyPaths(ctxFor([]), dir).map((line) => line.trim().split(/\s+/).pop()).sort()).toEqual(['.proofreader.ts', 'work-96.txt']);
   });
 });

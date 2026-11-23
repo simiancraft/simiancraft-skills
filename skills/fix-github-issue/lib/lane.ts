@@ -9,16 +9,16 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Context } from './context.ts';
-import { CONTROL_FILES } from './control-files.ts';
+import { CONTROL_FILES, inLaneScratch } from './control-files.ts';
 import { acquirePidLock } from './pid-lock.ts';
 import { sh } from './shell.ts';
 
-/** Porcelain status of a worktree, minus the loop's own control files. */
+/** Porcelain status of a worktree, minus the loop's own control files and a seat's untracked in-lane scratch. */
 export function dirtyPaths(ctx: Context, cwd: string): string[] {
   return sh(ctx, ['git', 'status', '--porcelain'], cwd)
     .split('\n')
     .filter(Boolean)
-    .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()));
+    .filter((line) => !CONTROL_FILES.has(line.slice(3).trim()) && !inLaneScratch(line));
 }
 
 /**

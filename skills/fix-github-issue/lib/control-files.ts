@@ -28,3 +28,19 @@ export const PANEL_JUDGMENT_FILE = 'loop-panel-judgment.json';
  * `git status --porcelain` would call every tree dirty and park every issue.
  */
 export const CONTROL_FILES = new Set([LAST_MESSAGE_FILE, VERDICT_FILE, CODE_FILE, PROOF_FILE, APPRAISAL_FILE, CONFIRMATION_FILE, REVIEW_FILE, CARVING_FILE, PANEL_QUESTIONS_FILE, PANEL_REVIEW_FILE, PANEL_JUDGMENT_FILE]);
+
+/**
+ * The directory name a seat may have staged receipts and scratch under inside a lane: `.proof/`, or
+ * `.proof-<issue>/`. A seat is given a scratch directory outside the lane for this, so these exist
+ * only from a prompt that did not name one; an untracked tree under either name is never code, and
+ * every dirty-tree judgement looks through it as it looks through the control files.
+ */
+export const IN_LANE_SCRATCH_PREFIX = '.proof';
+
+/** True for an untracked porcelain line under the in-lane scratch directory. */
+export function inLaneScratch(line: string): boolean {
+  if (!line.startsWith('?? ')) return false;
+  const path = line.slice(3).trim();
+  const top = path.split('/')[0] ?? '';
+  return path.includes('/') && (top === IN_LANE_SCRATCH_PREFIX || top.startsWith(`${IN_LANE_SCRATCH_PREFIX}-`));
+}
