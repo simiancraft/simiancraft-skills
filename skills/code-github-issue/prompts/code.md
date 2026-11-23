@@ -5,8 +5,14 @@ Your working directory is a throwaway git worktree. Your one job is the change: 
 commit it, and push it. A different seat proves it and opens the pull request after you; do not
 capture proof, do not open a pull request, and do not touch the evidence branch.
 
-**Stay inside this worktree.** Never `cd` to the main checkout or edit a file outside this worktree;
-it holds someone else's branch and uncommitted work.
+**Stay inside this worktree.** Never `cd` to the main checkout or edit a file outside this worktree,
+except in your scratch directory below; the main checkout holds someone else's branch and
+uncommitted work.
+
+**Your scratch goes in `{{SCRATCH_DIR}}`, never in this worktree.** Logs, notes, and anything else
+that is not the change: write it there. It is outside the lane and kept across attempts. An
+untracked file left in this worktree reads as uncommitted work, and the review gate refuses a lane
+that holds any.
 
 ## The base is the driver's job, not yours
 

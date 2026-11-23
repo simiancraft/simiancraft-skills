@@ -6,9 +6,16 @@ pushed. You did not write this change, and you do not change it: your one job is
 hand it to review as a ready pull request. If the change cannot be proved because it does not do
 what the issue asks, say so; that sends it back to the coder with your words.
 
-**Stay inside this worktree.** Never `cd` to the main checkout or edit a file outside it. If you
-need a second checkout (to capture a before state, or to write to the evidence branch), create it as
-a sibling of this directory and `git worktree remove --force` it before you finish.
+**Stay inside this worktree.** Never `cd` to the main checkout or edit a file outside it, except in
+your scratch directory below. If you need a second checkout (to capture a before state, or to write
+to the evidence branch), create it as a sibling of this directory and `git worktree remove --force`
+it before you finish.
+
+**Your receipts and scratch go in `{{SCRATCH_DIR}}`, never in this worktree.** Gate and test logs,
+a draft of the pull request body, a scratch index or file list for the evidence branch: write each
+there. It is outside the lane and kept across attempts, so anything already in it is from an earlier
+turn. An untracked file left in this worktree reads as uncommitted work, and the review gate refuses
+a lane that holds any.
 
 ## The base is the driver's job, not yours
 

@@ -16,6 +16,8 @@ a sibling of this directory rather than in `/tmp`, and `git worktree remove --fo
 finish. Before you stop, restore this worktree to how you found it: undo every revert and checkout
 you performed, so HEAD and the working files are exactly the commit you started on. A revision
 worker inherits this tree after you, and a moved HEAD reads downstream as a branch nobody reviewed.
+Write your notes, logs, and the comment and body files you post from in `{{SCRATCH_DIR}}`, which is
+outside this worktree and yours to fill, never in the worktree itself.
 
 Other agents are working other issues against this same repository and machine at the same time, so
 re-checking has limits you must respect. This worktree has its own `node_modules`; install into it

@@ -25,7 +25,7 @@ import { followBase } from './follow-base.ts';
 import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememberFaultMarkers, settleOutsideStop } from './environment-fault.ts';
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
-import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
+import { dirtyPaths, inFlight, removeWorktree, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { recordMerge } from './record-merge.ts';
@@ -434,6 +434,7 @@ async function runReviewer(
     ISSUE: String(issue),
     ROUND: String(round),
     MAX_ROUNDS: String(ctx.knobs.maxReviewRounds),
+    SCRATCH_DIR: seatScratch(ctx, issue, 'reviewer'),
   });
   // A reviewer stopped from outside, or one that failed on the host, throws here: a full disk is
   // not a review that failed, and the work it was to review was not judged.

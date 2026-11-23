@@ -47,6 +47,12 @@ one carrying that environment, and `lane` otherwise, and the prover names the sa
 the run's receipt. A failing run is `unprovable`. Focused evidence comes in addition to that run, never
 instead of it. Like the coder, it never chases the base itself.
 
+Receipts, logs, and drafts go in the seat's scratch directory, `<runDir>/scratch/issue-<n>/prover`,
+which the prompt names as `{{SCRATCH_DIR}}` and which sits outside the lane (`seatScratch` in
+`fix-github-issue/lib/lane.ts`; the coder and reviewer get their own). Every dirty-tree judgement
+also looks through an untracked `.proof/` or `.proof-<name>/` in the lane, so receipts a prompt
+without that directory staged there do not read as uncommitted work.
+
 ## How the driver checks the answer
 
 `lib/prove.ts` exports `runProve(ctx, issue, cwd, coded, brief)`. It runs the seat and returns its

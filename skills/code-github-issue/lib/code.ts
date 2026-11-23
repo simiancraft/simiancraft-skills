@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { agentCapMs, logTail, readResult, refuseEnvironmentFault, renderPrompt, runAgent, runAgentOnce } from '../../fix-github-issue/lib/agent.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE } from '../../fix-github-issue/lib/control-files.ts';
+import { seatScratch } from '../../fix-github-issue/lib/lane.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import type { Touch } from '../../fix-github-issue/lib/work-markers.ts';
 
@@ -85,6 +86,7 @@ export async function runCode(
     TITLE: issue.title,
     MAX_POINTS: String(maxPoints),
     BRIEF: briefText(brief),
+    SCRATCH_DIR: seatScratch(ctx, issue.number, 'coder'),
   });
   const role = brief.kind === 'conflict' ? 'coder-conflict' : brief.kind === 'first' ? 'coder' : 'coder-revise';
   const run = brief.kind === 'conflict'

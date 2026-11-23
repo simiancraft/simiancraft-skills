@@ -12,6 +12,7 @@ import { agentCapMs, logTail, readResult, refuseEnvironmentFault, renderPrompt, 
 import { type GateEnvironment, gateCommand, gateEnvironment, type ProjectConfig } from '../../fix-github-issue/lib/config.ts';
 import type { Context } from '../../fix-github-issue/lib/context.ts';
 import { CODE_FILE, PROOF_FILE } from '../../fix-github-issue/lib/control-files.ts';
+import { seatScratch } from '../../fix-github-issue/lib/lane.ts';
 import { sh } from '../../fix-github-issue/lib/shell.ts';
 import type { Touch } from '../../fix-github-issue/lib/work-markers.ts';
 
@@ -122,6 +123,7 @@ export async function runProve(
     BRIEF: briefText(brief),
     GATE: gateText(ctx.project, head, coded.gated),
     CI_COVERAGE: ciCoverageText(ctx.project),
+    SCRATCH_DIR: seatScratch(ctx, issue.number, 'prover'),
   });
   const run = await runAgent(ctx, 'prover', issue.number, cwd, ctx.seats.worker, prompt);
   // A prover stopped from outside, or one that failed on the host, did not fail: the pipeline
