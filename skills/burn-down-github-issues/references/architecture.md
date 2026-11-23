@@ -262,8 +262,12 @@ starting with "not" does not count), or one the loop opened on a coder's branch 
 their issue with `Refs` and never a closing keyword. A branch name alone resolves nothing.
 The merge is recorded as the landing records its own (`recordMerge` in the fix skill's
 `lib/record-merge.ts`): the card to Merged, the merge onto the floor, and the issue closed with a
-pointer. It never closes a trunk, a held or paused issue, a claimed issue, or a blocked one, and it
-re-reads the issue immediately before closing.
+pointer. It never closes a trunk, a paused issue, a claimed issue, or a blocked one, and it
+re-reads the issue immediately before closing. A held issue is closed only by the loop's own pull
+request, merged by hand while the loop held it, and only when every hold it carries is the loop's
+(`needs-human`, `needs-decision`, `loop/parked`, or a dead letter): those come off once the merge
+is recorded, and the log says so. A person's own hold (`loop/skip`, a configured skip label) keeps
+the issue as it is.
 
 ## Carving and revisits
 
