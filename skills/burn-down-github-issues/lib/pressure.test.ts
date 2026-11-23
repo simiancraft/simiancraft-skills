@@ -615,7 +615,7 @@ describe('runtime moves and settlement', () => {
       return '';
     };
     const { behindBase } = loadFunctions('../../fix-github-issue/lib/staleness.ts', ['behindBase'], { sh, fetchBase: () => checkedBase });
-    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true,
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null, behindBase, behindBeyondNoise: behindBase, requiresUpToDate: () => true, fetchBase: () => checkedBase, checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
       awaitGreenChecks: async () => null, move: noop, liveGate: () => ({ ok: true }), trackerIo: noop,
@@ -635,7 +635,7 @@ describe('runtime moves and settlement', () => {
     };
     const landWith = (strict: boolean) => {
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         // The lane is behind by a changelog alone, on every look.
@@ -670,7 +670,7 @@ describe('runtime moves and settlement', () => {
         return '';
       };
       const ctx = context(new FakeTracker(bot));
-      const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+      const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
         DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, MAX_NOISE_REFRESHES: 6, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
         sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
         fetchBase: () => { current = next(); return 'A'; },
@@ -727,7 +727,7 @@ describe('a floor incident at the merge boundary', () => {
       if (argv.at(-1) === '.parents[0].sha') return 'A';
       return '';
     };
-    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase', 'mergeAllowed'], {
+    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase', 'mergeAllowed'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], boundaryWaived, waiverNoted: new Set(),
       sh, catchUp: () => null, pullRequestMatchesReview: async () => null,
       behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
@@ -1341,7 +1341,7 @@ describe('a prover that needs a person', () => {
   it('refuses the merge while needs-human is on the pull request, whatever the issue carries', async () => {
     const writes: string[][] = [];
     const ctx = context(new FakeTracker(bot));
-    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
@@ -1363,16 +1363,16 @@ describe('a pull request merged while its landing watched', () => {
   it('ends the wait, merges nothing itself, and records the merge once: the card, the floor, and the close', async () => {
     const writes: string[][] = [];
     const lanes: string[] = [];
-    const floor: number[] = [];
+    const floor: Array<[number, string]> = [];
     const closes: number[] = [];
     const ctx = context(new FakeTracker(bot));
-    ctx.afterMerge = (event) => floor.push(event.pr);
+    ctx.afterMerge = (event) => floor.push([event.pr, event.sha]);
     const { recordMerge } = loadFunctions('../../fix-github-issue/lib/record-merge.ts', ['recordMerge'], {
       closeIssue: async (_ctx: unknown, issue: number) => { closes.push(issue); }, parkIssue: noop,
     });
-    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
-      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv.includes('mergedAt') ? '2026-11-21T11:11:04Z' : ''),
+      sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : argv.includes('mergedAt') ? '2026-11-21T11:11:04Z' : argv.includes('mergeCommit') ? 'm'.repeat(40) : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,
       behindBase: () => [], behindBeyondNoise: () => [], requiresUpToDate: () => false,
       fetchBase: () => 'A', checksOn: () => ({ names: ['ci'], passed: ['ci'] }), requiredStatusChecks: () => ['ci'],
@@ -1385,7 +1385,8 @@ describe('a pull request merged while its landing watched', () => {
     expect(outcome).toBe('merged');
     expect(writes.filter((argv) => argv[1] === 'pr' && argv[2] === 'merge')).toEqual([]);
     expect(lanes.at(-1)).toBe('T1');
-    expect(floor).toEqual([7]);
+    // The floor watches the merge commit a deploy on push builds, not the pull request's head.
+    expect(floor).toEqual([[7, 'm'.repeat(40)]]);
     expect(closes).toEqual([1]);
     // The next run start finds the issue closed and records nothing twice.
     const again = await recordMerge(ctx, { issue: 1, title: 'a fix', pr: 7, sha: 'h', mergedAt: '', paths: [] }, { place: noop, note: '', by: 'reconcile', comment: '', reason: '', isOpen: () => false });
@@ -1395,7 +1396,7 @@ describe('a pull request merged while its landing watched', () => {
 
   it('parks a pull request closed while its checks were waited on', async () => {
     const ctx = context(new FakeTracker(bot));
-    const api = loadFunctions(pipeline, ['land', 'landedOnUnseenBase'], {
+    const api = loadFunctions(pipeline, ['land', 'mergeCommitOf', 'landedOnUnseenBase'], {
       DEFAULT_MAX_POINTS: 2, MAX_BASE_REFRESHES: 2, effectiveTouches: () => ['code'], mergeAllowed: () => true, boundaryWaived: () => false,
       sh: (_ctx: unknown, argv: string[]) => (argv[1] === 'rev-parse' ? (argv.at(-1) === 'origin/main' ? 'A' : 'h') : ''),
       catchUp: () => null, pullRequestMatchesReview: async () => null,

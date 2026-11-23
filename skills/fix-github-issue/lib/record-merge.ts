@@ -17,8 +17,6 @@ export type MergeRecord = {
   /** The words the close posts on the issue. */
   comment: string;
   reason: string;
-  /** The commit the close event names; the merge's `sha` when not given. */
-  mergeSha?: string;
   /** Work done once the floor has the merge and before the issue closes (the lane's removal). */
   beforeClose?: () => void;
   /** Whether the issue is still open; a closed one is not closed again. */
@@ -41,6 +39,6 @@ export async function recordMerge(ctx: Context, merge: MergeEvent, record: Merge
     parkIssue(ctx, merge.issue, `Pull request #${merge.pr} merged at ${merge.mergedAt}, but the issue was not closed because ${refused}. A person closes it or carries on.`);
     return 'parked';
   }
-  await closeIssue(ctx, merge.issue, record.comment, { kind: 'merged', pr: merge.pr, mergeSha: record.mergeSha ?? merge.sha, reason: record.reason, by: record.by });
+  await closeIssue(ctx, merge.issue, record.comment, { kind: 'merged', pr: merge.pr, mergeSha: merge.sha, reason: record.reason, by: record.by });
   return 'closed';
 }

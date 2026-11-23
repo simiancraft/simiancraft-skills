@@ -851,12 +851,27 @@ export async function awaitGreenChecks(
 }
 
 /**
+ * The commit a merged pull request's merge made on the base, as GitHub reports it: what a deploy run
+ * on push builds and what the floor watches, never the pull request's head. Empty, and said, when it
+ * cannot be read.
+ */
+function mergeCommitOf(ctx: Context, pr: number, say: (message: string) => void): string {
+  try {
+    const oid = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
+    return oid === 'null' ? '' : oid;
+  } catch (error) {
+    say(`could not read the merge commit of PR #${pr}: ${(error as Error).message.split('\n')[0]}`);
+    return '';
+  }
+}
+
+/**
  * The base commit a merge landed on, when it is not the one this lane last fetched; null when the
  * merge landed on the base the lane held, or when it cannot be told (which is logged, not guessed).
  */
-function landedOnUnseenBase(ctx: Context, pr: number, seen: string, say: (message: string) => void): string | null {
+function landedOnUnseenBase(ctx: Context, mergeCommit: string, seen: string, say: (message: string) => void): string | null {
+  if (!mergeCommit) return null;
   try {
-    const mergeCommit = sh(ctx, ['gh', 'pr', 'view', String(pr), '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
     const landedOn = sh(ctx, ['gh', 'api', `repos/${ctx.project.repo}/commits/${mergeCommit}`, '--jq', '.parents[0].sha']);
     if (!landedOn || landedOn === seen) return null;
     say(`merged onto ${landedOn.slice(0, 10)}, but this lane last saw ${ctx.project.baseBranch} at ${seen.slice(0, 10)}: something else landed in between, and the combination is unverified`);
@@ -1356,20 +1371,22 @@ async function land(
     // file, but a person or another operator's loop can merge in the seconds between the last look
     // upstream and this merge, and a repository that does not require up-to-date branches lets it.
     // That cannot be prevented from here, so it is detected and said plainly.
-    const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, pr, baseSeen, say);
+    // The merge goes up as the commit the merge made, which is what a deploy on push builds, as the
+    // run start's reconcile records the merges it finds.
+    const mergeCommit = ctx.dryRun ? '' : mergeCommitOf(ctx, pr, say);
+    const unseenBase = ctx.dryRun || !baseSeen ? null : landedOnUnseenBase(ctx, mergeCommit, baseSeen, say);
     if (unseenBase) {
       mutate(ctx, `note on PR #${pr} that it landed across an unseen commit`, [
         'gh', 'pr', 'comment', String(pr), '--body',
         `This merged onto ${unseenBase.slice(0, 10)}, which landed on \`${ctx.project.baseBranch}\` between the last look upstream and the merge. The checks and the review covered the branch without that commit; the combination is unverified until the base's own checks pass.`,
       ]);
     }
-    await recordMerge(ctx, { issue: issue.number, title: issue.title, pr, sha: landingSha, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined }, {
+    await recordMerge(ctx, { issue: issue.number, title: issue.title, pr, sha: mergeCommit, mergedAt: merged, paths, unseenBase: unseenBase ?? undefined }, {
       place: (note) => move(ctx, issue, 'T1', note),
       note: `PR #${pr} merged ${merged}`,
       by: 'worker',
       comment: `Closed by #${pr}.`,
       reason: `merged #${pr}`,
-      mergeSha: reviewedSha,
       beforeClose: () => {
         // The person watching the main checkout sees the fix land, when the config asks for that.
         followBase(ctx, paths);

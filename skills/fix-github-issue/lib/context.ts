@@ -18,6 +18,7 @@ export type MergeEvent = {
   issue: number;
   title: string;
   pr: number;
+  /** The merge commit the merge made on the base (`mergeCommit.oid`), never the pull request's head; empty when it is not known. */
   sha: string;
   mergedAt: string;
   paths: string[];
