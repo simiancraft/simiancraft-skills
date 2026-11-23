@@ -28,6 +28,7 @@ import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, resetLane, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
 import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
+import { type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
 import { type BaseCommit, behindBase, behindBeyondNoise, commitsBehind, describeCommits, fetchBase, MAX_BASE_REFRESHES, MAX_NOISE_REFRESHES, matchesPath, staleAgainstBase } from './staleness.ts';
 import { codedComment, latestStep, type Touch, unprovedComment } from './work-markers.ts';
 import { heldComment, loopHoldStands, proofHeldComment, standingStop, stopComment } from './stop-record.ts';
@@ -652,25 +653,6 @@ export async function awaitGreenChecks(
   /** The tracker read and the wait, replaceable so a test neither shells out nor sleeps. */
   io: { read: (argv: string[]) => string; sleep: (ms: number) => Promise<void>; now: () => number } = { read: (argv) => sh(ctx, argv), sleep: (ms) => Bun.sleep(ms), now: () => Date.now() },
 ): Promise<string | null> {
-  type CheckNode = { name?: string; context?: string; status?: string; conclusion?: string; state?: string };
-  // A check that ran and was satisfied. SKIPPED and CANCELLED are neither this nor a failure: no
-  // verdict was reached, and a name whose every node is one of those has not been checked at all.
-  const PASSED = new Set(['SUCCESS', 'NEUTRAL']);
-  const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
-  // GitHub renders an unfinished CheckRun with conclusion "" (empty string, not null), so a
-  // nullish coalesce would read "" as a verdict and fail-close a merely-running check.
-  const classify = (c: CheckNode): 'passed' | 'skipped' | 'cancelled' | 'pending' | 'failed' => {
-    const verdict = c.conclusion || c.state || c.status || null;
-    if (verdict === null || RUNNING.has(verdict)) return 'pending';
-    if (PASSED.has(verdict)) return 'passed';
-    if (verdict === 'SKIPPED') return 'skipped';
-    // A cancelled run was superseded or stopped, often by the repository's own concurrency rule when
-    // a draft is marked ready; it says nothing about the change, so it is waited out, not refused.
-    if (verdict === 'CANCELLED') return 'cancelled';
-    return 'failed';
-  };
-  const nameOf = (c: CheckNode) => c.name ?? c.context ?? 'unnamed check';
-
   const deadline = io.now() + ctx.knobs.checksTimeoutMinutes * 60_000;
   const wait = async (why: string, ms: number): Promise<string | null> => {
     const left = deadline - io.now();
@@ -720,12 +702,13 @@ export async function awaitGreenChecks(
   // (`transport`), settled with nothing counted, never a landing dead letter.
   let offlineSince: number | null = null;
   let retries = 0;
-  const readRollup = async (): Promise<string | null> => {
+  const watch = landingWatch(pr, io);
+  const observe = async (): Promise<LandingObservation | null> => {
     try {
-      const raw = io.read(['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid']);
+      const seen = watch.observe();
       offlineSince = null;
       retries = 0;
-      return raw;
+      return seen;
     } catch (error) {
       const text = (error as Error).message ?? '';
       if (!transportFailureIn(text)) throw error;
@@ -743,25 +726,24 @@ export async function awaitGreenChecks(
     }
   };
   for (;;) {
-    const raw = await readRollup();
-    if (raw === null) continue;
-    const view = JSON.parse(raw) as { statusCheckRollup: CheckNode[] | null; headRefOid: string };
-    const rollup: CheckNode[] = view.statusCheckRollup ?? [];
-    if (expect && view.headRefOid !== expect.sha) {
+    const seen = await observe();
+    if (seen === null) continue;
+    const rollup = seen.checks;
+    if (expect && seen.head !== expect.sha) {
       const gaveUp = await wait('the pull request does not show the landing head yet', 15_000);
       if (gaveUp) return gaveUp;
       continue;
     }
     if (rollup.length === 0 && (ctx.knobs.checks === 'none' || !expect)) return null;
 
-    const failed = rollup.filter((c) => classify(c) === 'failed');
+    const failed = rollup.filter((c) => c.status === 'failed');
     if (failed.length > 0) {
-      return `checks failed: ${failed.map((c) => `${nameOf(c)} (${c.conclusion || c.state || c.status})`).join(', ')}`;
+      return `checks failed: ${failed.map((c) => `${c.name} (${c.verdict})`).join(', ')}`;
     }
 
-    const pending = rollup.filter((c) => classify(c) === 'pending');
+    const pending = rollup.filter((c) => c.status === 'pending');
     if (pending.length > 0) {
-      const gaveUp = await wait(`checks still unfinished: ${pending.map(nameOf).join(', ')}`, 30_000);
+      const gaveUp = await wait(`checks still unfinished: ${pending.map((c) => c.name).join(', ')}`, 30_000);
       if (gaveUp) return gaveUp;
       continue;
     }
@@ -777,8 +759,8 @@ export async function awaitGreenChecks(
     // to pass would hold every landing to the timeout. A check that passed at review and is only
     // skipped now is the other case: it stopped running, and the approval counted on it.
     const mustRun = new Set([...authoritative, ...(expect?.passedAtReview ?? [])]);
-    const byName = new Map<string, Array<ReturnType<typeof classify>>>();
-    for (const c of rollup) byName.set(nameOf(c), [...(byName.get(nameOf(c)) ?? []), classify(c)]);
+    const byName = new Map<string, CheckStatus[]>();
+    for (const c of rollup) byName.set(c.name, [...(byName.get(c.name) ?? []), c.status]);
     const unjudged = [...byName.entries()]
       .filter(([name, kinds]) => !kinds.includes('passed') && (kinds.includes('cancelled') || mustRun.has(name)))
       .map(([name, kinds]) => `${name} (${[...new Set(kinds)].join(' and ')})`);
@@ -791,7 +773,7 @@ export async function awaitGreenChecks(
     // Everything visible has passed. It is the whole list only when every expected check is in it
     // and nothing GitHub has opened on this head is still running or still to register.
     if (!expect) return null;
-    const present = new Set(rollup.map(nameOf));
+    const present = new Set(rollup.map((c) => c.name));
     const missing = expected.filter((name) => !present.has(name));
     if (missing.length > 0) {
       const gaveUp = await wait(`expected check(s) have not registered on the landing head: ${missing.join(', ')}`, 15_000);

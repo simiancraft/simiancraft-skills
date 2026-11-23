@@ -1,0 +1,120 @@
+/**
+ * The landing watch: a pull request under watch while it lands. Each poll is one observation of
+ * it: the pull request's state, its head, and each check on that head with its status and the
+ * moment this watch first saw it. A check's first sighting is kept across polls, so how long a
+ * check has sat in one place is a fact the watch knows rather than one each poll guesses at.
+ *
+ * The reader only observes. What an observation means for the landing (wait, refuse, end) is the
+ * checks wait's question (`awaitGreenChecks` in `pipeline.ts`).
+ */
+
+/** What a check's node reached: a satisfied run, a skip, a cancel, a run still going, or a failure. */
+export type CheckStatus = 'passed' | 'skipped' | 'cancelled' | 'pending' | 'failed';
+
+/** One check (a check run or a commit status) as one poll saw it. */
+export type CheckObservation = {
+  name: string;
+  status: CheckStatus;
+  /** The tracker's own word for it (`SUCCESS`, `FAILURE`, `QUEUED`, ...), or null when it gave none. */
+  verdict: string | null;
+  /** A check run the provider has not started: queued, requested, or waiting, never in progress. */
+  queued: boolean;
+  /** Who runs it: the workflow, or the host its details link to; `unknown provider` when neither is given. */
+  provider: string;
+  /** When this watch first saw this check, on the watch's clock. */
+  firstSeen: number;
+};
+
+/** The pull request as one poll saw it. */
+export type LandingObservation = {
+  state: 'OPEN' | 'MERGED' | 'CLOSED';
+  head: string;
+  checks: CheckObservation[];
+};
+
+/** A rollup node as `gh pr view --json statusCheckRollup` renders a check run or a commit status. */
+export type CheckNode = {
+  name?: string;
+  context?: string;
+  status?: string;
+  conclusion?: string;
+  state?: string;
+  workflowName?: string;
+  detailsUrl?: string;
+  targetUrl?: string;
+};
+
+const PASSED = new Set(['SUCCESS', 'NEUTRAL']);
+const RUNNING = new Set(['PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED']);
+/** A check run's statuses before its provider starts it. */
+const NOT_STARTED = new Set(['QUEUED', 'REQUESTED', 'WAITING', 'PENDING']);
+
+/**
+ * What a node reached. SKIPPED and CANCELLED are neither a pass nor a failure: no verdict was
+ * reached. GitHub renders an unfinished check run with conclusion "" (empty string, not null), so a
+ * nullish coalesce would read "" as a verdict and fail-close a merely-running check.
+ */
+export function classify(node: CheckNode): CheckStatus {
+  const verdict = node.conclusion || node.state || node.status || null;
+  if (verdict === null || RUNNING.has(verdict)) return 'pending';
+  if (PASSED.has(verdict)) return 'passed';
+  if (verdict === 'SKIPPED') return 'skipped';
+  // A cancelled run was superseded or stopped, often by the repository's own concurrency rule when
+  // a draft is marked ready; it says nothing about the change, so it is waited out, not refused.
+  if (verdict === 'CANCELLED') return 'cancelled';
+  return 'failed';
+}
+
+const nameOf = (node: CheckNode): string => node.name ?? node.context ?? 'unnamed check';
+
+function providerOf(node: CheckNode): string {
+  if (node.workflowName) return node.workflowName;
+  const link = node.detailsUrl || node.targetUrl;
+  if (link) {
+    try {
+      return new URL(link).host;
+    } catch {
+      // not a link; fall through
+    }
+  }
+  return 'unknown provider';
+}
+
+/** The argv of one observation's read. */
+export const watchArgv = (pr: number): string[] => ['gh', 'pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefOid,state'];
+
+/**
+ * A watch on one pull request. `observe` reads it once (a read that throws is the caller's to
+ * judge: a transport failure is retried there) and returns the observation, with each check's first
+ * sighting carried over from earlier polls. A check is the same check from poll to poll by its name
+ * and its details link, or by its name and its place among the nodes of that name when it has none.
+ */
+export function landingWatch(pr: number, io: { read: (argv: string[]) => string; now: () => number }): { observe: () => LandingObservation } {
+  const firstSeen = new Map<string, number>();
+  return {
+    observe: () => {
+      const view = JSON.parse(io.read(watchArgv(pr))) as { statusCheckRollup: CheckNode[] | null; headRefOid: string; state?: string };
+      const at = io.now();
+      const occurrences = new Map<string, number>();
+      const checks = (view.statusCheckRollup ?? []).map((node): CheckObservation => {
+        const name = nameOf(node);
+        const nth = occurrences.get(name) ?? 0;
+        occurrences.set(name, nth + 1);
+        const key = `${name}\u0000${node.detailsUrl || node.targetUrl || `#${nth}`}`;
+        if (!firstSeen.has(key)) firstSeen.set(key, at);
+        return {
+          name,
+          status: classify(node),
+          verdict: node.conclusion || node.state || node.status || null,
+          // Only a check run has a status apart from its verdict; a commit status's `PENDING` cannot
+          // tell a queued job from a running one.
+          queued: node.status !== undefined && !node.conclusion && NOT_STARTED.has(node.status),
+          provider: providerOf(node),
+          firstSeen: firstSeen.get(key) as number,
+        };
+      });
+      const state = view.state === 'MERGED' || view.state === 'CLOSED' ? view.state : 'OPEN';
+      return { state, head: view.headRefOid, checks };
+    },
+  };
+}
