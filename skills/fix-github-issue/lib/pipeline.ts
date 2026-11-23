@@ -26,7 +26,7 @@ import { EnvironmentFault, type EnvironmentFaultKind, environmentFaultOf, rememb
 import { attemptCount, ceilingFor, closeIssue, type DlqPhase, ensureLabel, parkIssue, recordAttempt, recordReview, reviewCount, sendToDlq } from './labels.ts';
 import { clearSizeLabels, weighHold } from './panel.ts';
 import { dirtyPaths, inFlight, removeWorktree, rescueRef, resetLane, seatScratch, updateFromBase, worktreeAtPullRequest, worktreeFor } from './lane.ts';
-import { finishDespiteStop, isFinishing, isStopping, mutate, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
+import { finishDespiteStop, isFinishing, isStopping, mutate, rateLimitedIn, rateLimitResetAt, RunStopping, sh, stoppableSleep, transportFailureIn, yieldToStop } from './shell.ts';
 import { boundaryWaived } from './land.ts';
 import { recordMerge } from './record-merge.ts';
 import { type CheckObservation, type CheckStatus, type LandingObservation, landingWatch } from './landing-watch.ts';
@@ -657,6 +657,9 @@ export const DEFAULT_STUCK_CHECK_MINUTES = 30;
 /** How long the checks wait keeps retrying a tracker it cannot reach before it settles as an outside stop. */
 export const TRANSPORT_WINDOW_MS = 5 * 60_000;
 
+/** How long the checks wait pauses on a rate limit whose reset GitHub does not name. */
+export const RATE_LIMIT_PAUSE_MS = 60_000;
+
 export async function awaitGreenChecks(
   ctx: Context,
   pr: number,
@@ -726,6 +729,17 @@ export async function awaitGreenChecks(
       const text = (error as Error).message ?? '';
       if (!transportFailureIn(text)) throw error;
       const now = io.now();
+      if (rateLimitedIn(text)) {
+        // Throttled, not offline: the read waits for the limit's reset (a minute when GitHub names
+        // none, as under a secondary limit), inside the checks deadline, and the transport window
+        // does not run meanwhile.
+        if (deadline - now <= 0) throw new EnvironmentFault({ kind: 'transport' }, 'landing', `the checks of PR #${pr} could not be read before the checks deadline: the tracker is rate limiting this token`);
+        const reset = rateLimitResetAt(io.read);
+        const pause = Math.max(reset === null ? RATE_LIMIT_PAUSE_MS : reset - now + 1_000, 1_000);
+        say(`the tracker is rate limiting this token; reading the checks again in ${Math.round(Math.min(pause, deadline - now) / 1000)}s, at the limit's reset`);
+        await stoppableSleep(Math.min(pause, deadline - now), io.sleep);
+        return null;
+      }
       offlineSince ??= now;
       const why = text.trim().split('\n').at(-1) ?? text;
       if (now - offlineSince >= TRANSPORT_WINDOW_MS || deadline - now <= 0) {

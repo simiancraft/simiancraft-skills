@@ -470,7 +470,7 @@ An outside stop is a stop the change did not cause, settled in one place, `settl
 |---|---|---|
 | `host` | a run ended on `ENOSPC` or `ENOMEM` | the line pauses; the work reruns (a repeat is charged; see below) |
 | `signal` | a stop signal the driver did not send | the work reruns on a later run |
-| `transport` | the tracker could not be reached (`TRANSPORT` in `lib/shell.ts`: a failed or timed-out connection, a 502, 503, or 504) | the work reruns on a later run; the checks wait first retries its read with backoff for up to five minutes |
+| `transport` | the tracker could not be reached (`TRANSPORT` in `lib/shell.ts`: a failed, closed, or timed-out connection, a host that did not resolve, an HTTP 5xx) or is rate limiting this token (`RATE_LIMIT`: the primary or secondary limit, a 429) | the work reruns on a later run; the checks wait first retries its read with backoff for up to five minutes, and waits out a rate limit until its reset (read from `gh api rate_limit`, a minute when none is named) within the checks deadline |
 | `stuck-check` | a check its provider queued and never started, past `stuckCheckMinutes` (30 by default) while the landing waited on it | the work reruns on a later run; the stop names the check, its provider, and how long it sat queued |
 | `base` | a coder's `needs-human` with `"outside": "base"` on a pull request | the work waits on a person with its pull request held open in draft |
 | `needs-person` | a prover's `needs-human`, or a coder's on a pull request | the work waits on a person with its pull request held open |

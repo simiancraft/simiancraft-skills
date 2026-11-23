@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import type { Context } from './context.ts';
 import { awaitGreenChecks, reviewedChecks } from './pipeline.ts';
 import { environmentFaultOf } from './environment-fault.ts';
-import { beginStop, resetStop, RunStopping, transportFailureIn } from './shell.ts';
+import { beginStop, rateLimitedIn, resetStop, RunStopping, transportFailureIn } from './shell.ts';
 
 type Check = { name: string; conclusion: string };
 
@@ -342,6 +342,36 @@ describe('a transport failure while the checks are waited on', () => {
     expect(transportFailureIn('dial tcp: lookup api.github.com: i/o timeout')).toBe(true);
     expect(transportFailureIn('checks failed: build (FAILURE)')).toBe(false);
     expect(transportFailureIn('HTTP 404: Not Found')).toBe(false);
+  });
+
+  it('reads the tracker\'s other ways of not answering as transport, rate limits included', () => {
+    for (const text of [
+      'Post "https://api.github.com/graphql": EOF',
+      'Get "https://api.github.com/repos/o/r": context deadline exceeded',
+      'dial tcp: lookup api.github.com: no such host',
+      'HTTP 500: Internal Server Error',
+      'GraphQL: API rate limit exceeded for user ID 1. (rateLimit)',
+      'HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+      'HTTP 429: Too Many Requests',
+    ]) expect([text, transportFailureIn(text)]).toEqual([text, true]);
+    expect(rateLimitedIn('HTTP 403: API rate limit exceeded for installation ID 9')).toBe(true);
+    expect(rateLimitedIn('HTTP 502: Bad Gateway')).toBe(false);
+    expect(transportFailureIn('HTTP 403: Resource not accessible by integration')).toBe(false);
+  });
+
+  it('waits out a rate limit until its reset, past the transport window, instead of stopping', async () => {
+    const said: string[] = [];
+    const w = world('required', () => [GREEN], { timeoutMinutes: 60 });
+    const read = w.io.read;
+    const reset = 20 * 60; // seconds on the test's clock
+    w.io.read = (argv: string[]) => {
+      if (argv[2] === 'rate_limit') return String(reset);
+      if (argv[1] === 'pr' && w.waited() < reset * 1000) throw new Error('gh pr view 1\nGraphQL: API rate limit exceeded for user ID 1.');
+      return read(argv);
+    };
+    expect(await awaitGreenChecks(w.ctx, 1, (m) => said.push(m), EXPECT, w.io)).toBeNull();
+    expect(w.waited()).toBeGreaterThanOrEqual(reset * 1000);
+    expect(said.some((m) => m.includes('rate limit'))).toBe(true);
   });
 });
 

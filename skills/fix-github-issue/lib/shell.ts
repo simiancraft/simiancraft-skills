@@ -67,9 +67,9 @@ export const CONTENTION = [
 
 /**
  * Failures that mean the tracker could not be reached, not that the command is wrong: a connection
- * that failed or timed out, or a gateway that answered for a server that did not. A read that meets
- * one is retried with backoff by the caller that can wait (the checks wait); one that outlasts the
- * retries is an outside stop (`environment-fault.ts`), never a dead letter.
+ * that failed, closed early, or timed out, a host that did not resolve, or a server error. A read
+ * that meets one is retried with backoff by the caller that can wait (the checks wait); one that
+ * outlasts the retries is an outside stop (`environment-fault.ts`), never a dead letter.
  */
 export const TRANSPORT: RegExp[] = [
   /error connecting to/i,
@@ -78,13 +78,42 @@ export const TRANSPORT: RegExp[] = [
   /\bi\/o timeout\b/i,
   /TLS handshake timeout/i,
   /could not resolve host/i,
-  /\bunexpected EOF\b/i,
-  /\bHTTP 50[234]\b/,
+  /\bno such host\b/i,
+  /context deadline exceeded/i,
+  /\bEOF\b/,
+  /\bHTTP 5\d\d\b/,
 ];
 
-/** Whether a command's error text is a transport failure. */
+/**
+ * The tracker throttling this token: the primary limit, the secondary limit, or a 429. The command
+ * was not wrong and nothing was judged; it is transport, and a caller that can wait waits for the
+ * limit's reset (`rateLimitResetAt`).
+ */
+export const RATE_LIMIT: RegExp[] = [/API rate limit exceeded/i, /secondary rate limit/i, /\bHTTP (403|429)\b.*rate.?limit/i, /\bHTTP 429\b/];
+
+/** Whether a command's error text says the tracker is rate limiting this token. */
+export function rateLimitedIn(text: string): boolean {
+  return RATE_LIMIT.some((pattern) => pattern.test(text));
+}
+
+/** Whether a command's error text is a transport failure, a rate limit included. */
 export function transportFailureIn(text: string): boolean {
-  return TRANSPORT.some((pattern) => pattern.test(text));
+  return TRANSPORT.some((pattern) => pattern.test(text)) || rateLimitedIn(text);
+}
+
+/**
+ * When the exhausted primary limit resets, in epoch milliseconds, from `gh api rate_limit` (a read
+ * the limit does not count); null when no resource is exhausted, as under a secondary limit, or
+ * when the read fails.
+ */
+export function rateLimitResetAt(read: (argv: string[]) => string): number | null {
+  try {
+    const out = read(['gh', 'api', 'rate_limit', '--jq', '[.resources[] | select(.remaining == 0) | .reset] | max // empty']).trim();
+    const seconds = Number(out);
+    return out !== '' && Number.isFinite(seconds) ? seconds * 1000 : null;
+  } catch {
+    return null;
+  }
 }
 
 export function sh(ctx: Context, cmd: string[], cwd = ctx.repoRoot, attempts = 4): string {
